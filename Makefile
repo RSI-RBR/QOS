@@ -44,5 +44,14 @@ $(BUILD)/%.o: %.S
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/hello.bin: user/hello.c
+	$(CC) -ffreestanding -nostdlib -Iinclude -c $< -o build/hello.o
+	$(OBJCOPY) -O binary build/hello.o build/hello.bin
+
+build/hello_bin.o: build/hello.bin
+	$(LD) -r -b binary $< -o $@
+
+OBJS += build/hello_bin.o
+
 clean:
 	rm -rf $(BUILD) kernel8.img
