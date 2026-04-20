@@ -1,10 +1,10 @@
-Pi OS (Custom Raspberry Pi OS)
+QOS (Quantum OS for Raspberry Pi)
 
 Minimal bare-metal operating system for Raspberry Pi (AArch64).
 
 ---
 
-Features
+## Features
 
 - UART input/output
 - Basic interactive shell
@@ -13,7 +13,7 @@ Features
 
 ---
 
-Requirements
+## Requirements
 
 - Raspberry Pi 3 B(+)
 - SD card (8GB+ recommended)
@@ -39,8 +39,8 @@ aarch64-linux-gnu-gcc --version
 
 Clone the repository:
 
-git clone https://github.com/YOUR_USERNAME/pi-os.git
-cd pi-os
+git clone https://github.com/RSI-RBR/QOS.git
+cd QOS
 
 Build:
 
@@ -189,4 +189,4 @@ Future Goals
 
 License
 
-(Choose a license if you want, e.g. MIT)
+All available rights reserved
