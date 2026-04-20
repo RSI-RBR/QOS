@@ -16,7 +16,8 @@ kernel/memory.c \
 kernel/string.c
 
 ASM_SOURCES = \
-boot/boot.S
+boot/boot.S \
+kernel/context.S
 
 OBJS = \
 $(patsubst %.c,$(BUILD)/%.o,$(C_SOURCES)) \

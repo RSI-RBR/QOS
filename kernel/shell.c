@@ -2,6 +2,19 @@
 #include "shell.h"
 #include "memory.h"
 #include "string.h"
+#include "api.h"
+#include "context.h"
+
+#define PROG_STACK_SIZE 4096
+
+static unsigned char prog_stack[PROG_STACK_SIZE];
+
+static kernel_api_t kapi = {
+    .puts = uart_puts,
+    .putc = uart_send
+};
+
+typedef void (*program_entry_t)(kernel_api_t *api);
 
 
 #define MAX_ARGS 8
@@ -34,21 +47,29 @@ static unsigned char program_buffer[256];
 
 static void cmd_loadtest(int argc, char **argv){
     uart_puts("Loading test program... \n");
-    program_buffer[0] = 0xC0;
-    program_buffer[1] = 0x03;
-    program_buffer[2] = 0x5F;
-    program_buffer[3] = 0xD6;
+    void test(kernel_api_t *api){
+        api->puts("Hello from program!\n");
+    }
 
+    unsigned char *src = (unsigned char *)test;
+
+    for (int i = 0; i < 128; i++){
+        program_buffer[i] = src[i];
+    }
+    
     uart_puts("Program loaded\n");
 }
 
 static void cmd_runmem(int argc, char **argv){
-    uart_puts("Executing memory... \n");
+    uart_puts("Executing program... \n");
 
-    void (*prog)(void) = (void (*)(void))program_buffer;
-    prog();
+    void (*prog)(kernel_api_t *) = (void (*)(kernel_api_t *))program_buffer;
 
-    uart_puts("Returned from memory!\n");
+    void *stack_top = prog_stack + PROG_STACK_SIZE;
+    
+    run_program(prog, stack_top, &kapi);
+
+    uart_puts("Program returned!\n");
 }
 
 static void shell_clear_buffer(){
