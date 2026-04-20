@@ -18,12 +18,9 @@ SECTIONS
         bss_end = .;
     }
 
-    .stack (NOLOAD) : {
-        . = ALIGN(16);
-        stack_bottom = .;
-        LONG(0xDEADBEEF);
-        . += 0x100000;
-        stack_top = .;
+    . = ALIGN(16);
 
-    }
+    stack_bottom = .;
+    . += 0x10000;
+    stack_top = .;
 }

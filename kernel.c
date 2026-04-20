@@ -2,21 +2,15 @@
 #include "shell.h"
 #include "memory.h"
 
-extern unsigned int stack_bottom;
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
         ((char*)start)[i] = 0;
 }
 
-void check_stack(){
-    if (*(unsigned int*)&stack_bottom != 0xDEADBEEF){
-        uart_puts("Stack Overflow Detected!\n");
-    }
-}
-
 void kernel_main(void){
     uart_init();
+    uart_puts("Uart initialized!\n");
     memory_init();
 
     uart_puts("Kernel booted successfully! \n");

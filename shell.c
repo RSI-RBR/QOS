@@ -22,19 +22,19 @@ static void shell_execute(char *cmd){
     if (cmd[0] == 0) return;
 
     // echo command
-    if (strcmp(cmd, "echo") == 0){
+    if (kstrcmp(cmd, "echo") == 0){
         uart_puts(cmd+5);
         return;
     }
 
-    if (strcmp(cmd, "help") == 0){
+    if (kstrcmp(cmd, "help") == 0){
         uart_puts("Commands: \n");
         uart_puts(" echo <text>\n");
         uart_puts(" help\n");
         return;
     }
 
-    if (strcmp(cmd, "mem") == 0){
+    if (kstrcmp(cmd, "mem") == 0){
         void *p = kmalloc(64);
 
         if (p == 0){
