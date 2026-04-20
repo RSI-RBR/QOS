@@ -5,6 +5,7 @@
 #include "api.h"
 #include "context.h"
 #include "programs.h"
+#include "process.h"
 
 
 static kernel_api_t kapi = {
@@ -38,14 +39,26 @@ static void cmd_run(int argc, char **argv){
 
     for (int i = 0; i < program_count; i++){
         if (kstrcmp(argv[1], programs[i].name) == 0){
+
+            void *stack = alloc_stack();
+
+            if (!stack){
+                uart_puts("No free stacks!\n");
+                return;
+            }
+
             uart_puts("Executing program...\n");
 
-            run_program(programs[i].entry, 0, &kapi);
+            run_program(programs[i].entry, stack, &kapi);
 
-            uart_puts("Program returned\n");
+            uart_puts("Program returned!\n");
+
+            free_stack(stack);
+
             return;
         }
     }
+
     uart_puts("Program not found\n");
 }
 
