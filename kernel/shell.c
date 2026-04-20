@@ -4,7 +4,9 @@
 #include "string.h"
 
 
-#define BUF_SIZE 128
+#define MAX_ARGS 8
+#define MAX_INPUT 128
+#define BUF_SIZE 256
 
 static char buffer[BUF_SIZE];
 static int buf_index = 0;
@@ -18,36 +20,86 @@ static void shell_clear_buffer(){
     buf_index = 0;
 }
 
-static void shell_execute(char *cmd){
-    if (cmd[0] == 0) return;
+static int parse_args(char* input, char *argv[]){
+    int argc = 0;
 
-    // echo command
-    if (kstrcmp(cmd, "echo") == 0){
-        uart_puts(cmd+5);
-        return;
-    }
+    while (*input && argc < MAX_ARGS){
+        while (*input == ' ') input ++;
 
-    if (kstrcmp(cmd, "help") == 0){
-        uart_puts("Commands: \n");
-        uart_puts(" echo <text>\n");
-        uart_puts(" help\n");
-        return;
-    }
+        if (*input == 0) break;
 
-    if (kstrcmp(cmd, "mem") == 0){
-        void *p = kmalloc(64);
+        argv[argc++] = input;
 
-        if (p == 0){
-            uart_puts("Out of memory!\n");
-        }else{
-            uart_puts("Allocated 64 bytes");
+        while (*input && *input != ' ') input ++;
+
+        if (*input) {
+            *input = 0;
+            input ++;
         }
+    }
 
+    return argc;
+}
+
+static void cmd_help(int argc, char **argv){
+    uart_puts("Commands: \n");
+    uart_puts(" echo <text> \n");
+    uart_puts(" help \n");
+    uart_puts(" mem \n");
+
+    return;
+}
+
+static void cmd_echo(int argc, char **argv){
+    if (argc < 2){
+        uart_puts("Usage: echo <text>\n");
         return;
     }
 
-    uart_puts("Unknown command!");
+    for (int i = 1; i < argc; i++){
+        uart_puts(argv[i]);
+        uart_puts(" ");
+    }
+    uart_puts("\n");
 
+    return;
+}
+
+static void cmd_mem(int argc, char **argv){
+    void *p = kmalloc(64);
+
+    if (!p) uart_puts("Out of memory! \n");
+    else uart_puts("Allocated 64 bytes \n");
+
+    return;
+}
+
+typedef struct {
+    const char *name;
+    void (*func)(int argc, char **argv);
+} command_t;
+
+static command_t commands[] = {
+    {"help", cmd_help},
+    {"echo", cmd_echo},
+    {"mem", cmd_mem}
+};
+
+static void shell_execute(char *input){
+    char *argv[MAX_ARGS];
+    int argc = parse_args(input, argv);
+
+    if (argc == 0) return;
+
+    for (unsigned int i = 0; i < sizeof(commands)/sizeof(commands[0]); i++){
+        if (kstrcmp(argv[0], commands[i].name) == 0){
+            commands[i].func(argc, argv);
+            return;
+        }
+    }
+    uart_puts("Unknown command! \n");
+
+    return;
 }
 
 void shell_init(void){
