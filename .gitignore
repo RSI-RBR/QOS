@@ -7,5 +7,7 @@
 *~
 *.swp
 
+.gitignore
+
 firmware/
 raspberry-pi-os/
