@@ -5,21 +5,26 @@
 // x2 = api pointer
 
 run_program:
-    // Save kernel state
+    // Save full context we care about
     mov x3, sp
-    mov x5, x30
+    mov x4, x30
+    mov x5, x29
 
-    // Switch to program stack
+    // Switch stack
     mov sp, x1
 
-    // Prepare call
-    mov x4, x0      // program entry
-    mov x0, x2      // argument (api)
+    // Set up proper frame
+    mov x29, sp
 
-    blr x4          // call program
+    // Prepare args
+    mov x6, x0      // program entry
+    mov x0, x2      // api
 
-    // Restore kernel state
+    blr x6          // call program
+
+    // Restore context
     mov sp, x3
-    mov x30, x5
+    mov x30, x4
+    mov x29, x5
 
     ret
