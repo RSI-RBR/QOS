@@ -66,7 +66,7 @@ static void cmd_runmem(int argc, char **argv){
     stack_top = (void*)((unsigned long)stack_top & ~0xF);
     stack_top -= 128;
 
-    run_program(test_program, stack_top, &kapi);
+    run_program(test_program, 0, &kapi);
 
     uart_puts("Program returned!\n");
 }
