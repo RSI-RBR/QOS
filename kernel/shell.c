@@ -34,6 +34,8 @@ static void program_puts(kernel_api_t *api, const char *s){
 
 static void test_program(kernel_api_t *api){
     program_puts(api, "Hello from program!\n");
+    api->puts("A\n");
+    api->puts("B\n");
     return;
 }
 
