@@ -30,6 +30,7 @@ static int buf_index = 0;
 
 static void test_program(void){
     uart_puts("Program executed!\n");
+    return;
 }
 
 static void shell_print_prompt(){
@@ -49,6 +50,7 @@ static void cmd_loadtest(int argc, char **argv){
     uart_puts("Loading test program... \n");
     void test(kernel_api_t *api){
         api->puts("Hello from program!\n");
+        return;
     }
 
     unsigned char *src = (unsigned char *)test;
