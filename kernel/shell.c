@@ -4,10 +4,8 @@
 #include "string.h"
 #include "api.h"
 #include "context.h"
+#include "programs.h"
 
-#define PROG_STACK_SIZE 4096
-
-static unsigned char prog_stack[PROG_STACK_SIZE];
 
 static kernel_api_t kapi = {
     .puts = uart_puts,
@@ -28,48 +26,39 @@ static void *ptrs[MAX_PTRS];
 static char buffer[BUF_SIZE];
 static int buf_index = 0;
 
-static void program_puts(kernel_api_t *api, const char *s){
-    api->puts(s);
-}
-
-static void test_program(kernel_api_t *api){
-    program_puts(api, "Hello from program!\n");
-    api->puts("A\n");
-    api->puts("B\n");
-    return;
-}
-
 static void shell_print_prompt(){
     uart_puts("\n*QOS* > ");
 }
 
-static unsigned char program_buffer[256];
+static void cmd_run(int argc, char **argv){
+    if (argc < 2){
+        uart_puts("Usage: run <program>\n");
+        return;
+    }
 
-static void cmd_loadtest(int argc, char **argv){
-    uart_puts("Loading test program... \n");
+    for (int i = 0; i < program_count; i++){
+        if (kstrcmp(argv[1], programs[i].name) == 0){
+            uart_puts("Executing program...\n");
 
-    // aarch64 ret instruction
-//    program_buffer[0] = 0xC0;
-//    program_buffer[1] = 0x03;
-//    program_buffer[2] = 0x5F;
-//    program_buffer[3] = 0xD6;
+            run_program(programs[i].entry, 0, &kapi);
 
-    *(program_entry_t *)program_buffer = test_program;
-
-    uart_puts("Program loaded\n");
+            uart_puts("Program returned\n");
+            return;
+        }
+    }
+    uart_puts("Program not found\n");
 }
 
-static void cmd_runmem(int argc, char **argv){
-    uart_puts("Executing program...\n");
+static void cmd_lsprog(int argc, char **argv){
+    uart_puts("Programs: \n");
 
-    void *stack_top = prog_stack + PROG_STACK_SIZE;
-    stack_top = (void*)((unsigned long)stack_top & ~0xF);
-    stack_top -= 128;
-
-    run_program(test_program, 0, &kapi);
-
-    uart_puts("Program returned!\n");
+    for (int i = 0; i < program_count; i++){
+        uart_puts(" - ");
+        uart_puts(programs[i].name);
+        uart_puts("\n");
+    }
 }
+
 static void shell_clear_buffer(){
     for (int i = 0; i < BUF_SIZE; i++) buffer[i] = 0;
     buf_index = 0;
@@ -103,8 +92,8 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" alloc \n");
     uart_puts(" free \n");
     uart_puts(" memlist \n");
-    uart_puts(" loadtest \n");
-    uart_puts(" runmem \n");
+    uart_puts(" run <program> \n");
+    uart_puts(" lsprog \n");
 
     return;
 }
@@ -202,8 +191,8 @@ static command_t commands[] = {
     {"alloc", cmd_alloc},
     {"free", cmd_free},
     {"memlist", cmd_memlist},
-    {"loadtest", cmd_loadtest},
-    {"runmem", cmd_runmem}
+    {"run", cmd_run},
+    {"lsprog", cmd_lsprog}
 };
 
 static void shell_execute(char *input){

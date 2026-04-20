@@ -13,7 +13,8 @@ kernel/kernel.c \
 kernel/uart.c \
 kernel/shell.c \
 kernel/memory.c \
-kernel/string.c
+kernel/string.c \
+kernel/programs.c
 
 ASM_SOURCES = \
 boot/boot.S \
