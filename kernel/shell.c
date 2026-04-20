@@ -28,20 +28,17 @@ static void *ptrs[MAX_PTRS];
 static char buffer[BUF_SIZE];
 static int buf_index = 0;
 
-static void test_program(void){
-    uart_puts("Program executed!\n");
+static void program_puts(kernel_api_t *api, const char *s){
+    api->puts(s);
+}
+
+static void test_program(kernel_api_t *api){
+    program_puts(api, "Hello from program!\n");
     return;
 }
 
 static void shell_print_prompt(){
     uart_puts("\n*QOS* > ");
-}
-
-static void cmd_run(int argc, char **argv){
-    uart_puts("Running program...\n");
-    void (*prog)(void) = test_program;
-    prog();
-    uart_puts("Returned from program!\n");
 }
 
 static unsigned char program_buffer[256];
@@ -50,10 +47,12 @@ static void cmd_loadtest(int argc, char **argv){
     uart_puts("Loading test program... \n");
 
     // aarch64 ret instruction
-    program_buffer[0] = 0xC0;
-    program_buffer[1] = 0x03;
-    program_buffer[2] = 0x5F;
-    program_buffer[3] = 0xD6;
+//    program_buffer[0] = 0xC0;
+//    program_buffer[1] = 0x03;
+//    program_buffer[2] = 0x5F;
+//    program_buffer[3] = 0xD6;
+
+    *(program_entry_t *)program_buffer = test_program;
 
     uart_puts("Program loaded\n");
 }
@@ -61,7 +60,7 @@ static void cmd_loadtest(int argc, char **argv){
 static void cmd_runmem(int argc, char **argv){
     uart_puts("Executing program... \n");
 
-    void (*prog)(kernel_api_t *) = (void (*)(kernel_api_t *))program_buffer;
+    program_entry_t prog = *(program_entry_t)program_buffer;
 
     void *stack_top = prog_stack + PROG_STACK_SIZE;
     stack_top = (void*)((unsigned long)stack_top & ~0xF);
@@ -104,7 +103,6 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" alloc \n");
     uart_puts(" free \n");
     uart_puts(" memlist \n");
-    uart_puts(" run \n");
     uart_puts(" loadtest \n");
     uart_puts(" runmem \n");
 
@@ -204,7 +202,6 @@ static command_t commands[] = {
     {"alloc", cmd_alloc},
     {"free", cmd_free},
     {"memlist", cmd_memlist},
-    {"run", cmd_run},
     {"loadtest", cmd_loadtest},
     {"runmem", cmd_runmem}
 };

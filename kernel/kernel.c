@@ -2,6 +2,7 @@
 #include "shell.h"
 #include "memory.h"
 
+//extern void vectors(void);
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
@@ -9,6 +10,8 @@ void memzero(unsigned long start, unsigned long size){
 }
 
 void kernel_main(void){
+//    asm volatile("msr VBAR_EL1, %0" :: "r"(&vectors));
+
     uart_init();
     uart_puts("Uart initialized!\n");
     memory_init();
