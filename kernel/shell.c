@@ -48,17 +48,13 @@ static unsigned char program_buffer[256];
 
 static void cmd_loadtest(int argc, char **argv){
     uart_puts("Loading test program... \n");
-    void test(kernel_api_t *api){
-        api->puts("Hello from program!\n");
-        return;
-    }
 
-    unsigned char *src = (unsigned char *)test;
+    // aarch64 ret instruction
+    program_buffer[0] = 0xC0;
+    program_buffer[1] = 0x03;
+    program_buffer[2] = 0x5F;
+    program_buffer[3] = 0xD6;
 
-    for (int i = 0; i < 128; i++){
-        program_buffer[i] = src[i];
-    }
-    
     uart_puts("Program loaded\n");
 }
 
@@ -68,7 +64,8 @@ static void cmd_runmem(int argc, char **argv){
     void (*prog)(kernel_api_t *) = (void (*)(kernel_api_t *))program_buffer;
 
     void *stack_top = prog_stack + PROG_STACK_SIZE;
-    
+    stack_top = (void*)((unsigned long)stack_top & ~0xF);
+
     run_program(prog, stack_top, &kapi);
 
     uart_puts("Program returned!\n");
