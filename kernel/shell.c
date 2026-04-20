@@ -58,18 +58,15 @@ static void cmd_loadtest(int argc, char **argv){
 }
 
 static void cmd_runmem(int argc, char **argv){
-    uart_puts("Executing program... \n");
-
-    program_entry_t prog = *(program_entry_t*)program_buffer;
+    uart_puts("Executing program...\n");
 
     void *stack_top = prog_stack + PROG_STACK_SIZE;
     stack_top = (void*)((unsigned long)stack_top & ~0xF);
 
-    run_program(prog, stack_top, &kapi);
+    run_program(test_program, stack_top, &kapi);
 
     uart_puts("Program returned!\n");
 }
-
 static void shell_clear_buffer(){
     for (int i = 0; i < BUF_SIZE; i++) buffer[i] = 0;
     buf_index = 0;
