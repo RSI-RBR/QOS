@@ -1,5 +1,9 @@
 .global run_program
 
+// x0 = program entry
+// x1 = stack
+// x2 = api
+
 run_program:
     // Save callee-saved registers
     stp x19, x20, [sp, -16]!
@@ -11,14 +15,22 @@ run_program:
 
     mov x29, sp
 
-    // Save program pointer
-    mov x19, x0
+    // Save kernel stack
+    mov x19, sp
+
+    // Switch to program stack
+    mov sp, x1
+
+    // Save program entry
+    mov x20, x0
 
     // Pass argument
     mov x0, x2
 
-    // Call program
-    blr x19
+    blr x20
+
+    // Restore kernel stack
+    mov sp, x19
 
     // Restore registers
     ldp x29, x30, [sp], 16
