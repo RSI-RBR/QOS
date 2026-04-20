@@ -60,7 +60,7 @@ static void cmd_loadtest(int argc, char **argv){
 static void cmd_runmem(int argc, char **argv){
     uart_puts("Executing program... \n");
 
-    program_entry_t prog = *(program_entry_t)program_buffer;
+    program_entry_t prog = *(program_entry_t*)program_buffer;
 
     void *stack_top = prog_stack + PROG_STACK_SIZE;
     stack_top = (void*)((unsigned long)stack_top & ~0xF);
