@@ -5,7 +5,7 @@ OBJCOPY = aarch64-linux-gnu-objcopy
 CFLAGS = -ffreestanding -nostdlib -Wall -O2
 LDFLAGS = -T linker.ld
 
-OBJS = boot.o kernel.o uart.o shell.o memory.o
+OBJS = boot.o kernel.o uart.o shell.o memory.o string.o
 
 all: kernel8.img
 

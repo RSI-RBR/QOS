@@ -2,6 +2,7 @@
 #include "shell.h"
 #include "memory.h"
 
+extern unsigned int stack_bottom;
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)

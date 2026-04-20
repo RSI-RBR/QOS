@@ -1,6 +1,8 @@
 #include "uart.h"
 #include "shell.h"
 #include "memory.h"
+#include "string.h"
+
 
 #define BUF_SIZE 128
 
@@ -20,19 +22,19 @@ static void shell_execute(char *cmd){
     if (cmd[0] == 0) return;
 
     // echo command
-    if (cmd[0] == 'e' && cmd[1] == 'c' && cmd[2] == 'h' && cmd[3] == 'o'){
+    if (strcmp(cmd, "echo") == 0){
         uart_puts(cmd+5);
         return;
     }
 
-    if (cmd[0] == 'h' && cmd[1] == 'e' && cmd[2] == 'l' && cmd[3] == 'p'){
+    if (strcmp(cmd, "help") == 0){
         uart_puts("Commands: \n");
         uart_puts(" echo <text>\n");
         uart_puts(" help\n");
         return;
     }
 
-    if (cmd[0] == 'm' && cmd[1] == 'e' && cmd[2] == 'm'){
+    if (strcmp(cmd, "mem") == 0){
         void *p = kmalloc(64);
 
         if (p == 0){
