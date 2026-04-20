@@ -61,3 +61,4 @@ void uart_puts(const char* str){
         uart_send(*str++);
     }
 }
+

@@ -8,11 +8,15 @@
 #define MAX_INPUT 128
 #define BUF_SIZE 256
 
+#define MAX_PTRS 16
+
+static void *ptrs[MAX_PTRS];
+
 static char buffer[BUF_SIZE];
 static int buf_index = 0;
 
 static void shell_print_prompt(){
-    uart_puts("\n> ");
+    uart_puts("\n *QOS* > ");
 }
 
 static void shell_clear_buffer(){
@@ -45,7 +49,9 @@ static void cmd_help(int argc, char **argv){
     uart_puts("Commands: \n");
     uart_puts(" echo <text> \n");
     uart_puts(" help \n");
-    uart_puts(" mem \n");
+    uart_puts(" alloc \n");
+    uart_puts(" free \n");
+    uart_puts(" memlist \n");
 
     return;
 }
@@ -65,13 +71,71 @@ static void cmd_echo(int argc, char **argv){
     return;
 }
 
-static void cmd_mem(int argc, char **argv){
-    void *p = kmalloc(64);
+static void cmd_alloc(int argc, char **argv){
+    if (argc < 2){
+        uart_puts("Usage: alloc <size> \n");
+        return;
+    }
 
-    if (!p) uart_puts("Out of memory! \n");
-    else uart_puts("Allocated 64 bytes \n");
+    int size = 0;
+    char *s = argv[1];
+
+    while (*s){
+        size = size * 10 + (*s - '0');
+        s++;
+    }
+
+    void *p = kmalloc(size);
+
+    if (!p){
+        uart_puts("Allocation failed! \n");
+        return;
+    }
+
+    for (int i = 0; i < MAX_PTRS; i++){
+        if (!ptrs[i]){
+            ptrs[i] = p;
+            uart_puts("Allocated at index ");
+            uart_send('0' + i);
+            uart_puts("\n");
+            return;
+        }
+    }
+
+    uart_puts("Pointer table full! \n");
 
     return;
+}
+
+static void cmd_free(int argc, char **argv){
+    if (argc < 2){
+        uart_puts("Usage: free <index> \n");
+        return;
+    }
+
+    int idx = argv[1][0] - '0';
+
+    if (idx < 0 || idx >= MAX_PTRS || !ptrs[idx]){
+        uart_puts("Invalid index \n");
+        return;
+    }
+
+    kfree(ptrs[idx]);
+    ptrs[idx] = 0;
+
+    uart_puts("Freed \n");
+
+    return;
+}
+
+static void cmd_memlist(int argc, char **argv){
+    for (int i = 0; i < MAX_PTRS; i++){
+        if (ptrs[i]){
+            uart_puts("Index ");
+            uart_send('0' + i);
+            uart_puts(" allocated \n");
+        }
+    }
 }
 
 typedef struct {
@@ -82,7 +146,9 @@ typedef struct {
 static command_t commands[] = {
     {"help", cmd_help},
     {"echo", cmd_echo},
-    {"mem", cmd_mem}
+    {"alloc", cmd_alloc},
+    {"free", cmd_free},
+    {"memlist", cmd_memlist}
 };
 
 static void shell_execute(char *input){
