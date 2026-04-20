@@ -12,14 +12,16 @@ run_program:
     // Switch stack
     mov sp, x1
 
+    // Save program entry
     mov x5, x0
-    // Pass argument
+
+    // Set argument
     mov x0, x2
 
     // Call program
     blr x5
 
-    // Restore stack
+    // Restore state
     mov sp, x3
     mov x30, x4
 
