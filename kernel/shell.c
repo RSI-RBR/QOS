@@ -16,11 +16,11 @@ static char buffer[BUF_SIZE];
 static int buf_index = 0;
 
 static void test_program(void){
-    uart_puts("Program executed!");
+    uart_puts("Program executed!\n");
 }
 
 static void shell_print_prompt(){
-    uart_puts("\n *QOS* > ");
+    uart_puts("\n*QOS* > ");
 }
 
 static void cmd_run(int argc, char **argv){
@@ -45,7 +45,7 @@ static void cmd_loadtest(int argc, char **argv){
 static void cmd_runmem(int argc, char **argv){
     uart_puts("Executing memory... \n");
 
-    void (*prog)(void) = (void (*)(void)program_buffer;
+    void (*prog)(void) = (void (*)(void))program_buffer;
     prog();
 
     uart_puts("Returned from memory!\n");
@@ -84,9 +84,9 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" alloc \n");
     uart_puts(" free \n");
     uart_puts(" memlist \n");
-    uart_puts(" run");
-    uart_puts(" loadtest");
-    uart_puts(" runmem");
+    uart_puts(" run \n");
+    uart_puts(" loadtest \n");
+    uart_puts(" runmem \n");
 
     return;
 }
