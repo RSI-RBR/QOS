@@ -32,13 +32,13 @@ static int buf_index = 0;
 #define USER_PROGRAM_ADDR 0x400000
 
 static void cmd_runbin(int argc, char **argv){
-    extern unsigned char _binary_hello_bin_start[];
-    extern unsigned char _binary_hello_bin_end[];
+    extern unsigned char _binary_build_hello_bin_start[];
+    extern unsigned char _binary_build_hello_bin_end[];
 
-    unsigned char *src = _binary_hello_bin_start;
+    unsigned char *src = _binary_build_hello_bin_start;
     unsigned char *dst = (unsigned char*)USER_PROGRAM_ADDR;
 
-    while (src < _binary_hello_bin_end){
+    while (src < _binary_build_hello_bin_end){
         *dst++ = *src++;
     }
 
