@@ -1,0 +1,11 @@
+*.o
+*.elf
+*.img
+
+*.bak
+
+*~
+*.swp
+
+firmware/
+raspberry-pi-os/

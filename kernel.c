@@ -1,0 +1,31 @@
+#include "uart.h"
+#include "shell.h"
+#include "memory.h"
+
+
+void memzero(unsigned long start, unsigned long size){
+    for (unsigned long i = 0; i < size; i++)
+        ((char*)start)[i] = 0;
+}
+
+void check_stack(){
+    if (*(unsigned int*)&stack_bottom != 0xDEADBEEF){
+        uart_puts("Stack Overflow Detected!\n");
+    }
+}
+
+void kernel_main(void){
+    uart_init();
+    memory_init();
+
+    uart_puts("Kernel booted successfully! \n");
+
+    shell_init();
+    shell_run();
+
+    while(1){
+        char c = uart_getc();
+        uart_send(c);
+    }
+
+}
