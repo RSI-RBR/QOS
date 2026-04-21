@@ -9,4 +9,6 @@ typedef struct {
     void  (*free)(void*);
 } kernel_api_t;
 
+extern kernel_api_t kapi;
+
 #endif
