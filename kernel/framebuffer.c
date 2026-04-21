@@ -5,7 +5,7 @@ static unsigned int width = 1024;
 static unsigned int height = 768;
 static unsigned int *fb;
 
-static volatile unsigned int mbox[36] __attribute__((aligned(16)));
+//static volatile unsigned int mbox[36] __attribute__((aligned(16)));
 
 void fb_init(){
     mbox[0] = 35 * 4;
@@ -37,7 +37,7 @@ void fb_init(){
     mbox[21] = 0;
 
     if (mailbox_call(8)){
-        fb = (unsigned int*)((unsigned long)mbox[19]);
+        fb = (unsigned int*)((unsigned long)(mbox[19] & 0x3FFFFFFF));
     }
 }
 

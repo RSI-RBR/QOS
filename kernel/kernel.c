@@ -42,6 +42,7 @@ void kernel_main(void){
 //    task_run_all();
 
     fb_init();
+    uart_puts("Frame buffer initialized!\n");
     fb_clear(0x00FF0000); // RED SCREEN
 
     while(1){
