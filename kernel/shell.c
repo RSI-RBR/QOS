@@ -31,29 +31,6 @@ static int buf_index = 0;
 
 #define USER_PROGRAM_ADDR 0x400000
 
-//static void cmd_runbin(int argc, char **argv){
-//    extern unsigned char _binary_build_hello_bin_start[];
-//    extern unsigned char _binary_build_hello_bin_end[];
-//
-//    unsigned char *src = _binary_build_hello_bin_start;
-//    unsigned char *dst = (unsigned char*)USER_PROGRAM_ADDR;
-//
-//    while (src < _binary_build_hello_bin_end){
-//        *dst++ = *src++;
-//    }
-//
-//    uart_puts("Running program...\n");
-//
-//    void (*prog)(kernel_api_t *) = (void*)USER_PROGRAM_ADDR;
-//
-//    void *stack = alloc_stack();
-//
-//    run_program(prog, stack, &kapi);
-//
-//    uart_puts("Program returned!\n");
-//
-//    free_stack(stack);
-//}
 
 static void cmd_loadtest(int argc, char** argv){
     uart_puts("Loading test program...\n");
@@ -72,7 +49,7 @@ static void shell_print_prompt(){
 
 static void cmd_run(int argc, char **argv){
 //    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
-    void *prog = load_program_from_sd("/boot/program.bin");
+    void *prog = load_program_from_sd();
 
     if (prog){
         void *stack = alloc_stack();
