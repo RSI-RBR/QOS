@@ -16,8 +16,8 @@ Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).
 ## Requirements
 
 - Raspberry Pi 3 B(+)
-- SD card (8GB+ recommended)
-- Linux system (tested on Kali Linux / Debian-based)
+- Micro SD card
+- Linux system (tested on Kali Linux)
 - USB-to-UART adapter (for serial output)
 
 ---
