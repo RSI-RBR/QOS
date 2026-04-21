@@ -27,8 +27,7 @@ kernel/context.S
 
 OBJS = \
 $(patsubst %.c,$(BUILD)/%.o,$(C_SOURCES)) \
-$(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES)) \
-$(BUILD)/hello_bin.o
+$(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 
 # ---------------------------
 # DEFAULT TARGET
@@ -56,20 +55,6 @@ $(BUILD)/%.o: %.c
 $(BUILD)/%.o: %.S
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
-
-# ---------------------------
-# USER PROGRAM (HELLO)
-# ---------------------------
-
-$(BUILD)/hello.o: user/hello.c
-	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD)/hello.bin: $(BUILD)/hello.o
-	$(OBJCOPY) -O binary $< $@
-
-$(BUILD)/hello_bin.o: $(BUILD)/hello.bin
-	$(LD) -r -b binary $< -o $@
 
 # ---------------------------
 # CLEAN

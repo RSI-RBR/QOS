@@ -29,31 +29,31 @@ static int buf_index = 0;
 
 //extern kernel_api_t kapi;
 
-#define USER_PROGRAM_ADDR 0x400000
+//#define USER_PROGRAM_ADDR 0x400000
 
-static void cmd_runbin(int argc, char **argv){
-    extern unsigned char _binary_build_hello_bin_start[];
-    extern unsigned char _binary_build_hello_bin_end[];
-
-    unsigned char *src = _binary_build_hello_bin_start;
-    unsigned char *dst = (unsigned char*)USER_PROGRAM_ADDR;
-
-    while (src < _binary_build_hello_bin_end){
-        *dst++ = *src++;
-    }
-
-    uart_puts("Running program...\n");
-
-    void (*prog)(kernel_api_t *) = (void*)USER_PROGRAM_ADDR;
-
-    void *stack = alloc_stack();
-
-    run_program(prog, stack, &kapi);
-
-    uart_puts("Program returned!\n");
-
-    free_stack(stack);
-}
+//static void cmd_runbin(int argc, char **argv){
+//    extern unsigned char _binary_build_hello_bin_start[];
+//    extern unsigned char _binary_build_hello_bin_end[];
+//
+//    unsigned char *src = _binary_build_hello_bin_start;
+//    unsigned char *dst = (unsigned char*)USER_PROGRAM_ADDR;
+//
+//    while (src < _binary_build_hello_bin_end){
+//        *dst++ = *src++;
+//    }
+//
+//    uart_puts("Running program...\n");
+//
+//    void (*prog)(kernel_api_t *) = (void*)USER_PROGRAM_ADDR;
+//
+//    void *stack = alloc_stack();
+//
+//    run_program(prog, stack, &kapi);
+//
+//    uart_puts("Program returned!\n");
+//
+//    free_stack(stack);
+//}
 
 static void shell_print_prompt(){
     uart_puts("\n*QOS* > ");
@@ -135,7 +135,7 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" memlist \n");
     uart_puts(" run <program> \n");
     uart_puts(" lsprog \n");
-    uart_puts(" runbin\n");
+//    uart_puts(" runbin\n");
 
     return;
 }
@@ -234,8 +234,7 @@ static command_t commands[] = {
     {"free", cmd_free},
     {"memlist", cmd_memlist},
     {"run", cmd_run},
-    {"lsprog", cmd_lsprog},
-    {"runbin", cmd_runbin}
+    {"lsprog", cmd_lsprog}
 };
 
 static void shell_execute(char *input){
