@@ -1,6 +1,6 @@
 QOS (Quantum OS for Raspberry Pi)
 
-Minimal bare-metal operating system for Raspberry Pi (AArch64).
+Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).
 
 ---
 
