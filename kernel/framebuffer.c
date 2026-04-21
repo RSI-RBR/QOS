@@ -1,8 +1,9 @@
 #include "framebuffer.h"
 #include "mailbox.h"
 
-static unsigned int width = 1024;
-static unsigned int height = 768;
+static unsigned int width = 1920;
+static unsigned int height = 1080;
+static unsigned int pitch;
 static unsigned int *fb;
 
 //static volatile unsigned int mbox[36] __attribute__((aligned(16)));
@@ -28,23 +29,54 @@ void fb_init(){
     mbox[14] = 4;
     mbox[15] = 32;
 
-    mbox[16] = 0x40001; // allocate framebuffer
-    mbox[17] = 8;
-    mbox[18] = 8;
-    mbox[19] = 16;
-    mbox[20] = 0;
+    mbox[16] = 0x40008; // pitch
+    mbox[17] = 4;
+    mbox[18] = 0;
+    mbox[19] = 0;
 
-    mbox[21] = 0;
+    
+    mbox[20] = 0x40001;
+    mbox[21] = 8;
+    mbox[22] = 8;
+    mbox[23] = 16;
+    mbox[24] = 0;
+
+    mbox[25] = 0;
 
     if (mailbox_call(8)){
-        fb = (unsigned int*)((unsigned long)(mbox[19] & 0x3FFFFFFF));
+        fb = (unsigned int*)((unsigned long)(mbox[23] & 0x3FFFFFFF));
+        pitch = mbox[19];
     }
 }
 
 void fb_clear(unsigned int color){
     for (unsigned int y = 0; y < height; y++){
         for (unsigned int x = 0; x < width; x++){
-            fb[y * width + x] = color;
+            fb[y * (pitch / 4) + x] = color;
         }
     }
+}
+
+void fb_draw_pixel(int x, int y, unsigned int color){
+    if (x < 0 || y < 0 || x >= (int)width || y >= (int)height){
+        return;
+    }
+
+    fb[y * (pitch / 4) + x] = color;
+}
+
+void fb_draw_rect(int x, int y, int w, int h, unsigned int color){
+    for (int j = 0; j < h; j++){
+        for (int i = 0; i < w; i++){
+            fb_draw_pixel(x + i, y + j, color);
+        }
+    }
+}
+
+unsigned int fb_get_width(){
+    return width;
+}
+
+unsigned int fb_get_height(){
+    return height;
 }

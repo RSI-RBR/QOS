@@ -43,7 +43,17 @@ void kernel_main(void){
 
     fb_init();
     uart_puts("Frame buffer initialized!\n");
-    fb_clear(0x00FF0000); // RED SCREEN
+
+//    if (!fb){
+//        uart_puts("FB null!\n");
+//    }else{
+//        uart_puts("FB OK!\n");
+//    }
+    fb_clear(0x00000000); // RED SCREEN
+
+    fb_draw_rect(100, 100, 200, 150, 0x00FF0000);
+    fb_draw_rect(400, 200, 100, 100, 0x0000FF00);
+    fb_draw_rect(600, 300, 150, 200, 0x000000FF);
 
     while(1){
         char c = uart_getc();
