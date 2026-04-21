@@ -34,8 +34,7 @@ kernel/context.S
 # ---------------------------
 OBJS = \
 $(patsubst %.c,$(BUILD)/%.o,$(C_SOURCES)) \
-$(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES)) \
-$(BUILD)/program_bin.o
+$(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 
 # ---------------------------
 # DEFAULT TARGET
@@ -60,25 +59,6 @@ $(BUILD)/%.o: %.c
 $(BUILD)/%.o: %.S
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
-
-# ---------------------------
-# USER PROGRAM BUILD (NO CONFLICTS)
-# ---------------------------
-
-PROGRAM = $(BUILD)/program
-
-$(PROGRAM).o: user/program.c
-	mkdir -p $(BUILD)
-	$(CC) -ffreestanding -nostdlib -Iinclude -c $< -o $@
-
-$(PROGRAM).elf: $(PROGRAM).o
-	$(LD) -Ttext=0x0 $< -o $@
-
-$(PROGRAM).bin: $(PROGRAM).elf
-	$(OBJCOPY) $< -O binary $@
-
-$(BUILD)/program_bin.o: $(PROGRAM).bin
-	$(LD) -r -b binary $< -o $@
 
 # ---------------------------
 # CLEAN

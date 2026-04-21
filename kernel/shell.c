@@ -28,7 +28,7 @@ static int buf_index = 0;
 
 //extern kernel_api_t kapi;
 
-//#define USER_PROGRAM_ADDR 0x400000
+#define USER_PROGRAM_ADDR 0x400000
 
 //static void cmd_runbin(int argc, char **argv){
 //    extern unsigned char _binary_build_hello_bin_start[];
@@ -54,49 +54,44 @@ static int buf_index = 0;
 //    free_stack(stack);
 //}
 
+static void cmd_loadtest(int argc, char** argv){
+    uart_puts("Loading test program...\n");
+    unsigned char *dst = (unsigned char*)USER_PROGRAM_ADDR;
+    dst[0] = 0xC0;
+    dst[1] = 0x03;
+    dst[2] = 0x5F;
+    dst[3] = 0xD6;
+
+    uart_puts("Program loaded at 0x400000 \n");
+}
+
 static void shell_print_prompt(){
     uart_puts("\n*QOS* > ");
 }
 
 static void cmd_run(int argc, char **argv){
-    if (argc < 2){
-        uart_puts("Usage: run <program>\n");
+    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
+
+    void *stack = alloc_stack();
+
+    if (!stack){
+        uart_puts("No free stacks!\n");
         return;
     }
 
-    for (int i = 0; i < program_count; i++){
-        if (kstrcmp(argv[1], programs[i].name) == 0){
+    uart_puts("Executing program at 0x400000... \n");
 
-            void *stack = alloc_stack();
+    run_program(prog, stack, &kapi);
 
-            if (!stack){
-                uart_puts("No free stacks!\n");
-                return;
-            }
+    uart_puts("Program returned!\n");
 
-            uart_puts("Executing program...\n");
+    free_stack(stack);
 
-            run_program(programs[i].entry, stack, &kapi);
-
-            uart_puts("Program returned!\n");
-
-            free_stack(stack);
-
-            return;
-        }
-    }
-
-    uart_puts("Program not found\n");
 }
 
 static void cmd_lsprog(int argc, char **argv){
-    uart_puts("Programs: \n");
-
-    for (int i = 0; i < program_count; i++){
-        uart_puts(" - ");
-        uart_puts(programs[i].name);
-        uart_puts("\n");
-    }
+    uart_puts("No built-in programs. \n");
+    uart_puts("Use loader to load external program.\n");
 }
 
 static void shell_clear_buffer(){
@@ -132,7 +127,8 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" alloc \n");
     uart_puts(" free \n");
     uart_puts(" memlist \n");
-    uart_puts(" run <program> \n");
+    uart_puts(" load_test\n");
+    uart_puts(" run (executes program at 0x400000) \n");
     uart_puts(" lsprog \n");
 //    uart_puts(" runbin\n");
 
@@ -233,7 +229,8 @@ static command_t commands[] = {
     {"free", cmd_free},
     {"memlist", cmd_memlist},
     {"run", cmd_run},
-    {"lsprog", cmd_lsprog}
+    {"lsprog", cmd_lsprog},
+    {"loadtest", cmd_loadtest}
 };
 
 static void shell_execute(char *input){

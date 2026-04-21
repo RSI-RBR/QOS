@@ -4,20 +4,17 @@
 
 #define PROGRAM_ADDR 0x400000
 
-extern unsigned char _binary_build_program_bin_start[];
-extern unsigned char _binary_build_program_bin_end[];
+//extern unsigned char _binary_build_program_bin_start[];
+//extern unsigned char _binary_build_program_bin_end[];
 
-void* load_program(){
+void* load_program(const void *src, unsigned long size, void *dst){
     uart_puts("Loading program...\n");
 
-    unsigned char *src = _binary_build_program_bin_start;
-    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
-
-    while (src < _binary_build_program_bin_end){
-        *dst++ = *src++;
+    for (unsigned long i = 0; i < size; i++){
+        ((unsigned char*)dst)[i] = ((unsigned char*)src)[i];
     }
 
     uart_puts("Program loaded\n");
 
-    return (void*)PROGRAM_ADDR;
+    return 0;
 }
