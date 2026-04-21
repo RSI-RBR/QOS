@@ -11,8 +11,11 @@ void memzero(unsigned long start, unsigned long size){
         ((char*)start)[i] = 0;
 }
 
-void test_task(void * arg){
-    uart_puts("Task running\n");
+void test_task(void *arg){
+    char id = (char)(unsigned long)arg;
+    uart_puts("Task ");
+    uart_send(id);
+    uart_puts(" running\n");
     return;
 }
 
@@ -32,8 +35,8 @@ void kernel_main(void){
     //shell_init();
     //shell_run();
 
-    task_create(test_task, 0);
-    task_create(test_task, 0);
+    task_create(test_task, (void*)'A');
+    task_create(test_task, (void*)'B');
 
     task_run_all();
 
