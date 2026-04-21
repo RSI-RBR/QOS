@@ -3,7 +3,7 @@
 
 void memory_init(void);
 
-void *kmalloc(unsigned int size);
+void *kmalloc(unsigned long size);
 void kfree(void *ptr);
 
 
