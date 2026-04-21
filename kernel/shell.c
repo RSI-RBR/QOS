@@ -8,10 +8,10 @@
 #include "process.h"
 
 
-static kernel_api_t kapi = {
-    .puts = uart_puts,
-    .putc = uart_send
-};
+//static kernel_api_t kapi = {
+//    .puts = uart_puts,
+//    .putc = uart_send
+//};
 
 typedef void (*program_entry_t)(kernel_api_t *api);
 extern void run_program(void *entry, void *stack, kernel_api_t *api);

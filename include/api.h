@@ -7,4 +7,6 @@ typedef struct{
 
 } kernel_api_t;
 
+extern kernel_api_t kapi;
+
 #endif

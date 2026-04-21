@@ -18,7 +18,11 @@ kernel/programs.c \
 kernel/process.c \
 kernel/task.c \
 kernel/mailbox.c \
-kernel/framebuffer.c
+kernel/framebuffer.c \
+kernel/sd.c \
+kernel/loader.c \
+kernel/api.c \
+user/program.c
 
 
 ASM_SOURCES = \
@@ -55,6 +59,20 @@ $(BUILD)/%.o: %.c
 $(BUILD)/%.o: %.S
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build user program.
+
+build/program.o: user/program.c
+	$(CC) -ffreestanding -nostdlib -Iinclude -c $< -o $@
+
+build/program.bin: build/program.o
+	$(LD) -Ttext=0x0 build/program.o -o build/program.elf
+	$(OBJCOPY) build/program.elf -O binary $@
+
+build/program_bin.o: build/program.bin
+	$(LD) -r -b binary $< -o $@
+
+OBJS += build/program_bin.o
 
 # ---------------------------
 # CLEAN
