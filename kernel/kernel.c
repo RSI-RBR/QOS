@@ -35,6 +35,9 @@ void kernel_main(void){
     fb_init();
     uart_puts("Frame buffer initialized!\n");
 
+    kapi.clear(0x00000000);
+    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
+
     uart_puts("Kernel booted successfully!\n");
 
     // -----------------------------
