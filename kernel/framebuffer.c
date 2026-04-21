@@ -52,7 +52,7 @@ void fb_init(){
 void fb_clear(unsigned int color){
     for (unsigned int y = 0; y < height; y++){
         for (unsigned int x = 0; x < width; x++){
-            fb[y * (pitch / 4) + x] = color;
+            fb_draw_pixel(x, y, color);
         }
     }
 }
@@ -62,7 +62,9 @@ void fb_draw_pixel(int x, int y, unsigned int color){
         return;
     }
 
-    fb[y * (pitch / 4) + x] = color;
+    unsigned int *ptr = (unsigned int*)((unsigned char*)fb + y * pitch);
+    ptr[x] = color;
+//    fb[y * (pitch / 4) + x] = color;
 }
 
 void fb_draw_rect(int x, int y, int w, int h, unsigned int color){
