@@ -5,6 +5,7 @@
 #include "api.h"
 #include "context.h"
 #include "process.h"
+#include "loader.h"
 
 
 //static kernel_api_t kapi = {
@@ -70,23 +71,24 @@ static void shell_print_prompt(){
 }
 
 static void cmd_run(int argc, char **argv){
-    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
+//    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
+    void *prog = load_program_from_sd("/boot/program.bin");
 
-    void *stack = alloc_stack();
+    if (prog){
+        void *stack = alloc_stack();
+        if (!stack){
+            uart_puts("No free stacks!\n");
+            return;
+        }
+        run_program(prog, stack, &kapi);
 
-    if (!stack){
-        uart_puts("No free stacks!\n");
-        return;
+        uart_puts("Program returned!\n");
+
+        free_stack(stack);
+
     }
 
-    uart_puts("Executing program at 0x400000... \n");
-
-    run_program(prog, stack, &kapi);
-
-    uart_puts("Program returned!\n");
-
-    free_stack(stack);
-
+    return;
 }
 
 static void cmd_lsprog(int argc, char **argv){

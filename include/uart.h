@@ -5,5 +5,7 @@ void uart_init(void);
 void uart_send(char c);
 void uart_puts(const char* str);
 char uart_getc(void);
+void uart_puthex(unsigned int val);
+
 
 #endif
