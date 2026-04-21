@@ -16,7 +16,9 @@ kernel/memory.c \
 kernel/string.c \
 kernel/programs.c \
 kernel/process.c \
-kernel/task.c
+kernel/task.c \
+kernel/mailbox.c \
+kernel/framebuffer.c
 
 
 ASM_SOURCES = \

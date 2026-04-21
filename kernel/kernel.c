@@ -2,6 +2,8 @@
 #include "shell.h"
 #include "memory.h"
 #include "task.h"
+#include "framebuffer.h"
+
 
 //extern void vectors(void);
 
@@ -35,11 +37,12 @@ void kernel_main(void){
     //shell_init();
     //shell_run();
 
-    task_create(test_task, (void*)'A');
-    task_create(test_task, (void*)'B');
+//    task_create(test_task, (void*)'A');
+//    task_create(test_task, (void*)'B');
+//    task_run_all();
 
-    task_run_all();
-
+    fb_init();
+    fb_clear(0x00FF0000); // RED SCREEN
 
     while(1){
         char c = uart_getc();
