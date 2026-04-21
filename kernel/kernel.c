@@ -1,7 +1,7 @@
 #include "uart.h"
 #include "shell.h"
 #include "memory.h"
-
+#include "task.h"
 
 //extern void vectors(void);
 
@@ -11,17 +11,32 @@ void memzero(unsigned long start, unsigned long size){
         ((char*)start)[i] = 0;
 }
 
+void test_task(void * arg){
+    uart_puts("Task running\n");
+    return;
+}
+
 void kernel_main(void){
 //    asm volatile("msr VBAR_EL1, %0" :: "r"(&vectors));
-
+    
     uart_init();
     uart_puts("Uart initialized!\n");
     memory_init();
+    uart_puts("Memory initialized!\n");
 
+    task_init();
+
+    
     uart_puts("Kernel booted successfully! \n");
 
-    shell_init();
-    shell_run();
+    //shell_init();
+    //shell_run();
+
+    task_create(test_task, 0);
+    task_create(test_task, 0);
+
+    task_run_all();
+
 
     while(1){
         char c = uart_getc();
