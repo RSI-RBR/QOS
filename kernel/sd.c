@@ -44,33 +44,43 @@ static void delay_cycles(int count) {
 void sd_gpio_init(void){
     uart_puts("Configuring SD GPIO...\n");
 
-    // Set GPIO 48–53 to ALT3 (SD)
     unsigned int val;
 
+    // GPIO48,49 (GPFSEL4)
     val = *GPFSEL4;
+
     val &= ~(7 << 24); // GPIO48
     val |=  (7 << 24);
+
     val &= ~(7 << 27); // GPIO49
     val |=  (7 << 27);
-    val &= ~(7 << 30); // GPIO50
-    val |=  (7 << 30);
+
     *GPFSEL4 = val;
 
+    // GPIO50–53 (GPFSEL5)
     val = *GPFSEL5;
-    val &= ~(7 << 0); // GPIO51
+
+    val &= ~(7 << 0);  // GPIO50
     val |=  (7 << 0);
-    val &= ~(7 << 3); // GPIO52
+
+    val &= ~(7 << 3);  // GPIO51
     val |=  (7 << 3);
-    val &= ~(7 << 6); // GPIO53
+
+    val &= ~(7 << 6);  // GPIO52
     val |=  (7 << 6);
+
+    val &= ~(7 << 9);  // GPIO53
+    val |=  (7 << 9);
+
     *GPFSEL5 = val;
 
     // Disable pull-up/down
     *GPPUD = 0;
     delay_cycles(150);
 
-    *GPPUDCLK1 = (1 << (48-32)) | (1 << (49-32)) | (1 << (50-32)) |
-                 (1 << (51-32)) | (1 << (52-32)) | (1 << (53-32));
+    *GPPUDCLK1 = (1 << (48-32)) | (1 << (49-32)) |
+                 (1 << (50-32)) | (1 << (51-32)) |
+                 (1 << (52-32)) | (1 << (53-32));
 
     delay_cycles(150);
 
