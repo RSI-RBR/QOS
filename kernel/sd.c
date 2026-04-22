@@ -1,3 +1,10 @@
+/**
+ * Function Name: sd_init
+ * Description: Initialize the SD card via the EMMC controller
+ * Uses the EMMC controller to initialize the SD card and set it to idle state.
+ * Returns: 0 on success, -1 on failure.
+ */
+
 #include "sd.h"
 #include "uart.h"
 
@@ -54,16 +61,23 @@ static void delay_ms(int ms) {
  */
 static int wait_cmd_done() {
     int timeout = 1000000;
+    int iterations = 0;
     while (timeout > 0) {
         unsigned int status = *EMMC_INTERRUPT;
+        iterations++;
 
         if (status & EMMC_INT_CMD_DONE) {
             *EMMC_INTERRUPT = EMMC_INT_CMD_DONE;  // Acknowledge interrupt
+            uart_puts("CMD done after ");
+            uart_puthex(iterations);
+            uart_puts(" iterations\n");
             return 0; // Success
         }
 
         if (status & (EMMC_INT_CMD_TIMEOUT | EMMC_INT_CMD_CRC_ERR | EMMC_INT_CMD_IDX_ERR)) {
-            uart_puts("ERROR: Command error, INTERRUPT STATUS: ");
+            uart_puts("ERROR at iteration ");
+            uart_puthex(iterations);
+            uart_puts(": STATUS=");
             uart_puthex(status);
             uart_puts("\n");
             *EMMC_INTERRUPT = status;  // Clear all error interrupts
@@ -72,7 +86,9 @@ static int wait_cmd_done() {
         timeout--;
     }
 
-    uart_puts("ERROR: Command timeout\n");
+    uart_puts("ERROR: Timeout after ");
+    uart_puthex(iterations);
+    uart_puts(" iterations\n");
     return -1; // Timeout
 }
 
@@ -174,6 +190,9 @@ int sd_init(void) {
 
     // Clear any pending interrupts
     *EMMC_INTERRUPT = 0xFFFFFFFF;
+    
+    // CRITICAL: Enable interrupt signals
+    *EMMC_IRPT_EN = 0xFFFFFFFF;
 
     // Step 2: Set clock frequency (~400kHz for initialization)
     unsigned int control = *EMMC_CONTROL1 & ~0xFFF;
@@ -192,7 +211,15 @@ int sd_init(void) {
     }
 
     *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_EN; // Enable SD clock output
-    delay_ms(10);
+    
+    // Extended delay after clock enable - required for card initialization
+    delay_ms(100);
+
+    uart_puts("About to send CMD0, CONTROL1=");
+    uart_puthex(*EMMC_CONTROL1);
+    uart_puts(", IRPT_EN=");
+    uart_puthex(*EMMC_IRPT_EN);
+    uart_puts("\n");
 
     // Step 3: Send CMD0 to reset the card to idle
     if (emmc_cmd(0, 0, EMMC_CMD_RESP_NONE) != 0) {
