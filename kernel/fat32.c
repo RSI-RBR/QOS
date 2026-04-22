@@ -38,3 +38,89 @@ int fat32_init(void){
     uart_puts("FAT32 initialized\n");
     return 0;
 }
+
+static int name_match(unsigned char *entry, const char *name){
+    // FAT uses 8.3 uppercase
+    for (int i = 0; i < 11; i++){
+        char c = entry[i];
+        if (c == ' ') c = 0;
+
+        if (name[i] != c) return 0;
+    }
+    return 1;
+}
+
+
+static int read_cluster(unsigned int cluster, unsigned char *buffer){
+    unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
+
+    for (unsigned int i = 0; i < sectors_per_cluster; i++){
+        if (sd_read_block(lba + i, buffer + i * SECTOR_SIZE)){
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static unsigned int fat_next(unsigned int cluster){
+    unsigned int fat_offset = cluster * 4;
+    unsigned int fat_sector = fat_start + (fat_offset / SECTOR_SIZE);
+    unsigned int offset = fat_offset % SECTOR_SIZE;
+
+    if (sd_read_block(fat_sector, sector)){
+        return 0x0FFFFFFF;
+    }
+
+    return read32(&sector[offset]) & 0x0FFFFFFF;
+}
+
+int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
+    unsigned char cluster_buf[4096]; // assume <=8 sectors
+
+    unsigned int cluster = root_cluster;
+
+    while (cluster < 0x0FFFFFF8){
+        if (read_cluster(cluster, cluster_buf)){
+            return -1;
+        }
+
+        for (int i = 0; i < 4096; i += 32){
+            unsigned char *entry = &cluster_buf[i];
+
+            if (entry[0] == 0x00) return -1; // end
+            if (entry[0] == 0xE5) continue;  // deleted
+            if (entry[11] == 0x0F) continue; // long name
+
+            if (name_match(entry, name)){
+                unsigned int first_cluster =
+                    (read16(&entry[20]) << 16) |
+                     read16(&entry[26]);
+
+                unsigned int size = read32(&entry[28]);
+
+                uart_puts("File found\n");
+
+                unsigned int copied = 0;
+
+                while (first_cluster < 0x0FFFFFF8 && copied < size){
+                    if (read_cluster(first_cluster, cluster_buf)){
+                        return -1;
+                    }
+
+                    for (int j = 0; j < 4096 && copied < size; j++){
+                        buffer[copied++] = cluster_buf[j];
+                    }
+
+                    first_cluster = fat_next(first_cluster);
+                }
+
+                return copied;
+            }
+        }
+
+        cluster = fat_next(cluster);
+    }
+
+    uart_puts("File not found\n");
+    return -1;
+}
