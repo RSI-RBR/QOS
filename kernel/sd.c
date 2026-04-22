@@ -119,7 +119,7 @@ int sd_init(void){
         for (int i = 28; i >= 0; i -= 4){
             unsigned int nibble = (debug_val >> i) & 0xF;
             char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
-            uart_putc(hex_char);
+            uart_send(hex_char);
         }
         uart_puts("\n");
         return -1;
