@@ -25,6 +25,12 @@ int fat32_init(void){
         return -1;
     }
 
+    uart_puts("Boot sector bytes: ");
+    for (int i = 0; i < 16; i++){
+        uart_puthex(sector[i]);
+        uart_puts(" ");
+    } uart_puts("\n");
+
     unsigned int reserved = read16(&sector[14]);
     unsigned int fats = sector[16];
     unsigned int sectors_per_fat = read32(&sector[36]);
