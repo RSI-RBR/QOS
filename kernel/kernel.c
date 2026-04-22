@@ -36,13 +36,22 @@ void kernel_main(void){
     uart_puts("Frame buffer initialized!\n");
 
     kapi.clear(0x00000000);
-    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
+//    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
 
     uart_puts("Kernel booted successfully!\n");
 
     // -----------------------------
     // OPTION 1: RUN SHELL (RECOMMENDED)
     // -----------------------------
+
+    void (*prog)(kernel_api_t *);
+    prog = load_program_from_sd;
+
+    if (prog){
+        void *stack = alloc_stack();
+        run_program(prog, stack, &kapi);
+    }
+
     shell_init();
     shell_run();
 

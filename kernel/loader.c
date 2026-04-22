@@ -3,25 +3,34 @@
 #include "uart.h"
 #include "sd.h"
 
-#define PROGRAM_MAX_SIZE (64 * 1024)
+#define PROGRAM_MAX (256 * 1024)
 #define PROGRAM_ADDR 0x400000
 
-#define PROGRAM_SECTOR 100
-#define PROGRAM_SECTORS 64 // size 32KB
+static unsigned char buffer[PROGRAM_MAX];
 
-void *load_program_from_sd(void)
+void* load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
 
-    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
-
-    // read directly into execution memory
-    if (sd_read_blocks(PROGRAM_SECTOR, dst, PROGRAM_SECTORS) != 0) {
-        uart_puts("SD read failed!\n");
+    if (fat32_init()){
+        uart_puts("FAT init failed.\n");
         return 0;
     }
 
-    uart_puts("Program loaded into memory\n");
+    int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+
+    if (size <= 0){
+        uart_puts("Load failed.\n");
+        return 0;
+    }
+
+    uart_puts("Program loaded! \n");
+
+    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
+
+    for (int i = 0; i < size; i++){
+        dst[i] = buffer[i];
+    }
 
     return (void*)PROGRAM_ADDR;
 }
