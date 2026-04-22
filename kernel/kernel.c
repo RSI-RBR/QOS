@@ -7,7 +7,7 @@
 #include "loader.h"
 #include "process.h"
 #include "sd.h"
-
+#include "gpio.h"
 
 extern kernel_api_t kapi;
 
@@ -84,7 +84,8 @@ void kernel_main(void){
 //        free_stack(stack);
 //    }
 
-    test_sd();
+//    test_sd();
+    gpio_init_sd();
 
     shell_init();
     shell_run();
