@@ -125,10 +125,11 @@ void kernel_main(void){
         uart_puts("MAILBOX CLOCK FAILED\n");
         return;
     }
-
     uart_puts("Clock set via mailbox OK\n");
 
-    test_sd();
+    sd_init();
+
+//    test_sd();
 
     uart_puts("--- END SD PIPELINE ---\n");
     

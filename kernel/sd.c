@@ -1,5 +1,6 @@
 #include "sd.h"
 #include "uart.h"
+//#include "emmc.h"
 
 #define EMMC_BASE 0x3F300000
 
@@ -73,71 +74,10 @@ static int emmc_cmd(unsigned int cmd_idx, unsigned int arg, unsigned int flags) 
     return wait_cmd_done();
 }
 
+extern int emmc_init(void);
+
 int sd_init(void) {
-    uart_puts("EMMC INIT START\n");
-
-    // Reset controller
-    *EMMC_CONTROL1 |= (1 << 24);
-    delay(10000);
-
-    *EMMC_CONTROL0 = 0x0;
-
-    *EMMC_CONTROL1 &= ~(1 << 2);
-
-    unsigned int divisor = 250;
-
-    *EMMC_CONTROL1 &= ~(0xFFF << 16);
-
-    *EMMC_CONTROL1 |= (divisor << 16);
-
-    *EMMC_CONTROL1 |= (1 << 0);
-
-    while(!(*EMMC_CONTROL1 & (1 << 1)));
-
-    *EMMC_CONTROL1 |= (1 << 2);
-
-    
-    delay(10000);
-
-    // Enable interrupts
-    *EMMC_INTERRUPT = *EMMC_INTERRUPT;
-    *EMMC_IRPT_EN = 0xFFFFFFFF;
-
-    // CMD0
-    if (emmc_cmd(0, 0, 0) != 0) return -1;
-
-    // CMD8
-    if (emmc_cmd(8, 0x1AA, (1 << 16)) != 0) {
-        uart_puts("CMD8 fail\n");
-    }
-
-    // ACMD41 loop
-    for (int i = 0; i < 10000; i++) {
-        emmc_cmd(55, 0, (1 << 16));
-        emmc_cmd(41, 0x40300000, (1 << 16));
-
-        if (*EMMC_RESP0 & (1 << 31)) {
-            uart_puts("CARD READY\n");
-            break;
-        }
-    }
-
-    // CMD2
-    emmc_cmd(2, 0, (1 << 16));
-
-    // CMD3
-    emmc_cmd(3, 0, (1 << 16));
-
-    unsigned int rca = (*EMMC_RESP0 >> 16);
-
-    // CMD7
-    emmc_cmd(7, rca << 16, (1 << 16));
-
-    // CMD16
-    emmc_cmd(16, 512, (1 << 16));
-
-    uart_puts("SD READY\n");
-    return 0;
+    return emmc_init();
 }
 
 int sd_read_block(unsigned int lba, unsigned char *buf) {
