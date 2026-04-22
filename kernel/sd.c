@@ -42,6 +42,23 @@
 #define EMMC_INT_DATA_CRC_ERR (1 << 21) // Data CRC error
 #define EMMC_INT_DATA_END_BIT (1 << 22) // Data end bit error
 
+// Command register bits
+#define EMMC_CMD_RESP_NONE    (0 << 16)  // No response
+#define EMMC_CMD_RESP_136     (1 << 16)  // 136-bit response
+#define EMMC_CMD_RESP_48      (2 << 16)  // 48-bit response
+#define EMMC_CMD_RESP_48B     (3 << 16)  // 48-bit response with busy
+#define EMMC_CMD_CRC_CHECK    (1 << 19)  // Check response CRC
+#define EMMC_CMD_IDX_CHECK    (1 << 20)  // Check response index
+#define EMMC_CMD_DATA         (1 << 21)  // Data transfer expected
+#define EMMC_CMD_TYPE_NORMAL  (0 << 22)  // Normal command
+#define EMMC_CMD_TYPE_SUSPEND (1 << 22)  // Suspend command
+#define EMMC_CMD_TYPE_RESUME  (2 << 22)  // Resume command
+#define EMMC_CMD_TYPE_ABORT   (3 << 22)  // Abort command
+
+static void delay_ms(int ms){
+    for (volatile int i = 0; i < ms * 1000; i++);
+}
+
 static int wait_cmd_done(){
     int timeout = 1000000;
     unsigned int status;
@@ -59,11 +76,7 @@ static int wait_cmd_done(){
         if (status & (EMMC_INT_CMD_TIMEOUT | EMMC_INT_CMD_CRC_ERR | 
                       EMMC_INT_CMD_END_BIT | EMMC_INT_CMD_IDX_ERR)){
             uart_puts("ERROR: Command error - interrupt status: 0x");
-            for (int i = 28; i >= 0; i -= 4){
-                unsigned int nibble = (status >> i) & 0xF;
-                char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
-                uart_send(hex_char);
-            }
+            uart_puthex(status);
             uart_puts("\n");
             *EMMC_INTERRUPT = status;  // Clear all interrupts
             return -1;
@@ -74,11 +87,7 @@ static int wait_cmd_done(){
     
     uart_puts("ERROR: Command timeout - final interrupt status: 0x");
     status = *EMMC_INTERRUPT;
-    for (int i = 28; i >= 0; i -= 4){
-        unsigned int nibble = (status >> i) & 0xF;
-        char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
-        uart_send(hex_char);
-    }
+    uart_puthex(status);
     uart_puts("\n");
     return -1;
 }
@@ -100,11 +109,7 @@ static int wait_data_done(){
         if (status & (EMMC_INT_DATA_TIMEOUT | EMMC_INT_DATA_CRC_ERR | 
                       EMMC_INT_DATA_END_BIT)){
             uart_puts("ERROR: Data error - interrupt status: 0x");
-            for (int i = 28; i >= 0; i -= 4){
-                unsigned int nibble = (status >> i) & 0xF;
-                char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
-                uart_send(hex_char);
-            }
+            uart_puthex(status);
             uart_puts("\n");
             *EMMC_INTERRUPT = status;  // Clear all interrupts
             return -1;
@@ -117,31 +122,46 @@ static int wait_data_done(){
     return -1;
 }
 
-static int emmc_cmd(unsigned int cmd, unsigned int arg){
+/**
+ * Send an EMMC command with proper response handling
+ * cmd_index: Command index (0-63)
+ * arg: Command argument
+ * resp_type: Expected response type (EMMC_CMD_RESP_*)
+ */
+static int emmc_cmd(unsigned int cmd_index, unsigned int arg, unsigned int resp_type){
+    // Wait for command line to be ready
+    int timeout = 100000;
+    while ((*EMMC_STATUS & (1 << 9)) && timeout > 0){  // CMD_INHIBIT bit
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Command line busy\n");
+        return -1;
+    }
+    
+    // Set argument
     *EMMC_ARG1 = arg;
+    
+    // Build command register value
+    // Bits 31:24 = command index
+    // Bits 23:16 = response type
+    unsigned int cmd = (cmd_index << 24) | resp_type;
+    
+    // Set command
     *EMMC_CMDTM = cmd;
-
+    
     return wait_cmd_done();
 }
 
 /**
  * Initialize the EMMC controller and SD card
- * 
- * Proper initialization sequence:
- * 1. Reset the host controller
- * 2. Set clock divider for 400kHz (initialization frequency)
- * 3. Enable internal clock (bit 0) and wait for stable (bit 1)
- * 4. Enable SD clock output (bit 2)
- * 5. Enable interrupts
- * 6. Send CMD0 (reset)
- * 7. Send CMD8 (voltage check)
- * 8. Loop ACMD41 until card is ready
  */
 int sd_init(void){
-    uart_puts("Initializing EMMC...\n");
+    uart_puts("\n=== Initializing EMMC ===\n");
 
     // Step 1: Reset host controller
-    uart_puts("Resetting EMMC controller...\n");
+    uart_puts("Step 1: Resetting EMMC controller...\n");
     *EMMC_CONTROL1 |= EMMC_CONTROL1_RESET_HC;
     
     int timeout = 100000;
@@ -153,24 +173,24 @@ int sd_init(void){
         uart_puts("ERROR: Controller reset timeout\n");
         return -1;
     }
+    uart_puts("  Reset complete\n");
 
     // Clear any pending interrupts after reset
     *EMMC_INTERRUPT = 0xFFFFFFFF;
 
     // Step 2: Set clock divider
-    // Raspberry Pi 3 EMMC clock is ~250MHz
-    // For 400kHz initialization: divider = 250MHz / 400kHz / 2 ≈ 312 (or ~240 for safety)
-    uart_puts("Setting clock divider...\n");
+    uart_puts("Step 2: Setting clock divider...\n");
     unsigned int control1 = *EMMC_CONTROL1;
-    control1 &= ~(0xFFFF);        // Clear existing divider and clock bits
-    control1 |= 240;              // Set divider to 240
+    control1 &= ~(0xFFFF);
+    control1 |= 240;              // Set divider to 240 for ~400kHz
     *EMMC_CONTROL1 = control1;
+    uart_puts("  Divider set\n");
 
-    // Step 3: Enable internal clock (bit 0)
-    uart_puts("Enabling internal clock...\n");
-    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_INTLEN;  // Set bit 0 to enable internal clock
+    // Step 3: Enable internal clock
+    uart_puts("Step 3: Enabling internal clock...\n");
+    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_INTLEN;
     
-    // Wait for clock to stabilize (bit 1)
+    // Wait for clock to stabilize
     timeout = 100000;
     while (!(*EMMC_CONTROL1 & EMMC_CONTROL1_CLK_STABLE) && timeout > 0){
         timeout--;
@@ -178,81 +198,83 @@ int sd_init(void){
     
     if (timeout <= 0){
         uart_puts("ERROR: Clock stabilization timeout\n");
-        uart_puts("DEBUG: CONTROL1 register = 0x");
-        unsigned int debug_val = *EMMC_CONTROL1;
-        for (int i = 28; i >= 0; i -= 4){
-            unsigned int nibble = (debug_val >> i) & 0xF;
-            char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
-            uart_send(hex_char);
-        }
-        uart_puts("\n");
         return -1;
     }
-    uart_puts("Clock stable\n");
+    uart_puts("  Clock stable\n");
 
-    // Step 4: Enable SD clock output (bit 2)
-    uart_puts("Enabling SD clock output...\n");
+    // Step 4: Enable SD clock output
+    uart_puts("Step 4: Enabling SD clock output...\n");
     *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_EN;
-
-    // Small delay to allow clock to stabilize
-    for (volatile int i = 0; i < 10000; i++);
+    delay_ms(10);
+    uart_puts("  SD clock enabled\n");
 
     // Step 5: Enable interrupts
-    uart_puts("Enabling interrupts...\n");
-    // Enable command done, data done, and error interrupts
+    uart_puts("Step 5: Enabling interrupts...\n");
     unsigned int int_en = EMMC_INT_CMD_DONE | EMMC_INT_DATA_DONE | 
                           EMMC_INT_CMD_TIMEOUT | EMMC_INT_CMD_CRC_ERR |
                           EMMC_INT_CMD_END_BIT | EMMC_INT_CMD_IDX_ERR |
                           EMMC_INT_DATA_TIMEOUT | EMMC_INT_DATA_CRC_ERR |
                           EMMC_INT_DATA_END_BIT;
     *EMMC_IRPT_EN = int_en;
-    *EMMC_IRPT_MASK = int_en;  // Also set the mask
-
-    // Clear any pending interrupts before starting
-    *EMMC_INTERRUPT = 0xFFFFFFFF;
+    *EMMC_IRPT_MASK = int_en;
+    *EMMC_INTERRUPT = 0xFFFFFFFF;  // Clear any pending interrupts
+    uart_puts("  Interrupts enabled\n");
 
     // Step 6: Send CMD0 (reset)
-    uart_puts("Sending CMD0 (reset)...\n");
-    if (emmc_cmd(0x00000000, 0) != 0){
-        uart_puts("ERROR: CMD0 failed\n");
+    uart_puts("Step 6: Sending CMD0 (reset)...\n");
+    if (emmc_cmd(0, 0, EMMC_CMD_RESP_NONE) != 0){
+        uart_puts("  ERROR: CMD0 failed\n");
         return -1;
     }
-    uart_puts("CMD0 sent successfully\n");
+    uart_puts("  CMD0 OK\n");
+    delay_ms(1);
 
-    // Step 7: Send CMD8 (voltage check) - for SD v2.0+ cards
-    uart_puts("Sending CMD8 (voltage check)...\n");
-    if (emmc_cmd(0x08020000, 0x1AA) != 0){
-        uart_puts("ERROR: CMD8 failed\n");
+    // Step 7: Send CMD8 (voltage check)
+    uart_puts("Step 7: Sending CMD8 (voltage check)...\n");
+    if (emmc_cmd(8, 0x1AA, EMMC_CMD_RESP_48) != 0){
+        uart_puts("  ERROR: CMD8 failed\n");
         return -1;
     }
-    uart_puts("CMD8 sent successfully\n");
+    uart_puts("  CMD8 OK, response: 0x");
+    uart_puthex(*EMMC_RESP0);
+    uart_puts("\n");
+    delay_ms(1);
 
     // Step 8: ACMD41 loop - wait for card to be ready
-    uart_puts("Initializing card with ACMD41...\n");
+    uart_puts("Step 8: Sending ACMD41 loop (init card)...\n");
     for (int i = 0; i < 1000; i++){
         // CMD55 (App command)
-        if (emmc_cmd(0x37000000, 0) != 0){
-            uart_puts("ERROR: CMD55 failed\n");
+        if (emmc_cmd(55, 0, EMMC_CMD_RESP_48) != 0){
+            uart_puts("  Attempt ");
+            uart_puthex(i);
+            uart_puts(": CMD55 error\n");
+            delay_ms(1);
             continue;
         }
         
         // ACMD41 (SD send operation conditions)
-        if (emmc_cmd(0x29020000, 0x40FF8000) != 0){
-            uart_puts("ERROR: ACMD41 failed\n");
+        if (emmc_cmd(41, 0x40FF8000, EMMC_CMD_RESP_48) != 0){
+            uart_puts("  Attempt ");
+            uart_puthex(i);
+            uart_puts(": ACMD41 error\n");
+            delay_ms(1);
             continue;
         }
 
         // Check if card is ready (bit 31 of response = card ready)
-        if (*EMMC_RESP0 & (1 << 31)){
-            uart_puts("Card ready!\n");
+        unsigned int resp = *EMMC_RESP0;
+        if (resp & (1 << 31)){
+            uart_puts("  Card ready after ");
+            uart_puthex(i);
+            uart_puts(" attempts!\n");
+            uart_puts("=== EMMC Init Complete ===\n");
             return 0;
         }
         
-        // Small delay between retries
-        for (volatile int j = 0; j < 1000; j++);
+        delay_ms(1);
     }
 
-    uart_puts("ERROR: Card initialization failed - timeout on ACMD41\n");
+    uart_puts("ERROR: Card initialization failed - ACMD41 timeout\n");
     return -1;
 }
 
@@ -261,7 +283,7 @@ int sd_read_block(unsigned int lba, unsigned char *buffer){
     *EMMC_BLKSIZECNT = (1 << 16) | 512;
 
     // CMD17 (read single block)
-    if (emmc_cmd(0x11220010, lba) != 0){
+    if (emmc_cmd(17, lba, EMMC_CMD_RESP_48) != 0){
         uart_puts("ERROR: CMD17 failed\n");
         return -1;
     }
