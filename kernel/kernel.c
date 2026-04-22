@@ -1,4 +1,4 @@
-#include "uart.h"
+\#include "uart.h"
 #include "shell.h"
 #include "memory.h"
 #include "task.h"
@@ -129,7 +129,7 @@ void kernel_main(void){
 
     sd_init();
 
-//    test_sd();
+    test_sd();
 
     uart_puts("--- END SD PIPELINE ---\n");
     
