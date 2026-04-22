@@ -16,70 +16,111 @@
 #define SDHOST_DATA    (*(volatile unsigned int*)(SDHOST_BASE + 0x40))
 #define SDHOST_HBLC    (*(volatile unsigned int*)(SDHOST_BASE + 0x50))
 
-#define SDHOST_HSTS_CMD_DONE (1 << 0)
+#define SDHOST_HSTS_CMD_DONE  (1 << 0)
 #define SDHOST_HSTS_DATA_DONE (1 << 1)
-#define SDHOST_HSTS_ERROR_MASK 0xFFFF0000
+#define SDHOST_HSTS_ERROR     0xFFFF0000
+
+// Command encoding
+#define CMD_INDEX(x)    ((x) << 24)
+#define CMD_RSPNS_NONE  (0 << 16)
+#define CMD_RSPNS_48    (2 << 16)
+#define CMD_CRCCHK      (1 << 19)
+#define CMD_IXCHK       (1 << 20)
 
 static void delay(int d) {
     while (d--) asm volatile("nop");
 }
 
-static void sdhost_wait_ready(void) {
+static void wait_cmd_ready(void) {
     int timeout = 1000000;
     while ((SDHOST_CMD & (1 << 7)) && timeout--) {
-        // wait for command not busy
+        // wait until not busy
     }
 }
 
 static int sdhost_send_cmd(unsigned int cmd, unsigned int arg) {
-    sdhost_wait_ready();
+    wait_cmd_ready();
+
+    // Clear status
+    SDHOST_HSTS = 0xFFFFFFFF;
+
+    unsigned int cmdtm;
+
+    switch (cmd) {
+        case 0: // CMD0
+            cmdtm = CMD_INDEX(0) | CMD_RSPNS_NONE;
+            break;
+
+        case 8: // CMD8
+            cmdtm = CMD_INDEX(8) | CMD_RSPNS_48 | CMD_CRCCHK | CMD_IXCHK;
+            break;
+
+        case 55:
+        case 41:
+            cmdtm = CMD_INDEX(cmd) | CMD_RSPNS_48;
+            break;
+
+        default:
+            cmdtm = CMD_INDEX(cmd) | CMD_RSPNS_48 | CMD_CRCCHK | CMD_IXCHK;
+            break;
+    }
 
     SDHOST_ARG = arg;
-    SDHOST_CMD = cmd;
+    SDHOST_CMD = cmdtm;
+
+    uart_puts("CMD ");
+    uart_puthex(cmd);
+    uart_puts("\n");
 
     int timeout = 1000000;
 
     while (timeout--) {
-        if (SDHOST_HSTS & SDHOST_HSTS_CMD_DONE) {
+        unsigned int status = SDHOST_HSTS;
+
+        if (status & SDHOST_HSTS_CMD_DONE) {
             SDHOST_HSTS = SDHOST_HSTS_CMD_DONE;
             return 0;
         }
 
-        if (SDHOST_HSTS & SDHOST_HSTS_ERROR_MASK) {
-            uart_puts("SDHOST CMD ERROR: ");
-            uart_puthex(SDHOST_HSTS);
+        if (status & SDHOST_HSTS_ERROR) {
+            uart_puts("CMD ERROR: ");
+            uart_puthex(status);
             uart_puts("\n");
             return -1;
         }
     }
 
-    uart_puts("SDHOST CMD TIMEOUT\n");
+    uart_puts("CMD TIMEOUT\n");
     return -1;
 }
 
 int sd_init(void) {
     uart_puts("SDHOST INIT START\n");
 
-    // Power on
+    // Power on SD
     SDHOST_VDD = 1;
     delay(10000);
 
-    // Set slow clock (~400kHz)
-    SDHOST_CDIV = 0x00000FA0;  // safe low speed
+    // Slow clock (~400kHz)
+    SDHOST_CDIV = 0x00000FA0;
 
-    // Timeout
+    // Max timeout
     SDHOST_TOUT = 0x00FFFFFF;
 
-    // Config: enable SD, 1-bit mode
+    // Enable SD, 1-bit mode
     SDHOST_HCFG = (1 << 0);
 
     delay(10000);
 
-    // CMD0 (reset)
-    if (sdhost_send_cmd(0, 0) != 0) return -1;
+    // CMD0
+    if (sdhost_send_cmd(0, 0) != 0) {
+        uart_puts("CMD0 FAIL\n");
+        return -1;
+    }
+
     uart_puts("CMD0 OK\n");
 
-    // CMD8 (voltage check)
+    // CMD8
     if (sdhost_send_cmd(8, 0x1AA) != 0) {
         uart_puts("CMD8 FAIL\n");
     } else {
@@ -102,8 +143,8 @@ int sd_init(void) {
 }
 
 int sd_read_block(unsigned int lba, unsigned char *buf) {
-    SDHOST_HBCT = 512;  // block size
-    SDHOST_HBLC = 1;    // block count
+    SDHOST_HBCT = 512;
+    SDHOST_HBLC = 1;
 
     if (sdhost_send_cmd(17, lba) != 0) {
         uart_puts("CMD17 FAIL\n");
@@ -113,9 +154,7 @@ int sd_read_block(unsigned int lba, unsigned char *buf) {
     int timeout = 1000000;
 
     for (int i = 0; i < 128; i++) {
-        while (!(SDHOST_HSTS & SDHOST_HSTS_DATA_DONE) && timeout--) {
-            // wait for data
-        }
+        while (!(SDHOST_HSTS & SDHOST_HSTS_DATA_DONE) && timeout--) {}
 
         unsigned int d = SDHOST_DATA;
 
