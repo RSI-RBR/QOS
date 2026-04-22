@@ -19,14 +19,41 @@
 #define EMMC_IRPT_MASK ((volatile unsigned int*)(EMMC_BASE + 0x34))
 #define EMMC_IRPT_EN  ((volatile unsigned int*)(EMMC_BASE + 0x38))
 
+// Clock control register bits
+#define EMMC_CONTROL1_CLK_INTLEN  (1 << 0)   // Clock internal enable
+#define EMMC_CONTROL1_CLK_STABLE  (1 << 1)   // Clock stable
+#define EMMC_CONTROL1_CLK_ENABLE  (1 << 2)   // Clock internal enable
+#define EMMC_CONTROL1_CLK_EN      (1 << 8)   // SD clock enable
+#define EMMC_CONTROL1_RESET_HC    (1 << 24)  // Reset host circuit
+#define EMMC_CONTROL1_RESET_CMD   (1 << 25)  // Reset command circuit
+#define EMMC_CONTROL1_RESET_DAT   (1 << 26)  // Reset data circuit
+
 static int wait_cmd_done(){
-    while (!(*EMMC_INTERRUPT & 0x1));
+    int timeout = 1000000;
+    while (!(*EMMC_INTERRUPT & 0x1) && timeout > 0){
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Command timeout\n");
+        return -1;
+    }
+    
     *EMMC_INTERRUPT = 0x1;
     return 0;
 }
 
 static int wait_data_done(){
-    while (!(*EMMC_INTERRUPT & 0x2));
+    int timeout = 1000000;
+    while (!(*EMMC_INTERRUPT & 0x2) && timeout > 0){
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Data timeout\n");
+        return -1;
+    }
+    
     *EMMC_INTERRUPT = 0x2;
     return 0;
 }
@@ -38,50 +65,125 @@ static int emmc_cmd(unsigned int cmd, unsigned int arg){
     return wait_cmd_done();
 }
 
+/**
+ * Initialize the EMMC controller and SD card
+ * 
+ * Proper initialization sequence:
+ * 1. Reset the host controller
+ * 2. Set clock divider for 400kHz (initialization frequency)
+ * 3. Enable internal clock and wait for stable
+ * 4. Enable SD clock output
+ * 5. Send CMD0 (reset)
+ * 6. Send CMD8 (voltage check)
+ * 7. Loop ACMD41 until card is ready
+ */
 int sd_init(void){
     uart_puts("Initializing EMMC...\n");
 
-    // Reset controller
-    *EMMC_CONTROL1 |= (1 << 24);
-
-    while (*EMMC_CONTROL1 & (1 << 24));
-
-    // Enable clock (very simplified)
-    *EMMC_CONTROL1 |= (1 << 2); // enable internal clock
-
-    while (!(*EMMC_CONTROL1 & (1 << 1)));
-
-    // Send CMD0 (reset)
-    emmc_cmd(0x00000000, 0);
-    uart_puts("CMD0 sent\n");
-
-    // CMD8 (voltage check)
-    emmc_cmd(0x08020000, 0x1AA);
-    uart_puts("CMD8 sent\n");
-
-    // ACMD41 loop
-    for (int i = 0; i < 1000; i++){
-        emmc_cmd(0x37000000, 0); // CMD55
-        emmc_cmd(0x29020000, 0x40FF8000); // ACMD41
-
-        if (*EMMC_RESP0 & (1 << 31)){
-            uart_puts("Card ready\n");
-            return 0;
-        }
+    // Step 1: Reset host controller
+    uart_puts("Resetting EMMC controller...\n");
+    *EMMC_CONTROL1 |= EMMC_CONTROL1_RESET_HC;
+    
+    int timeout = 100000;
+    while ((*EMMC_CONTROL1 & EMMC_CONTROL1_RESET_HC) && timeout > 0){
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Controller reset timeout\n");
+        return -1;
     }
 
-    uart_puts("Card init failed\n");
+    // Step 2: Set clock divider
+    // Raspberry Pi 3 EMMC clock is ~250MHz
+    // For 400kHz initialization: divider = 250MHz / 400kHz / 2 ≈ 312 (or ~240 for safety)
+    uart_puts("Setting clock divider...\n");
+    unsigned int control1 = *EMMC_CONTROL1;
+    control1 &= ~(0xFFFF);        // Clear existing divider and clock bits
+    control1 |= 240;              // Set divider to 240 (gives ~520kHz with 250MHz clock)
+    *EMMC_CONTROL1 = control1;
+
+    // Step 3: Enable internal clock
+    uart_puts("Enabling internal clock...\n");
+    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_ENABLE;
+    
+    // Wait for clock to stabilize
+    timeout = 100000;
+    while (!(*EMMC_CONTROL1 & EMMC_CONTROL1_CLK_STABLE) && timeout > 0){
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Clock stabilization timeout\n");
+        return -1;
+    }
+    uart_puts("Clock stable\n");
+
+    // Step 4: Enable SD clock output
+    uart_puts("Enabling SD clock output...\n");
+    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_EN;
+
+    // Small delay to allow clock to stabilize
+    for (volatile int i = 0; i < 10000; i++);
+
+    // Step 5: Send CMD0 (reset)
+    uart_puts("Sending CMD0 (reset)...\n");
+    if (emmc_cmd(0x00000000, 0) != 0){
+        uart_puts("ERROR: CMD0 failed\n");
+        return -1;
+    }
+    uart_puts("CMD0 sent successfully\n");
+
+    // Step 6: Send CMD8 (voltage check) - for SD v2.0+ cards
+    uart_puts("Sending CMD8 (voltage check)...\n");
+    if (emmc_cmd(0x08020000, 0x1AA) != 0){
+        uart_puts("ERROR: CMD8 failed\n");
+        return -1;
+    }
+    uart_puts("CMD8 sent successfully\n");
+
+    // Step 7: ACMD41 loop - wait for card to be ready
+    uart_puts("Initializing card with ACMD41...\n");
+    for (int i = 0; i < 1000; i++){
+        // CMD55 (App command)
+        if (emmc_cmd(0x37000000, 0) != 0){
+            uart_puts("ERROR: CMD55 failed\n");
+            continue;
+        }
+        
+        // ACMD41 (SD send operation conditions)
+        if (emmc_cmd(0x29020000, 0x40FF8000) != 0){
+            uart_puts("ERROR: ACMD41 failed\n");
+            continue;
+        }
+
+        // Check if card is ready (bit 31 of response = card ready)
+        if (*EMMC_RESP0 & (1 << 31)){
+            uart_puts("Card ready!\n");
+            return 0;
+        }
+        
+        // Small delay between retries
+        for (volatile int j = 0; j < 1000; j++);
+    }
+
+    uart_puts("ERROR: Card initialization failed - timeout on ACMD41\n");
     return -1;
 }
 
 int sd_read_block(unsigned int lba, unsigned char *buffer){
-    // set block size = 512, count = 1
+    // Set block size = 512, count = 1
     *EMMC_BLKSIZECNT = (1 << 16) | 512;
 
     // CMD17 (read single block)
-    emmc_cmd(0x11220010, lba);
+    if (emmc_cmd(0x11220010, lba) != 0){
+        uart_puts("ERROR: CMD17 failed\n");
+        return -1;
+    }
 
-    wait_data_done();
+    if (wait_data_done() != 0){
+        return -1;
+    }
 
     for (int i = 0; i < 128; i++){
         unsigned int data = *EMMC_DATA;
@@ -105,9 +207,11 @@ int sd_read_file(const char *path, void *buf, int max_size){
 
 int sd_read_blocks(uint32_t lba, uint8_t *buffer, int count){
     for (int i = 0; i < count; i++){
-        if (sd_read_block(lba + i, buffer + (i * 512)) !=0) return -1;
+        if (sd_read_block(lba + i, buffer + (i * 512)) != 0){
+            uart_puts("ERROR: Failed to read block\n");
+            return -1;
+        }
     }
 
     return 0;
 }
-
