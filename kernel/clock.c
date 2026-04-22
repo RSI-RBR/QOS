@@ -1,7 +1,7 @@
 #include "clock.h"
 #include "uart.h"
 
-#define CM_BASE 0x3F101000
+#define CM_BASE 0x3f101000
 
 #define CM_EMMCCTL (*(volatile unsigned int*)(CM_BASE + 0x1C))
 #define CM_EMMCDIV (*(volatile unsigned int*)(CM_BASE + 0x20))
