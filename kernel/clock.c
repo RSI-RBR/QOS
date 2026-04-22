@@ -12,6 +12,21 @@
 #define CM_CTL_KILL (1 << 5)
 #define CM_CTL_BUSY (1 << 7)
 
+void clock_debug_write(void)
+{
+    volatile unsigned int *test = (volatile unsigned int*)0x3F101000;
+
+    uart_puts("BEFORE: ");
+    uart_puthex(*test);
+    uart_puts("\n");
+
+    *test = 0xDEADBEEF;
+
+    uart_puts("AFTER: ");
+    uart_puthex(*test);
+    uart_puts("\n");
+}
+
 static void delay(int count) {
     while (count--) asm volatile("nop");
 }
