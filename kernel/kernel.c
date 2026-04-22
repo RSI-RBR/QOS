@@ -14,6 +14,8 @@ extern kernel_api_t kapi;
 unsigned char sector[512];
 
 void test_sd(void){
+    uart_puts("sd_gpio_init: \n");
+    sd_gpio_init();
     uart_puts("Testing SD read... (step 1) \n");
 
     if (sd_init() != 0){

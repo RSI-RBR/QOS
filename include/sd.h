@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+void sd_gpio_init(void);
 int sd_init();
 int sd_read_block(uint32_t lba, uint8_t *buffer);
 
