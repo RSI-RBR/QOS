@@ -89,7 +89,9 @@ void kernel_main(void){
 
 //    test_sd();
     gpio_init_sd();
+    clock_debug_write();
     clock_init_emmc();
+    
     
     shell_init();
     shell_run();
