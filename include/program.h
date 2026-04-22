@@ -7,6 +7,6 @@ typedef struct{
     unsigned int magic;
     unsigned int size;
     unsigned int entry_offset;
-} program_header_t
+} program_header_t;
 
 #endif

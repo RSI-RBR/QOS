@@ -23,7 +23,9 @@ kernel/mailbox.c \
 kernel/framebuffer.c \
 kernel/sd.c \
 kernel/loader.c \
-kernel/api.c
+kernel/api.c \
+kernel/fat32.c
+
 
 ASM_SOURCES = \
 boot/boot.S \
