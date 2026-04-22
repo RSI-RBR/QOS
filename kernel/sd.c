@@ -1,133 +1,72 @@
 #include "sd.h"
 #include "uart.h"
 
-#define SDHOST_BASE 0x3F202000
+// Mailbox base (Pi 3)
+#define MBOX_BASE 0x3F00B880
 
-#define SD_CMD   ((volatile unsigned int*)(SDHOST_BASE + 0x00))
-#define SD_ARG   ((volatile unsigned int*)(SDHOST_BASE + 0x04))
-#define SD_TOUT  ((volatile unsigned int*)(SDHOST_BASE + 0x08))
-#define SD_CDIV  ((volatile unsigned int*)(SDHOST_BASE + 0x0C))
-#define SD_RSP0  ((volatile unsigned int*)(SDHOST_BASE + 0x10))
-#define SD_RSP1  ((volatile unsigned int*)(SDHOST_BASE + 0x14))
-#define SD_RSP2  ((volatile unsigned int*)(SDHOST_BASE + 0x18))
-#define SD_RSP3  ((volatile unsigned int*)(SDHOST_BASE + 0x1C))
-#define SD_HSTS  ((volatile unsigned int*)(SDHOST_BASE + 0x20))
-#define SD_VDD   ((volatile unsigned int*)(SDHOST_BASE + 0x30))
-#define SD_EDM   ((volatile unsigned int*)(SDHOST_BASE + 0x34))
-#define SD_HCFG  ((volatile unsigned int*)(SDHOST_BASE + 0x38))
-#define SD_DATA  ((volatile unsigned int*)(SDHOST_BASE + 0x40))
+#define MBOX_READ   ((volatile unsigned int*)(MBOX_BASE + 0x00))
+#define MBOX_STATUS ((volatile unsigned int*)(MBOX_BASE + 0x18))
+#define MBOX_WRITE  ((volatile unsigned int*)(MBOX_BASE + 0x20))
 
-#define SD_CMD_START   (1u << 31)
-#define SD_CMD_RESPONSE (1u << 6)
-#define SD_CMD_LONGRESP (1u << 7)
-#define SD_CMD_WRITE    (1u << 10)
-#define SD_CMD_READ     (1u << 9)
+#define MBOX_FULL  0x80000000
+#define MBOX_EMPTY 0x40000000
 
-#define SD_HSTS_FIFO_EMPTY (1 << 1)
-#define SD_HSTS_BUSY (1 << 0)
-#define SD_HSTS_DATA_FLAG (1 << 4)
+#define MBOX_CHANNEL_PROP 8
 
+// Align buffer to 16 bytes (required)
+static volatile unsigned int __attribute__((aligned(16))) mbox[36];
 
-static int is_sdhc = 0;
+// Mailbox call
+static int mailbox_call(unsigned char ch) {
+    unsigned int r = ((unsigned int)((unsigned long)&mbox) & ~0xF) | (ch & 0xF);
 
-static void delay(int x) {
-    for (volatile int i = 0; i < x * 1000; i++);
-}
+    // Wait until mailbox is not full
+    while (*MBOX_STATUS & MBOX_FULL);
 
-static void sd_send_cmd(unsigned int cmd, unsigned int arg) {
-    *SD_ARG = arg;
-    *SD_CMD = cmd | SD_CMD_START;
-}
+    // Send request
+    *MBOX_WRITE = r;
 
-static int sd_wait_cmd_done() {
-    int timeout = 1000000;
+    // Wait for response
+    while (1) {
+        while (*MBOX_STATUS & MBOX_EMPTY);
 
-    while (timeout--) {
-        if (!(*SD_CMD & SD_CMD_START)) {
-            return 0;
+        if (*MBOX_READ == r) {
+            return mbox[1] == 0x80000000;
         }
     }
 
-    uart_puts("SDHOST CMD timeout\n");
-    return -1;
-}
-
-int sd_init(void) {
-    uart_puts("SDHOST init\n");
-
-    // power on
-    *SD_VDD = 0x1;
-    delay(100);
-
-    // slow clock for init
-    *SD_CDIV = 400;
-
-    *SD_HCFG = 0;
-
-    // CMD0 reset
-    sd_send_cmd(0, 0);
-    sd_wait_cmd_done();
-    uart_puts("CMD0 OK\n");
-
-    // CMD8 (voltage check)
-    sd_send_cmd(8 | SD_CMD_RESPONSE, 0x1AA);
-    sd_wait_cmd_done();
-
-    uart_puts("CMD8 OK\n");
-
-    // ACMD41 init loop
-    for (int i = 0; i < 1000; i++) {
-        sd_send_cmd(55 | SD_CMD_RESPONSE, 0);
-        sd_wait_cmd_done();
-
-        sd_send_cmd(41 | SD_CMD_RESPONSE, 0x40300000);
-        sd_wait_cmd_done();
-
-        unsigned int r = *SD_RSP0;
-
-        if (r & (1u << 31)) {
-            uart_puts("Card ready\n");
-
-            if (r & (1u << 30)) {
-                is_sdhc = 1;
-                uart_puts("SDHC detected\n");
-            }
-
-            break;
-        }
-
-        delay(10);
-    }
-
-    uart_puts("SDHOST init done\n");
     return 0;
 }
 
+int sd_init(void) {
+    uart_puts("Mailbox SD init (firmware-managed)\n");
+    return 0;
+}
+
+/*
+ * Read a 512-byte sector using mailbox "SD read" tag
+ * NOTE: This uses undocumented but commonly used firmware interface
+ */
 int sd_read_block(unsigned int lba, unsigned char *buffer) {
-    unsigned int addr = is_sdhc ? lba : (lba * 512);
 
-    sd_send_cmd(17 | SD_CMD_RESPONSE | SD_CMD_READ, addr);
-    sd_wait_cmd_done();
+    // Build mailbox message
+    mbox[0] = 9 * 4;           // total size
+    mbox[1] = 0;               // request
 
-    // IMPORTANT: SDHOST FIFO read loop
-    for (int i = 0; i < 128; i++) {
-        int timeout = 100000;
+    // Tag: SD read (0x0003000A is commonly used in bare-metal examples)
+    mbox[2] = 0x0003000A;      // tag
+    mbox[3] = 16;              // value buffer size
+    mbox[4] = 16;              // request size
 
-        while ((*SD_HSTS & SD_HSTS_FIFO_EMPTY) && timeout--){
-            // wait until fifo has data.
-        }
+    mbox[5] = lba;             // sector
+    mbox[6] = (unsigned int)((unsigned long)buffer);
+    mbox[7] = 512;             // length
 
-        if (timeout <= 0){
-            uart_puts("FIFO timeout.\n");
-            return -1;
-        }
-        
-        unsigned int data = *SD_DATA;
+    mbox[8] = 0;               // end tag
 
-        buffer[i * 4 + 0] = data & 0xFF;
-        buffer[i * 4 + 1] = (data >> 8) & 0xFF;
-        buffer[i * 4 + 2] = (data >> 16) & 0xFF;
-        buffer[i * 4 + 3] = (data >> 24) & 0xFF;
+    if (!mailbox_call(MBOX_CHANNEL_PROP)) {
+        uart_puts("Mailbox SD read failed\n");
+        return -1;
     }
 
     return 0;
