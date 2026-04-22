@@ -19,11 +19,10 @@
 #define EMMC_IRPT_MASK ((volatile unsigned int*)(EMMC_BASE + 0x34))
 #define EMMC_IRPT_EN  ((volatile unsigned int*)(EMMC_BASE + 0x38))
 
-// Clock control register bits
-#define EMMC_CONTROL1_CLK_INTLEN  (1 << 0)   // Clock internal enable
-#define EMMC_CONTROL1_CLK_STABLE  (1 << 1)   // Clock stable
-#define EMMC_CONTROL1_CLK_ENABLE  (1 << 2)   // Clock internal enable
-#define EMMC_CONTROL1_CLK_EN      (1 << 8)   // SD clock enable
+// CONTROL1 Register Bit Definitions (SDHCI Standard)
+#define EMMC_CONTROL1_CLK_INTLEN  (1 << 0)   // Internal Clock Enable (bit 0)
+#define EMMC_CONTROL1_CLK_STABLE  (1 << 1)   // Internal Clock Stable (bit 1) - READ ONLY
+#define EMMC_CONTROL1_CLK_EN      (1 << 2)   // SD Clock Enable (bit 2)
 #define EMMC_CONTROL1_RESET_HC    (1 << 24)  // Reset host circuit
 #define EMMC_CONTROL1_RESET_CMD   (1 << 25)  // Reset command circuit
 #define EMMC_CONTROL1_RESET_DAT   (1 << 26)  // Reset data circuit
@@ -71,8 +70,8 @@ static int emmc_cmd(unsigned int cmd, unsigned int arg){
  * Proper initialization sequence:
  * 1. Reset the host controller
  * 2. Set clock divider for 400kHz (initialization frequency)
- * 3. Enable internal clock and wait for stable
- * 4. Enable SD clock output
+ * 3. Enable internal clock (bit 0) and wait for stable (bit 1)
+ * 4. Enable SD clock output (bit 2)
  * 5. Send CMD0 (reset)
  * 6. Send CMD8 (voltage check)
  * 7. Loop ACMD41 until card is ready
@@ -100,14 +99,14 @@ int sd_init(void){
     uart_puts("Setting clock divider...\n");
     unsigned int control1 = *EMMC_CONTROL1;
     control1 &= ~(0xFFFF);        // Clear existing divider and clock bits
-    control1 |= 240;              // Set divider to 240 (gives ~520kHz with 250MHz clock)
+    control1 |= 240;              // Set divider to 240
     *EMMC_CONTROL1 = control1;
 
-    // Step 3: Enable internal clock
+    // Step 3: Enable internal clock (bit 0)
     uart_puts("Enabling internal clock...\n");
-    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_ENABLE;
+    *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_INTLEN;  // Set bit 0 to enable internal clock
     
-    // Wait for clock to stabilize
+    // Wait for clock to stabilize (bit 1)
     timeout = 100000;
     while (!(*EMMC_CONTROL1 & EMMC_CONTROL1_CLK_STABLE) && timeout > 0){
         timeout--;
@@ -115,11 +114,19 @@ int sd_init(void){
     
     if (timeout <= 0){
         uart_puts("ERROR: Clock stabilization timeout\n");
+        uart_puts("DEBUG: CONTROL1 register = 0x");
+        unsigned int debug_val = *EMMC_CONTROL1;
+        for (int i = 28; i >= 0; i -= 4){
+            unsigned int nibble = (debug_val >> i) & 0xF;
+            char hex_char = nibble < 10 ? ('0' + nibble) : ('A' + nibble - 10);
+            uart_putc(hex_char);
+        }
+        uart_puts("\n");
         return -1;
     }
     uart_puts("Clock stable\n");
 
-    // Step 4: Enable SD clock output
+    // Step 4: Enable SD clock output (bit 2)
     uart_puts("Enabling SD clock output...\n");
     *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_EN;
 
