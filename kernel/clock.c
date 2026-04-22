@@ -31,16 +31,23 @@ void clock_init_emmc(void) {
     unsigned int divisor = 650;
 
     CM_EMMCDIV = CM_PASSWORD | (divisor << 12);
-
     uart_puts("CLOCK: divisor set\n");
 
-    // 3. Enable clock (PLLD = source 6)
-    CM_EMMCCTL = CM_PASSWORD | (6) | (1 << 4); // enable
+    CM_EMMCCTL = CM_PASSWORD | 6;
 
     delay(2000);
 
-    // 4. Wait for clock to be running
-    while (!(CM_EMMCCTL & (1 << 7)));
+    CM_EMMCCTL = CM_PASSWORD | 6 | (1 << 4);
+
+    delay(2000);
+
+    int timeout = 1000000;
+    while (!(CM_EMMCCTL & (1 << 7)) && timeout--){}
+
+    if (timeout <= 0){
+        uart_puts("CLOCK: FAILED TO START.\n");
+        return;
+    }
 
     uart_puts("CLOCK: running\n");
 }
