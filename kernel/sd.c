@@ -30,6 +30,55 @@
 #define EMMC_CMD_RESP_136  (1 << 16)
 #define EMMC_CMD_DATA      (1 << 21)
 
+#define GPIO_BASE 0x3F200000
+
+#define GPFSEL4 ((volatile unsigned int*)(GPIO_BASE + 0x10))
+#define GPFSEL5 ((volatile unsigned int*)(GPIO_BASE + 0x14))
+#define GPPUD   ((volatile unsigned int*)(GPIO_BASE + 0x94))
+#define GPPUDCLK1 ((volatile unsigned int*)(GPIO_BASE + 0x9C))
+
+static void delay_cycles(int count) {
+    while(count--) asm volatile("nop");
+}
+
+void sd_gpio_init(void){
+    uart_puts("Configuring SD GPIO...\n");
+
+    // Set GPIO 48–53 to ALT3 (SD)
+    unsigned int val;
+
+    val = *GPFSEL4;
+    val &= ~(7 << 24); // GPIO48
+    val |=  (7 << 24);
+    val &= ~(7 << 27); // GPIO49
+    val |=  (7 << 27);
+    val &= ~(7 << 30); // GPIO50
+    val |=  (7 << 30);
+    *GPFSEL4 = val;
+
+    val = *GPFSEL5;
+    val &= ~(7 << 0); // GPIO51
+    val |=  (7 << 0);
+    val &= ~(7 << 3); // GPIO52
+    val |=  (7 << 3);
+    val &= ~(7 << 6); // GPIO53
+    val |=  (7 << 6);
+    *GPFSEL5 = val;
+
+    // Disable pull-up/down
+    *GPPUD = 0;
+    delay_cycles(150);
+
+    *GPPUDCLK1 = (1 << (48-32)) | (1 << (49-32)) | (1 << (50-32)) |
+                 (1 << (51-32)) | (1 << (52-32)) | (1 << (53-32));
+
+    delay_cycles(150);
+
+    *GPPUDCLK1 = 0;
+
+    uart_puts("GPIO configured\n");
+}
+
 static unsigned int rca = 0;
 static int is_sdhc = 0;
 
