@@ -55,6 +55,14 @@
 #define EMMC_CMD_TYPE_RESUME  (2 << 22)  // Resume command
 #define EMMC_CMD_TYPE_ABORT   (3 << 22)  // Abort command
 
+// STATUS register bits
+#define EMMC_STATUS_CMD_INHIBIT  (1 << 0)   // Command inhibit
+#define EMMC_STATUS_DAT_INHIBIT  (1 << 1)   // Data inhibit
+#define EMMC_STATUS_DAT_ACTIVE   (1 << 2)   // Data line active
+
+// Card RCA (Relative Card Address) - will be set during init
+static unsigned int card_rca = 0;
+
 static void delay_ms(int ms){
     for (volatile int i = 0; i < ms * 1000; i++);
 }
@@ -131,7 +139,7 @@ static int wait_data_done(){
 static int emmc_cmd(unsigned int cmd_index, unsigned int arg, unsigned int resp_type){
     // Wait for command line to be ready
     int timeout = 100000;
-    while ((*EMMC_STATUS & (1 << 9)) && timeout > 0){  // CMD_INHIBIT bit
+    while ((*EMMC_STATUS & EMMC_STATUS_CMD_INHIBIT) && timeout > 0){
         timeout--;
     }
     
@@ -146,12 +154,57 @@ static int emmc_cmd(unsigned int cmd_index, unsigned int arg, unsigned int resp_
     // Build command register value
     // Bits 31:24 = command index
     // Bits 23:16 = response type
-    unsigned int cmd = (cmd_index << 24) | resp_type;
+    unsigned int cmd = (cmd_index << 24) | resp_type | EMMC_CMD_CRC_CHECK | EMMC_CMD_IDX_CHECK;
     
     // Set command
     *EMMC_CMDTM = cmd;
     
     return wait_cmd_done();
+}
+
+/**
+ * Send CMD2 (Get CID) - returns 136-bit card identification
+ */
+static int emmc_get_cid(){
+    uart_puts("  Sending CMD2 (Get CID)...\n");
+    if (emmc_cmd(2, 0, EMMC_CMD_RESP_136) != 0){
+        uart_puts("    ERROR: CMD2 failed\n");
+        return -1;
+    }
+    uart_puts("    CMD2 OK\n");
+    return 0;
+}
+
+/**
+ * Send CMD3 (Get RCA) - Get Relative Card Address
+ */
+static int emmc_get_rca(){
+    uart_puts("  Sending CMD3 (Get RCA)...\n");
+    if (emmc_cmd(3, 0, EMMC_CMD_RESP_48) != 0){
+        uart_puts("    ERROR: CMD3 failed\n");
+        return -1;
+    }
+    
+    // Extract RCA from response (bits 31:16)
+    card_rca = (*EMMC_RESP0 >> 16) & 0xFFFF;
+    uart_puts("    Card RCA: 0x");
+    uart_puthex(card_rca);
+    uart_puts("\n");
+    return 0;
+}
+
+/**
+ * Send CMD7 (Select Card)
+ */
+static int emmc_select_card(){
+    uart_puts("  Sending CMD7 (Select Card)...\n");
+    unsigned int arg = (card_rca << 16);  // RCA in bits 31:16
+    if (emmc_cmd(7, arg, EMMC_CMD_RESP_48B) != 0){
+        uart_puts("    ERROR: CMD7 failed\n");
+        return -1;
+    }
+    uart_puts("    Card selected\n");
+    return 0;
 }
 
 /**
@@ -178,8 +231,8 @@ int sd_init(void){
     // Clear any pending interrupts after reset
     *EMMC_INTERRUPT = 0xFFFFFFFF;
 
-    // Step 2: Set clock divider
-    uart_puts("Step 2: Setting clock divider...\n");
+    // Step 2: Set clock divider for initialization (400kHz)
+    uart_puts("Step 2: Setting clock divider (400kHz)...\n");
     unsigned int control1 = *EMMC_CONTROL1;
     control1 &= ~(0xFFFF);
     control1 |= 240;              // Set divider to 240 for ~400kHz
@@ -245,18 +298,22 @@ int sd_init(void){
     for (int i = 0; i < 1000; i++){
         // CMD55 (App command)
         if (emmc_cmd(55, 0, EMMC_CMD_RESP_48) != 0){
-            uart_puts("  Attempt ");
-            uart_puthex(i);
-            uart_puts(": CMD55 error\n");
+            if (i % 100 == 0){
+                uart_puts("  Attempt ");
+                uart_puthex(i);
+                uart_puts(": CMD55 error\n");
+            }
             delay_ms(1);
             continue;
         }
         
         // ACMD41 (SD send operation conditions)
         if (emmc_cmd(41, 0x40FF8000, EMMC_CMD_RESP_48) != 0){
-            uart_puts("  Attempt ");
-            uart_puthex(i);
-            uart_puts(": ACMD41 error\n");
+            if (i % 100 == 0){
+                uart_puts("  Attempt ");
+                uart_puthex(i);
+                uart_puts(": ACMD41 error\n");
+            }
             delay_ms(1);
             continue;
         }
@@ -267,24 +324,66 @@ int sd_init(void){
             uart_puts("  Card ready after ");
             uart_puthex(i);
             uart_puts(" attempts!\n");
-            uart_puts("=== EMMC Init Complete ===\n");
-            return 0;
+            break;
         }
         
         delay_ms(1);
     }
 
-    uart_puts("ERROR: Card initialization failed - ACMD41 timeout\n");
-    return -1;
+    // Step 9: Get Card ID and RCA
+    uart_puts("Step 9: Getting card information...\n");
+    if (emmc_get_cid() != 0){
+        return -1;
+    }
+    delay_ms(1);
+    
+    if (emmc_get_rca() != 0){
+        return -1;
+    }
+    delay_ms(1);
+
+    // Step 10: Select the card for data transfer
+    uart_puts("Step 10: Selecting card...\n");
+    if (emmc_select_card() != 0){
+        return -1;
+    }
+    delay_ms(1);
+
+    // Step 11: Increase clock speed for data transfer
+    uart_puts("Step 11: Increasing clock speed for data transfer...\n");
+    control1 = *EMMC_CONTROL1;
+    control1 &= ~(0xFFFF);
+    control1 |= 2;  // Set divider to 2 for ~50MHz (from 250MHz)
+    *EMMC_CONTROL1 = control1;
+    delay_ms(10);
+    uart_puts("  Clock speed increased\n");
+
+    uart_puts("=== EMMC Init Complete ===\n");
+    return 0;
 }
 
 int sd_read_block(unsigned int lba, unsigned char *buffer){
     // Set block size = 512, count = 1
     *EMMC_BLKSIZECNT = (1 << 16) | 512;
+    
+    // Wait for data line to be ready
+    int timeout = 100000;
+    while ((*EMMC_STATUS & EMMC_STATUS_DAT_INHIBIT) && timeout > 0){
+        timeout--;
+    }
+    
+    if (timeout <= 0){
+        uart_puts("ERROR: Data line busy\n");
+        return -1;
+    }
 
-    // CMD17 (read single block)
-    if (emmc_cmd(17, lba, EMMC_CMD_RESP_48) != 0){
-        uart_puts("ERROR: CMD17 failed\n");
+    // CMD17 (read single block) - with CRC check and index check
+    uart_puts("Reading block ");
+    uart_puthex(lba);
+    uart_puts("...\n");
+    
+    if (emmc_cmd(17, lba, EMMC_CMD_RESP_48 | EMMC_CMD_DATA) != 0){
+        uart_puts("  ERROR: CMD17 failed\n");
         return -1;
     }
 
