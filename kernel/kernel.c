@@ -15,6 +15,20 @@ extern kernel_api_t kapi;
 
 unsigned char sector[512];
 
+void cm_probe(void)
+{
+    volatile unsigned int *ctl = (unsigned int*)0x3F10101C;
+
+    uart_puts("CM BEFORE=");
+    uart_puthex(*ctl);
+    uart_puts("\n");
+
+    *ctl = 0xFFFFFFFF;
+
+    uart_puts("CM AFTER=");
+    uart_puthex(*ctl);
+    uart_puts("\n");
+}
 
 void mmio_test(void)
 {
@@ -105,8 +119,9 @@ void kernel_main(void){
 //    test_sd();
     gpio_init_sd();
     clock_debug_write();
+    cm_probe();
     mmio_test();
-    clock_init_emmc();
+    //clock_init_emmc();
     
     
     shell_init();
