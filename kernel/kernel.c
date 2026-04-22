@@ -117,14 +117,20 @@ void kernel_main(void){
 //        free_stack(stack);
 //    }
 
-//    test_sd();
-    mailbox_set_emmc_clock(25000000);
+    uart_puts("\n--- START SD PIPELINE ---\n");
+
     gpio_init_sd();
-    clock_debug_write();
-    cm_probe();
-    mmio_test();
-    //clock_init_emmc();
-    
+
+    if (mailbox_set_emmc_clock(25000000) != 0) {
+        uart_puts("MAILBOX CLOCK FAILED\n");
+        return;
+    }
+
+    uart_puts("Clock set via mailbox OK\n");
+
+    test_sd();
+
+    uart_puts("--- END SD PIPELINE ---\n");
     
     shell_init();
     shell_run();
