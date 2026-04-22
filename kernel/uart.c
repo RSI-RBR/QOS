@@ -69,3 +69,4 @@ void uart_puthex(unsigned int val){
         uart_send(hex[(val >> i) & 0xF]);
     }
 }
+

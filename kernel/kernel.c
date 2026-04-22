@@ -6,8 +6,33 @@
 #include "context.h"
 #include "loader.h"
 #include "process.h"
+#include "sd.h"
+
 
 extern kernel_api_t kapi;
+
+unsigned char sector[512];
+
+void test_sd(void){
+    uart_puts("Testing SD read... (step 1) \n");
+
+    if (sd_init() != 0){
+        uart_puts("SD init failed.\n");
+        return;
+    }
+    uart_puts("SD init OK... (Step 2) \n");
+    if (sd_read_block(0, sector) != 0){
+        uart_puts("read fail\n");
+        return;
+    }
+
+    uart_puts("Read success (step 3) First bytes: \n");
+    for (int i = 0; i < 16; i++){
+        unsigned char b = sector[i];
+        uart_puthex(b);
+    } uart_send('\n');
+
+}
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
@@ -44,18 +69,20 @@ void kernel_main(void){
     // OPTION 1: RUN SHELL (RECOMMENDED)
     // -----------------------------
 
-    program_entry_t prog;
-    prog = load_program_from_sd();
+//    program_entry_t prog;
+//    prog = load_program_from_sd();
 
-    if (prog){
-        void *stack = alloc_stack();
-        if (!stack){
-            uart_puts("No stack available!\n");
-            return;
-        }
-        run_program(prog, stack, &kapi);
-        free_stack(stack);
-    }
+//    if (prog){
+//        void *stack = alloc_stack();
+//        if (!stack){
+//            uart_puts("No stack available!\n");
+//            return;
+//        }
+//        run_program(prog, stack, &kapi);
+//        free_stack(stack);
+//    }
+
+    test_sd();
 
     shell_init();
     shell_run();
