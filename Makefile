@@ -25,7 +25,8 @@ kernel/sd.c \
 kernel/loader.c \
 kernel/api.c \
 kernel/fat32.c \
-kernel/gpio.c
+kernel/gpio.c \
+kernel/clock.c
 
 
 ASM_SOURCES = \

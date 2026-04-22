@@ -8,6 +8,9 @@
 #include "process.h"
 #include "sd.h"
 #include "gpio.h"
+#include "clock.h"
+
+
 
 extern kernel_api_t kapi;
 
@@ -86,7 +89,8 @@ void kernel_main(void){
 
 //    test_sd();
     gpio_init_sd();
-
+    clock_init_emmc();
+    
     shell_init();
     shell_run();
 
