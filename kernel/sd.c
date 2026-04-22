@@ -23,6 +23,11 @@
 #define SD_CMD_WRITE    (1u << 10)
 #define SD_CMD_READ     (1u << 9)
 
+#define SD_HSTS_FIFO_EMPTY (1 << 1)
+#define SD_HSTS_BUSY (1 << 0)
+#define SD_HSTS_DATA_FLAG (1 << 4)
+
+
 static int is_sdhc = 0;
 
 static void delay(int x) {
@@ -106,6 +111,17 @@ int sd_read_block(unsigned int lba, unsigned char *buffer) {
 
     // IMPORTANT: SDHOST FIFO read loop
     for (int i = 0; i < 128; i++) {
+        int timeout = 100000;
+
+        while ((*SD_HSTS & SD_HSTS_FIFO_EMPTY) && timeout--){
+            // wait until fifo has data.
+        }
+
+        if (timeout <= 0){
+            uart_puts("FIFO timeout.\n");
+            return -1;
+        }
+        
         unsigned int data = *SD_DATA;
 
         buffer[i * 4 + 0] = data & 0xFF;
