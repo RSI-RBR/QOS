@@ -11,10 +11,25 @@
 #include "clock.h"
 
 
-
 extern kernel_api_t kapi;
 
 unsigned char sector[512];
+
+
+void mmio_test(void)
+{
+    volatile unsigned int *addr = (volatile unsigned int*)0x3F200000; // GPIO base
+
+    uart_puts("GPIO BEFORE=");
+    uart_puthex(*addr);
+    uart_puts("\n");
+
+    *addr = 0xAAAAAAAA;
+
+    uart_puts("GPIO AFTER=");
+    uart_puthex(*addr);
+    uart_puts("\n");
+}
 
 void test_sd(void){
 //    uart_puts("sd_gpio_init: \n");
@@ -90,6 +105,7 @@ void kernel_main(void){
 //    test_sd();
     gpio_init_sd();
     clock_debug_write();
+    mmio_test();
     clock_init_emmc();
     
     
