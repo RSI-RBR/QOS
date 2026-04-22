@@ -2,13 +2,15 @@
 #include "memory.h"
 #include "uart.h"
 #include "sd.h"
+#include "fat32.h"
+
 
 #define PROGRAM_MAX (256 * 1024)
 #define PROGRAM_ADDR 0x400000
 
 static unsigned char buffer[PROGRAM_MAX];
 
-void* load_program_from_sd(void)
+program_entry_t load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
 
@@ -32,5 +34,5 @@ void* load_program_from_sd(void)
         dst[i] = buffer[i];
     }
 
-    return (void*)PROGRAM_ADDR;
+    return (program_entry_t)PROGRAM_ADDR;
 }

@@ -44,12 +44,17 @@ void kernel_main(void){
     // OPTION 1: RUN SHELL (RECOMMENDED)
     // -----------------------------
 
-    void (*prog)(kernel_api_t *);
-    prog = load_program_from_sd;
+    program_entry_t prog;
+    prog = load_program_from_sd();
 
     if (prog){
         void *stack = alloc_stack();
+        if (!stack){
+            uart_puts("No stack available!\n");
+            return;
+        }
         run_program(prog, stack, &kapi);
+        free_stack(stack);
     }
 
     shell_init();
