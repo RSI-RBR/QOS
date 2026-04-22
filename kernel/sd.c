@@ -3,8 +3,6 @@
 
 #define EMMC_BASE 0x3F300000
 
-#define EMMC_ARG2     ((volatile unsigned int*)(EMMC_BASE + 0x00))
-#define EMMC_BLKSIZECNT ((volatile unsigned int*)(EMMC_BASE + 0x04))
 #define EMMC_ARG1     ((volatile unsigned int*)(EMMC_BASE + 0x08))
 #define EMMC_CMDTM    ((volatile unsigned int*)(EMMC_BASE + 0x0C))
 #define EMMC_RESP0    ((volatile unsigned int*)(EMMC_BASE + 0x10))
@@ -13,188 +11,139 @@
 #define EMMC_RESP3    ((volatile unsigned int*)(EMMC_BASE + 0x1C))
 #define EMMC_DATA     ((volatile unsigned int*)(EMMC_BASE + 0x20))
 #define EMMC_STATUS   ((volatile unsigned int*)(EMMC_BASE + 0x24))
-#define EMMC_CONTROL0 ((volatile unsigned int*)(EMMC_BASE + 0x28))
 #define EMMC_CONTROL1 ((volatile unsigned int*)(EMMC_BASE + 0x2C))
 #define EMMC_INTERRUPT ((volatile unsigned int*)(EMMC_BASE + 0x30))
-#define EMMC_IRPT_MASK ((volatile unsigned int*)(EMMC_BASE + 0x34))
 #define EMMC_IRPT_EN  ((volatile unsigned int*)(EMMC_BASE + 0x38))
 
-// CONTROL1 bits
 #define EMMC_CONTROL1_CLK_INTLEN  (1 << 0)
 #define EMMC_CONTROL1_CLK_STABLE  (1 << 1)
 #define EMMC_CONTROL1_CLK_EN      (1 << 2)
 #define EMMC_CONTROL1_RESET_HC    (1 << 24)
 
-// Interrupt bits
 #define EMMC_INT_CMD_DONE    (1 << 0)
-#define EMMC_INT_DATA_DONE   (1 << 1)
 #define EMMC_INT_CMD_TIMEOUT (1 << 16)
-#define EMMC_INT_CMD_CRC_ERR (1 << 17)
-#define EMMC_INT_CMD_IDX_ERR (1 << 19)
-#define EMMC_INT_DATA_TIMEOUT (1 << 20)
 
-// Command response types
-#define EMMC_CMD_RESP_NONE    (0 << 16)
-#define EMMC_CMD_RESP_136     (1 << 16)
-#define EMMC_CMD_RESP_48      (2 << 16)
-#define EMMC_CMD_RESP_48B     (3 << 16)
-#define EMMC_CMD_CRC_CHECK    (1 << 19)
-#define EMMC_CMD_IDX_CHECK    (1 << 20)
-#define EMMC_CMD_DATA         (1 << 21)
+#define EMMC_CMD_RESP_NONE (0 << 16)
+#define EMMC_CMD_RESP_48   (2 << 16)
+#define EMMC_CMD_RESP_136  (1 << 16)
 
-static void delay_ms(int ms) {
-    for (volatile int i = 0; i < ms * 1000; i++) {}
+static unsigned int rca = 0;
+
+static void delay(int x) {
+    for (volatile int i = 0; i < x * 1000; i++);
 }
 
-// Wait for command completion
 static int wait_cmd_done() {
     int timeout = 1000000;
-
     while (timeout--) {
-        unsigned int status = *EMMC_INTERRUPT;
+        unsigned int s = *EMMC_INTERRUPT;
 
-        if (status & EMMC_INT_CMD_DONE) {
+        if (s & EMMC_INT_CMD_DONE) {
             *EMMC_INTERRUPT = EMMC_INT_CMD_DONE;
             return 0;
         }
 
-        if (status & (EMMC_INT_CMD_TIMEOUT | EMMC_INT_CMD_CRC_ERR | EMMC_INT_CMD_IDX_ERR)) {
-            uart_puts("CMD ERROR: ");
-            uart_puthex(status);
-            uart_puts("\n");
-            *EMMC_INTERRUPT = status;
+        if (s & EMMC_INT_CMD_TIMEOUT) {
+            uart_puts("CMD TIMEOUT\n");
             return -1;
         }
     }
-
-    uart_puts("CMD TIMEOUT\n");
+    uart_puts("CMD WAIT TIMEOUT\n");
     return -1;
 }
 
-// Send command
-static int emmc_cmd(unsigned int cmd_idx, unsigned int arg, unsigned int resp) {
-    // Wait until command line free
-    unsigned int timeout = 100000;
-    while ((*EMMC_STATUS & (1 << 0)) && timeout--) {}
+static int cmd(unsigned int idx, unsigned int arg, unsigned int resp) {
+    while (*EMMC_STATUS & 1); // wait cmd line free
 
-    if (timeout == 0) {
-        uart_puts("CMD line busy\n");
-        return -1;
-    }
-
-    // Clear interrupts BEFORE command
     *EMMC_INTERRUPT = 0xFFFFFFFF;
-
     *EMMC_ARG1 = arg;
-    *EMMC_CMDTM = (cmd_idx << 24) | resp;
+    *EMMC_CMDTM = (idx << 24) | resp;
 
-    // Special case: CMD0 (no response)
-    if (cmd_idx == 0) {
-        delay_ms(10);
+    if (idx == 0) {
+        delay(10);
         return 0;
     }
 
     return wait_cmd_done();
 }
 
-// Read block (not usable yet until full init complete)
-int sd_read_block(unsigned int lba, unsigned char *buffer) {
-    *EMMC_BLKSIZECNT = (1 << 16) | 512;
-
-    int timeout = 100000;
-    while ((*EMMC_STATUS & (1 << 1)) && timeout--) {}
-
-    if (timeout == 0) {
-        uart_puts("DATA line busy\n");
-        return -1;
-    }
-
-    if (emmc_cmd(17, lba, EMMC_CMD_RESP_48 | EMMC_CMD_DATA) != 0) {
-        uart_puts("CMD17 failed\n");
-        return -1;
-    }
-
-    // Wait for data done
-    timeout = 1000000;
-    while (timeout--) {
-        if (*EMMC_INTERRUPT & EMMC_INT_DATA_DONE) {
-            *EMMC_INTERRUPT = EMMC_INT_DATA_DONE;
-            break;
-        }
-    }
-
-    if (timeout <= 0) {
-        uart_puts("DATA timeout\n");
-        return -1;
-    }
-
-    for (int i = 0; i < 128; i++) {
-        unsigned int data = *EMMC_DATA;
-        buffer[i*4+0] = data & 0xFF;
-        buffer[i*4+1] = (data >> 8) & 0xFF;
-        buffer[i*4+2] = (data >> 16) & 0xFF;
-        buffer[i*4+3] = (data >> 24) & 0xFF;
-    }
-
-    return 0;
-}
-
-// SD initialization (minimal stage)
 int sd_init(void) {
-    uart_puts("Initializing SD card...\n");
+    uart_puts("SD init start\n");
 
-    // --- RESET ---
+    // Reset
     *EMMC_CONTROL1 |= EMMC_CONTROL1_RESET_HC;
-
     int timeout = 100000;
-    while ((*EMMC_CONTROL1 & EMMC_CONTROL1_RESET_HC) && timeout--) {}
-
+    while ((*EMMC_CONTROL1 & EMMC_CONTROL1_RESET_HC) && timeout--);
     if (timeout <= 0) {
-        uart_puts("Reset timeout\n");
+        uart_puts("Reset fail\n");
         return -1;
     }
 
-    uart_puts("Reset complete\n");
-
-    // Clear interrupts
+    // Interrupts
     *EMMC_INTERRUPT = 0xFFFFFFFF;
     *EMMC_IRPT_EN = 0xFFFFFFFF;
 
-    // --- CLOCK SETUP ---
-    unsigned int control = *EMMC_CONTROL1 & ~0xFFF;
-    *EMMC_CONTROL1 = control | 240;
-
+    // Clock
+    unsigned int c = *EMMC_CONTROL1 & ~0xFFF;
+    *EMMC_CONTROL1 = c | 240;
     *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_INTLEN;
 
     timeout = 100000;
-    while (!(*EMMC_CONTROL1 & EMMC_CONTROL1_CLK_STABLE) && timeout--) {}
-
+    while (!(*EMMC_CONTROL1 & EMMC_CONTROL1_CLK_STABLE) && timeout--);
     if (timeout <= 0) {
-        uart_puts("Clock failed\n");
+        uart_puts("Clock fail\n");
         return -1;
     }
 
     *EMMC_CONTROL1 |= EMMC_CONTROL1_CLK_EN;
+    delay(100);
 
-    uart_puts("Clock stable\n");
+    uart_puts("CMD0\n");
+    if (cmd(0, 0, EMMC_CMD_RESP_NONE)) return -1;
 
-    delay_ms(100);
+    uart_puts("CMD8\n");
+    if (cmd(8, 0x1AA, EMMC_CMD_RESP_48)) return -1;
 
-    uart_puts("CONTROL1: ");
-    uart_puthex(*EMMC_CONTROL1);
+    unsigned int resp = *EMMC_RESP0;
+    uart_puts("CMD8 resp: ");
+    uart_puthex(resp);
     uart_puts("\n");
 
-    // --- CMD0 ---
-    uart_puts("Sending CMD0...\n");
+    // ACMD41 loop
+    uart_puts("ACMD41 loop\n");
+    for (int i = 0; i < 1000; i++) {
+        cmd(55, 0, EMMC_CMD_RESP_48); // APP_CMD
+        cmd(41, 0x40300000, EMMC_CMD_RESP_48);
 
-    if (emmc_cmd(0, 0, EMMC_CMD_RESP_NONE) != 0) {
-        uart_puts("CMD0 failed\n");
-        return -1;
+        resp = *EMMC_RESP0;
+
+        if (resp & (1 << 31)) {
+            uart_puts("Card ready\n");
+            break;
+        }
+
+        delay(10);
     }
 
-    uart_puts("CMD0 OK\n");
+    // CMD2
+    uart_puts("CMD2\n");
+    if (cmd(2, 0, EMMC_CMD_RESP_136)) return -1;
 
-    uart_puts("Basic init complete (NOT ready for reads yet)\n");
+    // CMD3
+    uart_puts("CMD3\n");
+    if (cmd(3, 0, EMMC_CMD_RESP_48)) return -1;
+
+    rca = *EMMC_RESP0 & 0xFFFF0000;
+
+    uart_puts("RCA: ");
+    uart_puthex(rca);
+    uart_puts("\n");
+
+    // CMD7 (select card)
+    uart_puts("CMD7\n");
+    if (cmd(7, rca, EMMC_CMD_RESP_48)) return -1;
+
+    uart_puts("SD card selected\n");
 
     return 0;
 }
