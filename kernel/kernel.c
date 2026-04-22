@@ -9,6 +9,7 @@
 #include "sd.h"
 #include "gpio.h"
 #include "clock.h"
+#include "mailbox.h"
 
 
 extern kernel_api_t kapi;
@@ -117,6 +118,7 @@ void kernel_main(void){
 //    }
 
 //    test_sd();
+    mailbox_set_emmc_clock(25000000);
     gpio_init_sd();
     clock_debug_write();
     cm_probe();
