@@ -8,44 +8,72 @@
 
 #define CM_PASSWORD 0x5A000000
 
+#define CM_CTL_ENAB (1 << 4)
+#define CM_CTL_KILL (1 << 5)
+#define CM_CTL_BUSY (1 << 7)
+
 static void delay(int count) {
     while (count--) asm volatile("nop");
+}
+
+static void mmio_barrier() {
+    asm volatile("dsb sy");
 }
 
 void clock_init_emmc(void) {
     uart_puts("CLOCK: init EMMC\n");
 
-    // 1. Stop clock (safe disable)
-    CM_EMMCCTL = CM_PASSWORD | (1 << 5); // kill
+    // --- STEP 1: Disable clock cleanly ---
+    unsigned int ctl = CM_EMMCCTL;
 
-    delay(2000);
+    // Kill + disable (preserve nothing)
+    CM_EMMCCTL = CM_PASSWORD | CM_CTL_KILL;
+    mmio_barrier();
 
-    // Wait until not busy
-    while (CM_EMMCCTL & (1 << 7));
+    delay(5000);
+
+    // Wait for BUSY to clear
+    int timeout = 1000000;
+    while ((CM_EMMCCTL & CM_CTL_BUSY) && timeout--) {}
+
+    if (timeout <= 0) {
+        uart_puts("CLOCK: failed to stop\n");
+        return;
+    }
 
     uart_puts("CLOCK: stopped\n");
 
-    // 2. Set clock divisor
-    // Base clock ~250 MHz → divide to ~400kHz for init
-    // divisor = 250MHz / 400kHz ≈ 625 → use 650 for safety
+    // --- STEP 2: Set divisor ---
     unsigned int divisor = 650;
 
     CM_EMMCDIV = CM_PASSWORD | (divisor << 12);
+    mmio_barrier();
+
     uart_puts("CLOCK: divisor set\n");
 
+    // --- STEP 3: Set clock source (PLLD = 6), no enable ---
     CM_EMMCCTL = CM_PASSWORD | 6;
+    mmio_barrier();
 
-    delay(2000);
+    delay(5000);
 
-    CM_EMMCCTL = CM_PASSWORD | 6 | (1 << 4);
+    // --- STEP 4: Enable clock ---
+    CM_EMMCCTL = CM_PASSWORD | 6 | CM_CTL_ENAB;
+    mmio_barrier();
 
-    delay(2000);
+    delay(5000);
 
-    int timeout = 1000000;
-    while (!(CM_EMMCCTL & (1 << 7)) && timeout--){}
+    // --- STEP 5: Wait for clock to run ---
+    timeout = 1000000;
+    while (!(CM_EMMCCTL & CM_CTL_BUSY) && timeout--) {}
 
-    if (timeout <= 0){
-        uart_puts("CLOCK: FAILED TO START.\n");
+    if (timeout <= 0) {
+        uart_puts("CLOCK: FAILED TO START\n");
+
+        uart_puts("CTL=");
+        uart_puthex(CM_EMMCCTL);
+        uart_puts("\n");
+
         return;
     }
 
