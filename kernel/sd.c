@@ -17,6 +17,8 @@
 #define INT_DATA_DONE (1 << 1)
 #define INT_ERROR_MASK 0xFFFF0000
 
+#define EMMC_CONTROL0 ((volatile unsigned int*)(EMMC_BASE + 0x28))
+
 static void delay(int count) {
     while (count--) asm volatile("nop");
 }
@@ -61,9 +63,9 @@ static int wait_data_done() {
 
 static int emmc_cmd(unsigned int cmd_idx, unsigned int arg, unsigned int flags) {
 
-    while (*EMMC_STATUS & (1 << 0)); // CMD inhibit
+    while (*EMMC_STATUS & ((1 << 0) | (1 << 1))); // CMD inhibit
 
-    *EMMC_INTERRUPT = 0xFFFFFFFF;
+    *EMMC_INTERRUPT = *EMMC_INTERRUPT;
 
     *EMMC_ARG1 = arg;
     *EMMC_CMDTM = (cmd_idx << 24) | flags;
@@ -78,23 +80,27 @@ int sd_init(void) {
     *EMMC_CONTROL1 |= (1 << 24);
     delay(10000);
 
-    // Enable clock
-    unsigned int c1 = *EMMC_CONTROL1;
-    c1 |= (1 << 0); // internal clock enable
-    *EMMC_CONTROL1 = c1;
+    *EMMC_CONTROL0 = 0x0;
 
-    delay(10000);
+    *EMMC_CONTROL1 &= ~(1 << 2);
 
-    // Wait for clock stable
-    while (!(*EMMC_CONTROL1 & (1 << 1)));
+    unsigned int divisor = 250;
 
-    // Enable SD clock
+    *EMMC_CONTROL1 &= ~(0xFFF << 16);
+
+    *EMMC_CONTROL1 |= (divisor << 16);
+
+    *EMMC_CONTROL1 |= (1 << 0);
+
+    while(!(*EMMC_CONTROL1 & (1 << 1)));
+
     *EMMC_CONTROL1 |= (1 << 2);
 
+    
     delay(10000);
 
     // Enable interrupts
-    *EMMC_INTERRUPT = 0xFFFFFFFF;
+    *EMMC_INTERRUPT = *EMMC_INTERRUPT;
     *EMMC_IRPT_EN = 0xFFFFFFFF;
 
     // CMD0
