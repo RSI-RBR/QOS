@@ -43,12 +43,12 @@ void gpio_init_sd(void) {
     uart_puts("GPIO: configuring SD pins\n");
 
     // ALT0 = 100
-    gpio_set_alt(48, 0); // SD_CLK
-    gpio_set_alt(49, 0); // SD_CMD
-    gpio_set_alt(50, 0); // SD_DAT0
-    gpio_set_alt(51, 0); // SD_DAT1
-    gpio_set_alt(52, 0); // SD_DAT2
-    gpio_set_alt(53, 0); // SD_DAT3
+    gpio_set_alt(48, 4); // SD_CLK
+    gpio_set_alt(49, 4); // SD_CMD
+    gpio_set_alt(50, 4); // SD_DAT0
+    gpio_set_alt(51, 4); // SD_DAT1
+    gpio_set_alt(52, 4); // SD_DAT2
+    gpio_set_alt(53, 4); // SD_DAT3
 
     // Disable pull-up/down
     *GPPUD = 0;
