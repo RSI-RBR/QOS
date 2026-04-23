@@ -13,9 +13,11 @@
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
 
+#define SDCMD_NO_RESPONSE 0x400
+#define SDCMD_LONG_RESPONSE 0x200
 
 unsigned int sdhost_get_resp(void){
-    return *(volatile unsigned int*)SDRSP0;
+    return SDRSP0;
 }
 
 static void delay(int count) {
@@ -31,7 +33,7 @@ void sdhost_reset(void) {
     SDCMD = 0;
     SDARG = 0;
     SDTOUT = 0xF00000;
-    SDCDIV = 0;
+    SDCDIV = 250;
     SDHSTS = 0x7F8;
 
     delay(10000);
@@ -40,7 +42,7 @@ void sdhost_reset(void) {
     delay(10000);
 }
 
-int sdhost_cmd(unsigned int cmd, unsigned int arg) {
+int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     int timeout;
 
     uart_puts("CMD ");
@@ -58,8 +60,26 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg) {
     // Clear errors
     SDHSTS = SDHSTS;
 
+//    SDARG = arg;
+//    SDCMD = cmd | SDCMD_NEW_FLAG;
+
+    unsigned int sdcmd = cmd;
+
+    switch(cmd){
+        case 0:
+            sdcmd |= SDCMD_NO_RESPONSE;
+            break;
+        case 8:
+        case 55:
+        case 41:
+            break;
+
+        default:
+            break;
+    }
+
     SDARG = arg;
-    SDCMD = cmd | SDCMD_NEW_FLAG;
+    SDCMD = sdcmd | SDCMD_NEW_FLAG;
 
     // Wait for completion
     timeout = 1000000;
@@ -82,10 +102,10 @@ int sdhost_init_card(void) {
     uart_puts("SD INIT START\n");
 
     // CMD0 (reset)
-    if (sdhost_cmd(0, 0) != 0) return -1;
+    if (sdhost_cmd(0, 0, 0) != 0) return -1;
 
     // CMD8 (check voltage)
-    if (sdhost_cmd(8, 0x1AA) != 0) {
+    if (sdhost_cmd(8, 0x1AA, 1) != 0) {
         uart_puts("CMD8 failed (maybe old card)\n");
     } else {
         uart_puts("CMD8 OK\n");
@@ -99,12 +119,15 @@ int sdhost_init_card(void) {
     int retries = 1000;
 
     do {
-        if (sdhost_cmd(55, 0) != 0){
+        if (sdhost_cmd(55, 0, 1) != 0){
             uart_puts("CMD55 FAIL\n");
             return -1;
         }
+        uart_puts("CMD55 RESP = \n");
+        uart_puthex(SDRSP0);
+        uart_puts("\n");
 
-        if (sdhost_cmd(41, 0x40300000) != 0){
+        if (sdhost_cmd(41, 0x40300000, 1) != 0){
             uart_puts("ACMD41 FAIL\n");
             return -1;
         }
@@ -117,7 +140,7 @@ int sdhost_init_card(void) {
 
         if (resp & 0x80000000) break;
 
-        delay(10);
+        delay(10000);
 
     } while (-- retries);
 
