@@ -64,7 +64,7 @@ void gpio_init_sd(void) {
     delay(150);
     *GPPUDCLK1 = 0;
 
-    *GPPUID = 2;
+    *GPPUD = 2;
     delay(150);
 
     *GPPUDCLK1 = (1 << (49 - 32)) |
