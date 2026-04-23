@@ -1,4 +1,4 @@
-#include "uart.h"
+\#include "uart.h"
 
 #define SDHOST_BASE 0x3F202000
 
@@ -58,7 +58,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     }
 
     // Clear errors
-    SDHSTS = SDHSTS;
+    SDHSTS = 0x7F8;
 
 //    SDARG = arg;
 //    SDCMD = cmd | SDCMD_NEW_FLAG;
@@ -123,7 +123,7 @@ int sdhost_init_card(void) {
             uart_puts("CMD55 FAIL\n");
             return -1;
         }
-        uart_puts("CMD55 RESP = \n");
+        uart_puts("CMD55 RESP = ");
         uart_puthex(SDRSP0);
         uart_puts("\n");
 
