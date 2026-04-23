@@ -9,6 +9,8 @@
 #define SDRSP0  (*(volatile unsigned int*)(SDHOST_BASE + 0x10))
 #define SDHSTS  (*(volatile unsigned int*)(SDHOST_BASE + 0x20))
 #define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
+#define SDHCFG  (*(volatile unsigned int*)(SDHOST_BASE + 0x38))
+
 
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
@@ -33,8 +35,9 @@ void sdhost_reset(void) {
     SDCMD = 0;
     SDARG = 0;
     SDTOUT = 0xF00000;
-    SDCDIV = 250;
+    SDCDIV = 0x148;
     SDHSTS = 0x7F8;
+    SDHCFG = (1 << 0) | (1 << 1);
 
     delay(10000);
 
@@ -96,7 +99,7 @@ int sdhost_init_card(void) {
     if (sdhost_cmd(0, 0, 0) != 0) return -1;
 
     // CMD8 (check voltage)
-    if (sdhost_cmd(8, 0x1AA, 1) != 0) {
+    if (sdhost_cmd(8, 0x1AA, 48) != 0) {
         uart_puts("CMD8 failed (maybe old card)\n");
     } else {
         uart_puts("CMD8 OK\n");
@@ -110,7 +113,7 @@ int sdhost_init_card(void) {
     int retries = 1000;
 
     do {
-        if (sdhost_cmd(55, 0, 1) != 0){
+        if (sdhost_cmd(55, 0, 48) != 0){
             uart_puts("CMD55 FAIL\n");
             return -1;
         }
@@ -118,7 +121,7 @@ int sdhost_init_card(void) {
         uart_puthex(SDRSP0);
         uart_puts("\n");
 
-        if (sdhost_cmd(41, 0x40300000, 1) != 0){
+        if (sdhost_cmd(41, 0x40300000, 48) != 0){
             uart_puts("ACMD41 FAIL\n");
             return -1;
         }
