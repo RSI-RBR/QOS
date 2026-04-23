@@ -16,3 +16,21 @@
 static void delay(int count) {
     while (count--) asm volatile("nop");
 }
+
+void sdhost_reset(void) {
+    uart_puts("SDHOST RESET\n");
+
+    SDVDD = 0;
+    delay(10000);
+
+    SDCMD = 0;
+    SDARG = 0;
+    SDTOUT = 0xF00000;
+    SDCDIV = 0;
+    SDHSTS = 0x7F8;
+
+    delay(10000);
+
+    SDVDD = 1;
+    delay(10000);
+}
