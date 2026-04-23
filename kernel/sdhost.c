@@ -8,11 +8,11 @@
 #define SDCDIV  (*(volatile unsigned int*)(SDHOST_BASE + 0x0C))
 #define SDRSP0  (*(volatile unsigned int*)(SDHOST_BASE + 0x10))
 #define SDHSTS  (*(volatile unsigned int*)(SDHOST_BASE + 0x20))
-#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
+#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
 #define SDHCFG  (*(volatile unsigned int*)(SDHOST_BASE + 0x38))
 
 #define SDDATA (*(volatile unsigned int*)(SDHOST_BASE + 0x40))
-#define SDHSTS_DATA_FLAG 0x00000001
+#define SDHSTS_DATA_FLAG (1 << 0)
 #define SDHSTS_ERROR_MASK 0x0000007E
 
 #define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
@@ -31,7 +31,7 @@ static unsigned int sd_rca = 0;
 static int sdhost_wait_resp(void){
     int timeout = 1000000;
 
-    while(!(SDHSTS & (1 << 0)) && timeout--){
+    while((SDCMD & SDCMD_NEW_FLAG) && timeout--){
         // wait
     }
     if (!timeout){
@@ -65,7 +65,7 @@ void sdhost_reset(void) {
     SDHSTS = 0x7F8;
     SDHCFG = (1 << 0) | (1 << 1);
 
-    delay(10000);
+    delay(100000);
 
     SDVDD = 1;
     delay(500000);
@@ -89,7 +89,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     // Clear errors
     SDHSTS = 0x7F8;
 
-    unsigned int sdcmd = (cmd << 8);
+    unsigned int sdcmd = cmd;
 
 //    if (flags == 0) {
 //        sdcmd |= SDCMD_NO_RESPONSE;
@@ -110,9 +110,9 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     SDCMD = sdcmd | SDCMD_NEW_FLAG;
 
     // Wait for completion
-    if (sdhost_wait_resp() != 0){
-        return -1;
-    }
+//    if(sdhost_wait_resp() != 0){
+//        return -1;
+//    }
 
     if (SDCMD & SDCMD_FAIL_FLAG) {
         uart_puts("CMD FAIL\n");
@@ -235,8 +235,16 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puts("CMD17 OK, reading data... \n");
 
 
-//    delay(10000);
+    delay(50000);
     for (int i = 0; i < 128; i++){
+//        int timeout = 1000000;
+//        while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
+
+//        if (!timeout){
+//            uart_puts("DATA TIMEOUT\n");
+//            return -1;
+//        }
+        
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
