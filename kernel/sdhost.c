@@ -13,6 +13,11 @@
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
 
+
+unsigned int sdhost_get_resp(void){
+    return *(volatile unsigned int*)SDRSP0;
+}
+
 static void delay(int count) {
     while (count--) asm volatile("nop");
 }
@@ -89,27 +94,59 @@ int sdhost_init_card(void) {
         uart_puts("\n");
     }
 
-    // ACMD41 loop
-    uart_puts("ACMD41 loop...\n");
+    unsigned int resp;
 
-    for (int i = 0; i < 10000; i++) {
-        // CMD55 (APP_CMD)
-        if (sdhost_cmd(55, 0) != 0) return -1;
+    int retries = 1000;
 
-        // ACMD41
-        if (sdhost_cmd(41, 0x40300000) != 0) return -1;
-
-        unsigned int resp = SDRSP0;
-
-        if (resp & (1 << 31)) {
-            uart_puts("CARD READY\n");
-            uart_puts("OCR: ");
-            uart_puthex(resp);
-            uart_puts("\n");
-            return 0;
+    do {
+        if (sdhost_cmd(55, 0) != 0){
+            uart_puts("CMD55 FAIL\n");
+            return -1;
         }
+
+        if (sdhost_cmd(41, 0x40300000) != 0){
+            uart_puts("ACMD41 FAIL\n");
+            return -1;
+        }
+
+        resp = sdhost_get_resp();
+
+        uart_puts("ACMD41 RESP= ");
+        uart_puthex(resp);
+        uart_puts("\n");
+
+        if (resp & 0x80000000) break;
+
+        delay(10);
+
+    } while (-- retries);
+
+    if (retries == 0){
+        uart_puts("ACMD41 TIMEOUT\n");
+        return -1;
     }
 
-    uart_puts("ACMD41 TIMEOUT\n");
+//    // ACMD41 loop
+//    uart_puts("ACMD41 loop...\n");
+//
+//    for (int i = 0; i < 10000; i++) {
+//        // CMD55 (APP_CMD)
+//        if (sdhost_cmd(55, 0) != 0) return -1;
+//
+//        // ACMD41
+//        if (sdhost_cmd(41, 0x40300000) != 0) return -1;
+//
+//        unsigned int resp = SDRSP0;
+//
+//        if (resp & (1 << 31)) {
+//            uart_puts("CARD READY\n");
+//            uart_puts("OCR: ");
+//            uart_puthex(resp);
+//            uart_puts("\n");
+//            return 0;
+//        }
+//    }
+//
+//    uart_puts("ACMD41 TIMEOUT\n");
     return -1;
 }
