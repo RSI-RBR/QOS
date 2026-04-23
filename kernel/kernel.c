@@ -121,12 +121,26 @@ void kernel_main(void){
     extern void sdhost_reset(void);
     extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
     extern int sdhost_init_card(void);
+    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
     gpio_init_sd();
     sdhost_reset();
     if (sdhost_init_card() != 0){
         uart_puts("SD INIT FAILED!\n");
         return;
     }
+
+    uart_puts("INIT OK, attempting read...\n");
+
+    if (sdhost_read_block(2048, sector) != 0){
+        uart_puts("READ FAILED!\n");
+        return;
+    }
+
+    uart_puts("Read success. First 16 bytes: \n");
+
+    for (int i = 0; i < 16; i++){
+        uart_puthex(sector[i]);
+    } uart_puts("\n");
 
 //    if (sdhost_cmd(0, 0) != 0){
 //        uart_puts("CMD0 FAIL.\n");

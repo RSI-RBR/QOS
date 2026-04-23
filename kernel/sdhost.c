@@ -8,9 +8,15 @@
 #define SDCDIV  (*(volatile unsigned int*)(SDHOST_BASE + 0x0C))
 #define SDRSP0  (*(volatile unsigned int*)(SDHOST_BASE + 0x10))
 #define SDHSTS  (*(volatile unsigned int*)(SDHOST_BASE + 0x20))
-#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
+#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
 #define SDHCFG  (*(volatile unsigned int*)(SDHOST_BASE + 0x38))
 
+#define SDDATA (*(volatile unsigned int*)(SDHOST_BASE + 0x40))
+#define SDHSTS_DATA_FLAG 0x00000001
+#define SDHSTS_ERROR_MASK 0x0000007E
+
+#define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
+#define SDHBLC (*(volatile unsigned int*)(SDHOST_BASE + 0x34))
 
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
@@ -19,6 +25,8 @@
 #define SDCMD_LONG_RESPONSE 0x200
 #define CMD_NEEDS_RESP 1
 #define CMD_LONG_RESP 2
+
+static unsigned int sd_rca = 0;
 
 unsigned int sdhost_get_resp(void){
     return SDRSP0;
@@ -37,14 +45,14 @@ void sdhost_reset(void) {
     SDCMD = 0;
     SDARG = 0;
     SDTOUT = 0xF00000;
-    SDCDIV = 0x3FF;
+    SDCDIV = 0x00000F00;
     SDHSTS = 0x7F8;
     SDHCFG = (1 << 0) | (1 << 1);
 
     delay(10000);
 
     SDVDD = 1;
-    delay(10000);
+    delay(500000);
 }
 
 int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
@@ -161,5 +169,57 @@ int sdhost_init_card(void) {
     uart_puthex(resp);
     uart_puts("\n");
 
+    if (sdhost_cmd(2, 0, CMD_NEEDS_RESP | CMD_LONG_RESP) != 0){
+        uart_puts("CMD2 FAIL\n");
+        return -1;
+    }
+
+    if (sdhost_cmd(3, 0, CMD_NEEDS_RESP) != 0){
+        uart_puts("CMD3 FAIL\n");
+        return -1;
+    }
+
+    sd_rca = sdhost_get_resp() >> 16;
+
+    uart_puts("RCA = ");
+    uart_puthex(sd_rca);
+    uart_puts("\n");
+
+    if (sdhost_cmd(7, sd_rca << 16, CMD_NEEDS_RESP) != 0){
+        uart_puts("CMD7 FAIL\n");
+        return -1;
+    }
+
+    uart_puts("CARD SELECTED\n");
+
+    return 0;
+}
+
+int sdhost_read_block(unsigned int lba, unsigned char *buffer){
+    uart_puts("READ BLOCK ");
+    uart_puthex(lba);
+    uart_puts("\n");
+
+    SDHBCT = 1;
+    SDHBLC = 512;
+
+    if (sdhost_cmd(17, lba, 48) != 0){
+        uart_puts("CMD17 FAIL\n");
+        return -1;
+    }
+
+    uart_puts("CMD17 OK, reading data... \n");
+
+
+//    delay(10000);
+    for (int i = 0; i < 128; i++){
+        unsigned int data = SDDATA;
+        buffer[i*4+0] = (data >> 0) & 0xFF;
+        buffer[i*4+1] = (data >> 8) & 0xFF;
+        buffer[i*4+2] = (data >> 16) & 0xFF;
+        buffer[i*4+3] = (data >> 24) & 0xFF;
+    }
+    SDHSTS = SDHSTS;
+    uart_puts("READ DONE!\n");
     return 0;
 }
