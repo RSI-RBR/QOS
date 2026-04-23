@@ -116,18 +116,20 @@ int sdhost_init_card(void) {
     // CMD0 (reset)
     if (sdhost_cmd(0, 0, 0) != 0) return -1;
 
+    int sd_v2 = 0;
     // CMD8 (check voltage)
-    if (sdhost_cmd(8, 0x1AA, CMD_NEEDS_RESP) != 0) {
-        uart_puts("CMD8 failed (maybe old card)\n");
+    if (sdhost_cmd(8, 0x1AA, CMD_NEEDS_RESP) == 0) {
+        unsigned int r = sdhost_get_resp();
 
-        uart_puts("CMD8 RESP: ");
-        uart_puthex(SDRSP0);
+        uart_puts("CMD8 OK RESP: ");
+        uart_puthex(r);
         uart_puts("\n");
+
+        if ((r & 0xFFF) == 0x1AA){
+            sd_v2 = 1;
+        }
     } else {
-        uart_puts("CMD8 OK\n");
-        uart_puts("RESP: ");
-        uart_puthex(SDRSP0);
-        uart_puts("\n");
+        uart_puts("CMD8 FAIL -> assuming SDv1\n");
     }
 
     unsigned int resp;
@@ -135,7 +137,7 @@ int sdhost_init_card(void) {
     int retries = 1000;
 
     do {
-        if (sdhost_cmd(55, 0, CMD_NEEDS_RESP) != 0){
+        if (sdhost_cmd(55, sd_rca << 16, CMD_NEEDS_RESP) != 0){
             uart_puts("CMD55 FAIL\n");
             return -1;
         }
@@ -143,7 +145,14 @@ int sdhost_init_card(void) {
         uart_puthex(SDRSP0);
         uart_puts("\n");
 
-        if (sdhost_cmd(41, 0x40300000, CMD_NEEDS_RESP) != 0){
+        unsigned int acmd41_arg;
+
+        if (sd_v2){
+            acmd41_arg = 0x40300000;
+        }
+        else { acmd41_arg = 0x00300000; }
+
+        if (sdhost_cmd(41, acmd41_arg, CMD_NEEDS_RESP) != 0){
             uart_puts("ACMD41 FAIL\n");
             return -1;
         }
@@ -203,7 +212,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     SDHBCT = 1;
     SDHBLC = 512;
 
-    if (sdhost_cmd(17, lba, 48) != 0){
+    if (sdhost_cmd(17, lba, CMD_NEEDS_RESP) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
