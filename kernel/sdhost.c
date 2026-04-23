@@ -28,8 +28,24 @@
 
 static unsigned int sd_rca = 0;
 
+static int sdhost_wait_resp(void){
+    int timeout = 1000000;
+
+    while(!(SDHSTS & (1 << 0)) && timeout--){
+        // wait
+    }
+    if (!timeout){
+        uart_puts("RESP TIMEOUT\n");
+        return -1;
+    }
+    return 0;
+}
+
 unsigned int sdhost_get_resp(void){
-    return SDRSP0;
+    unsigned int r = SDRSP0;
+    SDHSTS = 0x7F8;
+
+    return r;
 }
 
 static void delay(int count) {
@@ -45,7 +61,7 @@ void sdhost_reset(void) {
     SDCMD = 0;
     SDARG = 0;
     SDTOUT = 0xF00000;
-    SDCDIV = 0x00000F00;
+    SDCDIV = 0x00000148;
     SDHSTS = 0x7F8;
     SDHCFG = (1 << 0) | (1 << 1);
 
@@ -73,7 +89,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     // Clear errors
     SDHSTS = 0x7F8;
 
-    unsigned int sdcmd = cmd;
+    unsigned int sdcmd = (cmd << 8);
 
 //    if (flags == 0) {
 //        sdcmd |= SDCMD_NO_RESPONSE;
@@ -94,10 +110,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     SDCMD = sdcmd | SDCMD_NEW_FLAG;
 
     // Wait for completion
-    timeout = 1000000;
-    while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
-    if (!timeout) {
-        uart_puts("CMD TIMEOUT\n");
+    if (sdhost_wait_resp() != 0){
         return -1;
     }
 
@@ -116,6 +129,8 @@ int sdhost_init_card(void) {
     // CMD0 (reset)
     if (sdhost_cmd(0, 0, 0) != 0) return -1;
 
+    delay(100000);
+    
     int sd_v2 = 0;
     // CMD8 (check voltage)
     if (sdhost_cmd(8, 0x1AA, CMD_NEEDS_RESP) == 0) {
@@ -137,7 +152,7 @@ int sdhost_init_card(void) {
     int retries = 1000;
 
     do {
-        if (sdhost_cmd(55, sd_rca << 16, CMD_NEEDS_RESP) != 0){
+        if (sdhost_cmd(55, 0, CMD_NEEDS_RESP) != 0){
             uart_puts("CMD55 FAIL\n");
             return -1;
         }
