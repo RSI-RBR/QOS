@@ -1,4 +1,4 @@
-\#include "uart.h"
+#include "uart.h"
 
 #define SDHOST_BASE 0x3F202000
 
@@ -49,7 +49,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     uart_puthex(cmd);
     uart_puts("\n");
 
-    // Wait until controller is free
+    // Wait until controller free
     timeout = 1000000;
     while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
     if (!timeout) {
@@ -60,22 +60,13 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     // Clear errors
     SDHSTS = 0x7F8;
 
-//    SDARG = arg;
-//    SDCMD = cmd | SDCMD_NEW_FLAG;
-
     unsigned int sdcmd = cmd;
 
-    switch(cmd){
-        case 0:
-            sdcmd |= SDCMD_NO_RESPONSE;
-            break;
-        case 8:
-        case 55:
-        case 41:
-            break;
-
-        default:
-            break;
+    if (flags == 0) {
+        sdcmd |= SDCMD_NO_RESPONSE;
+    } else {
+        if (flags == 136)
+            sdcmd |= SDCMD_LONG_RESPONSE;
     }
 
     SDARG = arg;
