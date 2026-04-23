@@ -34,3 +34,41 @@ void sdhost_reset(void) {
     SDVDD = 1;
     delay(10000);
 }
+
+int sdhost_cmd(unsigned int cmd, unsigned int arg) {
+    int timeout;
+
+    uart_puts("CMD ");
+    uart_puthex(cmd);
+    uart_puts("\n");
+
+    // Wait until controller is free
+    timeout = 1000000;
+    while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
+    if (!timeout) {
+        uart_puts("CMD BUSY TIMEOUT\n");
+        return -1;
+    }
+
+    // Clear errors
+    SDHSTS = SDHSTS;
+
+    SDARG = arg;
+    SDCMD = cmd | SDCMD_NEW_FLAG;
+
+    // Wait for completion
+    timeout = 1000000;
+    while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
+    if (!timeout) {
+        uart_puts("CMD TIMEOUT\n");
+        return -1;
+    }
+
+    if (SDCMD & SDCMD_FAIL_FLAG) {
+        uart_puts("CMD FAIL\n");
+        return -1;
+    }
+
+    uart_puts("CMD OK\n");
+    return 0;
+}
