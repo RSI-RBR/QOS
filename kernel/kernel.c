@@ -120,18 +120,23 @@ void kernel_main(void){
     uart_puts("\n--- START SD PIPELINE ---\n");
     extern void sdhost_reset(void);
     extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
+    extern int sdhost_init_card(void);
     gpio_init_sd();
     sdhost_reset();
-
-    if (sdhost_cmd(0, 0) != 0){
-        uart_puts("CMD0 FAIL.\n");
+    if (sdhost_init_card() != 0){
+        uart_puts("SD INIT FAILED!\n");
         return;
     }
 
-    if (sdhost_cmd(8, 0x1AA) != 0){
-        uart_puts("CMD8 FAIL\n");
-        return;
-    }
+//    if (sdhost_cmd(0, 0) != 0){
+//        uart_puts("CMD0 FAIL.\n");
+//        return;
+//    }
+
+//    if (sdhost_cmd(8, 0x1AA) != 0){
+//        uart_puts("CMD8 FAIL\n");
+//        return;
+//    }
 
 //    if (mailbox_set_emmc_clock(25000000) != 0) {
 //        uart_puts("MAILBOX CLOCK FAILED\n");
