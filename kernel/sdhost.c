@@ -15,8 +15,8 @@
 #define SDHSTS_DATA_FLAG (1 << 0)
 #define SDHSTS_ERROR_MASK 0x0000007E
 
-#define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
-#define SDHBLC (*(volatile unsigned int*)(SDHOST_BASE + 0x50))
+#define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
+#define SDHBLC (*(volatile unsigned int*)(SDHOST_BASE + 0x34))
 
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
@@ -25,12 +25,12 @@
 #define SDCMD_NO_RESPONSE 0x1000
 #define SDCMD_LONG_RESPONSE 0x0800
 
-#define SDCMD_READ_CMD 0x0400
+//#define SDCMD_READ_CMD 0x0400
 #define SDCMD_WRITE_CMD 0x0200
 
 #define CMD_NEEDS_RESP 1
 #define CMD_LONG_RESP 2
-#define CMD_IS_READ 4
+//#define CMD_IS_READ 4
 
 static unsigned int sd_rca = 0;
 
@@ -106,7 +106,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
 
     if (!(flags & CMD_NEEDS_RESP)) sdcmd |= SDCMD_NO_RESPONSE;
     if (flags & CMD_LONG_RESP) sdcmd |= SDCMD_LONG_RESPONSE;
-    if (flags & CMD_IS_READ) sdcmd |= SDCMD_READ_CMD;
+//    if (flags & CMD_IS_READ) sdcmd |= SDCMD_READ_CMD;
 
     SDARG = arg;
     SDCMD = sdcmd | SDCMD_NEW_FLAG;
@@ -116,6 +116,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
 
     if (SDCMD & SDCMD_FAIL_FLAG){
         uart_puts("CMD FAIL\n");
+        return -1;
     }
 
     // Wait for completion
@@ -233,10 +234,10 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puthex(lba);
     uart_puts("\n");
 
-    SDHBCT = 512;
-    SDHBLC = 1;
+    SDHBCT = 1;
+    SDHBLC = 512;
 
-    if (sdhost_cmd(17, lba, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
+    if (sdhost_cmd(17, lba, CMD_NEEDS_RESP) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
@@ -260,7 +261,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
     }
-    SDHSTS = SDHSTS;
+    SDHSTS = 0x7F8;
     uart_puts("READ DONE!\n");
     return 0;
 }
