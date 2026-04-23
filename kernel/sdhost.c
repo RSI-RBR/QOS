@@ -72,3 +72,44 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg) {
     uart_puts("CMD OK\n");
     return 0;
 }
+
+int sdhost_init_card(void) {
+    uart_puts("SD INIT START\n");
+
+    // CMD0 (reset)
+    if (sdhost_cmd(0, 0) != 0) return -1;
+
+    // CMD8 (check voltage)
+    if (sdhost_cmd(8, 0x1AA) != 0) {
+        uart_puts("CMD8 failed (maybe old card)\n");
+    } else {
+        uart_puts("CMD8 OK\n");
+        uart_puts("RESP: ");
+        uart_puthex(SDRSP0);
+        uart_puts("\n");
+    }
+
+    // ACMD41 loop
+    uart_puts("ACMD41 loop...\n");
+
+    for (int i = 0; i < 10000; i++) {
+        // CMD55 (APP_CMD)
+        if (sdhost_cmd(55, 0) != 0) return -1;
+
+        // ACMD41
+        if (sdhost_cmd(41, 0x40300000) != 0) return -1;
+
+        unsigned int resp = SDRSP0;
+
+        if (resp & (1 << 31)) {
+            uart_puts("CARD READY\n");
+            uart_puts("OCR: ");
+            uart_puthex(resp);
+            uart_puts("\n");
+            return 0;
+        }
+    }
+
+    uart_puts("ACMD41 TIMEOUT\n");
+    return -1;
+}
