@@ -62,8 +62,22 @@ void gpio_init_sd(void) {
                  (1 << (53 - 32));
 
     delay(150);
+    *GPPUDCLK1 = 0;
+
+    *GPPUID = 2;
+    delay(150);
+
+    *GPPUDCLK1 = (1 << (49 - 32)) |
+                 (1 << (50 - 32)) |
+                 (1 << (51 - 32)) |
+                 (1 << (52 - 32)) |
+                 (1 << (53 - 32));
+
+    delay(150);
 
     *GPPUDCLK1 = 0;
+
+    
 
     uart_puts("GPIO: SD pins configured\n");
 }
