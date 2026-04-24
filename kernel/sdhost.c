@@ -306,56 +306,83 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puthex(lba);
     uart_puts("\n");
 
-    SDHBCT = 512;
-    SDHBLC = 1;
+    // Set up the block transfer parameters BEFORE issuing the command
+    SDHBCT = 512;  // Bytes per block - MUST be set before CMD17
+    SDHBLC = 1;    // Number of blocks - MUST be set before CMD17
+    
     unsigned int addr = lba;
     if (!sd_is_sdhc){
-        addr = lba * 512;
+        addr = lba * 512;  // SDSC cards use byte addresses
     }
+    
+    // Now issue the read command
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
+    
     uart_puts("CMD17 RESP = ");
     uart_puthex(sdhost_get_resp());
     uart_puts("\n");
     uart_puts("CMD17 OK, reading data... \n");
 
-//    delay(50000);
+    // Give the card/controller time to prepare data
+    delay(50000);
+    
+    // Read 128 words (512 bytes)
     for (int i = 0; i < 128; i++){
         int timeout = 1000000;
+        
+        // Wait for data to be ready
         while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
 
         if (!timeout){
-            uart_puts("DATA TIMEOUT\n");
+            uart_puts("DATA TIMEOUT at word ");
+            uart_puthex(i);
+            uart_puts("\n");
+            SDHSTS = 0x7F8;  // Clear status
             return -1;
         }
+        
+        // Check for errors
         if (SDHSTS & SDHSTS_ERROR_MASK){
             uart_puts("DATA ERROR at word ");
             uart_puthex(i);
             uart_puts(" - SDHSTS = ");
             uart_puthex(SDHSTS);
             uart_puts("\n");
-
-            SDHSTS = 0x7F8;
+            SDHSTS = 0x7F8;  // Clear error flags
             return -1;
         }
-        delay(100);
+        
+        // Read the 32-bit word
         unsigned int data = SDDATA;
+        
+        // Store bytes in buffer (little-endian)
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
-
-        if (i < 4){
+        
+        // Debug: print first few words to verify data
+        if (i < 4) {
             uart_puts("Word ");
             uart_puthex(i);
             uart_puts(" = ");
             uart_puthex(data);
+            uart_puts(" -> ");
+            uart_puthex(buffer[i*4+0]);
+            uart_puts(" ");
+            uart_puthex(buffer[i*4+1]);
+            uart_puts(" ");
+            uart_puthex(buffer[i*4+2]);
+            uart_puts(" ");
+            uart_puthex(buffer[i*4+3]);
             uart_puts("\n");
         }
     }
-    SDHSTS = 0x7F8;
+    
+    SDHSTS = 0x7F8;  // Clear all status flags
     uart_puts("READ DONE!\n");
     return 0;
 }
