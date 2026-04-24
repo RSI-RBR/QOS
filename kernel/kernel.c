@@ -84,11 +84,16 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
+extern unsigned long stack_bottom;
+
 void kernel_main(void){
     uart_init();
     uart_puts("Uart initialized!\n");
 
-    check_stack();
+    uart_puts("STACK GUARD INIT = ");
+    uart_puthex(*(unsigned long*)&stack_bottom);
+    uart_puts("\n");
+//    check_stack();
 
     memory_init();
     uart_puts("Memory initialized!\n");

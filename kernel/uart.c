@@ -76,3 +76,5 @@ void uart_puthex(unsigned int val){
     }
 }
 
+//void uart_puthex64(unsigned long value
+

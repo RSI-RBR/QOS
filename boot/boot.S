@@ -22,7 +22,7 @@ master:
 
     // 🔴 Initialize stack guard at bottom
     ldr x0, =stack_bottom
-    mov x1, #0xAAAAAAAAAAAAAAAA
+    ldr x1, =0xAAAAAAAA
     str x1, [x0]
 
     bl kernel_main

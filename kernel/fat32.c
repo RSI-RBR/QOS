@@ -15,7 +15,7 @@ static unsigned int root_cluster;
 static unsigned char sector[SECTOR_SIZE];
 
 static unsigned int read32(unsigned char *p){
-    return p[0] | (p[1]<<8) | (p[2]<<16) | (p[3]<<24);
+    return ((unsigned int)p[0]) | ((unsigned int)p[1]<<8) | ((unsigned int)p[2]<<16) | ((unsigned int)p[3]<<24);
 }
 
 static unsigned short read16(unsigned char *p){
@@ -48,8 +48,8 @@ int fat32_init(void){
 
     check_stack();
 
-    unsigned int partition_lba = sector[0x1BE + 8] | (sector[0x1BE + 9] << 8) | (sector[0x1BE + 10] << 16) | (sector[0x1BE + 11] << 24);
-//    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
+//    unsigned int partition_lba = sector[0x1BE + 8] | (sector[0x1BE + 9] << 8) | (sector[0x1BE + 10] << 16) | (sector[0x1BE + 11] << 24);
+    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
 
     uart_puts("Partition LBA = ");
     uart_puthex(partition_lba);
