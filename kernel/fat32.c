@@ -127,9 +127,9 @@ int fat32_init(void){
     sectors_per_cluster = v_sector[13];
     unsigned int reserved = v_sector[14] | (v_sector[15] << 8);
     unsigned int fats = v_sector[16];
-    unsigned int sectors_per_fat = v_sector[36];
+    unsigned int sectors_per_fat = v_sector[36] | (v_sector[37] << 8) | (v_sector[38] << 16) | (v_sector[39] << 24);
 
-    root_cluster = v_sector[44];
+    root_cluster = v_sector[44] | (v_sector[45] << 8) | (v_sector[46] << 16) | (v_sector[47] << 24);
 
     fat_start = partition_lba + reserved;
     data_start = fat_start + (fats * sectors_per_fat);
@@ -138,6 +138,8 @@ int fat32_init(void){
 
     uart_puts("SPC=");
     uart_puthex(sectors_per_cluster);
+    uart_puts(" SPF = ");
+    uart_puthex(sectors_per_fat);
     uart_puts(" ROOT=");
     uart_puthex(root_cluster);
     uart_puts("\n");
@@ -181,8 +183,8 @@ static unsigned int fat_next(unsigned int cluster){
 }
 
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    static unsigned char cluster_buf[8192]; // assume <=8 sectors
-
+    static unsigned char cluster_buf[MAX_CLUSTER_SIZE]; // assume <=8 sectors
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
     unsigned int cluster = root_cluster;
 
     while (cluster < 0x0FFFFFF8){
@@ -190,7 +192,7 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
             return -1;
         }
 
-        for (int i = 0; i < 4096; i += 32){
+        for (int i = 0; i < cluster_size; i += 32){
             unsigned char *entry = &cluster_buf[i];
 
             if (entry[0] == 0x00) return -1; // end
