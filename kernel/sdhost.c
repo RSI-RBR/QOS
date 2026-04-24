@@ -77,17 +77,12 @@ void sdhost_reset(void) {
     SDHSTS = 0x7F8;
 
     unsigned int temp = SDEDM;
-    // Clear both read and write threshold bits
     temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
-    
-    // Set HIGHER thresholds for stable block reads
-    // Try 16 for read threshold (instead of 4)
-    temp |= (16 << SDEDM_READ_THRESHOLD_SHIFT);
-    temp |= (16 << SDEDM_WRITE_THRESHOLD_SHIFT);
+    // Increased threshold to 31 (max value) for stable reads
+    temp |= (31 << SDEDM_READ_THRESHOLD_SHIFT);
+    temp |= (31 << SDEDM_WRITE_THRESHOLD_SHIFT);
 
     SDEDM = temp;
-    
-    // SDHCFG: Bits 0=HSTROBE, 1=INTBUS, 3=SLOW_CARD
     SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
 
     delay(100000);
@@ -314,64 +309,42 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     SDHBCT = 512;
     SDHBLC = 1;
-    
     unsigned int addr = lba;
     if (!sd_is_sdhc){
         addr = lba * 512;
     }
-    
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
-    
     uart_puts("CMD17 RESP = ");
     uart_puthex(sdhost_get_resp());
     uart_puts("\n");
     uart_puts("CMD17 OK, reading data... \n");
 
     delay(50000);
-    
     for (int i = 0; i < 128; i++){
         int timeout = 1000000;
-        
         while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
 
         if (!timeout){
-            uart_puts("DATA TIMEOUT at word ");
-            uart_puthex(i);
-            uart_puts("\n");
-            SDHSTS = 0x7F8;
+            uart_puts("DATA TIMEOUT\n");
             return -1;
         }
-        
-        // Check for errors but DON'T return immediately
         if (SDHSTS & SDHSTS_ERROR_MASK){
             uart_puts("DATA ERROR at word ");
             uart_puthex(i);
-            uart_puts(" - SDHSTS = ");
-            uart_puthex(SDHSTS);
             uart_puts("\n");
-            
-            // Clear the error flag and continue reading
+            // Clear error but continue - data may still be valid
             SDHSTS = 0x7F8;
         }
-        
+        delay(100);  // Increased delay before reading
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
-        
-        if (i < 4) {
-            uart_puts("Word ");
-            uart_puthex(i);
-            uart_puts(" = ");
-            uart_puthex(data);
-            uart_puts("\n");
-        }
     }
-    
     SDHSTS = 0x7F8;
     uart_puts("READ DONE!\n");
     return 0;
