@@ -70,14 +70,15 @@ int fat32_init(void){
     uart_puthex(sector[457]);
     uart_puts("\n");
 
+    volatile unsigned char *v_sector = (volatile unsigned char *)sector;
     barrier();
-    unsigned int b0 = sector[454];
+    unsigned int b0 = v_sector[454];
 //    uart_puts("B");
-    unsigned int b1 = sector[455];
+    unsigned int b1 = v_sector[455];
 //    uart_puts("B");
-    unsigned int b2 = sector[456];
+    unsigned int b2 = v_sector[456];
 //    uart_puts("B");
-    unsigned int b3 = sector[457];
+    unsigned int b3 = v_sector[457];
 
     uart_puts("INDIV BYTES OK\n");
 
