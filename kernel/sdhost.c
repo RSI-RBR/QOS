@@ -341,8 +341,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     while (words_left > 0){
 
-//        unsigned int edm = SDEDM;
-        unsigned int fifo_words = (SDEDM >> 4) & 0x1F;
+        unsigned int edm = SDEDM;
+        unsigned int fifo_words = (edm >> 4) & 0x1F;
+        unsigned int fsm = edm & SDEDM_FSM_MASK;
+
+        if (fsm == 0){
+            continue;
+        }
 
         // Wait for FIFO data
         if (fifo_words == 0){
@@ -365,12 +370,12 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
             unsigned int data = SDDATA;
 
-            buffer[index + 0] = (data >> 0) & 0xFF;
-            buffer[index + 1] = (data >> 8) & 0xFF;
-            buffer[index + 2] = (data >> 16) & 0xFF;
-            buffer[index + 3] = (data >> 24) & 0xFF;
+            buffer[index++] = (data >> 0) & 0xFF;
+            buffer[index++] = (data >> 8) & 0xFF;
+            buffer[index++] = (data >> 16) & 0xFF;
+            buffer[index++] = (data >> 24) & 0xFF;
 
-            index += 4;
+//            index += 4;
             words_left--;
 
             // 🚨 EXTRA SAFETY

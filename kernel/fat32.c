@@ -12,7 +12,7 @@ static unsigned int data_start;
 static unsigned int sectors_per_cluster;
 static unsigned int root_cluster;
 
-static unsigned char sector[SECTOR_SIZE];
+static unsigned char sector[SECTOR_SIZE] __attribute__((alligned(4096)));
 
 static unsigned int read32(unsigned char *p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1]<<8) | ((unsigned int)p[2]<<16) | ((unsigned int)p[3]<<24);
@@ -39,35 +39,44 @@ int fat32_init(void){
         uart_puts(" ");
     }uart_puts("\n");
 
-//    uart_puts("Sector dump : \n");
+    uart_puts("Sector dump : \n");
+    for (int i = 0; i < 512; i++){
+        uart_puthex(sector[i]); uart_puts(" ");
+        if ((i % 16) == 15) uart_puts("\n");
+    }
+    uart_puts("sector dumped!\n");
+
 //    for (int i = 0; i < 512; i++){
-//        uart_puthex(sector[i]);
-//        if ((i % 16) == 15) uart_puts("\n");
+//        if (sector[i] == 0xAA){
+//            uart_puts("AA found!\n");
+//        }
 //    }
-//    uart_puts("sector dumped!\n");
+//
+//    uart_puts("ADDR sector = ");
+//    uart_puthex((unsigned int)sector);
+//    uart_puts("\n");
 
-    uart_puts("ADDR sector = ");
-    uart_puthex((unsigned int)sector);
-    uart_puts("\n");
-
-    uart_puts("ADDR b0 = ");
-    uart_puthex((unsigned int)&sector[0x1BE + 8]);
-    uart_puts("\n");
+//    uart_puts("ADDR b0 = ");
+//    uart_puthex((unsigned int)&sector[0x1BE + 8]);
+//    uart_puts("\n");
 
     uart_puts("RAW BYTES: ");
-    uart_puthex(sector[0x1BE + 8]);
+    uart_puthex(sector[454]);
     uart_puts(" ");
-    uart_puthex(sector[0x1BE + 9]);
+    uart_puthex(sector[455]);
     uart_puts(" ");
-    uart_puthex(sector[0x1BE + 10]);
+    uart_puthex(sector[456]);
     uart_puts(" ");
-    uart_puthex(sector[0x1BE + 11]);
+    uart_puthex(sector[457]);
     uart_puts("\n");
 
-    unsigned int b0 = sector[0x1BE + 8];
-    unsigned int b1 = sector[0x1BE + 9];
-    unsigned int b2 = sector[0x1BE + 10];
-    unsigned int b3 = sector[0x1BE + 11];
+    unsigned int b0 = sector[454];
+    uart_puts("B");
+    unsigned int b1 = sector[455];
+    uart_puts("B");
+    unsigned int b2 = sector[456];
+    uart_puts("B");
+    unsigned int b3 = sector[457];
 
     uart_puts("INDIV BYTES OK\n");
 
