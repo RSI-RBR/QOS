@@ -307,6 +307,7 @@ int sdhost_init_card(void) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer){
+    SDHSTS = 0x7F8;
     uart_puts("READ BLOCK ");
     uart_puthex(lba);
     uart_puts("\n");
@@ -335,6 +336,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puts("\n");
 
     uart_puts("CMD17 OK, reading data...\n");
+    delay(50000);
 
     int words_left = 128; // 512 bytes / 4
 
@@ -396,6 +398,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         return -1;
     }
 
+    int timeout = 1000000;
+    while (!(SDCMD & (1 << 1)) && timeout--);
+
+    if (!timeout){
+        uart_puts("TRANSFER DONE TIMEOUT\n");
+        return -1;
+    }
     // Clear status AFTER transfer completes
     SDHSTS = 0x7F8;
 

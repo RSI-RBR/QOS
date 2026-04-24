@@ -3,6 +3,8 @@
 #include "uart.h"
 
 #define SECTOR_SIZE 512
+#define MAX_CLUSTER_SIZE 4096
+
 
 static unsigned int fat_start;
 static unsigned int data_start;
@@ -26,8 +28,25 @@ int fat32_init(void){
         return -1;
     }
     uart_puts("Read block 0 ... \n");
+//    delay(100000);
+//    SDHSTS = 0x7F8;
     // Check for partition (offset 0x1BE)
-    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
+    uart_puts("partition entry bytes:");
+
+    for (int i = 0; i < 16; i++){
+        uart_puthex(sector[0x1BE + i]);
+        uart_puts(" ");
+    }uart_puts("\n");
+
+    uart_puts("Sector dump : \n");
+    for (int i = 0; i < 512; i++){
+        uart_puthex(sector[i]);
+        if ((i % 16) == 15) uart_puts("\n");
+    }
+    uart_puts("sector dumped!\n");
+
+    unsigned int partition_lba = sector[0x1BE + 8] | (sector[0x1BE + 9] << 8) | (sector[0x1BE + 10] << 16) | (sector[0x1BE + 11] << 24);
+//    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
 
     uart_puts("Partition LBA = ");
     uart_puthex(partition_lba);
@@ -97,8 +116,7 @@ static unsigned int fat_next(unsigned int cluster){
 }
 
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    #define MAX_CLUSTER_SIZE 8192
-    unsigned char cluster_buf[MAX_CLUSTER_SIZE]; // assume <=8 sectors
+    unsigned char cluster_buf[4096]; // assume <=8 sectors
 
     unsigned int cluster = root_cluster;
 

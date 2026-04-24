@@ -63,10 +63,16 @@ void uart_puts(const char* str){
 }
 
 void uart_puthex(unsigned int val){
-    char hex[] = "0123456789ABCDEF";
-
+//    char hex[] = "0123456789ABCDEF";
+//
+//    for (int i = 28; i >= 0; i -= 4){
+//        uart_send(hex[(val >> i) & 0xF]);
+//    }
     for (int i = 28; i >= 0; i -= 4){
-        uart_send(hex[(val >> i) & 0xF]);
+        unsigned int digit = (val >> i) & 0xF;
+
+        if (digit < 10) uart_send('0' + digit);
+        else uart_send('A' + digit - 10);
     }
 }
 

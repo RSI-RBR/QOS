@@ -16,7 +16,7 @@
 
 extern kernel_api_t kapi;
 
-unsigned char sector[512];
+static unsigned char sector[512];
 
 //void cm_probe(void)
 //{
@@ -132,7 +132,11 @@ void kernel_main(void){
     }
 
     uart_puts("INIT OK, attempting read...\n");
-//    return;
+
+    sdhost_read_block(0, sector);
+    uart_puts("First read OK\n");
+    sdhost_read_block(0, sector);
+    uart_puts("Second read OK\n");//    return;
 //    if (sdhost_read_block(2048, sector) != 0){
 //        uart_puts("READ FAILED!\n");
 //        return;
