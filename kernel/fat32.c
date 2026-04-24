@@ -1,5 +1,5 @@
 #include "fat32.h"
-#include "sd.h"
+//#include "sd.h"
 #include "uart.h"
 
 #define SECTOR_SIZE 512
@@ -20,28 +20,44 @@ static unsigned short read16(unsigned char *p){
 }
 
 int fat32_init(void){
-    if (sd_read_block(0, sector)){
+    // Read MBR
+    if (sdhost_read_block(0, sector)){
+        uart_puts("FAT: failed to read MBR\n");
+        return -1;
+    }
+
+    // Check for partition (offset 0x1BE)
+    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
+
+    uart_puts("Partition LBA = ");
+    uart_puthex(partition_lba);
+    uart_puts("\n");
+
+    // Read FAT32 boot sector
+    if (sdhost_read_block(partition_lba, sector)){
         uart_puts("FAT: failed to read boot sector\n");
         return -1;
     }
 
-    uart_puts("Boot sector bytes: ");
-    for (int i = 0; i < 16; i++){
-        uart_puthex(sector[i]);
-        uart_puts(" ");
-    } uart_puts("\n");
-
+    unsigned int bytes_per_sector = read16(&sector[11]);
+    sectors_per_cluster = sector[13];
     unsigned int reserved = read16(&sector[14]);
     unsigned int fats = sector[16];
     unsigned int sectors_per_fat = read32(&sector[36]);
 
-    sectors_per_cluster = sector[13];
     root_cluster = read32(&sector[44]);
 
-    fat_start = reserved;
-    data_start = reserved + (fats * sectors_per_fat);
+    fat_start = partition_lba + reserved;
+    data_start = fat_start + (fats * sectors_per_fat);
 
     uart_puts("FAT32 initialized\n");
+
+    uart_puts("SPC=");
+    uart_puthex(sectors_per_cluster);
+    uart_puts(" ROOT=");
+    uart_puthex(root_cluster);
+    uart_puts("\n");
+
     return 0;
 }
 
