@@ -1,6 +1,7 @@
 #include "fat32.h"
 #include "sdhost.h"
 #include "uart.h"
+#include "debug.h"
 
 #define SECTOR_SIZE 512
 #define MAX_CLUSTER_SIZE 4096
@@ -44,6 +45,8 @@ int fat32_init(void){
         if ((i % 16) == 15) uart_puts("\n");
     }
     uart_puts("sector dumped!\n");
+
+    check_stack();
 
     unsigned int partition_lba = sector[0x1BE + 8] | (sector[0x1BE + 9] << 8) | (sector[0x1BE + 10] << 16) | (sector[0x1BE + 11] << 24);
 //    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
