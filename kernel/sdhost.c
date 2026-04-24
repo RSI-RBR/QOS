@@ -331,16 +331,29 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             return -1;
         }
         if (SDHSTS & SDHSTS_ERROR_MASK){
-            uart_puts("DATA ERROR\n");
+            uart_puts("DATA ERROR at word ");
+            uart_puthex(i);
+            uart_puts(" - SDHSTS = ");
             uart_puthex(SDHSTS);
             uart_puts("\n");
+
+            SDHSTS = 0x7F8;
+            return -1;
         }
-        delay(50);
+        delay(100);
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
+
+        if (i < 4){
+            uart_puts("Word ");
+            uart_puthex(i);
+            uart_puts(" = ");
+            uart_puthex(data);
+            uart_puts("\n");
+        }
     }
     SDHSTS = 0x7F8;
     uart_puts("READ DONE!\n");
