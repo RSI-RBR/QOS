@@ -47,10 +47,14 @@ int fat32_init(void){
 //    uart_puts("sector dumped!\n");
 
     check_stack();
-
+    unsigned int test = sector[0x1BE];
+    unsigned int test2 = sector[0x1BE + 8];
+    unsigned int test3 = sector[0x1BE + 11];
+    uart_puts("Byte OK!\n");
 //    unsigned int partition_lba = sector[0x1BE + 8] | (sector[0x1BE + 9] << 8) | (sector[0x1BE + 10] << 16) | (sector[0x1BE + 11] << 24);
-    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
-
+//    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
+    unsigned int partition_lba = 0x12345678;
+    
     uart_puts("Partition LBA = ");
     uart_puthex(partition_lba);
     uart_puts("\n");

@@ -341,8 +341,8 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     while (words_left > 0){
 
-        unsigned int edm = SDEDM;
-        unsigned int fifo_words = (edm >> 4) & 0x1F;
+//        unsigned int edm = SDEDM;
+        unsigned int fifo_words = (SDEDM >> 4) & 0x1F;
 
         // Wait for FIFO data
         if (fifo_words == 0){
