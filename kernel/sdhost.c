@@ -8,7 +8,7 @@
 #define SDCDIV  (*(volatile unsigned int*)(SDHOST_BASE + 0x0C))
 #define SDRSP0  (*(volatile unsigned int*)(SDHOST_BASE + 0x10))
 #define SDHSTS  (*(volatile unsigned int*)(SDHOST_BASE + 0x20))
-#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
+#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
 #define SDHCFG  (*(volatile unsigned int*)(SDHOST_BASE + 0x38))
 
 #define SDDATA (*(volatile unsigned int*)(SDHOST_BASE + 0x40))
@@ -20,24 +20,18 @@
 
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
-#define SDCMD_BUSY_FLAG 0x2000
 
 #define SDCMD_NO_RESPONSE 0x400
 #define SDCMD_LONG_RESPONSE 0x200
-
-//#define SDCMD_READ_CMD 0x0400
-#define SDCMD_WRITE_CMD 0x0200
-
 #define CMD_NEEDS_RESP 1
 #define CMD_LONG_RESP 2
-//#define CMD_IS_READ 4
 
 static unsigned int sd_rca = 0;
 
 static int sdhost_wait_resp(void){
     int timeout = 1000000;
 
-    while(!(SDHSTS & (1 << 0)) && timeout--){
+    while((SDCMD & SDCMD_NEW_FLAG) && timeout--){
         // wait
     }
     if (!timeout){
@@ -91,10 +85,6 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
         uart_puts("CMD BUSY TIMEOUT\n");
         return -1;
     }
-//    if (sdhost_wait_resp() != 0){
-//        uart_puts("CMD TIMEOUT\n");
-//        return -1;
-//    }
 
     // Clear errors
     SDHSTS = 0x7F8;
@@ -108,31 +98,26 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
 //            sdcmd |= SDCMD_LONG_RESPONSE;
 //    }
 
-    if (!(flags & CMD_NEEDS_RESP)) sdcmd |= SDCMD_NO_RESPONSE;
-    if (flags & CMD_LONG_RESP) sdcmd |= SDCMD_LONG_RESPONSE;
-//    if (flags & CMD_IS_READ) sdcmd |= SDCMD_READ_CMD;
+    if (!(flags & CMD_NEEDS_RESP)){
+        sdcmd |= SDCMD_NO_RESPONSE;
+    } else {
+        if (flags & CMD_LONG_RESP){
+            sdcmd |= SDCMD_LONG_RESPONSE;
+        }
+    }
 
     SDARG = arg;
     SDCMD = sdcmd | SDCMD_NEW_FLAG;
 
-    timeout = 1000000;
-    while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
+    // Wait for completion
+//    if(sdhost_wait_resp() != 0){
+//        return -1;
+//    }
 
-    if (SDCMD & SDCMD_FAIL_FLAG){
+    if (SDCMD & SDCMD_FAIL_FLAG) {
         uart_puts("CMD FAIL\n");
         return -1;
     }
-
-    // Wait for completion
-//    if(sdhost_wait_resp() != 0){
-//        uart_puts("CMD TIMEOUT\n");
-//        return -1;
-//    }
-
-//    if (SDCMD & SDCMD_FAIL_FLAG) {
-//        uart_puts("CMD FAIL\n");
-//        return -1;
-//    }
 
     uart_puts("CMD OK\n");
     return 0;
@@ -252,13 +237,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     delay(50000);
     for (int i = 0; i < 128; i++){
-        int timeout = 1000000;
-        while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
+//        int timeout = 1000000;
+//        while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
 
-        if (!timeout){
-            uart_puts("DATA TIMEOUT\n");
-            return -1;
-        }
+//        if (!timeout){
+//            uart_puts("DATA TIMEOUT\n");
+//            return -1;
+//        }
         
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
@@ -266,7 +251,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
     }
-    SDHSTS = 0x7F8;
+    SDHSTS = SDHSTS;
     uart_puts("READ DONE!\n");
     return 0;
 }
