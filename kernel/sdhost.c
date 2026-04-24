@@ -343,6 +343,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
         unsigned int edm = SDEDM;
         unsigned int fifo_words = (edm >> 4) & 0x1F;
+        barrier();
         unsigned int fsm = edm & SDEDM_FSM_MASK;
 
         if (fsm == 0){
@@ -363,13 +364,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         for (int j = 0; j < burst; j++){
 
             // 🚨 HARD SAFETY CHECK
-            if (index > 508){
+            if (index >= 512){
                 uart_puts("BUFFER OVERFLOW!\n");
                 return -1;
             }
 
             unsigned int data = SDDATA;
-
+            barrier();
             buffer[index++] = (data >> 0) & 0xFF;
             buffer[index++] = (data >> 8) & 0xFF;
             buffer[index++] = (data >> 16) & 0xFF;
@@ -406,7 +407,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     // Wait for transfer complete
     int timeout = 1000000;
-    while (!(SDCMD & (1 << 1)) && timeout--);
+    while (!(SDHSTS & (1 << 1)) && timeout--);
 
     if (!timeout){
         uart_puts("TRANSFER DONE TIMEOUT\n");

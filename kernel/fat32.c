@@ -12,14 +12,14 @@ static unsigned int data_start;
 static unsigned int sectors_per_cluster;
 static unsigned int root_cluster;
 
-static unsigned char sector[SECTOR_SIZE] __attribute__((alligned(4096)));
+static unsigned char sector[SECTOR_SIZE] __attribute__((aligned(4096)));
 
 static unsigned int read32(unsigned char *p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1]<<8) | ((unsigned int)p[2]<<16) | ((unsigned int)p[3]<<24);
 }
 
 static unsigned short read16(unsigned char *p){
-    return p[0] | (p[1]<<8);
+    return ((unsigned short)p[0]) | ((unsigned short)p[1]<<8);
 }
 
 int fat32_init(void){
@@ -70,12 +70,13 @@ int fat32_init(void){
     uart_puthex(sector[457]);
     uart_puts("\n");
 
+    barrier();
     unsigned int b0 = sector[454];
-    uart_puts("B");
+//    uart_puts("B");
     unsigned int b1 = sector[455];
-    uart_puts("B");
+//    uart_puts("B");
     unsigned int b2 = sector[456];
-    uart_puts("B");
+//    uart_puts("B");
     unsigned int b3 = sector[457];
 
     uart_puts("INDIV BYTES OK\n");

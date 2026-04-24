@@ -1,4 +1,5 @@
 #include "uart.h"
+#include "debug.h"
 
 unsigned int sdhost_get_resp(void);
 
