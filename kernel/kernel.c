@@ -6,68 +6,69 @@
 #include "context.h"
 #include "loader.h"
 #include "process.h"
-#include "sd.h"
-#include "gpio.h"
-#include "clock.h"
-#include "mailbox.h"
+#include "fat32.h"
+//#include "sd.h"
+//#include "gpio.h"
+//#include "clock.h"
+//#include "mailbox.h"
 
 
 extern kernel_api_t kapi;
 
 unsigned char sector[512];
 
-void cm_probe(void)
-{
-    volatile unsigned int *ctl = (unsigned int*)0x3F10101C;
+//void cm_probe(void)
+//{
+//    volatile unsigned int *ctl = (unsigned int*)0x3F10101C;
+//
+//    uart_puts("CM BEFORE=");
+//    uart_puthex(*ctl);
+//    uart_puts("\n");
+//
+//    *ctl = 0xFFFFFFFF;
+//
+//    uart_puts("CM AFTER=");
+//    uart_puthex(*ctl);
+//    uart_puts("\n");
+//}
 
-    uart_puts("CM BEFORE=");
-    uart_puthex(*ctl);
-    uart_puts("\n");
-
-    *ctl = 0xFFFFFFFF;
-
-    uart_puts("CM AFTER=");
-    uart_puthex(*ctl);
-    uart_puts("\n");
-}
-
-void mmio_test(void)
-{
-    volatile unsigned int *addr = (volatile unsigned int*)0x3F200000; // GPIO base
-
-    uart_puts("GPIO BEFORE=");
-    uart_puthex(*addr);
-    uart_puts("\n");
-
-    *addr = 0xAAAAAAAA;
-
-    uart_puts("GPIO AFTER=");
-    uart_puthex(*addr);
-    uart_puts("\n");
-}
-
-void test_sd(void){
-//    uart_puts("sd_gpio_init: \n");
-//    sd_gpio_init();
-    uart_puts("Testing SD read... (step 1) \n");
-
-    if (sd_init() != 0){
-        uart_puts("SD init failed.\n");
-        return;
-    }
-    uart_puts("SD init OK... (Step 2) \n");
-    if (sd_read_block(0, sector) != 0){
-        uart_puts("read fail\n");
-        return;
-    }
-
-    uart_puts("Read success (step 3) First bytes: \n");
-    for (int i = 0; i < 16; i++){
-        unsigned char b = sector[i];
-        uart_puthex(b);
-    } uart_send('\n');
-
-}
+//void mmio_test(void)
+//{
+//    volatile unsigned int *addr = (volatile unsigned int*)0x3F200000; // GPIO base
+//
+//    uart_puts("GPIO BEFORE=");
+//    uart_puthex(*addr);
+//    uart_puts("\n");
+//
+//    *addr = 0xAAAAAAAA;
+//
+//    uart_puts("GPIO AFTER=");
+//    uart_puthex(*addr);
+//    uart_puts("\n");
+//}
+//
+//void test_sd(void){
+////    uart_puts("sd_gpio_init: \n");
+////    sd_gpio_init();
+//    uart_puts("Testing SD read... (step 1) \n");
+//
+//    if (sd_init() != 0){
+//        uart_puts("SD init failed.\n");
+//        return;
+//    }
+//    uart_puts("SD init OK... (Step 2) \n");
+//    if (sd_read_block(0, sector) != 0){
+//        uart_puts("read fail\n");
+//        return;
+//    }
+//
+//    uart_puts("Read success (step 3) First bytes: \n");
+//    for (int i = 0; i < 16; i++){
+//        unsigned char b = sector[i];
+//        uart_puthex(b);
+//    } uart_send('\n');
+//
+//}
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
@@ -118,49 +119,47 @@ void kernel_main(void){
 //    }
 
     uart_puts("\n--- START SD PIPELINE ---\n");
-    extern void sdhost_reset(void);
-    extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
-    extern int sdhost_init_card(void);
-    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
-    gpio_init_sd();
-    sdhost_reset();
-    if (sdhost_init_card() != 0){
-        uart_puts("SD INIT FAILED!\n");
+//    extern void sdhost_reset(void);
+//    extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
+//    extern int sdhost_init_card(void);
+//    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
+//    gpio_init_sd();
+//    sdhost_reset();
+//    if (sdhost_init_card() != 0){
+//        uart_puts("SD INIT FAILED!\n");
+//        return;
+//    }
+
+//    uart_puts("INIT OK, attempting read...\n");
+
+//    if (sdhost_read_block(2048, sector) != 0){
+//        uart_puts("READ FAILED!\n");
+//        return;
+//    }
+
+//    uart_puts("Read success. First 16 bytes: \n");
+
+//    for (int i = 0; i < 16; i++){
+//        uart_puthex(sector[i]);
+//    } uart_puts("\n");
+
+    unsigned char prog[8192];
+
+    if (fat32_init() != 0){
+        uart_puts("FAT init failed!\n");
+        return;
+    }
+    uart_puts("FAT INITIALIZED!\n");
+    int size = fat32_read_file("PROGRAM BIN", prog, sizeof(prog));
+
+    if (size < 0){
+        uart_puts("File read failed.\n");
         return;
     }
 
-    uart_puts("INIT OK, attempting read...\n");
-
-    if (sdhost_read_block(2048, sector) != 0){
-        uart_puts("READ FAILED!\n");
-        return;
-    }
-
-    uart_puts("Read success. First 16 bytes: \n");
-
-    for (int i = 0; i < 16; i++){
-        uart_puthex(sector[i]);
-    } uart_puts("\n");
-
-//    if (sdhost_cmd(0, 0) != 0){
-//        uart_puts("CMD0 FAIL.\n");
-//        return;
-//    }
-
-//    if (sdhost_cmd(8, 0x1AA) != 0){
-//        uart_puts("CMD8 FAIL\n");
-//        return;
-//    }
-
-//    if (mailbox_set_emmc_clock(25000000) != 0) {
-//        uart_puts("MAILBOX CLOCK FAILED\n");
-//        return;
-//    }
-//    uart_puts("Clock set via mailbox OK\n");
-
-//    sd_init();
-
-//    test_sd();
+    uart_puts("PROGRAM.BIN loaded, size = ");
+    uart_puthex(size);
+    uart_puts("\n");
 
     uart_puts("--- END SD PIPELINE ---\n");
     

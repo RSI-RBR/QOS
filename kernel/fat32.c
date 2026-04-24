@@ -1,5 +1,5 @@
 #include "fat32.h"
-//#include "sd.h"
+#include "sdhost.h"
 #include "uart.h"
 
 #define SECTOR_SIZE 512
@@ -77,7 +77,7 @@ static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
 
     for (unsigned int i = 0; i < sectors_per_cluster; i++){
-        if (sd_read_block(lba + i, buffer + i * SECTOR_SIZE)){
+        if (sdhost_read_block(lba + i, buffer + i * SECTOR_SIZE)){
             return -1;
         }
     }
@@ -89,7 +89,7 @@ static unsigned int fat_next(unsigned int cluster){
     unsigned int fat_sector = fat_start + (fat_offset / SECTOR_SIZE);
     unsigned int offset = fat_offset % SECTOR_SIZE;
 
-    if (sd_read_block(fat_sector, sector)){
+    if (sdhost_read_block(fat_sector, sector)){
         return 0x0FFFFFFF;
     }
 
@@ -97,7 +97,8 @@ static unsigned int fat_next(unsigned int cluster){
 }
 
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    unsigned char cluster_buf[4096]; // assume <=8 sectors
+    #define MAX_CLUSTER_SIZE 8192
+    unsigned char cluster_buf[MAX_CLUSTER_SIZE]; // assume <=8 sectors
 
     unsigned int cluster = root_cluster;
 
