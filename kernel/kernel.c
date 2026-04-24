@@ -8,9 +8,10 @@
 #include "process.h"
 #include "fat32.h"
 //#include "sd.h"
-//#include "gpio.h"
-//#include "clock.h"
-//#include "mailbox.h"
+#include "gpio.h"
+#include "sdhost.h"
+#include "clock.h"
+#include "mailbox.h"
 
 
 extern kernel_api_t kapi;
@@ -123,14 +124,14 @@ void kernel_main(void){
 //    extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
 //    extern int sdhost_init_card(void);
 //    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
-//    gpio_init_sd();
-//    sdhost_reset();
-//    if (sdhost_init_card() != 0){
-//        uart_puts("SD INIT FAILED!\n");
-//        return;
-//    }
+    gpio_init_sd();
+    sdhost_reset();
+    if (sdhost_init_card() != 0){
+        uart_puts("SD INIT FAILED!\n");
+        return;
+    }
 
-//    uart_puts("INIT OK, attempting read...\n");
+    uart_puts("INIT OK, attempting read...\n");
 
 //    if (sdhost_read_block(2048, sector) != 0){
 //        uart_puts("READ FAILED!\n");
