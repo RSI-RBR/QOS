@@ -77,11 +77,17 @@ void sdhost_reset(void) {
     SDHSTS = 0x7F8;
 
     unsigned int temp = SDEDM;
+    // Clear both read and write threshold bits
     temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
-    temp |= (4 << SDEDM_READ_THRESHOLD_SHIFT);
-    temp |= (4 << SDEDM_WRITE_THRESHOLD_SHIFT);
+    
+    // Set HIGHER thresholds for stable block reads
+    // Try 16 for read threshold (instead of 4)
+    temp |= (16 << SDEDM_READ_THRESHOLD_SHIFT);
+    temp |= (16 << SDEDM_WRITE_THRESHOLD_SHIFT);
 
     SDEDM = temp;
+    
+    // SDHCFG: Bits 0=HSTROBE, 1=INTBUS, 3=SLOW_CARD
     SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
 
     delay(100000);
