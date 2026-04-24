@@ -39,12 +39,12 @@ int fat32_init(void){
         uart_puts(" ");
     }uart_puts("\n");
 
-    uart_puts("Sector dump : \n");
-    for (int i = 0; i < 512; i++){
-        uart_puthex(sector[i]);
-        if ((i % 16) == 15) uart_puts("\n");
-    }
-    uart_puts("sector dumped!\n");
+//    uart_puts("Sector dump : \n");
+//    for (int i = 0; i < 512; i++){
+//        uart_puthex(sector[i]);
+//        if ((i % 16) == 15) uart_puts("\n");
+//    }
+//    uart_puts("sector dumped!\n");
 
     check_stack();
 

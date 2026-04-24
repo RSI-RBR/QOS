@@ -353,11 +353,12 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         if (burst > words_left){
             burst = words_left;
         }
+        if (burst > 8) burst = 8;
 
         for (int j = 0; j < burst; j++){
 
             // 🚨 HARD SAFETY CHECK
-            if (index >= 512){
+            if (index > 508){
                 uart_puts("BUFFER OVERFLOW!\n");
                 return -1;
             }

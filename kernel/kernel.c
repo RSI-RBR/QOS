@@ -12,7 +12,7 @@
 #include "sdhost.h"
 //#include "clock.h"
 //#include "mailbox.h"
-
+#include "debug.h"
 
 extern kernel_api_t kapi;
 
@@ -88,8 +88,11 @@ void kernel_main(void){
     uart_init();
     uart_puts("Uart initialized!\n");
 
+    check_stack();
+
     memory_init();
     uart_puts("Memory initialized!\n");
+    check_stack();
 
     task_init();
     uart_puts("Task system initialized!\n");
@@ -132,11 +135,11 @@ void kernel_main(void){
     }
 
     uart_puts("INIT OK, attempting read...\n");
-
-    sdhost_read_block(0, sector);
-    uart_puts("First read OK\n");
-    sdhost_read_block(0, sector);
-    uart_puts("Second read OK\n");//    return;
+    check_stack();
+//    sdhost_read_block(0, sector);
+//    uart_puts("First read OK\n");
+//    sdhost_read_block(0, sector);
+//    uart_puts("Second read OK\n");//    return;
 //    if (sdhost_read_block(2048, sector) != 0){
 //        uart_puts("READ FAILED!\n");
 //        return;
@@ -163,6 +166,7 @@ void kernel_main(void){
     uart_puthex((unsigned long)&stack_top);
     uart_puts("\n");
 
+    check_stack();
 
     if (fat32_init() != 0){
         uart_puts("FAT init failed!\n");
