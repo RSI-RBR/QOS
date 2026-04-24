@@ -33,6 +33,10 @@
 #define SDEDM_READ_THRESHOLD_SHIFT 14
 #define SDEDM_WRITE_THRESHOLD_SHIFT 9
 #define SDEDM_THRESHOLD_MASK 0x1F
+#define SDEDM_FSM_MASK 0xf
+#define SDEDM_FSM_READDATA 0x2
+#define SDEDM_FSM_READWAIT 0x4
+#define SDEDM_FSM_READCRC 0x5
 
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
@@ -78,7 +82,7 @@ void sdhost_reset(void) {
 
     unsigned int temp = SDEDM;
     temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
-    // Use moderate threshold (8) for balance between speed and stability
+    // Use threshold of 4 as per official Circle library
     temp |= (4 << SDEDM_READ_THRESHOLD_SHIFT);
     temp |= (4 << SDEDM_WRITE_THRESHOLD_SHIFT);
 
@@ -335,7 +339,27 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             return -1;
         }
         
-        // Read data immediately when flag is set
+        // Check FIFO word count in SDEDM (bits 4-8)
+        unsigned int edm = SDEDM;
+        unsigned int fifo_words = (edm >> 4) & 0x1f;
+        unsigned int fsm_state = edm & SDEDM_FSM_MASK;
+        
+        // If FIFO is empty and not in correct read state, wait longer
+        if (fifo_words < 1) {
+            if ((fsm_state != SDEDM_FSM_READDATA) &&
+                (fsm_state != SDEDM_FSM_READWAIT) &&
+                (fsm_state != SDEDM_FSM_READCRC)) {
+                uart_puts("FSM state ");
+                uart_puthex(fsm_state);
+                uart_puts(" at word ");
+                uart_puthex(i);
+                uart_puts("\n");
+            }
+            // Wait for FIFO to have data
+            delay(100);
+        }
+        
+        // Read data when available
         unsigned int data = SDDATA;
         unsigned int status = SDHSTS;
         
@@ -345,6 +369,8 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             uart_puthex(i);
             uart_puts(" status=");
             uart_puthex(status);
+            uart_puts(" fifo_words=");
+            uart_puthex(fifo_words);
             uart_puts("\n");
         }
         
