@@ -15,8 +15,8 @@
 #define SDHSTS_DATA_FLAG (1 << 0)
 #define SDHSTS_ERROR_MASK 0x0000007E
 
-#define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
-#define SDHBLC (*(volatile unsigned int*)(SDHOST_BASE + 0x34))
+#define SDHBCT (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
+#define SDHBLC (*(volatile unsigned int*)(SDHOST_BASE + 0x50))
 
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
@@ -224,8 +224,8 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puthex(lba);
     uart_puts("\n");
 
-    SDHBCT = 1;
-    SDHBLC = 512;
+    SDHBCT = 512;
+    SDHBLC = 1;
 
     if (sdhost_cmd(17, lba, CMD_NEEDS_RESP) != 0){
         uart_puts("CMD17 FAIL\n");
