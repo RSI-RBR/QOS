@@ -332,6 +332,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             return -1;
         }
         
+        // Small delay for last few words to ensure CRC is finalized
+        if (i >= 120) {
+            delay(50);
+        }
+        
         unsigned int data = SDDATA;
         unsigned int status = SDHSTS;
         
