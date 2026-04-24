@@ -10,8 +10,8 @@
 //#include "sd.h"
 #include "gpio.h"
 #include "sdhost.h"
-#include "clock.h"
-#include "mailbox.h"
+//#include "clock.h"
+//#include "mailbox.h"
 
 
 extern kernel_api_t kapi;
@@ -132,7 +132,7 @@ void kernel_main(void){
     }
 
     uart_puts("INIT OK, attempting read...\n");
-
+//    return;
 //    if (sdhost_read_block(2048, sector) != 0){
 //        uart_puts("READ FAILED!\n");
 //        return;

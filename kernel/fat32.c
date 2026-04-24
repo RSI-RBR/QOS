@@ -25,7 +25,7 @@ int fat32_init(void){
         uart_puts("FAT: failed to read MBR\n");
         return -1;
     }
-
+    uart_puts("Read block 0 ... \n");
     // Check for partition (offset 0x1BE)
     unsigned int partition_lba = read32(&sector[0x1BE + 8]);
 
