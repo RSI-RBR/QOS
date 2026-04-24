@@ -362,6 +362,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
             int index = (128 - words_left) * 4;
 
+            if (index >= 512){
+                uart_puts("BUFFER OVERFLOW\n");
+                return -1;
+            }
+
             buffer[index + 0] = (data >> 0) & 0xFF;
             buffer[index + 1] = (data >> 8) & 0xFF;
             buffer[index + 2] = (data >> 16) & 0xFF;

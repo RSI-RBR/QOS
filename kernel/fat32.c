@@ -116,7 +116,7 @@ static unsigned int fat_next(unsigned int cluster){
 }
 
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    unsigned char cluster_buf[4096]; // assume <=8 sectors
+    static unsigned char cluster_buf[4096]; // assume <=8 sectors
 
     unsigned int cluster = root_cluster;
 

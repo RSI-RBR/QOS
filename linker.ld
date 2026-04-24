@@ -37,6 +37,7 @@ SECTIONS
         bss_end = .;
     } :data
 
+    . += 0x1000;
     . = ALIGN(16);
 
     /* Stack */

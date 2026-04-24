@@ -148,7 +148,21 @@ void kernel_main(void){
 //        uart_puthex(sector[i]);
 //    } uart_puts("\n");
 
-    unsigned char prog[8192];
+    static unsigned char prog[8192];
+
+    extern unsigned long bss_end;
+    extern unsigned long stack_top;
+    extern unsigned long stack_bottom;
+    uart_puts("bss_end = ");
+    uart_puthex((unsigned long)&bss_end);
+    uart_puts("\n");
+    uart_puts("stack_bottom = ");
+    uart_puthex((unsigned long)&stack_bottom);
+    uart_puts("\n");
+    uart_puts("stack_top = ");
+    uart_puthex((unsigned long)&stack_top);
+    uart_puts("\n");
+
 
     if (fat32_init() != 0){
         uart_puts("FAT init failed!\n");
