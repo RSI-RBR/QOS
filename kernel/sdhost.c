@@ -79,8 +79,8 @@ void sdhost_reset(void) {
     unsigned int temp = SDEDM;
     temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
     // Use moderate threshold (8) for balance between speed and stability
-    temp |= (8 << SDEDM_READ_THRESHOLD_SHIFT);
-    temp |= (8 << SDEDM_WRITE_THRESHOLD_SHIFT);
+    temp |= (4 << SDEDM_READ_THRESHOLD_SHIFT);
+    temp |= (4 << SDEDM_WRITE_THRESHOLD_SHIFT);
 
     SDEDM = temp;
     SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
@@ -323,8 +323,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puts("CMD17 OK, reading data... \n");
 
     delay(50000);
+    
     for (int i = 0; i < 128; i++){
         int timeout = 1000000;
+        
+        // Wait for data flag
         while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
 
         if (!timeout){
@@ -332,15 +335,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             return -1;
         }
         
-        // Small delay for last few words to ensure CRC is finalized
-        if (i >= 120) {
-            delay(50);
-        }
-        
+        // Read data immediately when flag is set
         unsigned int data = SDDATA;
         unsigned int status = SDHSTS;
         
-        // Check for errors AFTER reading data
+        // Check for errors AFTER reading
         if (status & SDHSTS_ERROR_MASK){
             uart_puts("DATA ERROR at word ");
             uart_puthex(i);
@@ -349,7 +348,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             uart_puts("\n");
         }
         
-        // Clear status flags for next iteration
+        // Clear status flags
         SDHSTS = 0x7F8;
         
         buffer[i*4+0] = (data >> 0) & 0xFF;
@@ -357,6 +356,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         buffer[i*4+2] = (data >> 16) & 0xFF;
         buffer[i*4+3] = (data >> 24) & 0xFF;
     }
+    
     SDHSTS = 0x7F8;
     uart_puts("READ DONE!\n");
     return 0;
