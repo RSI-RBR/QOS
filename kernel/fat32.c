@@ -46,6 +46,49 @@ int fat32_init(void){
 //    }
 //    uart_puts("sector dumped!\n");
 
+    uart_puts("ADDR sector = ");
+uart_puthex((unsigned int)sector);
+uart_puts("\n");
+
+    uart_puts("ADDR b0 = ");
+uart_puthex((unsigned int)&sector[0x1BE + 8]);
+uart_puts("\n");
+
+    uart_puts("RAW BYTES: ");
+    uart_puthex(sector[0x1BE + 8]);
+uart_puts(" ");
+uart_puthex(sector[0x1BE + 9]);
+uart_puts(" ");
+uart_puthex(sector[0x1BE + 10]);
+uart_puts(" ");
+uart_puthex(sector[0x1BE + 11]);
+uart_puts("\n");
+
+    unsigned int b0 = sector[0x1BE + 8];
+unsigned int b1 = sector[0x1BE + 9];
+unsigned int b2 = sector[0x1BE + 10];
+unsigned int b3 = sector[0x1BE + 11];
+
+uart_puts("INDIV BYTES OK\n");
+
+    unsigned int test = b0 | (b1 << 8);
+
+uart_puts("LOW WORD OK = ");
+uart_puthex(test);
+uart_puts("\n");
+
+    unsigned int test2 = test | (b2 << 16);
+
+uart_puts("MID WORD OK = ");
+uart_puthex(test2);
+uart_puts("\n");
+
+    unsigned int partition_lba = test2 | (b3 << 24);
+
+uart_puts("FINAL LBA = ");
+uart_puthex(partition_lba);
+uart_puts("\n");
+    
     check_stack();
     unsigned int test = sector[0x1BE];
     unsigned int test2 = sector[0x1BE + 8];
