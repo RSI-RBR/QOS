@@ -306,68 +306,99 @@ int sdhost_init_card(void) {
     return 0;
 }
 
-int words_left = 128;
-int index = 0;
+int sdhost_read_block(unsigned int lba, unsigned char *buffer){
+    uart_puts("READ BLOCK ");
+    uart_puthex(lba);
+    uart_puts("\n");
 
-while (words_left > 0){
+    // Set block size/count
+    SDHBCT = 512;
+    SDHBLC = 1;
 
-    unsigned int edm = SDEDM;
-    unsigned int fifo_words = (edm >> 4) & 0x1F;
-
-    // Wait for data
-    if (fifo_words == 0){
-        continue;
+    // Addressing
+    unsigned int addr = lba;
+    if (!sd_is_sdhc){
+        addr = lba * 512;
     }
 
-    int burst = fifo_words;
-    if (burst > words_left){
-        burst = words_left;
+    // Clear status BEFORE command
+    SDHSTS = 0x7F8;
+
+    // Send CMD17
+    if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
+        uart_puts("CMD17 FAIL\n");
+        return -1;
     }
 
-    for (int j = 0; j < burst; j++){
+    uart_puts("CMD17 RESP = ");
+    uart_puthex(sdhost_get_resp());
+    uart_puts("\n");
 
-        // 🚨 HARD SAFETY CHECK
-        if (index >= 512){
-            uart_puts("BUFFER OVERFLOW!\n");
-            return -1;
+    uart_puts("CMD17 OK, reading data...\n");
+
+    int words_left = 128;
+    int index = 0;
+
+    while (words_left > 0){
+
+        unsigned int edm = SDEDM;
+        unsigned int fifo_words = (edm >> 4) & 0x1F;
+
+        // Wait for FIFO data
+        if (fifo_words == 0){
+            continue;
         }
 
-        unsigned int data = SDDATA;
-
-        buffer[index + 0] = (data >> 0) & 0xFF;
-        buffer[index + 1] = (data >> 8) & 0xFF;
-        buffer[index + 2] = (data >> 16) & 0xFF;
-        buffer[index + 3] = (data >> 24) & 0xFF;
-
-        index += 4;
-        words_left--;
-
-        // 🚨 EXTRA SAFETY
-        if (words_left < 0){
-            uart_puts("WORDS UNDERFLOW!\n");
-            return -1;
+        int burst = fifo_words;
+        if (burst > words_left){
+            burst = words_left;
         }
 
-        unsigned int status = SDHSTS;
-        if (status & SDHSTS_ERROR_MASK){
-            uart_puts("DATA ERROR\n");
-            SDHSTS = 0x7F8;
-            return -1;
+        for (int j = 0; j < burst; j++){
+
+            // 🚨 HARD SAFETY CHECK
+            if (index >= 512){
+                uart_puts("BUFFER OVERFLOW!\n");
+                return -1;
+            }
+
+            unsigned int data = SDDATA;
+
+            buffer[index + 0] = (data >> 0) & 0xFF;
+            buffer[index + 1] = (data >> 8) & 0xFF;
+            buffer[index + 2] = (data >> 16) & 0xFF;
+            buffer[index + 3] = (data >> 24) & 0xFF;
+
+            index += 4;
+            words_left--;
+
+            // 🚨 EXTRA SAFETY
+            if (words_left < 0){
+                uart_puts("WORDS UNDERFLOW!\n");
+                return -1;
+            }
+
+            // Check errors after each word
+            unsigned int status = SDHSTS;
+            if (status & SDHSTS_ERROR_MASK){
+                uart_puts("DATA ERROR\n");
+                SDHSTS = 0x7F8;
+                return -1;
+            }
         }
     }
-}
 
-    // Final status check AFTER full block
+    // Final error check
     unsigned int final_status = SDHSTS;
     if (final_status & SDHSTS_ERROR_MASK){
         uart_puts("FINAL DATA ERROR status=");
         uart_puthex(final_status);
         uart_puts("\n");
-
         SDHSTS = 0x7F8;
         return -1;
     }
 
+    // Wait for transfer complete
     int timeout = 1000000;
     while (!(SDCMD & (1 << 1)) && timeout--);
 
@@ -375,7 +406,8 @@ while (words_left > 0){
         uart_puts("TRANSFER DONE TIMEOUT\n");
         return -1;
     }
-    // Clear status AFTER transfer completes
+
+    // Clear status AFTER transfer
     SDHSTS = 0x7F8;
 
     uart_puts("READ DONE!\n");
