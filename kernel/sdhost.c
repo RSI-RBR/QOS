@@ -21,7 +21,7 @@
 #define SDCMD_NEW_FLAG 0x8000
 #define SDCMD_FAIL_FLAG 0x4000
 
-#define SDCMD_READ_CMD 0x0400
+#define SDCMD_READ_CMD 0x40
 #define CMD_IS_READ 4
 
 #define SDCMD_NO_RESPONSE 0x400
@@ -30,7 +30,7 @@
 #define CMD_LONG_RESP 2
 
 static unsigned int sd_rca = 0;
-
+static int sd_is_sdhc = 0;
 
 
 static int sdhost_wait_resp(void){
@@ -68,9 +68,9 @@ void sdhost_reset(void) {
     SDCMD = 0;
     SDARG = 0;
     SDTOUT = 0xF00000;
-    SDCDIV = 0x00000400;
+    SDCDIV = 0x000007FF;
     SDHSTS = 0x7F8;
-    SDHCFG = (1 << 0);
+    SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
 
     delay(100000);
 
@@ -219,9 +219,18 @@ int sdhost_init_card(void) {
         return -1;
     }
 
+    if (resp & (1 << 30)){
+        sd_is_sdhc = 1;
+        uart_puts("SDHC card detected\n");
+    } else{
+        sd_is_sdhc = 0;
+        uart_puts("SDSC card detected\n");
+    }
+
     uart_puts("CARD READY! \n");
     uart_puthex(resp);
     uart_puts("\n");
+
 
     if (sdhost_cmd(2, 0, CMD_NEEDS_RESP | CMD_LONG_RESP) != 0){
         uart_puts("CMD2 FAIL\n");
@@ -285,10 +294,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puthex(lba);
     uart_puts("\n");
 
-    SDHBCT = 1;
-    SDHBLC = 512;
-
-    if (sdhost_cmd(17, lba, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
+    SDHBCT = 512;
+    SDHBLC = 1;
+    unsigned int addr = lba;
+    if (!sd_is_sdhc){
+        addr = lba * 512;
+    }
+    if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
@@ -306,7 +318,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             uart_puts("DATA TIMEOUT\n");
             return -1;
         }
-        
+        if (SDHSTS & SDHSTS_ERROR_MASK){
+            uart_puts("DATA ERROR\n");
+            uart_puthex(SDHSTS);
+            uart_puts("\n");
+        }
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
