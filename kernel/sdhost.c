@@ -8,7 +8,7 @@
 #define SDCDIV  (*(volatile unsigned int*)(SDHOST_BASE + 0x0C))
 #define SDRSP0  (*(volatile unsigned int*)(SDHOST_BASE + 0x10))
 #define SDHSTS  (*(volatile unsigned int*)(SDHOST_BASE + 0x20))
-#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x30))
+#define SDVDD   (*(volatile unsigned int*)(SDHOST_BASE + 0x3C))
 #define SDHCFG  (*(volatile unsigned int*)(SDHOST_BASE + 0x38))
 
 #define SDDATA (*(volatile unsigned int*)(SDHOST_BASE + 0x40))
@@ -22,8 +22,8 @@
 #define SDCMD_FAIL_FLAG 0x4000
 #define SDCMD_BUSY_FLAG 0x2000
 
-#define SDCMD_NO_RESPONSE 0x1000
-#define SDCMD_LONG_RESPONSE 0x0800
+#define SDCMD_NO_RESPONSE 0x400
+#define SDCMD_LONG_RESPONSE 0x200
 
 //#define SDCMD_READ_CMD 0x0400
 #define SDCMD_WRITE_CMD 0x0200
@@ -37,7 +37,7 @@ static unsigned int sd_rca = 0;
 static int sdhost_wait_resp(void){
     int timeout = 1000000;
 
-    while((SDCMD & SDCMD_NEW_FLAG) && timeout--){
+    while(!(SDHSTS & (1 << 0)) && timeout--){
         // wait
     }
     if (!timeout){
@@ -91,6 +91,10 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
         uart_puts("CMD BUSY TIMEOUT\n");
         return -1;
     }
+//    if (sdhost_wait_resp() != 0){
+//        uart_puts("CMD TIMEOUT\n");
+//        return -1;
+//    }
 
     // Clear errors
     SDHSTS = 0x7F8;
@@ -121,6 +125,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
 
     // Wait for completion
 //    if(sdhost_wait_resp() != 0){
+//        uart_puts("CMD TIMEOUT\n");
 //        return -1;
 //    }
 
