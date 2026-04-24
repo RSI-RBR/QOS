@@ -78,9 +78,9 @@ void sdhost_reset(void) {
 
     unsigned int temp = SDEDM;
     temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
-    // Increased threshold to 31 (max value) for stable reads
-    temp |= (31 << SDEDM_READ_THRESHOLD_SHIFT);
-    temp |= (31 << SDEDM_WRITE_THRESHOLD_SHIFT);
+    // Use moderate threshold (8) for balance between speed and stability
+    temp |= (8 << SDEDM_READ_THRESHOLD_SHIFT);
+    temp |= (8 << SDEDM_WRITE_THRESHOLD_SHIFT);
 
     SDEDM = temp;
     SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
@@ -331,15 +331,22 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             uart_puts("DATA TIMEOUT\n");
             return -1;
         }
-        if (SDHSTS & SDHSTS_ERROR_MASK){
+        
+        unsigned int data = SDDATA;
+        unsigned int status = SDHSTS;
+        
+        // Check for errors AFTER reading data
+        if (status & SDHSTS_ERROR_MASK){
             uart_puts("DATA ERROR at word ");
             uart_puthex(i);
+            uart_puts(" status=");
+            uart_puthex(status);
             uart_puts("\n");
-            // Clear error but continue - data may still be valid
-            SDHSTS = 0x7F8;
         }
-        delay(100);  // Increased delay before reading
-        unsigned int data = SDDATA;
+        
+        // Clear status flags for next iteration
+        SDHSTS = 0x7F8;
+        
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
         buffer[i*4+2] = (data >> 16) & 0xFF;
