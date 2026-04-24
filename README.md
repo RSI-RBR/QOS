@@ -1,7 +1,7 @@
 QOS (Quantum OS for Raspberry Pi)
 
 Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).
-
+(WORK IN PROGRESS)
 ---
 
 ## Features
@@ -174,6 +174,7 @@ Notes
 - This OS is bare metal (no Linux)
 - No GPU / framebuffer yet
 - UART is the only I/O
+- 
 
 ---
 
@@ -184,6 +185,8 @@ Future Goals
 - Networking
 - Security features
 - GPU acceleration (2D)
+- PI 5 compatibility
+- Secure board compatibility
 
 ---
 
