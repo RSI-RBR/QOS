@@ -311,79 +311,94 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     uart_puthex(lba);
     uart_puts("\n");
 
+    // Set block size and count
     SDHBCT = 512;
     SDHBLC = 1;
+
+    // Addressing
     unsigned int addr = lba;
     if (!sd_is_sdhc){
         addr = lba * 512;
     }
+
+    // Clear status BEFORE command
+    SDHSTS = 0x7F8;
+
+    // Send CMD17 (READ_SINGLE_BLOCK)
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
+
     uart_puts("CMD17 RESP = ");
     uart_puthex(sdhost_get_resp());
     uart_puts("\n");
-    uart_puts("CMD17 OK, reading data... \n");
 
-    delay(50000);
-    
-    for (int i = 0; i < 128; i++){
-        int timeout = 1000000;
-        
-        // Wait for data flag
-        while(!(SDHSTS & SDHSTS_DATA_FLAG) && timeout--);
+    uart_puts("CMD17 OK, reading data...\n");
 
-        if (!timeout){
-            uart_puts("DATA TIMEOUT\n");
-            return -1;
-        }
-        
-        // Check FIFO word count in SDEDM (bits 4-8)
+    int words_left = 128; // 512 bytes / 4
+
+    while (words_left > 0){
         unsigned int edm = SDEDM;
-        unsigned int fifo_words = (edm >> 4) & 0x1f;
+        unsigned int fifo_words = (edm >> 4) & 0x1F;
         unsigned int fsm_state = edm & SDEDM_FSM_MASK;
-        
-        // If FIFO is empty and not in correct read state, wait longer
-        if (fifo_words < 1) {
-            if ((fsm_state != SDEDM_FSM_READDATA) &&
-                (fsm_state != SDEDM_FSM_READWAIT) &&
-                (fsm_state != SDEDM_FSM_READCRC)) {
-                uart_puts("FSM state ");
+
+        // Wait until FIFO has data
+        if (fifo_words == 0){
+            // Optional debug (only if stuck)
+            continue;
+        }
+
+        // Read as many words as available (burst)
+        int burst = fifo_words;
+        if (burst > words_left){
+            burst = words_left;
+        }
+
+        for (int j = 0; j < burst; j++){
+            unsigned int data = SDDATA;
+
+            int index = (128 - words_left) * 4;
+
+            buffer[index + 0] = (data >> 0) & 0xFF;
+            buffer[index + 1] = (data >> 8) & 0xFF;
+            buffer[index + 2] = (data >> 16) & 0xFF;
+            buffer[index + 3] = (data >> 24) & 0xFF;
+
+            words_left--;
+
+            // Check for errors AFTER reading each word
+            unsigned int status = SDHSTS;
+            if (status & SDHSTS_ERROR_MASK){
+                uart_puts("DATA ERROR at word ");
+                uart_puthex(128 - words_left - 1);
+                uart_puts(" status=");
+                uart_puthex(status);
+                uart_puts(" fsm=");
                 uart_puthex(fsm_state);
-                uart_puts(" at word ");
-                uart_puthex(i);
                 uart_puts("\n");
+
+                // Clear error and bail
+                SDHSTS = 0x7F8;
+                return -1;
             }
-            // Wait for FIFO to have data
-            delay(100);
         }
-        
-        // Read data when available
-        unsigned int data = SDDATA;
-        unsigned int status = SDHSTS;
-        
-        // Check for errors AFTER reading
-        if (status & SDHSTS_ERROR_MASK){
-            uart_puts("DATA ERROR at word ");
-            uart_puthex(i);
-            uart_puts(" status=");
-            uart_puthex(status);
-            uart_puts(" fifo_words=");
-            uart_puthex(fifo_words);
-            uart_puts("\n");
-        }
-        
-        // Clear status flags
-        SDHSTS = 0x7F8;
-        
-        buffer[i*4+0] = (data >> 0) & 0xFF;
-        buffer[i*4+1] = (data >> 8) & 0xFF;
-        buffer[i*4+2] = (data >> 16) & 0xFF;
-        buffer[i*4+3] = (data >> 24) & 0xFF;
     }
-    
+
+    // Final status check AFTER full block
+    unsigned int final_status = SDHSTS;
+    if (final_status & SDHSTS_ERROR_MASK){
+        uart_puts("FINAL DATA ERROR status=");
+        uart_puthex(final_status);
+        uart_puts("\n");
+
+        SDHSTS = 0x7F8;
+        return -1;
+    }
+
+    // Clear status AFTER transfer completes
     SDHSTS = 0x7F8;
+
     uart_puts("READ DONE!\n");
     return 0;
 }
