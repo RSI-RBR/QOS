@@ -119,13 +119,17 @@ int fat32_init(void){
         return -1;
     }
 
-    unsigned int bytes_per_sector = read16(&sector[11]);
-    sectors_per_cluster = sector[13];
-    unsigned int reserved = read16(&sector[14]);
-    unsigned int fats = sector[16];
-    unsigned int sectors_per_fat = read32(&sector[36]);
+    barrier();
 
-    root_cluster = read32(&sector[44]);
+    v_sector = (volatile unsigned char*)sector;
+
+    unsigned int bytes_per_sector = v_sector[11] | (v_sector[12] << 8);
+    sectors_per_cluster = v_sector[13];
+    unsigned int reserved = v_sector[14] | (v_sector[15] << 8);
+    unsigned int fats = v_sector[16];
+    unsigned int sectors_per_fat = v_sector[36];
+
+    root_cluster = v_sector[44];
 
     fat_start = partition_lba + reserved;
     data_start = fat_start + (fats * sectors_per_fat);
@@ -144,10 +148,10 @@ int fat32_init(void){
 static int name_match(unsigned char *entry, const char *name){
     // FAT uses 8.3 uppercase
     for (int i = 0; i < 11; i++){
-        char c = entry[i];
-        if (c == ' ') c = 0;
+//        char c = entry[i];
+//        if (c == ' ') c = 0;
 
-        if (name[i] != c) return 0;
+        if (name[i] != entry[i]) return 0;
     }
     return 1;
 }
@@ -177,7 +181,7 @@ static unsigned int fat_next(unsigned int cluster){
 }
 
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    static unsigned char cluster_buf[4096]; // assume <=8 sectors
+    static unsigned char cluster_buf[8192]; // assume <=8 sectors
 
     unsigned int cluster = root_cluster;
 
@@ -226,3 +230,4 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     uart_puts("File not found\n");
     return -1;
 }
+
