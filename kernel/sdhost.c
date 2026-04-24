@@ -29,6 +29,11 @@
 #define CMD_NEEDS_RESP 1
 #define CMD_LONG_RESP 2
 
+#define SDEDM (*(volatile unsigned int*)(SDHOST_BASE + 0x34))
+#define SDEDM_READ_THRESHOLD_SHIFT 14
+#define SDEDM_WRITE_THRESHOLD_SHIFT 9
+#define SDEDM_THRESHOLD_MASK 0x1F
+
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
 
@@ -70,6 +75,13 @@ void sdhost_reset(void) {
     SDTOUT = 0xF00000;
     SDCDIV = 0x000007FF;
     SDHSTS = 0x7F8;
+
+    unsigned int temp = SDEDM;
+    temp &= ~((SDEDM_THRESHOLD_MASK << SDEDM_READ_THRESHOLD_SHIFT) | (SDEDM_THRESHOLD_MASK << SDEDM_WRITE_THRESHOLD_SHIFT));
+    temp |= (4 << SDEDM_READ_THRESHOLD_SHIFT);
+    temp |= (4 << SDEDM_WRITE_THRESHOLD_SHIFT);
+
+    SDEDM = temp;
     SDHCFG = (1 << 0) | (1 << 1) | (1 << 3);
 
     delay(100000);
@@ -323,6 +335,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             uart_puthex(SDHSTS);
             uart_puts("\n");
         }
+        delay(50);
         unsigned int data = SDDATA;
         buffer[i*4+0] = (data >> 0) & 0xFF;
         buffer[i*4+1] = (data >> 8) & 0xFF;
