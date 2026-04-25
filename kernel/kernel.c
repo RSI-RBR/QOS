@@ -194,7 +194,11 @@ void kernel_main(void){
     unsigned long entry = load_program_from_sd();
     if (entry){
         execute_program(entry);
+    } else{
+        uart_puts("No valid program loaded\n");
+        return;
     }
+    
     
     shell_init();
     shell_run();
