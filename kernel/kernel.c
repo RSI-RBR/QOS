@@ -139,7 +139,7 @@ void kernel_main(void){
         return;
     }
 
-    uart_puts("INIT OK, attempting read...\n");
+    uart_puts("INIT OK...\n");
     check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
@@ -156,40 +156,45 @@ void kernel_main(void){
 //        uart_puthex(sector[i]);
 //    } uart_puts("\n");
 
-    static unsigned char prog[8192];
-
-    extern unsigned long bss_end;
-    extern unsigned long stack_top;
-    extern unsigned long stack_bottom;
-    uart_puts("bss_end = ");
-    uart_puthex((unsigned long)&bss_end);
-    uart_puts("\n");
-    uart_puts("stack_bottom = ");
-    uart_puthex((unsigned long)&stack_bottom);
-    uart_puts("\n");
-    uart_puts("stack_top = ");
-    uart_puthex((unsigned long)&stack_top);
-    uart_puts("\n");
-
-    check_stack();
-
-    if (fat32_init() != 0){
-        uart_puts("FAT init failed!\n");
-        return;
-    }
-    uart_puts("FAT INITIALIZED!\n");
-    int size = fat32_read_file("PROGRAM BIN", prog, sizeof(prog));
-
-    if (size < 0){
-        uart_puts("File read failed.\n");
-        return;
-    }
-
-    uart_puts("PROGRAM.BIN loaded, size = ");
-    uart_puthex(size);
-    uart_puts("\n");
+//    static unsigned char prog[8192];
+//
+//    extern unsigned long bss_end;
+//    extern unsigned long stack_top;
+//    extern unsigned long stack_bottom;
+//    uart_puts("bss_end = ");
+//    uart_puthex((unsigned long)&bss_end);
+//    uart_puts("\n");
+//    uart_puts("stack_bottom = ");
+//    uart_puthex((unsigned long)&stack_bottom);
+//    uart_puts("\n");
+//    uart_puts("stack_top = ");
+//    uart_puthex((unsigned long)&stack_top);
+//    uart_puts("\n");
+//
+//    check_stack();
+//
+//    if (fat32_init() != 0){
+//        uart_puts("FAT init failed!\n");
+//        return;
+//    }
+//    uart_puts("FAT INITIALIZED!\n");
+//    int size = fat32_read_file("PROGRAM BIN", prog, sizeof(prog));
+//
+//    if (size < 0){
+//        uart_puts("File read failed.\n");
+//        return;
+//    }
+//
+//    uart_puts("PROGRAM.BIN loaded, size = ");
+//    uart_puthex(size);
+//    uart_puts("\n");
 
     uart_puts("--- END SD PIPELINE ---\n");
+
+    unsigned long entry = load_program_from_sd();
+    if (entry){
+        execute_program(entry);
+    }
     
     shell_init();
     shell_run();

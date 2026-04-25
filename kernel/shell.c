@@ -49,21 +49,21 @@ static void shell_print_prompt(){
 
 static void cmd_run(int argc, char **argv){
 //    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
-    void *prog = load_program_from_sd();
-
-    if (prog){
-        void *stack = alloc_stack();
-        if (!stack){
-            uart_puts("No free stacks!\n");
-            return;
-        }
-        run_program(prog, stack, &kapi);
-
-        uart_puts("Program returned!\n");
-
-        free_stack(stack);
-
-    }
+//    void *prog = load_program_from_sd();
+//
+//    if (prog){
+//        void *stack = alloc_stack();
+//        if (!stack){
+//            uart_puts("No free stacks!\n");
+//            return;
+//        }
+//        run_program(prog, stack, &kapi);
+//
+//        uart_puts("Program returned!\n");
+//
+//        free_stack(stack);
+//
+//    }
 
     return;
 }

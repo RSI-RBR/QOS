@@ -3,14 +3,16 @@
 #include "uart.h"
 #include "sd.h"
 #include "fat32.h"
+#include "api.h"
 
 
-#define PROGRAM_MAX (256 * 1024)
-#define PROGRAM_ADDR ((unsigned long)0x400000)
+#define PROGRAM_MAX (8 * 1024)
+#define PROGRAM_ADDR ((unsigned long)0x40000)
 
 static unsigned char buffer[PROGRAM_MAX];
 
-program_entry_t load_program_from_sd(void)
+
+unsigned long load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
 
@@ -35,6 +37,13 @@ program_entry_t load_program_from_sd(void)
 
     program_header_t *hdr = (program_header_t*)buffer;
 
+    uart_puts("MAGIC raw: ");
+    uart_puthex(buffer[0]);
+    uart_puthex(buffer[1]);
+    uart_puthex(buffer[2]);
+    uart_puthex(buffer[3]);
+    uart_puts("\n");
+
     if (hdr->magic != QOS_MAGIC){
         uart_puts("Bad magic.\n");
         return 0;
@@ -54,11 +63,27 @@ program_entry_t load_program_from_sd(void)
     unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
 
 
-    for (int i = 0; i < code_size; i++){
+    for (unsigned int i = 0; i < code_size; i++){
         dst[i] = src[i];
     }
 
-    program_entry_t entry = (program_entry_t)(PROGRAM_ADDR + entry_offset);
+    unsigned long entry = PROGRAM_ADDR + entry_offset;
 
     return entry;
 }
+
+void execute_program(unsigned long entry_addr){
+    extern kernel_api_t kapi;
+
+    uart_puts("EXEC: jumping ...\n");
+
+    asm volatile ("dsb sy");
+    asm volatile ("isb");
+
+    void (*entry_fn)(kernel_api_t*) = (void(*)(kernel_api_t*))entry_addr;
+
+    entry_fn(&kapi);
+
+    uart_puts("Program returned to kernel.\n");
+}
+

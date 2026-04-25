@@ -8,6 +8,9 @@
 
 typedef void (*program_entry_t)(kernel_api_t *);
 
-program_entry_t load_program_from_sd(void);
+unsigned long load_program_from_sd(void);
+
+void execute_program(unsigned long entry_addr);
+
 
 #endif

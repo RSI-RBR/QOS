@@ -150,8 +150,9 @@ int fat32_init(void){
 static int name_match(unsigned char *entry, const char *name){
     // FAT uses 8.3 uppercase
     for (int i = 0; i < 11; i++){
-//        char c = entry[i];
-//        if (c == ' ') c = 0;
+        char c1 = entry[i];
+        char c2 = name[i];
+        if (c2 == '\0') c2 = ' ';
 
         if (name[i] != entry[i]) return 0;
     }
@@ -215,7 +216,7 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
                         return -1;
                     }
 
-                    for (int j = 0; j < 4096 && copied < size; j++){
+                    for (int j = 0; j < cluster_size && copied < size; j++){
                         buffer[copied++] = cluster_buf[j];
                     }
 
