@@ -127,7 +127,7 @@ void kernel_main(void){
 //        free_stack(stack);
 //    }
 
-    uart_puts("\n--- START SD PIPELINE ---\n");
+//    uart_puts("\n--- START SD PIPELINE ---\n");
 //    extern void sdhost_reset(void);
 //    extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
 //    extern int sdhost_init_card(void);
@@ -140,7 +140,7 @@ void kernel_main(void){
     }
 
     uart_puts("INIT OK...\n");
-    check_stack();
+//    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
 //    sdhost_read_block(0, sector);
@@ -189,16 +189,16 @@ void kernel_main(void){
 //    uart_puthex(size);
 //    uart_puts("\n");
 
-    uart_puts("--- END SD PIPELINE ---\n");
+//    uart_puts("--- END SD PIPELINE ---\n");
 
-    unsigned long entry = load_program_from_sd();
-    if (entry){
-        execute_program(entry);
-    } else{
-        uart_puts("No valid program loaded\n");
-        return;
-    }
-    
+//    unsigned long entry = load_program_from_sd();
+//    if (entry){
+//        execute_program(entry);
+//    } else{
+//        uart_puts("No valid program loaded\n");
+//        return;
+//    }
+//    
     
     shell_init();
     shell_run();

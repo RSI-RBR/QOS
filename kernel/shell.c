@@ -29,7 +29,7 @@ static int buf_index = 0;
 
 //extern kernel_api_t kapi;
 
-#define USER_PROGRAM_ADDR 0x400000
+#define USER_PROGRAM_ADDR 0x40000
 
 
 static void cmd_loadtest(int argc, char** argv){
@@ -49,21 +49,21 @@ static void shell_print_prompt(){
 
 static void cmd_run(int argc, char **argv){
 //    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
-//    void *prog = load_program_from_sd();
-//
-//    if (prog){
-//        void *stack = alloc_stack();
-//        if (!stack){
-//            uart_puts("No free stacks!\n");
-//            return;
-//        }
-//        run_program(prog, stack, &kapi);
-//
-//        uart_puts("Program returned!\n");
-//
-//        free_stack(stack);
-//
-//    }
+    unsigned long prog = load_program_from_sd();
+
+    if (prog){
+        void *stack = alloc_stack();
+        if (!stack){
+            uart_puts("No free stacks!\n");
+            return;
+        }
+        run_program((void*)prog, stack, &kapi);
+
+        uart_puts("Program returned!\n");
+
+        free_stack(stack);
+
+    }
 
     return;
 }
@@ -107,7 +107,7 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" free \n");
     uart_puts(" memlist \n");
     uart_puts(" load_test\n");
-    uart_puts(" run (executes program at 0x400000) \n");
+    uart_puts(" run (executes program at 0x40000) \n");
     uart_puts(" lsprog \n");
 //    uart_puts(" runbin\n");
 
