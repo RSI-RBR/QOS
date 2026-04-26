@@ -359,7 +359,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         if (burst > words_left){
             burst = words_left;
         }
-        if (burst > 8) burst = 8;
+//        if (burst > 8) burst = 8;
 
         for (int j = 0; j < burst; j++){
 
@@ -406,13 +406,13 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     }
 
     // Wait for transfer complete
-    int timeout = 1000000;
-    while (!(SDHSTS & (1 << 1)) && timeout--);
+//    int timeout = 1000000;
+//    while (!(SDHSTS  (1 << 1)) && timeout--);
 
-    if (!timeout){
-        uart_puts("TRANSFER DONE TIMEOUT\n");
-        return -1;
-    }
+//    if (!timeout){
+//        uart_puts("TRANSFER DONE TIMEOUT\n");
+//        return -1;
+//    }
 
     // Clear status AFTER transfer
     SDHSTS = 0x7F8;

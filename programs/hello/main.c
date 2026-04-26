@@ -11,5 +11,6 @@ void program_main(kernel_api_t *api){
         api->puts("Allocated memory\n");
         api->free(mem);
     }
+    api->puts("Program main returning...\n");
     return;
 }

@@ -57,6 +57,9 @@ static void cmd_run(int argc, char **argv){
             uart_puts("No free stacks!\n");
             return;
         }
+        uart_puts("Stack: ");
+        uart_puthex((unsigned long)stack);
+        uart_puts("\n");
         run_program((void*)prog, stack, &kapi);
 
         uart_puts("Program returned!\n");
