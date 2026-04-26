@@ -15,6 +15,8 @@ static void api_clear(unsigned int color){
     fb_clear(color);
 }
 
+
+
 kernel_api_t kapi = {
     .puts = uart_puts,
     .putc = uart_send,
@@ -24,5 +26,7 @@ kernel_api_t kapi = {
 
     .draw_pixel = api_draw_pixel,
     .draw_rect = api_draw_rect,
-    .clear = api_clear
+    .clear = api_clear,
+
+    .exit = kexit
 };

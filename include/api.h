@@ -13,6 +13,8 @@ typedef struct {
     void (*draw_rect)(int x, int y, int w, int h, unsigned int color);
     void (*clear)(unsigned int color);
 
+    void (*exit) (int code);
+    
 } kernel_api_t;
 
 extern kernel_api_t kapi;
