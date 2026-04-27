@@ -1,16 +1,26 @@
 #include "loader.h"
-#include "memory.h"
-#include "uart.h"
-#include "sd.h"
-#include "fat32.h"
-#include "api.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
-#define PROGRAM_ADDR ((unsigned long)0x40000)
+//#define PROGRAM_ADDR ((unsigned long)0x40000)
+#define PROGRAM_POOL_START 0x40000
+#define PROGRAM_POOL_SIZE (1024*1024)
+
+static unsigned long program_next = PROGRAM_POOL_START;
+
 
 static unsigned char buffer[PROGRAM_MAX];
 
+
+void* alloc_program_memory(unsigned int size){
+    size = (size+15) & ~15;
+
+    if (program_next + size > PROGRAM_POOL_START + PROGRAM_POOL_SIZE){ return 0; }
+
+    void* addr = (void*)program_next;
+    program_next += size;
+    return addr;
+}
 
 program_entry_t load_program_from_sd(void)
 {
@@ -60,14 +70,21 @@ program_entry_t load_program_from_sd(void)
     }
 
     unsigned char *src = buffer + sizeof(program_header_t);
-    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
-
+//    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
+    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
+    if (!dst){
+        uart_puts("No memory for program!\n");
+        return 0;
+    }
 
     for (unsigned int i = 0; i < code_size; i++){
         dst[i] = src[i];
     }
 
-    program_entry_t entry = (program_entry_t)(PROGRAM_ADDR + entry_offset);
+    clean_data_cache();
+    invalidate_instruction_cache();
+
+    program_entry_t entry = (program_entry_t)((unsigned long)dst + entry_offset);
 
     return entry;
 }

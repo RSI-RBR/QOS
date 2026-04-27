@@ -29,7 +29,8 @@ kernel/gpio.c \
 kernel/clock.c \
 kernel/emmc.c \
 kernel/sdhost.c \
-kernel/debug.c
+kernel/debug.c \
+kernel/cache.c
 
 
 ASM_SOURCES = \

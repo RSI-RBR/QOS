@@ -3,7 +3,7 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -O2 -I../../include
+CFLAGS = -ffreestanding -nostdlib -O2 -fPIE -I../../include
 
 all: program.bin
 
@@ -14,7 +14,7 @@ start.o: start.S
 	$(CC) $(CFLAGS) -c start.S -o start.o
 
 program.elf: main.o start.o
-	$(LD) -T linker.ld start.o main.o -o program.elf
+	$(LD) -pie -T linker.ld start.o main.o -o program.elf
 
 program.raw: program.elf
 	$(OBJCOPY) program.elf -O binary program.raw
