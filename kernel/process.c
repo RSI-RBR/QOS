@@ -10,6 +10,9 @@ void *alloc_stack(void){
         if (!used[i]){
             used[i] = 1;
 
+            for (int j = 0; j < STACK_SIZE; j++){
+                stacks[i][j] = 0;
+            }
             void *top = stacks[i] + STACK_SIZE;
 
             // align stack (important)

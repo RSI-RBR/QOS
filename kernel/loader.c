@@ -71,14 +71,20 @@ program_entry_t load_program_from_sd(void)
 
     unsigned char *src = buffer + sizeof(program_header_t);
 //    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
-    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
+//    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
+    void* dst = kmalloc(code_size);
+    unsigned char* d = (unsigned char*)dst;
     if (!dst){
         uart_puts("No memory for program!\n");
         return 0;
     }
 
+    for (unsigned int i = 0; i < PROGRAM_MAX; i++){
+        d[i] = 0;
+    }
+
     for (unsigned int i = 0; i < code_size; i++){
-        dst[i] = src[i];
+        d[i] = src[i];
     }
 
     clean_data_cache();
