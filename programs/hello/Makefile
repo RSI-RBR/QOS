@@ -3,7 +3,7 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -O2 -fPIC -I../../include
+CFLAGS = -ffreestanding -nostdlib -O2 -pie -I../../include
 
 all: program.bin
 

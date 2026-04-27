@@ -82,3 +82,14 @@ void kfree(void *ptr){
 
     merge_blocks();
 }
+
+void kfree_secure(void* ptr, unsigned long size){
+    unsigned char* p = ptr;
+
+    for (unsigned long i = 0; i < size; i++){
+        p[i] = 0;
+    }
+
+    kfree(ptr);
+
+}

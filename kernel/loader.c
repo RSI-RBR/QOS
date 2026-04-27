@@ -79,7 +79,7 @@ program_entry_t load_program_from_sd(void)
         return 0;
     }
 
-    for (unsigned int i = 0; i < PROGRAM_MAX; i++){
+    for (unsigned int i = 0; i < code_size; i++){
         d[i] = 0;
     }
 
@@ -91,7 +91,12 @@ program_entry_t load_program_from_sd(void)
     invalidate_instruction_cache();
 
     program_entry_t entry = (program_entry_t)((unsigned long)dst + entry_offset);
-
+    uart_puts("Program loaded at: ");
+    uart_puthex((unsigned long)dst);
+    uart_puts("\n");
+    uart_puts("Entry at: ");
+    uart_puthex((unsigned long)entry);
+    uart_puts("\n");
     return entry;
 }
 
