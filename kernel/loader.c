@@ -12,7 +12,7 @@
 static unsigned char buffer[PROGRAM_MAX];
 
 
-unsigned long load_program_from_sd(void)
+program_entry_t load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
 
@@ -67,7 +67,7 @@ unsigned long load_program_from_sd(void)
         dst[i] = src[i];
     }
 
-    unsigned long entry = PROGRAM_ADDR + entry_offset;
+    program_entry_t entry = (program_entry_t)(PROGRAM_ADDR + entry_offset);
 
     return entry;
 }

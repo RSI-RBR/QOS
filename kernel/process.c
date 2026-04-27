@@ -3,6 +3,8 @@
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
 static int used[MAX_PROCESSES] = {0};
 
+static process_t processes[MAX_PROCESSES];
+
 void *alloc_stack(void){
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (!used[i]){
@@ -29,4 +31,31 @@ void free_stack(void *stack){
             return;
         }
     }
+}
+
+process_t* process_create(program_entry_t entry){
+    for (int i = 0; i < MAX_PROCESSES; i++){
+        if (!processes[i].active){
+            void* stack = alloc_stack();
+            if (!stack){
+                uart_puts("No stack available.\n");
+                return 0;
+            }
+            processes[i].entry = entry;
+            processes[i].stack = stack;
+            processes[i].active = 1;
+
+            return &processes[i];
+        }
+    }
+    return 0;
+}
+
+void process_destroy(process_t* p){
+    if (!p) return;
+
+    free_stack(p->stack);
+    p->active = 0;
+
+    return;
 }

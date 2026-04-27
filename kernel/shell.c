@@ -47,9 +47,12 @@ static void shell_print_prompt(){
     uart_puts("\n*QOS* > ");
 }
 
+//extern volatile int program_should_exit;
+//program_should_exit = 0;
+
 static void cmd_run(int argc, char **argv){
 //    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
-    unsigned long prog = load_program_from_sd();
+    program_entry_t prog = load_program_from_sd();
 
     if (prog){
         void *stack = alloc_stack();
@@ -60,7 +63,24 @@ static void cmd_run(int argc, char **argv){
         uart_puts("Stack: ");
         uart_puthex((unsigned long)stack);
         uart_puts("\n");
-        run_program((void*)prog, stack, &kapi);
+
+        process_t *p = process_create(prog);
+
+        if (!p){
+            uart_puts("Process creation failed.\n");
+            return;
+        }
+
+        run_program(p->entry, p->stack, &kapi);
+
+        process_destroy(p);
+//        run_program((void*)prog, stack, &kapi);
+
+//        if (program_should_exit){
+//            uart_puts("Program exited via API.\n");
+//        }else{
+//            uart_puts("Program returned normally.\n");
+//        }
 
         uart_puts("Program returned!\n");
 

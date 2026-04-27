@@ -15,7 +15,16 @@ static void api_clear(unsigned int color){
     fb_clear(color);
 }
 
+//volatile int program_should_exit = 0;
 
+void kexit(int code){
+    uart_puts("User called exit.\n");
+
+//    program_should_exit = 1;
+
+//    while(1){}
+    return;
+}
 
 kernel_api_t kapi = {
     .puts = uart_puts,

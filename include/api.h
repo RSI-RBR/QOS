@@ -19,4 +19,6 @@ typedef struct {
 
 extern kernel_api_t kapi;
 
+//extern volatile int program_should_exit;
+
 #endif
