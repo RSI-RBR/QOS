@@ -13,63 +13,13 @@
 //#include "clock.h"
 //#include "mailbox.h"
 #include "debug.h"
+#include "interrupt.h"
+
 
 extern kernel_api_t kapi;
 
 static unsigned char sector[512];
 
-//void cm_probe(void)
-//{
-//    volatile unsigned int *ctl = (unsigned int*)0x3F10101C;
-//
-//    uart_puts("CM BEFORE=");
-//    uart_puthex(*ctl);
-//    uart_puts("\n");
-//
-//    *ctl = 0xFFFFFFFF;
-//
-//    uart_puts("CM AFTER=");
-//    uart_puthex(*ctl);
-//    uart_puts("\n");
-//}
-
-//void mmio_test(void)
-//{
-//    volatile unsigned int *addr = (volatile unsigned int*)0x3F200000; // GPIO base
-//
-//    uart_puts("GPIO BEFORE=");
-//    uart_puthex(*addr);
-//    uart_puts("\n");
-//
-//    *addr = 0xAAAAAAAA;
-//
-//    uart_puts("GPIO AFTER=");
-//    uart_puthex(*addr);
-//    uart_puts("\n");
-//}
-//
-//void test_sd(void){
-////    uart_puts("sd_gpio_init: \n");
-////    sd_gpio_init();
-//    uart_puts("Testing SD read... (step 1) \n");
-//
-//    if (sd_init() != 0){
-//        uart_puts("SD init failed.\n");
-//        return;
-//    }
-//    uart_puts("SD init OK... (Step 2) \n");
-//    if (sd_read_block(0, sector) != 0){
-//        uart_puts("read fail\n");
-//        return;
-//    }
-//
-//    uart_puts("Read success (step 3) First bytes: \n");
-//    for (int i = 0; i < 16; i++){
-//        unsigned char b = sector[i];
-//        uart_puthex(b);
-//    } uart_send('\n');
-//
-//}
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
@@ -100,7 +50,9 @@ void kernel_main(void){
     check_stack();
 
 //    task_init();
-//    uart_puts("Task system initialized!\n");
+    interrupt_init();
+    enable_interrupts();
+    uart_puts("Interrupt system initialized!\n");
 
     fb_init();
     uart_puts("Frame buffer initialized!\n");

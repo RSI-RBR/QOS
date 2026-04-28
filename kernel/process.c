@@ -7,8 +7,17 @@ static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
 
-extern void context_switch(void *old_sp, void *new_sp);
+extern void context_switch(void **old_sp, void *new_sp);
 
+void scheduler_tick(void){
+    process_t* old = get_current_process();
+    process_t* next = scheduler_next();
+
+    if (!next || old == next) return;
+
+    context_switch(&old->sp, next->sp);
+
+}
 
 void process_init(void){
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -129,7 +138,7 @@ void schedule(void){
 
     if (!next || old == next) return;
 
-    context_switch(old, next);
+    context_switch(&old->sp, next->sp);
 
 }
 

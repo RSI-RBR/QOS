@@ -36,4 +36,6 @@ process_t* scheduler_next(void);
 
 void schedule(void);
 
+void scheduler_tick(void);
+
 #endif

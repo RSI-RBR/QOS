@@ -55,6 +55,15 @@ char uart_getc(void){
     return (char)(*(volatile unsigned int*)UART0_DR);
 }
 
+int uart_try_getc(char *c){
+    if (*(volatile unsigned int*)UART0_FR & (1 << 4)){
+        return 0;
+    }
+
+    *c = (char)(*(volatile unsigned int*)UART0_DR);
+    return 1;
+}
+
 void uart_puts(const char* str){
     while (*str){
         if (*str == '\n') uart_send('\r');

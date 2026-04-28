@@ -29,12 +29,16 @@ kernel/clock.c \
 kernel/emmc.c \
 kernel/sdhost.c \
 kernel/debug.c \
-kernel/cache.c
+kernel/cache.c \
+kernel/interrupt.c \
+kernel/timer.c
 
 
 ASM_SOURCES = \
 boot/boot.S \
-kernel/context.S
+kernel/context.S \
+kernel/vectors.S
+
 
 # ---------------------------
 # OBJECTS

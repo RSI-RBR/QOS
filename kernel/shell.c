@@ -262,32 +262,35 @@ void shell_init(void){
 
 void shell_run(void){
     while (1){
-        char c = uart_getc();
+        char c;
+//        c = uart_getc();
+        if (uart_try_getc(&c)){
 
-        if (c == '\r' || c == '\n'){
-            uart_puts("\n");
-            buffer[buf_index] = 0;
-            shell_execute(buffer);
-            shell_clear_buffer();
-            shell_print_prompt();
-            continue;
-        }
-
-        if (c == 127 || c == '\b'){
-            if (buf_index > 0){
-                buf_index--;
+            if (c == '\r' || c == '\n'){
+                uart_puts("\n");
                 buffer[buf_index] = 0;
-                uart_puts("\b \b");
+                shell_execute(buffer);
+                shell_clear_buffer();
+                shell_print_prompt();
+                continue;
             }
-            continue;
+
+            if (c == 127 || c == '\b'){
+                if (buf_index > 0){
+                    buf_index--;
+                    buffer[buf_index] = 0;
+                    uart_puts("\b \b");
+                }
+                continue;
+            }
+
+            if (buf_index < BUF_SIZE - 1){
+                buffer[buf_index++] = c;
+                uart_send(c);
+
+            }
         }
-
-        if (buf_index < BUF_SIZE - 1){
-            buffer[buf_index++] = c;
-            uart_send(c);
-
-        }
-
+//        asm volatile("wfi");
     }
 
 }
