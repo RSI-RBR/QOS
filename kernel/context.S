@@ -33,7 +33,7 @@ process_start:
 
     // If program returns
     bl process_exit_current
-
+    ret
 1:
     b 1b
 
