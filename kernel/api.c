@@ -31,7 +31,7 @@ kernel_api_t kapi = {
     .putc = uart_send,
     
     .malloc = kmalloc,
-    .free = kfree,
+    .free = kfree_secure,
 
     .draw_pixel = api_draw_pixel,
     .draw_rect = api_draw_rect,
