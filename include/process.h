@@ -9,6 +9,7 @@
 
 typedef struct{
     unsigned long regs[12];
+    void* sp;
     void* stack;
     program_entry_t entry;
     int active;

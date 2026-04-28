@@ -56,11 +56,11 @@ process_t* process_create(program_entry_t entry){
                 uart_puts("No stack available.\n");
                 return 0;
             }
-            void* top = stacks[i] + STACK_SIZE;
-            top = (void*)((unsigned long)top & ~0xF);
+//            void* top = stacks[i] + STACK_SIZE;
+//            top = (void*)((unsigned long)top & ~0xF);
             processes[i].entry = entry;
-            processes[i].stack_base = stack;
-            processes[i].stack_top = top;
+            processes[i].stack = stack;
+            processes[i].sp = stack;
             processes[i].active = 1;
 
             for (int r = 0; r < 12; r++){
@@ -113,4 +113,17 @@ process_t scheduler_next(void){
     }
     return -1;
 }
+
+extern void context_switch(process_t *old, process_t *new);
+
+void schedule(void){
+    process_t* old = get_current_process();
+    process_t* next = scheduler_next();
+
+    if (!next || old == next) return;
+
+    context_switch(old, next);
+
+}
+
 
