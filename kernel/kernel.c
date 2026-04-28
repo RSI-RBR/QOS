@@ -18,8 +18,7 @@
 
 extern kernel_api_t kapi;
 
-static unsigned char sector[512];
-
+//static unsigned char sector[512];
 
 void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)

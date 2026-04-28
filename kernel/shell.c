@@ -40,7 +40,7 @@ static void cmd_loadtest(int argc, char** argv){
     dst[2] = 0x5F;
     dst[3] = 0xD6;
 
-    uart_puts("Program loaded at 0x400000 \n");
+    uart_puts("Program loaded at 0x40000 \n");
 }
 
 static void shell_print_prompt(){
@@ -52,30 +52,33 @@ static void shell_print_prompt(){
 
 static void cmd_run(int argc, char **argv){
 //    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
-    program_entry_t prog = load_program_from_sd();
+    loaded_program_t prog = load_program_from_sd();
 
-    if (prog){
-        void *stack = alloc_stack();
-        if (!stack){
-            uart_puts("No free stacks!\n");
-            return;
-        }
-        uart_puts("Stack: ");
-        uart_puthex((unsigned long)stack);
-        uart_puts("\n");
+    if (!prog.entry){
+        uart_puts("Program load failed.\n");
+    }
+    void *stack = alloc_stack();
+    if (!stack){
+        uart_puts("No free stacks!\n");
+        return;
+    }
+    uart_puts("Stack: ");
+    uart_puthex((unsigned long)stack);
+    uart_puts("\n");
 
-        int p = process_create(prog);
+    int p = process_create(prog.entry);
 
-        if (p < 0){
-            uart_puts("Process creation failed.\n");
-            return;
-        }
+    if (p < 0){
+        uart_puts("Process creation failed.\n");
+        return;
+    }
 
-        process_t* proc = get_process(p);
+//    process_t* proc = get_process(p);
 
-        process_start(proc->entry, proc->stack, &kapi);
+    process_start((void*)prog.entry, stack, &kapi);
 
-        process_exit(p);
+    process_exit(p);
+    kfree_secure(prog.memory, prog.size);
 //        run_program((void*)prog, stack, &kapi);
 
 //        if (program_should_exit){
@@ -84,11 +87,9 @@ static void cmd_run(int argc, char **argv){
 //            uart_puts("Program returned normally.\n");
 //        }
 
-        uart_puts("Program returned!\n");
+    uart_puts("Program returned!\n");
 
-        free_stack(stack);
-
-    }
+    free_stack(stack);
 
     return;
 }

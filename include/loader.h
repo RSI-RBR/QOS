@@ -13,9 +13,16 @@
 
 typedef void (*program_entry_t)(kernel_api_t *);
 
+typedef struct{
+    program_entry_t entry;
+    void* memory;
+    unsigned long size;
+} loaded_program_t;
+
+
 void* alloc_program_memory(unsigned int size);
 
-program_entry_t load_program_from_sd(void);
+loaded_program_t load_program_from_sd(void);
 
 void execute_program(unsigned long entry_addr);
 

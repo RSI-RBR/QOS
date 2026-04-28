@@ -52,6 +52,7 @@ void free_stack(void *stack){
     for (int i = 0; i < MAX_PROCESSES; i++){
         if ((void*)(stacks[i] + STACK_SIZE) == (void*)((unsigned long)stack + 128)){
             used[i] = 0;
+            for (unsigned long s = 0; s < STACK_SIZE; s++){stacks[i][s] = 0;}
             return;
         }
     }
@@ -72,6 +73,9 @@ int process_create(program_entry_t entry){
             processes[i].sp = stack;
             processes[i].active = 1;
 
+//            processes[i].program_memory = prog_mem;
+//            processes[i].program_size = prog_size;
+
             for (int r = 0; r < 12; r++){
                 processes[i].regs[r] = 0;
             }
@@ -89,6 +93,11 @@ void process_exit(int pid){
     if (processes[pid].active){
         free_stack(processes[pid].stack);
         processes[pid].active = 0;
+//        if (processes[pid].program_memory){
+//            unsigned char* mem = (unsigned char*)processes[pid].program_memory;
+
+//            kfree_secure(processes[pid].program_memory);
+//        }
     }
 
     return;
@@ -115,9 +124,9 @@ process_t* get_current_process(void){
 
 process_t* scheduler_next(void){
 //    int next = (current + 1) % MAX_PROCESSES;
-
+    int start = (current_pid < 0) ? 0 : current_pid + 1;
     for (int i = 0; i < MAX_PROCESSES; i++){
-        int next = (current_pid + i) % MAX_PROCESSES;
+        int next = (start + i) % MAX_PROCESSES;
 //        int idx = (next + i) % MAX_PROCESSES;
         if (processes[next].active){
             current_pid = next;

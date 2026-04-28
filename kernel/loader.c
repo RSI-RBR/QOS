@@ -22,27 +22,27 @@ void* alloc_program_memory(unsigned int size){
     return addr;
 }
 
-program_entry_t load_program_from_sd(void)
+loaded_program_t load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
-
+    loaded_program_t prog = {0};
     if (fat32_init()){
         uart_puts("FAT init failed.\n");
-        return 0;
+        return prog;
     }
 
     int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
 
     if (size <= 0){
         uart_puts("Load failed.\n");
-        return 0;
+        return prog;
     }
 
     uart_puts("File read OK. \n");
 
     if (size < sizeof(program_header_t)){
         uart_puts("Invalid program (too small)");
-        return 0;
+        return prog;
     }
 
     program_header_t *hdr = (program_header_t*)buffer;
@@ -56,7 +56,7 @@ program_entry_t load_program_from_sd(void)
 
     if (hdr->magic != QOS_MAGIC){
         uart_puts("Bad magic.\n");
-        return 0;
+        return prog;
     }
 
     uart_puts("Valid QOS magic!\n");
@@ -66,7 +66,7 @@ program_entry_t load_program_from_sd(void)
 
     if (code_size > PROGRAM_MAX){
         uart_puts("Program too large.\n");
-        return 0;
+        return prog;
     }
 
     unsigned char *src = buffer + sizeof(program_header_t);
@@ -76,12 +76,12 @@ program_entry_t load_program_from_sd(void)
     unsigned char* d = (unsigned char*)dst;
     if (!dst){
         uart_puts("No memory for program!\n");
-        return 0;
+        return prog;
     }
 
-    for (unsigned int i = 0; i < code_size; i++){
-        d[i] = 0;
-    }
+//    for (unsigned int i = 0; i < code_size; i++){
+//        d[i] = prog;
+//    }
 
     for (unsigned int i = 0; i < code_size; i++){
         d[i] = src[i];
@@ -90,14 +90,16 @@ program_entry_t load_program_from_sd(void)
     clean_data_cache();
     invalidate_instruction_cache();
 
-    program_entry_t entry = (program_entry_t)((unsigned long)dst + entry_offset);
+    prog.entry = (program_entry_t)((unsigned long)dst + entry_offset);
+    prog.memory = dst;
+    prog.size = code_size;
     uart_puts("Program loaded at: ");
     uart_puthex((unsigned long)dst);
     uart_puts("\n");
     uart_puts("Entry at: ");
-    uart_puthex((unsigned long)entry);
+    uart_puthex((unsigned long)prog.entry);
     uart_puts("\n");
-    return entry;
+    return prog;
 }
 
 void execute_program(unsigned long entry_addr){
