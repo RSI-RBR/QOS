@@ -79,11 +79,18 @@ void process_exit(int pid){
 
     if (processes[pid].active){
         free_stack(processes[pid].stack);
-        p->active = 0;
+        processes[pid].active = 0;
     }
 
-    
+    return;
+}
 
+void process_exit_current(void){
+    if (current_pid < 0 || pid >= MAX_PROCESSES) return;
+    if (processes[current_pid].active){
+        free_stack(processes[current_pid].stack);
+        processes[current_pid].active = 0;
+    }
     return;
 }
 

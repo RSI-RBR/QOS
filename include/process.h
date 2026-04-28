@@ -26,6 +26,7 @@ int process_create(program_entry_t entry);
 
 void process_exit(int pid);
 
+void process_exit_current(void);
 
 process_t* get_process(int pid);
 
