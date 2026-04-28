@@ -1,43 +1,32 @@
-.global run_program
+.global context_switch
 
-// x0 = program entry
-// x1 = stack
-// x2 = api
+// x0 = old process struct pointer
+// x1 = new process struct pointer
 
-run_program:
-    // Save callee-saved registers
-    stp x19, x20, [sp, -16]!
-    stp x21, x22, [sp, -16]!
-    stp x23, x24, [sp, -16]!
-    stp x25, x26, [sp, -16]!
-    stp x27, x28, [sp, -16]!
-    stp x29, x30, [sp, -16]!
+context_switch:
 
-    mov x29, sp
+    // Save old callee-saved registers
+    stp x19, x20, [x0]
+    stp x21, x22, [x0, #16]
+    stp x23, x24, [x0, #32]
+    stp x25, x26, [x0, #48]
+    stp x27, x28, [x0, #64]
+    stp x29, x30, [x0, #80]
 
-    // Save kernel stack
-    mov x19, sp
+    // Save SP
+    mov x2, sp
+    str x2, [x0, #96]
 
-    // Switch to program stack
-    mov sp, x1
+    // Load new SP
+    ldr x2, [x1, #96]
+    mov sp, x2
 
-    // Save program entry
-    mov x20, x0
-
-    // Pass argument
-    mov x0, x2
-
-    blr x20
-
-    // Restore kernel stack
-    mov sp, x19
-
-    // Restore registers
-    ldp x29, x30, [sp], 16
-    ldp x27, x28, [sp], 16
-    ldp x25, x26, [sp], 16
-    ldp x23, x24, [sp], 16
-    ldp x21, x22, [sp], 16
-    ldp x19, x20, [sp], 16
+    // Restore new registers
+    ldp x19, x20, [x1]
+    ldp x21, x22, [x1, #16]
+    ldp x23, x24, [x1, #32]
+    ldp x25, x26, [x1, #48]
+    ldp x27, x28, [x1, #64]
+    ldp x29, x30, [x1, #80]
 
     ret
