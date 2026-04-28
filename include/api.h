@@ -6,7 +6,7 @@ typedef struct {
     void (*putc)(char);
 
     void* (*malloc)(unsigned long);
-    void  (*free)(void*);
+    void  (*free)(void*, long unsigned int);
 
     // Graphics
     void (*draw_pixel)(int x, int y, unsigned int color);

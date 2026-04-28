@@ -7,7 +7,7 @@ static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
 
-extern void context_switch(void **old_sp, void *new_sp);
+extern void context_switch(void *old_sp, void *new_sp);
 
 
 void process_init(void){
@@ -48,7 +48,7 @@ void free_stack(void *stack){
     }
 }
 
-process_t* process_create(program_entry_t entry){
+int process_create(program_entry_t entry){
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (!processes[i].active){
             void* stack = alloc_stack();
@@ -86,7 +86,7 @@ void process_exit(int pid){
 }
 
 void process_exit_current(void){
-    if (current_pid < 0 || pid >= MAX_PROCESSES) return;
+    if (current_pid < 0 || current_pid >= MAX_PROCESSES) return;
     if (processes[current_pid].active){
         free_stack(processes[current_pid].stack);
         processes[current_pid].active = 0;
@@ -95,16 +95,16 @@ void process_exit_current(void){
 }
 
 process_t* get_process(int pid){
-    if (pid < 0 || pid >= MAX_PROCESSES) return -1;
+    if (pid < 0 || pid >= MAX_PROCESSES) return 0;
     return &processes[pid];
 }
 
 process_t* get_current_process(void){
-    if (current_pid < 0) return -1;
+    if (current_pid < 0) return 0;
     return &processes[current_pid];
 }
 
-process_t scheduler_next(void){
+process_t* scheduler_next(void){
 //    int next = (current + 1) % MAX_PROCESSES;
 
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -118,10 +118,10 @@ process_t scheduler_next(void){
             return &processes[next];;
         }
     }
-    return -1;
+    return 0;
 }
 
-extern void context_switch(process_t *old, process_t *new);
+//extern void context_switch(process_t *old, process_t *new);
 
 void schedule(void){
     process_t* old = get_current_process();

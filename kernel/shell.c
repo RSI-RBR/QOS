@@ -14,7 +14,7 @@
 //};
 
 typedef void (*program_entry_t)(kernel_api_t *api);
-extern void run_program(void *entry, void *stack, kernel_api_t *api);
+extern void process_start(void *entry, void *stack, kernel_api_t *api);
 
 #define MAX_ARGS 8
 #define MAX_INPUT 128
@@ -64,16 +64,18 @@ static void cmd_run(int argc, char **argv){
         uart_puthex((unsigned long)stack);
         uart_puts("\n");
 
-        process_t *p = process_create(prog);
+        int p = process_create(prog);
 
-        if (!p){
+        if (p < 0){
             uart_puts("Process creation failed.\n");
             return;
         }
 
-        run_program(p->entry, p->stack, &kapi);
+        process_t* proc = get_process(p);
 
-        process_destroy(p);
+        process_start(proc->entry, proc->stack, &kapi);
+
+        process_exit(p);
 //        run_program((void*)prog, stack, &kapi);
 
 //        if (program_should_exit){

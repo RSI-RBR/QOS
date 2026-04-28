@@ -1,7 +1,7 @@
 #include "uart.h"
 #include "shell.h"
 #include "memory.h"
-#include "task.h"
+//#include "task.h"
 #include "framebuffer.h"
 #include "context.h"
 #include "loader.h"
@@ -99,8 +99,8 @@ void kernel_main(void){
     uart_puts("Memory initialized!\n");
     check_stack();
 
-    task_init();
-    uart_puts("Task system initialized!\n");
+//    task_init();
+//    uart_puts("Task system initialized!\n");
 
     fb_init();
     uart_puts("Frame buffer initialized!\n");
