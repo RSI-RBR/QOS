@@ -1,17 +1,12 @@
 .global process_start
 .global context_switch
 
-.extern process_exit_current
-
 // x0 = entry
 // x1 = stack
 // x2 = api
 
 process_start:
-    // Switch to process stack
-    mov sp, x1
-
-    // Reserve initial frame
+    // Save kernel context before switching stacks
     stp x19, x20, [sp, -16]!
     stp x21, x22, [sp, -16]!
     stp x23, x24, [sp, -16]!
@@ -21,26 +16,60 @@ process_start:
 
     mov x29, sp
 
-    // Save args
-    mov x19, x2      // api
-    mov x20, x0      // entry
+    // Save kernel stack
+    mov x19, sp
 
-    // Pass api to program
-    mov x0, x19
+    // Switch to process stack
+    mov sp, x1
 
-    // Run program
+    // Create valid process frame
+    stp x19, x20, [sp, -16]!
+    stp x21, x22, [sp, -16]!
+    stp x23, x24, [sp, -16]!
+    stp x25, x26, [sp, -16]!
+    stp x27, x28, [sp, -16]!
+    stp x29, x30, [sp, -16]!
+
+    mov x29, sp
+
+    // Preserve entry + api
+    mov x20, x0
+    mov x21, x2
+
+    // Pass api as arg0
+    mov x0, x21
+
+    // Run user program
     blr x20
 
-    // If program returns
-    bl process_exit_current
+    // Program returned naturally
+
+    // Tear down process frame
+    ldp x29, x30, [sp], 16
+    ldp x27, x28, [sp], 16
+    ldp x25, x26, [sp], 16
+    ldp x23, x24, [sp], 16
+    ldp x21, x22, [sp], 16
+    ldp x19, x20, [sp], 16
+
+    // Restore kernel stack
+    mov sp, x19
+
+    // Restore kernel context
+    ldp x29, x30, [sp], 16
+    ldp x27, x28, [sp], 16
+    ldp x25, x26, [sp], 16
+    ldp x23, x24, [sp], 16
+    ldp x21, x22, [sp], 16
+    ldp x19, x20, [sp], 16
+
     ret
-1:
-    b 1b
 
 
 // x0 = &old->sp
 // x1 = new->sp
 context_switch:
+    // Save outgoing process context
     stp x19, x20, [sp, -16]!
     stp x21, x22, [sp, -16]!
     stp x23, x24, [sp, -16]!
@@ -51,8 +80,10 @@ context_switch:
     mov x2, sp
     str x2, [x0]
 
+    // Load incoming process stack
     mov sp, x1
 
+    // Restore incoming process context
     ldp x29, x30, [sp], 16
     ldp x27, x28, [sp], 16
     ldp x25, x26, [sp], 16
