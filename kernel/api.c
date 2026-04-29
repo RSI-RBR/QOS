@@ -1,7 +1,5 @@
 #include "api.h"
-#include "uart.h"
-#include "memory.h"
-#include "framebuffer.h"
+
 
 static void api_draw_pixel(int x, int y, unsigned int color){
     fb_draw_pixel(x, y, color);
@@ -13,6 +11,12 @@ static void api_draw_rect(int x , int y, int w, int h, unsigned int color){
 
 static void api_clear(unsigned int color){
     fb_clear(color);
+}
+
+static void api_sleep(unsigned int ms){
+    unsigned long target = system_ticks + ms;
+
+    while (system_ticks < target){}
 }
 
 //volatile int program_should_exit = 0;
@@ -36,6 +40,8 @@ kernel_api_t kapi = {
     .draw_pixel = api_draw_pixel,
     .draw_rect = api_draw_rect,
     .clear = api_clear,
+
+    .sleep = api_sleep,
 
     .exit = kexit
 };

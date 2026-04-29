@@ -24,7 +24,10 @@ void disable_interrupts(void){
 }
 
 void irq_handler(void){
-    timer_clear_interrupt();
+    unsigned int pending = *IRQ_PENDING_1
 
-    scheduler_tick();
+    if (pending & (1 << 1)){
+        timer_clear_interrupt();
+        scheduler_tick();
+    }
 }

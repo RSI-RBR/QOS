@@ -1,6 +1,11 @@
 #ifndef API_H
 #define API_H
 
+#include "uart.h"
+#include "memory.h"
+#include "framebuffer.h"
+#include "timer.h"
+
 typedef struct {
     void (*puts)(const char*);
     void (*putc)(char);
@@ -12,6 +17,8 @@ typedef struct {
     void (*draw_pixel)(int x, int y, unsigned int color);
     void (*draw_rect)(int x, int y, int w, int h, unsigned int color);
     void (*clear)(unsigned int color);
+
+    void (*sleep)(unsigned int ms);
 
     void (*exit) (int code);
     
