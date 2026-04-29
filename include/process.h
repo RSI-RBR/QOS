@@ -12,6 +12,8 @@ typedef struct{
     void* sp;
     void* stack;
     program_entry_t entry;
+    void* program_memory;
+    unsigned long program_size;
     int active;
     int pid;
 } process_t;
@@ -23,6 +25,7 @@ void free_stack(void *stack);
 void process_init(void);
 
 int process_create(program_entry_t entry);
+int process_create_loaded(loaded_program_t prog);
 
 void process_exit(int pid);
 
@@ -37,5 +40,8 @@ process_t* scheduler_next(void);
 void schedule(void);
 
 void scheduler_tick(void);
+void scheduler_run_once(void);
+void process_yield(void);
+int scheduler_has_runnable(void);
 
 #endif

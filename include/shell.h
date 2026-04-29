@@ -3,6 +3,7 @@
 
 void shell_init(void);
 void shell_run(void);
+void shell_update(void);
 
 
 //static void shell_print_prompt();

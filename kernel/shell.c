@@ -13,11 +13,7 @@
 //    .putc = uart_send
 //};
 
-typedef void (*program_entry_t)(kernel_api_t *api);
-extern void process_start(void *entry, void *stack, kernel_api_t *api);
-
 #define MAX_ARGS 8
-#define MAX_INPUT 128
 #define BUF_SIZE 256
 
 #define MAX_PTRS 16
@@ -51,47 +47,24 @@ static void shell_print_prompt(){
 //program_should_exit = 0;
 
 static void cmd_run(int argc, char **argv){
-//    void (*prog)(kernel_api_t*) = (void*)USER_PROGRAM_ADDR;
     loaded_program_t prog = load_program_from_sd();
 
     if (!prog.entry){
         uart_puts("Program load failed.\n");
-    }
-    void *stack = alloc_stack();
-    if (!stack){
-        uart_puts("No free stacks!\n");
         return;
     }
-    uart_puts("Stack: ");
-    uart_puthex((unsigned long)stack);
-    uart_puts("\n");
 
-    int p = process_create(prog.entry);
+    int p = process_create_loaded(prog);
 
     if (p < 0){
         uart_puts("Process creation failed.\n");
+        kfree_secure(prog.memory, prog.size);
         return;
     }
 
-//    process_t* proc = get_process(p);
-
-    process_start((void*)prog.entry, stack, &kapi);
-
-    process_exit(p);
-    kfree_secure(prog.memory, prog.size);
-//        run_program((void*)prog, stack, &kapi);
-
-//        if (program_should_exit){
-//            uart_puts("Program exited via API.\n");
-//        }else{
-//            uart_puts("Program returned normally.\n");
-//        }
-
-    uart_puts("Program returned!\n");
-
-    free_stack(stack);
-
-    return;
+    uart_puts("Program queued as PID ");
+    uart_send('0' + p);
+    uart_puts("\n");
 }
 
 static void cmd_lsprog(int argc, char **argv){
@@ -261,37 +234,39 @@ void shell_init(void){
     shell_print_prompt();
 }
 
-void shell_run(void){
-    while (1){
-        char c;
-//        c = uart_getc();
-        if (uart_try_getc(&c)){
 
-            if (c == '\r' || c == '\n'){
-                uart_puts("\n");
-                buffer[buf_index] = 0;
-                shell_execute(buffer);
-                shell_clear_buffer();
-                shell_print_prompt();
-                continue;
-            }
-
-            if (c == 127 || c == '\b'){
-                if (buf_index > 0){
-                    buf_index--;
-                    buffer[buf_index] = 0;
-                    uart_puts("\b \b");
-                }
-                continue;
-            }
-
-            if (buf_index < BUF_SIZE - 1){
-                buffer[buf_index++] = c;
-                uart_send(c);
-
-            }
-        }
-//        asm volatile("wfi");
+void shell_update(void){
+    char c;
+    if (!uart_try_getc(&c)){
+        return;
     }
 
+    if (c == '\r' || c == '\n'){
+        uart_puts("\n");
+        buffer[buf_index] = 0;
+        shell_execute(buffer);
+        shell_clear_buffer();
+        shell_print_prompt();
+        return;
+    }
+
+    if (c == 127 || c == '\b'){
+        if (buf_index > 0){
+            buf_index--;
+            buffer[buf_index] = 0;
+            uart_puts("\b \b");
+        }
+        return;
+    }
+
+    if (buf_index < BUF_SIZE - 1){
+        buffer[buf_index++] = c;
+        uart_send(c);
+    }
+}
+
+void shell_run(void){
+    while (1){
+        shell_update();
+    }
 }

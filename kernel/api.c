@@ -1,4 +1,5 @@
 #include "api.h"
+#include "process.h"
 
 
 static void api_draw_pixel(int x, int y, unsigned int color){
@@ -16,7 +17,9 @@ static void api_clear(unsigned int color){
 static void api_sleep(unsigned int ms){
     unsigned long target = system_ticks + ms;
 
-    while (system_ticks < target){}
+    while (system_ticks < target){
+        process_yield();
+    }
 }
 
 //volatile int program_should_exit = 0;

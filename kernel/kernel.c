@@ -48,7 +48,7 @@ void kernel_main(void){
     uart_puts("Memory initialized!\n");
     check_stack();
 
-//    task_init();
+    process_init();
     interrupt_init();
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");
@@ -152,7 +152,6 @@ void kernel_main(void){
 //    
     
     shell_init();
-    shell_run();
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
@@ -165,7 +164,10 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
-        char c = uart_getc();
-        uart_send(c);
+        shell_update();
+        if (scheduler_has_runnable()){
+            scheduler_run_once();
+        }
+        asm volatile("wfi");
     }
 }

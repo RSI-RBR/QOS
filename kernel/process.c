@@ -1,4 +1,6 @@
 #include "process.h"
+#include "api.h"
+#include "memory.h"
 
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
 static int used[MAX_PROCESSES] = {0};
@@ -6,17 +8,48 @@ static int used[MAX_PROCESSES] = {0};
 static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
+static void* kernel_sp = 0;
+static int zombie_pid = -1;
 
 extern void context_switch(void **old_sp, void *new_sp);
+extern kernel_api_t kapi;
+
+static void process_bootstrap(void){
+    process_t* p = get_current_process();
+    if (!p || !p->entry){
+        process_exit_current();
+        return;
+    }
+
+    p->entry(&kapi);
+    process_exit_current();
+}
+
+static void* build_initial_context(void* stack_top){
+    unsigned long* frame = (unsigned long*)stack_top;
+    frame -= 12;
+    for (int i = 0; i < 12; i++){
+        frame[i] = 0;
+    }
+    frame[1] = (unsigned long)process_bootstrap;
+    return frame;
+}
+
+static void reap_process_resources(int pid){
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        return;
+    }
+
+    free_stack(processes[pid].stack);
+    if (processes[pid].program_memory){
+        kfree_secure(processes[pid].program_memory, processes[pid].program_size);
+        processes[pid].program_memory = 0;
+        processes[pid].program_size = 0;
+    }
+}
 
 void scheduler_tick(void){
-    process_t* old = get_current_process();
-    process_t* next = scheduler_next();
-
-    if (!next || old == next) return;
-
-    context_switch(&old->sp, next->sp);
-
+    return;
 }
 
 void process_init(void){
@@ -70,8 +103,10 @@ int process_create(program_entry_t entry){
 //            top = (void*)((unsigned long)top & ~0xF);
             processes[i].entry = entry;
             processes[i].stack = stack;
-            processes[i].sp = stack;
+            processes[i].sp = build_initial_context(stack);
             processes[i].active = 1;
+            processes[i].program_memory = 0;
+            processes[i].program_size = 0;
 
 //            processes[i].program_memory = prog_mem;
 //            processes[i].program_size = prog_size;
@@ -86,28 +121,39 @@ int process_create(program_entry_t entry){
     return -1;
 }
 
+int process_create_loaded(loaded_program_t prog){
+    int pid = process_create(prog.entry);
+    if (pid < 0){
+        return pid;
+    }
+
+    processes[pid].program_memory = prog.memory;
+    processes[pid].program_size = prog.size;
+    return pid;
+}
 
 void process_exit(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES) return;
 
-    if (processes[pid].active){
-        free_stack(processes[pid].stack);
-        processes[pid].active = 0;
-//        if (processes[pid].program_memory){
-//            unsigned char* mem = (unsigned char*)processes[pid].program_memory;
-
-//            kfree_secure(processes[pid].program_memory);
-//        }
-    }
+    if (!processes[pid].active) return;
+    processes[pid].active = 0;
+    reap_process_resources(pid);
 
     return;
 }
 
 void process_exit_current(void){
+    process_t* current = get_current_process();
     if (current_pid < 0 || current_pid >= MAX_PROCESSES) return;
     if (processes[current_pid].active){
-        free_stack(processes[current_pid].stack);
-        processes[current_pid].active = 0;
+        zombie_pid = current_pid;
+        processes[zombie_pid].active = 0;
+        current_pid = -1;
+    } else{
+        current_pid = -1;
+    }
+    if (kernel_sp){
+        context_switch(&current->sp, kernel_sp);
     }
     return;
 }
@@ -142,13 +188,39 @@ process_t* scheduler_next(void){
 //extern void context_switch(process_t *old, process_t *new);
 
 void schedule(void){
-    process_t* old = get_current_process();
+    scheduler_run_once();
+}
+
+void scheduler_run_once(void){
+    if (zombie_pid >= 0){
+        reap_process_resources(zombie_pid);
+        zombie_pid = -1;
+    }
+
     process_t* next = scheduler_next();
 
-    if (!next || old == next) return;
+    if (!next){
+        return;
+    }
 
-    context_switch(&old->sp, next->sp);
+    context_switch(&kernel_sp, next->sp);
+}
 
+void process_yield(void){
+    process_t* current = get_current_process();
+    if (!current || !kernel_sp){
+        return;
+    }
+    context_switch(&current->sp, kernel_sp);
+}
+
+int scheduler_has_runnable(void){
+    for (int i = 0; i < MAX_PROCESSES; i++){
+        if (processes[i].active){
+            return 1;
+        }
+    }
+    return 0;
 }
 
 

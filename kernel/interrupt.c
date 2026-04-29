@@ -1,14 +1,11 @@
 #include "interrupt.h"
 #include "uart.h"
 #include "timer.h"
-#include "process.h"
 
 extern void vectors(void);
 
-#define VBAR_EL1 asm volatile("msr VBAR_EL1, %0" : : "r"(vectors))
-
 void interrupt_init(void){
-    VBAR_EL1;
+    asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
 
     timer_init();
 
@@ -24,10 +21,6 @@ void disable_interrupts(void){
 }
 
 void irq_handler(void){
-    unsigned int pending = *IRQ_PENDING_1
-
-    if (pending & (1 << 1)){
-        timer_clear_interrupt();
-        scheduler_tick();
-    }
+    timer_clear_interrupt();
+    timer_handler();
 }
