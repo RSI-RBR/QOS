@@ -74,11 +74,14 @@ int fat32_init(void){
 //    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
 //    unsigned int partition_lba = 0x12345678;
     
-
+//    uart_puts("Reading partition_lba to sector...\n");
+    barrier();
     // Read FAT32 boot sector
     if (sdhost_read_block(partition_lba, sector)){
         uart_puts("FAT: failed to read boot sector\n");
         return -1;
+    }else{
+        uart_puts("Read boot sector!\n");
     }
 
     barrier();
