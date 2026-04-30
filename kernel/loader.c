@@ -13,12 +13,6 @@ static unsigned long program_next = PROGRAM_POOL_START;
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
 
-static void loader_delay(int count){
-    while (count--){
-        asm volatile("nop");
-    }
-}
-
 static int loader_try_lock(void){
     int taken;
     asm volatile("msr daifset, #2");
@@ -73,10 +67,7 @@ loaded_program_t load_program_from_sd(void)
     if (size <= 0){
         // One-time resync path for long-uptime SDHOST drift.
         sdhost_reset();
-        if (sdhost_init_card() == 0){
-            // Allow card/controller state to settle before first FAT read.
-            loader_delay(200000);
-        }
+        sdhost_init_card();
         if (fat32_init() == 0){
             size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
         }
