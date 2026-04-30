@@ -96,6 +96,7 @@ void free_stack(void *stack){
 }
 
 int process_create(program_entry_t entry){
+    uart_puts("process_create: begin\n");
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (!processes[i].active){
             void* stack = alloc_stack();
@@ -119,9 +120,13 @@ int process_create(program_entry_t entry){
                 processes[i].regs[r] = 0;
             }
 
+            uart_puts("process_create: pid=");
+            uart_send('0' + i);
+            uart_puts("\n");
             return i;
         }
     }
+    uart_puts("process_create: no slot\n");
     return -1;
 }
 

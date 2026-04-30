@@ -7,6 +7,7 @@ extern void vectors(void);
 
 void interrupt_init(void){
     asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
+    asm volatile("isb");
 
     timer_init();
 

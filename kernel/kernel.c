@@ -157,10 +157,15 @@ void kernel_main(void){
 //    }
 //    
     
-    if (process_create(shell_process_entry) < 0){
+    uart_puts("Creating shell process...\n");
+    int shell_pid = process_create(shell_process_entry);
+    if (shell_pid < 0){
         uart_puts("Failed to create shell process\n");
         return;
     }
+    uart_puts("Shell process PID=");
+    uart_send('0' + shell_pid);
+    uart_puts("\n");
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
@@ -174,7 +179,9 @@ void kernel_main(void){
     // never reach here normally
     while (1){
         if (scheduler_has_runnable()){
+            uart_puts("Dispatching scheduler...\n");
             scheduler_run_once();
+            uart_puts("Returned from scheduler.\n");
         }
     }
 }
