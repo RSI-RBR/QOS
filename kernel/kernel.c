@@ -70,6 +70,7 @@ void kernel_main(void){
     uart_puts("Interrupt system initialized!\n");
 
     fb_init();
+    fb_init_buffers();
     uart_puts("Frame buffer initialized!\n");
 
     kapi.clear(0x00000000);

@@ -19,7 +19,7 @@ void program_main(kernel_api_t *api){
     struct screen_saver_cube cube; cube.lx = 0; cube.ly = 0; cube.vx = 1; cube.vy = 1; cube.c = 0x00FFFFFF; cube.sx = 50; cube.sy = 50;
     while (running){
 //        api->clear(0x00000000);
-        api->draw_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
+        api->edit_buffer_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
         int nx = cube.lx + cube.vx;
         int ny = cube.ly + cube.vy;
 
@@ -41,7 +41,8 @@ void program_main(kernel_api_t *api){
 
         cube.lx = nx; cube.ly = ny;
 
-        api->draw_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
+        api->edit_buffer_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
+        api->update_buffer_pixels();
 //        api->sleep(16);
     }
     
