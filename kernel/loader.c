@@ -1,4 +1,5 @@
 #include "loader.h"
+#include "sdhost.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
