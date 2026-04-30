@@ -13,6 +13,7 @@ static int logged_program_start = 0;
 
 extern kernel_api_t kapi;
 extern void restore_context_and_eret(void* frame_sp);
+extern void process_start(void *entry, void *stack, kernel_api_t *api);
 
 #define IRQ_FRAME_WORDS 34
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
@@ -201,6 +202,27 @@ process_t* scheduler_next(void){
 
 void schedule(void){
     scheduler_run_once();
+}
+
+void process_start_first(void){
+    if (current_pid >= 0){
+        return;
+    }
+
+    process_t* next = scheduler_next();
+    if (!next){
+        return;
+    }
+
+    uart_puts("process_start_first: pid=");
+    uart_send('0' + next->pid);
+    uart_puts("\n");
+
+    process_start((void*)next->entry, next->stack, &kapi);
+
+    // If it returns naturally, clean up and continue.
+    process_exit(next->pid);
+    current_pid = -1;
 }
 
 void scheduler_run_once(void){

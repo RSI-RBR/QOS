@@ -189,9 +189,8 @@ void kernel_main(void){
     // never reach here normally
     while (1){
         if (scheduler_has_runnable()){
-            uart_puts("Dispatching scheduler...\n");
+            process_start_first();
             scheduler_run_once();
-            uart_puts("Returned from scheduler.\n");
         }
     }
 }
