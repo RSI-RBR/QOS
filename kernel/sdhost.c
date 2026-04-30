@@ -146,6 +146,9 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
         return -1;
     }
 
+    // Small deterministic settle delay to avoid relying on UART print timing.
+    delay(200);
+
     return 0;
 }
 
