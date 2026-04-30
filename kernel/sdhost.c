@@ -324,8 +324,14 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     int words_left = 128;
     int index = 0;
+    int data_timeout = 2000000;
 
     while (words_left > 0){
+        if (--data_timeout <= 0){
+            uart_puts("SD read timeout\n");
+            goto out_irq;
+        }
+
         unsigned int edm = SDEDM;
         unsigned int fifo_words = (edm >> 4) & 0x1F;
         barrier();
@@ -344,6 +350,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         }
 
         for (int j = 0; j < burst; j++){
+            if (--data_timeout <= 0){
+                uart_puts("SD read timeout\n");
+                goto out_irq;
+            }
+
             if (index >= 512){
                 uart_puts("SD buffer overflow\n");
                 goto out_irq;
