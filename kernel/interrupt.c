@@ -1,6 +1,7 @@
 #include "interrupt.h"
 #include "uart.h"
 #include "timer.h"
+#include "process.h"
 
 extern void vectors(void);
 
@@ -20,7 +21,8 @@ void disable_interrupts(void){
     asm volatile("msr daifset, #2");
 }
 
-void irq_handler(void){
+void* irq_handler(void* irq_frame_sp){
     timer_clear_interrupt();
     timer_handler();
+    return scheduler_on_irq(irq_frame_sp);
 }

@@ -33,6 +33,12 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
+static void shell_process_entry(kernel_api_t *api){
+    (void)api;
+    shell_init();
+    shell_run();
+}
+
 extern unsigned long stack_bottom;
 
 void kernel_main(void){
@@ -151,7 +157,10 @@ void kernel_main(void){
 //    }
 //    
     
-    shell_init();
+    if (process_create(shell_process_entry) < 0){
+        uart_puts("Failed to create shell process\n");
+        return;
+    }
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
@@ -164,7 +173,6 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
-        shell_update();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         }

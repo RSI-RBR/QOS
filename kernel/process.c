@@ -8,11 +8,15 @@ static int used[MAX_PROCESSES] = {0};
 static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
-static void* kernel_sp = 0;
 static int zombie_pid = -1;
 
-extern void context_switch(void **old_sp, void *new_sp);
 extern kernel_api_t kapi;
+extern void restore_context_and_eret(void* frame_sp);
+
+#define IRQ_FRAME_WORDS 34
+#define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
+#define IRQ_FRAME_ELR_IDX 31
+#define IRQ_FRAME_SPSR_IDX 32
 
 static void process_bootstrap(void){
     process_t* p = get_current_process();
@@ -26,12 +30,12 @@ static void process_bootstrap(void){
 }
 
 static void* build_initial_context(void* stack_top){
-    unsigned long* frame = (unsigned long*)stack_top;
-    frame -= 12;
-    for (int i = 0; i < 12; i++){
+    unsigned long* frame = (unsigned long*)((unsigned long)stack_top - IRQ_FRAME_SIZE);
+    for (int i = 0; i < IRQ_FRAME_WORDS; i++){
         frame[i] = 0;
     }
-    frame[1] = (unsigned long)process_bootstrap;
+    frame[IRQ_FRAME_ELR_IDX] = (unsigned long)process_bootstrap;
+    frame[IRQ_FRAME_SPSR_IDX] = 0x5;
     return frame;
 }
 
@@ -143,18 +147,12 @@ void process_exit(int pid){
 }
 
 void process_exit_current(void){
-    process_t* current = get_current_process();
     if (current_pid < 0 || current_pid >= MAX_PROCESSES) return;
     if (processes[current_pid].active){
         zombie_pid = current_pid;
         processes[zombie_pid].active = 0;
-        current_pid = -1;
-    } else{
-        current_pid = -1;
     }
-    if (kernel_sp){
-        context_switch(&current->sp, kernel_sp);
-    }
+    while (1){ asm volatile("wfi"); }
     return;
 }
 
@@ -197,21 +195,21 @@ void scheduler_run_once(void){
         zombie_pid = -1;
     }
 
+    if (current_pid >= 0){
+        return;
+    }
+
     process_t* next = scheduler_next();
 
     if (!next){
         return;
     }
 
-    context_switch(&kernel_sp, next->sp);
+    restore_context_and_eret(next->sp);
 }
 
 void process_yield(void){
-    process_t* current = get_current_process();
-    if (!current || !kernel_sp){
-        return;
-    }
-    context_switch(&current->sp, kernel_sp);
+    return;
 }
 
 int scheduler_has_runnable(void){
@@ -221,6 +219,25 @@ int scheduler_has_runnable(void){
         }
     }
     return 0;
+}
+
+void* scheduler_on_irq(void* irq_frame_sp){
+    if (zombie_pid >= 0){
+        reap_process_resources(zombie_pid);
+        zombie_pid = -1;
+    }
+
+    if (current_pid >= 0 && current_pid < MAX_PROCESSES){
+        processes[current_pid].sp = irq_frame_sp;
+    } else{
+        return irq_frame_sp;
+    }
+
+    process_t* next = scheduler_next();
+    if (!next){
+        return irq_frame_sp;
+    }
+    return next->sp;
 }
 
 

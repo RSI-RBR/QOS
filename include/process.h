@@ -43,5 +43,6 @@ void scheduler_tick(void);
 void scheduler_run_once(void);
 void process_yield(void);
 int scheduler_has_runnable(void);
+void* scheduler_on_irq(void* irq_frame_sp);
 
 #endif

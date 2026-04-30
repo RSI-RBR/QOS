@@ -1,19 +1,53 @@
 .global vectors
 .global irq_handler
+.global restore_context_and_eret
 
 .align 11
 vectors:
+    // Current EL with SP_EL0
+    .align 7
     b .
+    .align 7
     b .
+    .align 7
     b .
+    .align 7
     b .
+
+    // Current EL with SP_ELx
+    .align 7
     b .
+    .align 7
     b irq_entry
+    .align 7
     b .
+    .align 7
+    b .
+
+    // Lower EL using AArch64
+    .align 7
+    b .
+    .align 7
+    b irq_entry
+    .align 7
+    b .
+    .align 7
+    b .
+
+    // Lower EL using AArch32
+    .align 7
+    b .
+    .align 7
+    b irq_entry
+    .align 7
+    b .
+    .align 7
     b .
 
 irq_entry:
-    sub sp, sp, #256
+    // Frame layout (272 bytes):
+    // x0-x29 at 0..239, x30 at 240, ELR_EL1 at 248, SPSR_EL1 at 256, pad at 264
+    sub sp, sp, #272
 
     stp x0, x1, [sp, #16 * 0]
     stp x2, x3, [sp, #16 * 1]
@@ -30,9 +64,26 @@ irq_entry:
     stp x24, x25, [sp, #16 * 12]
     stp x26, x27, [sp, #16 * 13]
     stp x28, x29, [sp, #16 * 14]
-    str x30, [sp, #16 * 15]
+    str x30, [sp, #240]
 
+    mrs x1, elr_el1
+    str x1, [sp, #248]
+    mrs x1, spsr_el1
+    str x1, [sp, #256]
+
+    mov x0, sp
     bl irq_handler
+    b restore_from_frame
+
+restore_context_and_eret:
+    // x0 = prebuilt frame pointer
+restore_from_frame:
+    mov sp, x0
+
+    ldr x1, [sp, #248]
+    msr elr_el1, x1
+    ldr x1, [sp, #256]
+    msr spsr_el1, x1
 
     ldp x0, x1, [sp, #16 * 0]
     ldp x2, x3, [sp, #16 * 1]
@@ -49,7 +100,7 @@ irq_entry:
     ldp x24, x25, [sp, #16 * 12]
     ldp x26, x27, [sp, #16 * 13]
     ldp x28, x29, [sp, #16 * 14]
-    ldr x30, [sp, #16 * 15]
+    ldr x30, [sp, #240]
 
-    add sp, sp, #256
+    add sp, sp, #272
     eret
