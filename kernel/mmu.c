@@ -89,7 +89,7 @@ void mmu_init(void){
     unsigned long sctlr;
     asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1UL << 0);  // M
-    sctlr |= (1UL << 2);  // C
+    sctlr &= ~(1UL << 2); // C (off for now; framebuffer coherency)
     sctlr |= (1UL << 12); // I
     asm volatile("msr sctlr_el1, %0" : : "r"(sctlr));
     asm volatile("isb");
