@@ -56,7 +56,10 @@ static int sdhost_wait_resp(void){
 }
 
 unsigned int sdhost_get_resp(void){
-    return SDRSP0;
+    unsigned int r = SDRSP0;
+    SDHSTS = 0x7F8;
+
+    return r;
 }
 
 
@@ -319,44 +322,10 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     asm volatile("msr daifset, #2");
 
-    // Wait for controller to enter a read-capable FSM/data-ready state.
-    {
-        int start_timeout = 1000000;
-        while (start_timeout-- > 0){
-            unsigned int edm = SDEDM;
-            unsigned int fsm = edm & SDEDM_FSM_MASK;
-            unsigned int status = SDHSTS;
-
-            if (status & SDHSTS_ERROR_MASK){
-                uart_puts("SD start data error\n");
-                SDHSTS = 0x7F8;
-                goto out_irq;
-            }
-
-            if ((status & SDHSTS_DATA_FLAG) ||
-                fsm == SDEDM_FSM_READDATA ||
-                fsm == SDEDM_FSM_READWAIT ||
-                fsm == SDEDM_FSM_READCRC){
-                break;
-            }
-        }
-
-        if (start_timeout <= 0){
-            uart_puts("SD start timeout\n");
-            goto out_irq;
-        }
-    }
-
     int words_left = 128;
     int index = 0;
-    int data_timeout = 2000000;
 
     while (words_left > 0){
-        if (--data_timeout <= 0){
-            uart_puts("SD read timeout\n");
-            goto out_irq;
-        }
-
         unsigned int edm = SDEDM;
         unsigned int fifo_words = (edm >> 4) & 0x1F;
         barrier();
@@ -375,11 +344,6 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         }
 
         for (int j = 0; j < burst; j++){
-            if (--data_timeout <= 0){
-                uart_puts("SD read timeout\n");
-                goto out_irq;
-            }
-
             if (index >= 512){
                 uart_puts("SD buffer overflow\n");
                 goto out_irq;
