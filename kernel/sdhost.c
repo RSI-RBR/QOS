@@ -56,10 +56,7 @@ static int sdhost_wait_resp(void){
 }
 
 unsigned int sdhost_get_resp(void){
-    unsigned int r = SDRSP0;
-    SDHSTS = 0x7F8;
-
-    return r;
+    return SDRSP0;
 }
 
 
