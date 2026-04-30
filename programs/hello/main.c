@@ -42,7 +42,7 @@ void program_main(kernel_api_t *api){
         cube.lx = nx; cube.ly = ny;
 
         api->draw_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
-        api->sleep(16);
+//        api->sleep(16);
     }
     
 
