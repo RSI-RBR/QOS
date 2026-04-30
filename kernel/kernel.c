@@ -42,6 +42,16 @@ static void shell_process_entry(kernel_api_t *api){
 extern unsigned long stack_bottom;
 
 void kernel_main(void){
+    // Enable FP/ASIMD at EL1 to avoid EC=0x07 traps on generated code paths.
+    asm volatile(
+        "mrs x0, cpacr_el1\n"
+        "orr x0, x0, #(3 << 20)\n"
+        "msr cpacr_el1, x0\n"
+        "isb\n"
+        :
+        :
+        : "x0");
+
     uart_init();
     uart_puts("Uart initialized!\n");
 
