@@ -1,4 +1,5 @@
 #include "loader.h"
+#include "interrupt.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
@@ -26,12 +27,16 @@ loaded_program_t load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
     loaded_program_t prog = {0};
+    disable_interrupts();
+
     if (fat32_init()){
+        enable_interrupts();
         uart_puts("FAT init failed.\n");
         return prog;
     }
 
     int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+    enable_interrupts();
 
     if (size <= 0){
         uart_puts("Load failed.\n");

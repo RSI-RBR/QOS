@@ -58,6 +58,11 @@ void fb_init(){
     if (mailbox_call(8)){
         fb = (unsigned int*)((unsigned long)(mbox[23] & 0x3FFFFFFF));
         pitch = mbox[19];
+        // Use actual dimensions returned by firmware, not only requested values.
+        if (mbox[5] > 0 && mbox[6] > 0){
+            width = mbox[5];
+            height = mbox[6];
+        }
     }
 }
 
@@ -110,7 +115,9 @@ void fb_edit_buffer_rect(unsigned int x, unsigned int y, unsigned int w, unsigne
 
 void fb_update_buffer_pixels(void){
     for (unsigned long i = 0; i < modified_pixel_count; i++){
-        fb_draw_pixel(modified_pixel_coords[0][i], modified_pixel_coords[1][i], back_buffer[modified_pixel_coords[0][i]][modified_pixel_coords[1][i]]);
+        unsigned int x = modified_pixel_coords[0][i];
+        unsigned int y = modified_pixel_coords[1][i];
+        fb_draw_pixel(x, y, back_buffer[y][x]);
     }
 
     modified_pixel_count = 0;
@@ -150,6 +157,7 @@ void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, un
 
         for (unsigned int i = 0; i < w; i++){
             unsigned int px = x + i;
+            if (px >= width) break;
             back_buffer[py][px] = colour;
 
             if (!dirty_map[py][px]){
