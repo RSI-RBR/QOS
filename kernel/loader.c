@@ -12,6 +12,23 @@ static unsigned long program_next = PROGRAM_POOL_START;
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
 
+static int loader_try_lock(void){
+    int taken;
+    asm volatile("msr daifset, #2");
+    taken = loader_busy;
+    if (!taken){
+        loader_busy = 1;
+    }
+    asm volatile("msr daifclr, #2");
+    return !taken;
+}
+
+static void loader_unlock(void){
+    asm volatile("msr daifset, #2");
+    loader_busy = 0;
+    asm volatile("msr daifclr, #2");
+}
+
 
 int loader_is_busy(void){
     return loader_busy;
@@ -32,19 +49,19 @@ loaded_program_t load_program_from_sd(void)
     uart_puts("Loading program from SD...\n");
     loaded_program_t prog = {0};
 
-    if (__sync_lock_test_and_set(&loader_busy, 1)){
+    if (!loader_try_lock()){
         uart_puts("Loader busy.\n");
         return prog;
     }
 
     if (fat32_init()){
-        __sync_lock_release(&loader_busy);
+        loader_unlock();
         uart_puts("FAT init failed.\n");
         return prog;
     }
 
     int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
-    __sync_lock_release(&loader_busy);
+    loader_unlock();
 
     if (size <= 0){
         uart_puts("Load failed.\n");
