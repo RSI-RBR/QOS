@@ -9,6 +9,7 @@ static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
 static int zombie_pid = -1;
+static int logged_program_start = 0;
 
 extern kernel_api_t kapi;
 extern void restore_context_and_eret(void* frame_sp);
@@ -22,11 +23,18 @@ extern void restore_context_and_eret(void* frame_sp);
 static void process_bootstrap(void){
     process_t* p = get_current_process();
     if (!p || !p->entry){
+        uart_puts("process_bootstrap: invalid current process\n");
         process_exit_current();
         return;
     }
 
+    uart_puts("process_bootstrap: enter pid=");
+    uart_send('0' + p->pid);
+    uart_puts("\n");
     p->entry(&kapi);
+    uart_puts("process_bootstrap: returned pid=");
+    uart_send('0' + p->pid);
+    uart_puts("\n");
     process_exit_current();
 }
 
@@ -253,6 +261,12 @@ void* scheduler_on_irq(void* irq_frame_sp){
     process_t* next = scheduler_next();
     if (!next){
         return irq_frame_sp;
+    }
+    if (!logged_program_start && next->pid > 0){
+        logged_program_start = 1;
+        uart_puts("scheduler_on_irq: switching to program pid=");
+        uart_send('0' + next->pid);
+        uart_puts("\n");
     }
     return next->sp;
 }
