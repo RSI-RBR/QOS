@@ -186,7 +186,6 @@ void kernel_main(void){
     // never reach here normally
     while (1){
         if (scheduler_has_runnable()){
-            process_start_first();
             scheduler_run_once();
         } else{
             asm volatile("wfi");

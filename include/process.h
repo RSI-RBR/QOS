@@ -52,7 +52,7 @@ void scheduler_run_once(void);
 void process_yield(void);
 int scheduler_has_runnable(void);
 void* scheduler_on_irq(void* irq_frame_sp);
-void process_start_first(void);
 void process_sleep(unsigned int ms);
+void process_dump(void);
 
 #endif

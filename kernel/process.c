@@ -12,7 +12,6 @@ static int zombie_pid = -1;
 
 extern kernel_api_t kapi;
 extern void restore_context_and_eret(void* frame_sp);
-extern void process_start(void *entry, void *stack, kernel_api_t *api);
 extern volatile unsigned long system_ticks;
 
 #define IRQ_FRAME_WORDS 34
@@ -20,6 +19,10 @@ extern volatile unsigned long system_ticks;
 #define IRQ_FRAME_ELR_IDX 31
 #define IRQ_FRAME_SPSR_IDX 32
 #define INITIAL_SPSR_EL1H 0x345
+
+static int tick_reached(unsigned long now, unsigned long target){
+    return (long)(now - target) >= 0;
+}
 
 static void process_bootstrap(void){
     process_t* p = get_current_process();
@@ -105,7 +108,7 @@ int process_create(program_entry_t entry){
             void* stack = alloc_stack();
             if (!stack){
                 uart_puts("No stack available.\n");
-                return 0;
+                return -1;
             }
             processes[i].entry = entry;
             processes[i].stack = stack;
@@ -151,7 +154,6 @@ void process_exit_current(void){
         zombie_pid = current_pid;
         processes[zombie_pid].state = PROC_DEAD;
     }
-    current_pid = -1;
     while (1){ asm volatile("wfi"); }
     return;
 }
@@ -183,23 +185,6 @@ process_t* scheduler_next(void){
 
 void schedule(void){
     scheduler_run_once();
-}
-
-void process_start_first(void){
-    if (current_pid >= 0){
-        return;
-    }
-
-    process_t* next = scheduler_next();
-    if (!next){
-        return;
-    }
-
-    process_start((void*)next->entry, next->stack, &kapi);
-
-    // If it returns naturally, clean up and continue.
-    process_exit(next->pid);
-    current_pid = -1;
 }
 
 void scheduler_run_once(void){
@@ -245,7 +230,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
     }
 
     for (int i = 0; i < MAX_PROCESSES; i++){
-        if (processes[i].state == PROC_SLEEPING && system_ticks >= processes[i].wake_tick){
+        if (processes[i].state == PROC_SLEEPING && tick_reached(system_ticks, processes[i].wake_tick)){
             processes[i].state = PROC_READY;
             processes[i].wake_tick = 0;
         }
@@ -280,6 +265,26 @@ void process_sleep(unsigned int ms){
     while (processes[pid].state == PROC_SLEEPING){
         asm volatile("wfi");
     }
+}
+
+void process_dump(void){
+    uart_puts("PID STATE WAKE\n");
+    for (int i = 0; i < MAX_PROCESSES; i++){
+        uart_send('0' + i);
+        uart_puts(" ");
+        switch (processes[i].state){
+            case PROC_DEAD: uart_puts("DEAD "); break;
+            case PROC_READY: uart_puts("READY "); break;
+            case PROC_RUNNING: uart_puts("RUN "); break;
+            case PROC_SLEEPING: uart_puts("SLEEP "); break;
+            default: uart_puts("UNK "); break;
+        }
+        uart_puthex((unsigned int)processes[i].wake_tick);
+        uart_puts("\n");
+    }
+    uart_puts("ticks=");
+    uart_puthex((unsigned int)system_ticks);
+    uart_puts("\n");
 }
 
 
