@@ -168,6 +168,5 @@ void kernel_main(void){
         if (scheduler_has_runnable()){
             scheduler_run_once();
         }
-        asm volatile("wfi");
     }
 }
