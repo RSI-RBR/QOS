@@ -18,7 +18,7 @@ extern void restore_context_and_eret(void* frame_sp);
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
 #define IRQ_FRAME_ELR_IDX 31
 #define IRQ_FRAME_SPSR_IDX 32
-#define INITIAL_SPSR_EL1H 0x3C5
+#define INITIAL_SPSR_EL1H 0x345
 
 static void process_bootstrap(void){
     process_t* p = get_current_process();
