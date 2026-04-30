@@ -27,3 +27,15 @@ void* irq_handler(void* irq_frame_sp){
     timer_handler();
     return scheduler_on_irq(irq_frame_sp);
 }
+
+void sync_exception_handler(unsigned long esr, unsigned long elr, unsigned long spsr){
+    uart_puts("\nSYNC EXCEPTION\n");
+    uart_puts("ESR_EL1=");
+    uart_puthex((unsigned int)esr);
+    uart_puts("\nELR_EL1=");
+    uart_puthex((unsigned int)elr);
+    uart_puts("\nSPSR_EL1=");
+    uart_puthex((unsigned int)spsr);
+    uart_puts("\nHALTING\n");
+    while (1){}
+}

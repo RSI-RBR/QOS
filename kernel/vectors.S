@@ -1,12 +1,13 @@
 .global vectors
 .global irq_handler
 .global restore_context_and_eret
+.global sync_exception_handler
 
 .align 11
 vectors:
     // Current EL with SP_EL0
     .align 7
-    b .
+    b sync_entry
     .align 7
     b .
     .align 7
@@ -16,7 +17,7 @@ vectors:
 
     // Current EL with SP_ELx
     .align 7
-    b .
+    b sync_entry
     .align 7
     b irq_entry
     .align 7
@@ -26,7 +27,7 @@ vectors:
 
     // Lower EL using AArch64
     .align 7
-    b .
+    b sync_entry
     .align 7
     b irq_entry
     .align 7
@@ -36,7 +37,7 @@ vectors:
 
     // Lower EL using AArch32
     .align 7
-    b .
+    b sync_entry
     .align 7
     b irq_entry
     .align 7
@@ -104,3 +105,11 @@ restore_from_frame:
 
     add sp, sp, #272
     eret
+
+sync_entry:
+    mrs x0, esr_el1
+    mrs x1, elr_el1
+    mrs x2, spsr_el1
+    bl sync_exception_handler
+1:
+    b 1b

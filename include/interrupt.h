@@ -4,5 +4,6 @@
 void interrupt_init(void);
 void enable_interrupts(void);
 void disable_interrupts(void);
+void sync_exception_handler(unsigned long esr, unsigned long elr, unsigned long spsr);
 
 #endif
