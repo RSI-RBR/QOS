@@ -64,7 +64,7 @@ int fat32_init(void){
     unsigned int test2 = test | (b2 << 16);
 
     unsigned int partition_lba = test2 | (b3 << 24);
-    
+    volatile unsigned int v_partition_lba = (volatile unsigned int)partition_lba;
     check_stack();
 //    unsigned int test = sector[0x1BE];
 //    unsigned int test2 = sector[0x1BE + 8];
