@@ -222,10 +222,11 @@ void scheduler_run_once(void){
 }
 
 void process_yield(void){
-    if (current_pid >= 0 && current_pid < MAX_PROCESSES){
-        processes[current_pid].state = PROC_READY;
+    if (current_pid < 0 || current_pid >= MAX_PROCESSES){
+        return;
     }
-    while (1){ asm volatile("wfi"); }
+    processes[current_pid].state = PROC_READY;
+    asm volatile("wfi");
 }
 
 int scheduler_has_runnable(void){
@@ -267,13 +268,18 @@ void* scheduler_on_irq(void* irq_frame_sp){
 }
 
 void process_sleep(unsigned int ms){
-    if (current_pid < 0 || current_pid >= MAX_PROCESSES){
+    int pid = current_pid;
+    if (pid < 0 || pid >= MAX_PROCESSES){
         return;
     }
 
-    processes[current_pid].wake_tick = system_ticks + ms;
-    processes[current_pid].state = PROC_SLEEPING;
-    while (1){ asm volatile("wfi"); }
+    processes[pid].wake_tick = system_ticks + ms;
+    processes[pid].state = PROC_SLEEPING;
+
+    // Block cooperatively until the timer IRQ path wakes us.
+    while (processes[pid].state == PROC_SLEEPING){
+        asm volatile("wfi");
+    }
 }
 
 
