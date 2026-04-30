@@ -336,6 +336,10 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     uart_puts("CMD17 OK, reading data...\n");
 
+    // Critical section: polling FIFO is timing-sensitive on this driver.
+    // Keep IRQs masked only for the data drain window (one 512-byte block).
+    asm volatile("msr daifset, #2");
+
     int words_left = 128;
     int index = 0;
 
@@ -390,6 +394,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             if (status & SDHSTS_ERROR_MASK){
                 uart_puts("DATA ERROR\n");
                 SDHSTS = 0x7F8;
+                asm volatile("msr daifclr, #2");
                 return -1;
             }
         }
@@ -402,6 +407,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         uart_puthex(final_status);
         uart_puts("\n");
         SDHSTS = 0x7F8;
+        asm volatile("msr daifclr, #2");
         return -1;
     }
 
@@ -416,6 +422,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     // Clear status AFTER transfer
     SDHSTS = 0x7F8;
+    asm volatile("msr daifclr, #2");
 
     uart_puts("READ DONE!\n");
     return 0;
