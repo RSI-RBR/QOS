@@ -8,9 +8,10 @@ static unsigned int width = 1920;
 static unsigned int height = 1080;
 static unsigned int pitch;
 static unsigned int *fb;
-static unsigned char bytes_per_pixel = 4;
+//static unsigned char bytes_per_pixel = 4;
 
-static unsigned int back_buffer[MAX_WIDTH][MAX_HEIGHT] __attribute__((aligned(64)));
+static unsigned char dirty_map[MAX_HEIGHT][MAX_WIDTH];
+static unsigned int back_buffer[MAX_HEIGHT][MAX_WIDTH] __attribute__((aligned(64)));
 //static unsigned int front_buffer[width][height] __attribute__((aligned(64)));
 
 
@@ -60,11 +61,16 @@ void fb_init(){
     }
 }
 
+static inline void fb_draw_pixel_fast(unsigned int x, unsigned int y, unsigned int colour){
+    unsigned int *ptr = (unsigned int*)((unsigned char*)fb + y * pitch);
+    ptr[x] = colour;
+}
+
 void fb_init_buffers(void){
     for (unsigned long y = 0; y < height; y++){
         for (unsigned long x = 0; x < width; x++){
 //            front_buffer[x][y] = 0x00000000;
-            back_buffer[x][y] = 0x00000000;
+            back_buffer[y][x] = 0x00000000;
         }
     }
     for (unsigned long i = 0; i < 1920*1080; i++){
@@ -75,15 +81,15 @@ void fb_init_buffers(void){
 
 void fb_edit_buffer_pixel(unsigned int x, unsigned int y, unsigned int colour){
     if (x >= width || y >= height) return;
-    back_buffer[x][y] = colour;
+    back_buffer[y][x] = colour;
 
     unsigned char already_modified = 0;
-    for (unsigned long i = 0; i < modified_pixel_count; i++){
-        if (modified_pixel_coords[0][i] == x && modified_pixel_coords[1][i] == y){
-            already_modified = 1;
-            break;
-        }
-    }
+//    for (unsigned long i = 0; i < modified_pixel_count; i++){
+//        if (modified_pixel_coords[0][i] == x && modified_pixel_coords[1][i] == y){
+//            already_modified = 1;
+//            break;
+//        }
+//    }
 
     if (!already_modified){
         modified_pixel_coords[0][modified_pixel_count] = x;
@@ -109,6 +115,51 @@ void fb_update_buffer_pixels(void){
 
     modified_pixel_count = 0;
 
+}
+
+void fb_edit_buffer_pixel_fast(unsigned int x, unsigned int y, unsigned int colour){
+    if (x >= width || y >= height) return;
+
+    back_buffer[y][x] = colour;
+
+    if (!dirty_map[y][x]){
+        dirty_map[y][x] = 1;
+
+        modified_pixel_coords[0][modified_pixel_count] = x;
+        modified_pixel_coords[1][modified_pixel_count] = y;
+        modified_pixel_count ++;
+    }
+}
+
+void fb_update_buffer_pixels_fast(void){
+    for (unsigned long i = 0; i < modified_pixel_count; i++){
+        unsigned int x = modified_pixel_coords[0][i];
+        unsigned int y = modified_pixel_coords[1][i];
+
+        fb_draw_pixel_fast(x, y, back_buffer[y][x]);
+
+        dirty_map[y][x] = 0;
+    }
+    modified_pixel_count = 0;
+}
+
+void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int colour){
+    for (unsigned int j = 0; j < h; j++){
+        unsigned int py = y + j;
+        if (py >= height) break;
+
+        for (unsigned int i = 0; i < w; i++){
+            unsigned int px = x + i;
+            back_buffer[py][px] = colour;
+
+            if (!dirty_map[py][px]){
+                dirty_map[py][px] = 1;
+                modified_pixel_coords[0][modified_pixel_count] = px;
+                modified_pixel_coords[1][modified_pixel_count] = py;
+                modified_pixel_count ++;
+            }
+        }
+    }
 }
 
 void fb_clear(unsigned int color){

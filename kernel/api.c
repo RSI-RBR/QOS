@@ -7,15 +7,15 @@
 //}
 
 static void api_edit_buffer_pixel(unsigned int x, unsigned int y, unsigned int colour){
-    fb_edit_buffer_pixel(x, y, colour);
+    fb_edit_buffer_pixel_fast(x, y, colour);
 }
 
 static void api_edit_buffer_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int colour){
-    fb_edit_buffer_rect(x, y, w, h, colour);
+    fb_edit_buffer_rect_fast(x, y, w, h, colour);
 }
 
 static void api_update_buffer_pixels(void){
-    fb_update_buffer_pixels();
+    fb_update_buffer_pixels_fast();
 }
 
 //static void api_draw_rect(int x , int y, int w, int h, unsigned int color){
