@@ -207,3 +207,7 @@ unsigned int fb_get_height(){
 unsigned int fb_get_pitch(){
     return pitch;
 }
+
+unsigned long fb_get_base(){
+    return (unsigned long)fb;
+}

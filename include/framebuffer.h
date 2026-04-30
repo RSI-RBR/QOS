@@ -20,5 +20,6 @@ void fb_draw_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h
 unsigned int fb_get_width();
 unsigned int fb_get_height();
 unsigned int fb_get_pitch();
+unsigned long fb_get_base();
 
 #endif

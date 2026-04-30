@@ -46,6 +46,22 @@ static unsigned long block_desc(unsigned long pa, int is_device){
     return desc;
 }
 
+static void set_block_attr(unsigned long pa, int is_device){
+    unsigned long l1_index = pa >> 30;            // 1GB region
+    unsigned long l2_index = (pa >> 21) & 0x1FF; // 2MB block
+    unsigned long* table = 0;
+
+    if (l1_index == 0){
+        table = l2_table;
+    } else if (l1_index == 1){
+        table = l2_table_1;
+    } else{
+        return;
+    }
+
+    table[l2_index] = block_desc(pa, is_device);
+}
+
 void mmu_init(void){
     zero_tables();
 
@@ -89,8 +105,26 @@ void mmu_init(void){
     unsigned long sctlr;
     asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1UL << 0);  // M
-    sctlr &= ~(1UL << 2); // C (off for now; framebuffer coherency)
+    sctlr |= (1UL << 2);  // C
     sctlr |= (1UL << 12); // I
     asm volatile("msr sctlr_el1, %0" : : "r"(sctlr));
+    asm volatile("isb");
+}
+
+void mmu_map_device_region(unsigned long pa_start, unsigned long size){
+    if (size == 0){
+        return;
+    }
+
+    unsigned long start = pa_start & ~((1UL << 21) - 1); // 2MB aligned
+    unsigned long end = (pa_start + size + ((1UL << 21) - 1)) & ~((1UL << 21) - 1);
+
+    for (unsigned long pa = start; pa < end; pa += (1UL << 21)){
+        set_block_attr(pa, 1);
+    }
+
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
     asm volatile("isb");
 }

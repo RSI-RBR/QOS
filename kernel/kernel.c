@@ -74,6 +74,7 @@ void kernel_main(void){
     uart_puts("Interrupt system initialized!\n");
 
     fb_init();
+    mmu_map_device_region(fb_get_base(), (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height());
     fb_init_buffers();
     uart_puts("Frame buffer initialized!\n");
 
