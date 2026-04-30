@@ -14,6 +14,7 @@
 //#include "mailbox.h"
 #include "debug.h"
 #include "interrupt.h"
+#include "mmu.h"
 
 
 extern kernel_api_t kapi;
@@ -54,6 +55,9 @@ void kernel_main(void){
 
     uart_init();
     uart_puts("Uart initialized!\n");
+
+    mmu_init();
+    uart_puts("MMU (phase 1 identity map) enabled.\n");
 
     uart_puts("STACK GUARD INIT = ");
     uart_puthex(*(unsigned long*)&stack_bottom);

@@ -1,0 +1,89 @@
+#include "mmu.h"
+
+#define L1_ENTRIES 512
+#define L2_ENTRIES 512
+
+#define DESC_VALID          (1UL << 0)
+#define DESC_TABLE          (1UL << 1)
+#define DESC_BLOCK          (0UL << 1)
+
+#define ATTRIDX_SHIFT       2
+#define SH_SHIFT            8
+#define AF_BIT              (1UL << 10)
+#define PXN_BIT             (1UL << 53)
+#define UXN_BIT             (1UL << 54)
+
+#define SH_OUTER            (2UL << SH_SHIFT)
+#define SH_INNER            (3UL << SH_SHIFT)
+
+#define ATTRIDX_NORMAL      0UL
+#define ATTRIDX_DEVICE      1UL
+
+#define DEVICE_BASE         0x3F000000UL
+#define DEVICE_END          0x40200000UL
+
+static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long l2_table[L2_ENTRIES] __attribute__((aligned(4096)));
+
+static void zero_tables(void){
+    for (int i = 0; i < L1_ENTRIES; i++){
+        l1_table[i] = 0;
+    }
+    for (int i = 0; i < L2_ENTRIES; i++){
+        l2_table[i] = 0;
+    }
+}
+
+static unsigned long block_desc(unsigned long pa, int is_device){
+    unsigned long desc = (pa & 0xFFFFFFFFFFE00000UL) | DESC_VALID | DESC_BLOCK | AF_BIT;
+    if (is_device){
+        desc |= (ATTRIDX_DEVICE << ATTRIDX_SHIFT) | SH_OUTER | PXN_BIT | UXN_BIT;
+    } else{
+        desc |= (ATTRIDX_NORMAL << ATTRIDX_SHIFT) | SH_INNER;
+    }
+    return desc;
+}
+
+void mmu_init(void){
+    zero_tables();
+
+    // 1GB identity map using L2 2MB blocks, covered by L1 entry 0.
+    l1_table[0] = ((unsigned long)l2_table & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+
+    for (unsigned long i = 0; i < L2_ENTRIES; i++){
+        unsigned long pa = i << 21; // 2MB blocks
+        int is_device = (pa >= DEVICE_BASE && pa < DEVICE_END);
+        l2_table[i] = block_desc(pa, is_device);
+    }
+
+    // MAIR index0: normal WBWA cacheable, index1: device nGnRnE.
+    unsigned long mair =
+        (0xFFUL << 0) |   // AttrIdx 0
+        (0x00UL << 8);    // AttrIdx 1
+
+    // TCR: TTBR0, 4KB granule, inner-shareable WBWA, 4GB VA space (T0SZ=32).
+    unsigned long tcr =
+        (32UL << 0)  |    // T0SZ
+        (0UL << 6)   |    // TG0 = 4KB
+        (3UL << 8)   |    // SH0 = Inner shareable
+        (1UL << 10)  |    // ORGN0 = WBWA
+        (1UL << 12);      // IRGN0 = WBWA
+
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
+    asm volatile("isb");
+
+    asm volatile("msr mair_el1, %0" : : "r"(mair));
+    asm volatile("msr tcr_el1, %0" : : "r"(tcr));
+    asm volatile("msr ttbr0_el1, %0" : : "r"(l1_table));
+    asm volatile("isb");
+
+    unsigned long sctlr;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr |= (1UL << 0);  // M
+    sctlr |= (1UL << 2);  // C
+    sctlr |= (1UL << 12); // I
+    asm volatile("msr sctlr_el1, %0" : : "r"(sctlr));
+    asm volatile("isb");
+}

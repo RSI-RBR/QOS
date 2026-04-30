@@ -31,7 +31,8 @@ kernel/sdhost.c \
 kernel/debug.c \
 kernel/cache.c \
 kernel/interrupt.c \
-kernel/timer.c
+kernel/timer.c \
+kernel/mmu.c
 
 
 ASM_SOURCES = \
