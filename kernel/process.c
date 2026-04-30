@@ -17,6 +17,7 @@ extern void restore_context_and_eret(void* frame_sp);
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
 #define IRQ_FRAME_ELR_IDX 31
 #define IRQ_FRAME_SPSR_IDX 32
+#define INITIAL_SPSR_EL1H 0x3C5
 
 static void process_bootstrap(void){
     process_t* p = get_current_process();
@@ -35,7 +36,7 @@ static void* build_initial_context(void* stack_top){
         frame[i] = 0;
     }
     frame[IRQ_FRAME_ELR_IDX] = (unsigned long)process_bootstrap;
-    frame[IRQ_FRAME_SPSR_IDX] = 0x5;
+    frame[IRQ_FRAME_SPSR_IDX] = INITIAL_SPSR_EL1H;
     return frame;
 }
 
