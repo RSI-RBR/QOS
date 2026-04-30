@@ -119,6 +119,11 @@ static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
     for (unsigned int i = 0; i < sectors_per_cluster; i++){
         if (sdhost_read_block(lba + i, buffer + i * SECTOR_SIZE)){
+            uart_puts("FAT read_cluster fail cl=");
+            uart_puthex(cluster);
+            uart_puts(" lba=");
+            uart_puthex(lba + i);
+            uart_puts("\n");
             return -1;
         }
     }
@@ -131,6 +136,11 @@ static unsigned int fat_next(unsigned int cluster){
     unsigned int offset = fat_offset % SECTOR_SIZE;
 
     if (sdhost_read_block(fat_sector, sector)){
+        uart_puts("FAT fat_next read fail cl=");
+        uart_puthex(cluster);
+        uart_puts(" fatsec=");
+        uart_puthex(fat_sector);
+        uart_puts("\n");
         return 0x0FFFFFFF;
     }
 
@@ -149,6 +159,9 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
 
     while (cluster < 0x0FFFFFF8){
         if (read_cluster(cluster, cluster_buf)){
+            uart_puts("FAT root walk fail at cl=");
+            uart_puthex(cluster);
+            uart_puts("\n");
             return -1;
         }
 
@@ -175,6 +188,11 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
 
                 while (first_cluster < 0x0FFFFFF8 && copied < size){
                     if (read_cluster(first_cluster, cluster_buf)){
+                        uart_puts("FAT file cluster read fail cl=");
+                        uart_puthex(first_cluster);
+                        uart_puts(" copied=");
+                        uart_puthex(copied);
+                        uart_puts("\n");
                         return -1;
                     }
                     unsigned int to_copy = cluster_size;
@@ -186,6 +204,13 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
                     }
                     if (copied < size){
                         first_cluster = fat_next(first_cluster);
+                        if (first_cluster >= 0x0FFFFFF8 && copied < size){
+                            uart_puts("FAT file chain ended early copied=");
+                            uart_puthex(copied);
+                            uart_puts(" size=");
+                            uart_puthex(size);
+                            uart_puts("\n");
+                        }
                     }
                 }
 
