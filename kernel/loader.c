@@ -54,13 +54,20 @@ loaded_program_t load_program_from_sd(void)
         return prog;
     }
 
-    if (fat32_init()){
-        loader_unlock();
-        uart_puts("FAT init failed.\n");
-        return prog;
+    int size = -1;
+
+    if (fat32_init() == 0){
+        size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
     }
 
-    int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+    if (size <= 0){
+        // One-time resync path for long-uptime SDHOST drift.
+        sdhost_reset();
+        if (sdhost_init_card() == 0 && fat32_init() == 0){
+            size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+        }
+    }
+
     loader_unlock();
 
     if (size <= 0){
