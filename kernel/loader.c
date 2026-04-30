@@ -1,5 +1,4 @@
 #include "loader.h"
-#include "interrupt.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
@@ -11,7 +10,12 @@ static unsigned long program_next = PROGRAM_POOL_START;
 
 
 static unsigned char buffer[PROGRAM_MAX];
+static volatile int loader_busy = 0;
 
+
+int loader_is_busy(void){
+    return loader_busy;
+}
 
 void* alloc_program_memory(unsigned int size){
     size = (size+15) & ~15;
@@ -27,16 +31,20 @@ loaded_program_t load_program_from_sd(void)
 {
     uart_puts("Loading program from SD...\n");
     loaded_program_t prog = {0};
-    disable_interrupts();
+
+    if (__sync_lock_test_and_set(&loader_busy, 1)){
+        uart_puts("Loader busy.\n");
+        return prog;
+    }
 
     if (fat32_init()){
-        enable_interrupts();
+        __sync_lock_release(&loader_busy);
         uart_puts("FAT init failed.\n");
         return prog;
     }
 
     int size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
-    enable_interrupts();
+    __sync_lock_release(&loader_busy);
 
     if (size <= 0){
         uart_puts("Load failed.\n");

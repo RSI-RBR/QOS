@@ -23,6 +23,7 @@ typedef struct{
 void* alloc_program_memory(unsigned int size);
 
 loaded_program_t load_program_from_sd(void);
+int loader_is_busy(void);
 
 void execute_program(unsigned long entry_addr);
 

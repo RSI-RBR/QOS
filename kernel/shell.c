@@ -47,6 +47,11 @@ static void shell_print_prompt(){
 //program_should_exit = 0;
 
 static void cmd_run(int argc, char **argv){
+    if (loader_is_busy()){
+        uart_puts("Loader is busy; try again.\n");
+        return;
+    }
+
     loaded_program_t prog = load_program_from_sd();
 
     if (!prog.entry){
