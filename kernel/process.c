@@ -211,6 +211,17 @@ void scheduler_run_once(void){
         return;
     }
 
+    unsigned long* frame = (unsigned long*)next->sp;
+    uart_puts("scheduler_run_once: pid=");
+    uart_send('0' + current_pid);
+    uart_puts(" frame=");
+    uart_puthex((unsigned int)(unsigned long)next->sp);
+    uart_puts(" elr=");
+    uart_puthex((unsigned int)frame[IRQ_FRAME_ELR_IDX]);
+    uart_puts(" spsr=");
+    uart_puthex((unsigned int)frame[IRQ_FRAME_SPSR_IDX]);
+    uart_puts("\n");
+
     restore_context_and_eret(next->sp);
 }
 
