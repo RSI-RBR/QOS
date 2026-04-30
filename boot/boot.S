@@ -35,6 +35,13 @@ master:
     msr hcr_el2, x0
     isb
 
+    // Allow EL1 access to physical counter/timer registers.
+    mrs x0, cnthctl_el2
+    orr x0, x0, #3          // EL1PCTEN=1, EL1PCEN=1
+    msr cnthctl_el2, x0
+    msr cntvoff_el2, xzr
+    isb
+
     msr sctlr_el1, xzr
     ldr x0, =stack_top
     msr sp_el1, x0
