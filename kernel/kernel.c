@@ -168,15 +168,11 @@ void kernel_main(void){
 //    }
 //    
     
-    uart_puts("Creating shell process...\n");
     int shell_pid = process_create(shell_process_entry);
     if (shell_pid < 0){
         uart_puts("Failed to create shell process\n");
         return;
     }
-    uart_puts("Shell process PID=");
-    uart_send('0' + shell_pid);
-    uart_puts("\n");
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
@@ -192,6 +188,8 @@ void kernel_main(void){
         if (scheduler_has_runnable()){
             process_start_first();
             scheduler_run_once();
+        } else{
+            asm volatile("wfi");
         }
     }
 }

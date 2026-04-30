@@ -9,11 +9,11 @@ static process_t processes[MAX_PROCESSES];
 
 static int current_pid = -1;
 static int zombie_pid = -1;
-static int logged_program_start = 0;
 
 extern kernel_api_t kapi;
 extern void restore_context_and_eret(void* frame_sp);
 extern void process_start(void *entry, void *stack, kernel_api_t *api);
+extern volatile unsigned long system_ticks;
 
 #define IRQ_FRAME_WORDS 34
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
@@ -24,18 +24,11 @@ extern void process_start(void *entry, void *stack, kernel_api_t *api);
 static void process_bootstrap(void){
     process_t* p = get_current_process();
     if (!p || !p->entry){
-        uart_puts("process_bootstrap: invalid current process\n");
         process_exit_current();
         return;
     }
 
-    uart_puts("process_bootstrap: enter pid=");
-    uart_send('0' + p->pid);
-    uart_puts("\n");
     p->entry(&kapi);
-    uart_puts("process_bootstrap: returned pid=");
-    uart_send('0' + p->pid);
-    uart_puts("\n");
     process_exit_current();
 }
 
@@ -68,7 +61,8 @@ void scheduler_tick(void){
 
 void process_init(void){
     for (int i = 0; i < MAX_PROCESSES; i++){
-        processes[i].active = 0;
+        processes[i].state = PROC_DEAD;
+        processes[i].wake_tick = 0;
         processes[i].pid = i;
     }
 }
@@ -106,37 +100,27 @@ void free_stack(void *stack){
 }
 
 int process_create(program_entry_t entry){
-    uart_puts("process_create: begin\n");
     for (int i = 0; i < MAX_PROCESSES; i++){
-        if (!processes[i].active){
+        if (processes[i].state == PROC_DEAD){
             void* stack = alloc_stack();
             if (!stack){
                 uart_puts("No stack available.\n");
                 return 0;
             }
-//            void* top = stacks[i] + STACK_SIZE;
-//            top = (void*)((unsigned long)top & ~0xF);
             processes[i].entry = entry;
             processes[i].stack = stack;
             processes[i].sp = build_initial_context(stack);
-            processes[i].active = 1;
+            processes[i].state = PROC_READY;
             processes[i].program_memory = 0;
             processes[i].program_size = 0;
-
-//            processes[i].program_memory = prog_mem;
-//            processes[i].program_size = prog_size;
+            processes[i].wake_tick = 0;
 
             for (int r = 0; r < 12; r++){
                 processes[i].regs[r] = 0;
             }
-
-            uart_puts("process_create: pid=");
-            uart_send('0' + i);
-            uart_puts("\n");
             return i;
         }
     }
-    uart_puts("process_create: no slot\n");
     return -1;
 }
 
@@ -154,8 +138,8 @@ int process_create_loaded(loaded_program_t prog){
 void process_exit(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES) return;
 
-    if (!processes[pid].active) return;
-    processes[pid].active = 0;
+    if (processes[pid].state == PROC_DEAD) return;
+    processes[pid].state = PROC_DEAD;
     reap_process_resources(pid);
 
     return;
@@ -163,10 +147,11 @@ void process_exit(int pid){
 
 void process_exit_current(void){
     if (current_pid < 0 || current_pid >= MAX_PROCESSES) return;
-    if (processes[current_pid].active){
+    if (processes[current_pid].state != PROC_DEAD){
         zombie_pid = current_pid;
-        processes[zombie_pid].active = 0;
+        processes[zombie_pid].state = PROC_DEAD;
     }
+    current_pid = -1;
     while (1){ asm volatile("wfi"); }
     return;
 }
@@ -182,17 +167,13 @@ process_t* get_current_process(void){
 }
 
 process_t* scheduler_next(void){
-//    int next = (current + 1) % MAX_PROCESSES;
     int start = (current_pid < 0) ? 0 : current_pid + 1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         int next = (start + i) % MAX_PROCESSES;
-//        int idx = (next + i) % MAX_PROCESSES;
-        if (processes[next].active){
+        if (processes[next].state == PROC_READY || processes[next].state == PROC_RUNNING){
             current_pid = next;
-//            current = idx;
-
-//            context_switch(&processes[prev].stack, processes[idx].stack);
-            return &processes[next];;
+            processes[next].state = PROC_RUNNING;
+            return &processes[next];
         }
     }
     return 0;
@@ -213,10 +194,6 @@ void process_start_first(void){
     if (!next){
         return;
     }
-
-    uart_puts("process_start_first: pid=");
-    uart_send('0' + next->pid);
-    uart_puts("\n");
 
     process_start((void*)next->entry, next->stack, &kapi);
 
@@ -241,27 +218,19 @@ void scheduler_run_once(void){
         return;
     }
 
-    unsigned long* frame = (unsigned long*)next->sp;
-    uart_puts("scheduler_run_once: pid=");
-    uart_send('0' + current_pid);
-    uart_puts(" frame=");
-    uart_puthex((unsigned int)(unsigned long)next->sp);
-    uart_puts(" elr=");
-    uart_puthex((unsigned int)frame[IRQ_FRAME_ELR_IDX]);
-    uart_puts(" spsr=");
-    uart_puthex((unsigned int)frame[IRQ_FRAME_SPSR_IDX]);
-    uart_puts("\n");
-
     restore_context_and_eret(next->sp);
 }
 
 void process_yield(void){
-    return;
+    if (current_pid >= 0 && current_pid < MAX_PROCESSES){
+        processes[current_pid].state = PROC_READY;
+    }
+    while (1){ asm volatile("wfi"); }
 }
 
 int scheduler_has_runnable(void){
     for (int i = 0; i < MAX_PROCESSES; i++){
-        if (processes[i].active){
+        if (processes[i].state == PROC_READY || processes[i].state == PROC_RUNNING){
             return 1;
         }
     }
@@ -274,7 +243,17 @@ void* scheduler_on_irq(void* irq_frame_sp){
         zombie_pid = -1;
     }
 
+    for (int i = 0; i < MAX_PROCESSES; i++){
+        if (processes[i].state == PROC_SLEEPING && system_ticks >= processes[i].wake_tick){
+            processes[i].state = PROC_READY;
+            processes[i].wake_tick = 0;
+        }
+    }
+
     if (current_pid >= 0 && current_pid < MAX_PROCESSES){
+        if (processes[current_pid].state == PROC_RUNNING){
+            processes[current_pid].state = PROC_READY;
+        }
         processes[current_pid].sp = irq_frame_sp;
     } else{
         return irq_frame_sp;
@@ -284,13 +263,17 @@ void* scheduler_on_irq(void* irq_frame_sp){
     if (!next){
         return irq_frame_sp;
     }
-    if (!logged_program_start && next->pid > 0){
-        logged_program_start = 1;
-        uart_puts("scheduler_on_irq: switching to program pid=");
-        uart_send('0' + next->pid);
-        uart_puts("\n");
-    }
     return next->sp;
+}
+
+void process_sleep(unsigned int ms){
+    if (current_pid < 0 || current_pid >= MAX_PROCESSES){
+        return;
+    }
+
+    processes[current_pid].wake_tick = system_ticks + ms;
+    processes[current_pid].state = PROC_SLEEPING;
+    while (1){ asm volatile("wfi"); }
 }
 
 

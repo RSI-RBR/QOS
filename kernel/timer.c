@@ -1,6 +1,5 @@
 #include "timer.h"
 #include "process.h"
-#include "uart.h"
 
 #define TIMER_INTERVAL 200000
 #define LOCAL_BASE 0x40000000UL
@@ -19,7 +18,6 @@ void timer_init(void){
     asm volatile("msr cntp_tval_el0, %0" : : "r"(interval));
     asm volatile("msr cntp_ctl_el0, %0" : : "r"(1));
 
-    uart_puts("timer_init: CNTPNSIRQ enabled\n");
 }
 
 void timer_clear_interrupt(void){
@@ -34,11 +32,6 @@ void timer_clear_interrupt(void){
 volatile unsigned long system_ticks = 0;
 
 void timer_handler(void){
-    static int first_tick = 1;
     system_ticks ++;
-    if (first_tick){
-        first_tick = 0;
-        uart_puts("timer_handler: first tick\n");
-    }
     scheduler_tick();
 }

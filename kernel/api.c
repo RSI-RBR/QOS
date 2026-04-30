@@ -27,11 +27,7 @@ static void api_clear(unsigned int color){
 }
 
 static void api_sleep(unsigned int ms){
-    unsigned long target = system_ticks + ms;
-
-    while (system_ticks < target){
-        process_yield();
-    }
+    process_sleep(ms);
 }
 
 //volatile int program_should_exit = 0;

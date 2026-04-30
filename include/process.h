@@ -7,6 +7,13 @@
 #define MAX_PROCESSES 8
 #define STACK_SIZE 4096
 
+typedef enum {
+    PROC_DEAD = 0,
+    PROC_READY,
+    PROC_RUNNING,
+    PROC_SLEEPING
+} process_state_t;
+
 typedef struct{
     unsigned long regs[12];
     void* sp;
@@ -14,7 +21,8 @@ typedef struct{
     program_entry_t entry;
     void* program_memory;
     unsigned long program_size;
-    int active;
+    process_state_t state;
+    unsigned long wake_tick;
     int pid;
 } process_t;
 
@@ -45,5 +53,6 @@ void process_yield(void);
 int scheduler_has_runnable(void);
 void* scheduler_on_irq(void* irq_frame_sp);
 void process_start_first(void);
+void process_sleep(unsigned int ms);
 
 #endif
