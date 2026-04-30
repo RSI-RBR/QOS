@@ -411,5 +411,17 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     SDHSTS = 0x7F8;
     asm volatile("msr daifclr, #2");
 
+    // Let controller FSM settle before next command/read.
+    // This replaces the incidental timing side-effect from debug UART prints.
+    {
+        int settle_timeout = 100000;
+        while (settle_timeout--){
+            unsigned int fsm = SDEDM & SDEDM_FSM_MASK;
+            if (fsm == 0){
+                break;
+            }
+        }
+    }
+
     return 0;
 }
