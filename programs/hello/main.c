@@ -43,7 +43,7 @@ void program_main(kernel_api_t *api){
 
         api->edit_buffer_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
         api->update_buffer_pixels();
-//        api->sleep(16);
+        api->sleep(16);
     }
     
 
