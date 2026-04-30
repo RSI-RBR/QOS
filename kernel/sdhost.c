@@ -98,15 +98,12 @@ void sdhost_reset(void) {
 int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     int timeout;
 
-    uart_puts("CMD ");
-    uart_puthex(cmd);
-    uart_puts("\n");
 
     // Wait until controller free
     timeout = 1000000;
     while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
     if (!timeout) {
-        uart_puts("CMD BUSY TIMEOUT\n");
+        uart_puts("SD CMD timeout\n");
         return -1;
     }
 
@@ -141,16 +138,14 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     timeout = 1000000;
     while ((SDCMD & SDCMD_NEW_FLAG) && timeout--);
     if (!timeout) {
-        uart_puts("CMD BUSY TIMEOUT\n");
+        uart_puts("SD CMD timeout\n");
         return -1;
     }
 
     if (SDCMD & SDCMD_FAIL_FLAG) {
-        uart_puts("CMD FAIL\n");
+        uart_puts("SD CMD fail\n");
         return -1;
     }
-
-    uart_puts("CMD OK\n");
     return 0;
 }
 
@@ -307,10 +302,6 @@ int sdhost_init_card(void) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer){
-    uart_puts("READ BLOCK ");
-    uart_puthex(lba);
-    uart_puts("\n");
-
     // Set block size/count
     SDHBCT = 512;
     SDHBLC = 1;
@@ -326,15 +317,10 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     // Send CMD17
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
-        uart_puts("CMD17 FAIL\n");
+        uart_puts("SD read command failed\n");
         return -1;
     }
-
-    uart_puts("CMD17 RESP = ");
-    uart_puthex(sdhost_get_resp());
-    uart_puts("\n");
-
-    uart_puts("CMD17 OK, reading data...\n");
+    (void)sdhost_get_resp();
 
     // Critical section: polling FIFO is timing-sensitive on this driver.
     // Keep IRQs masked only for the data drain window (one 512-byte block).
@@ -369,7 +355,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
             // 🚨 HARD SAFETY CHECK
             if (index >= 512){
-                uart_puts("BUFFER OVERFLOW!\n");
+                uart_puts("SD buffer overflow\n");
                 return -1;
             }
 
@@ -385,14 +371,14 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
             // 🚨 EXTRA SAFETY
             if (words_left < 0){
-                uart_puts("WORDS UNDERFLOW!\n");
+                uart_puts("SD words underflow\n");
                 return -1;
             }
 
             // Check errors after each word
             unsigned int status = SDHSTS;
             if (status & SDHSTS_ERROR_MASK){
-                uart_puts("DATA ERROR\n");
+                uart_puts("SD data error\n");
                 SDHSTS = 0x7F8;
                 asm volatile("msr daifclr, #2");
                 return -1;
@@ -403,7 +389,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     // Final error check
     unsigned int final_status = SDHSTS;
     if (final_status & SDHSTS_ERROR_MASK){
-        uart_puts("FINAL DATA ERROR status=");
+        uart_puts("SD final data error status=");
         uart_puthex(final_status);
         uart_puts("\n");
         SDHSTS = 0x7F8;
@@ -424,6 +410,5 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     SDHSTS = 0x7F8;
     asm volatile("msr daifclr, #2");
 
-    uart_puts("READ DONE!\n");
     return 0;
 }

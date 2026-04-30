@@ -62,7 +62,7 @@ static void cmd_run(int argc, char **argv){
     int p = process_create_loaded(prog);
 
     if (p < 0){
-        uart_puts("Process creation failed.\n");
+        uart_puts("Process creation failed (process limit reached).\n");
         kfree_secure(prog.memory, prog.size);
         return;
     }
