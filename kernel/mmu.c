@@ -24,6 +24,7 @@
 
 static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table[L2_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
 
 static void zero_tables(void){
     for (int i = 0; i < L1_ENTRIES; i++){
@@ -31,6 +32,7 @@ static void zero_tables(void){
     }
     for (int i = 0; i < L2_ENTRIES; i++){
         l2_table[i] = 0;
+        l2_table_1[i] = 0;
     }
 }
 
@@ -47,13 +49,18 @@ static unsigned long block_desc(unsigned long pa, int is_device){
 void mmu_init(void){
     zero_tables();
 
-    // 1GB identity map using L2 2MB blocks, covered by L1 entry 0.
+    // 2GB identity map using two L2 tables (1GB each via 2MB blocks).
     l1_table[0] = ((unsigned long)l2_table & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+    l1_table[1] = ((unsigned long)l2_table_1 & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
 
     for (unsigned long i = 0; i < L2_ENTRIES; i++){
         unsigned long pa = i << 21; // 2MB blocks
         int is_device = (pa >= DEVICE_BASE && pa < DEVICE_END);
         l2_table[i] = block_desc(pa, is_device);
+
+        unsigned long pa1 = (1UL << 30) + (i << 21); // 1GB..2GB
+        int is_device1 = (pa1 >= DEVICE_BASE && pa1 < DEVICE_END);
+        l2_table_1[i] = block_desc(pa1, is_device1);
     }
 
     // MAIR index0: normal WBWA cacheable, index1: device nGnRnE.
