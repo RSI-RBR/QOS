@@ -13,7 +13,10 @@ struct screen_saver_cube{
 void program_main(kernel_api_t *api){
     api->puts("Hello from external program!\n");
 
-    int screen_x = 1920; int screen_y = 1080;
+    int screen_x = (int)api->get_screen_width();
+    int screen_y = (int)api->get_screen_height();
+    if (screen_x <= 0) screen_x = 1920;
+    if (screen_y <= 0) screen_y = 1080;
 //    api->draw_rect(0, 0, 50, 50, 0x00FF0000);
     char running = 1;
     struct screen_saver_cube cube; cube.lx = 0; cube.ly = 0; cube.vx = 1; cube.vy = 1; cube.c = 0x00FFFFFF; cube.sx = 50; cube.sy = 50;

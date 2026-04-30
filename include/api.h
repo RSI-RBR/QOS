@@ -21,6 +21,8 @@ typedef struct {
     void (*update_buffer_pixels)(void);
 
     void (*clear)(unsigned int color);
+    unsigned int (*get_screen_width)(void);
+    unsigned int (*get_screen_height)(void);
 
     void (*sleep)(unsigned int ms);
 

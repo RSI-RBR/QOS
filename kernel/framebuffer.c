@@ -203,3 +203,7 @@ unsigned int fb_get_width(){
 unsigned int fb_get_height(){
     return height;
 }
+
+unsigned int fb_get_pitch(){
+    return pitch;
+}

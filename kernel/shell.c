@@ -78,6 +78,18 @@ static void cmd_ps(int argc, char **argv){
     process_dump();
 }
 
+static void cmd_fbinfo(int argc, char **argv){
+    (void)argc;
+    (void)argv;
+    uart_puts("FB width=");
+    uart_puthex(fb_get_width());
+    uart_puts(" height=");
+    uart_puthex(fb_get_height());
+    uart_puts(" pitch=");
+    uart_puthex(fb_get_pitch());
+    uart_puts("\n");
+}
+
 static void shell_clear_buffer(){
     for (int i = 0; i < BUF_SIZE; i++) buffer[i] = 0;
     buf_index = 0;
@@ -115,6 +127,7 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" run (executes program at 0x40000) \n");
     uart_puts(" lsprog \n");
     uart_puts(" ps \n");
+    uart_puts(" fbinfo \n");
 //    uart_puts(" runbin\n");
 
     return;
@@ -216,6 +229,7 @@ static command_t commands[] = {
     {"run", cmd_run},
     {"lsprog", cmd_lsprog},
     {"ps", cmd_ps},
+    {"fbinfo", cmd_fbinfo},
     {"loadtest", cmd_loadtest}
 };
 

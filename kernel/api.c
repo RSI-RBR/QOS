@@ -26,6 +26,14 @@ static void api_clear(unsigned int color){
     fb_clear(color);
 }
 
+static unsigned int api_get_screen_width(void){
+    return fb_get_width();
+}
+
+static unsigned int api_get_screen_height(void){
+    return fb_get_height();
+}
+
 static void api_sleep(unsigned int ms){
     process_sleep(ms);
 }
@@ -54,6 +62,8 @@ kernel_api_t kapi = {
     .edit_buffer_rect = api_edit_buffer_rect,
     .update_buffer_pixels = api_update_buffer_pixels,
     .clear = api_clear,
+    .get_screen_width = api_get_screen_width,
+    .get_screen_height = api_get_screen_height,
 
     .sleep = api_sleep,
 
