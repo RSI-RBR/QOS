@@ -57,6 +57,11 @@ loaded_program_t load_program_from_sd(void)
 
     int size = -1;
 
+    // SD/FAT path is timing-sensitive on this platform. Keep the entire
+    // init + file read transaction non-preemptible to avoid scheduler
+    // interleaving that can cause false FAT chain/end-marker failures.
+    asm volatile("msr daifset, #2");
+
     if (fat32_init() == 0){
         size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
         if (size <= 0){
@@ -72,6 +77,8 @@ loaded_program_t load_program_from_sd(void)
             size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
         }
     }
+
+    asm volatile("msr daifclr, #2");
 
     loader_unlock();
 
