@@ -316,48 +316,40 @@ int sdhost_init_card(void) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer){
+    int rc = -1;
+    int irq_masked = 0;
+
     sdhost_drain_fifo();
 
-    // Set block size/count
     SDHBCT = 512;
     SDHBLC = 1;
 
-    // Addressing
     unsigned int addr = lba;
     if (!sd_is_sdhc){
         addr = lba * 512;
     }
 
-    // Clear status BEFORE command
     SDHSTS = 0x7F8;
 
-    // Send CMD17
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
         return -1;
     }
     (void)sdhost_get_resp();
 
-    // Critical section: polling FIFO is timing-sensitive on this driver.
-    // Keep IRQs masked only for the data drain window (one 512-byte block).
     asm volatile("msr daifset, #2");
+    irq_masked = 1;
 
     int words_left = 128;
     int index = 0;
 
     while (words_left > 0){
-
         unsigned int edm = SDEDM;
         unsigned int fifo_words = (edm >> 4) & 0x1F;
-        barrier();
         unsigned int fsm = edm & SDEDM_FSM_MASK;
+        barrier();
 
-        if (fsm == 0){
-            continue;
-        }
-
-        // Wait for FIFO data
-        if (fifo_words == 0){
+        if (fsm == 0 || fifo_words == 0){
             continue;
         }
 
@@ -365,14 +357,11 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         if (burst > words_left){
             burst = words_left;
         }
-//        if (burst > 8) burst = 8;
 
         for (int j = 0; j < burst; j++){
-
-            // 🚨 HARD SAFETY CHECK
             if (index >= 512){
-                uart_puts("BUFFER OVERFLOW!\n");
-                return -1;
+                uart_puts("BUFFER OVERFLOW\n");
+                goto out;
             }
 
             unsigned int data = SDDATA;
@@ -381,67 +370,42 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             buffer[index++] = (data >> 8) & 0xFF;
             buffer[index++] = (data >> 16) & 0xFF;
             buffer[index++] = (data >> 24) & 0xFF;
-
-//            index += 4;
             words_left--;
 
-            // 🚨 EXTRA SAFETY
-            if (words_left < 0){
-                uart_puts("WORDS UNDERFLOW!\n");
-                return -1;
-            }
-
-            // Check errors after each word
-            unsigned int status = SDHSTS;
-            if (status & SDHSTS_ERROR_MASK){
+            if (SDHSTS & SDHSTS_ERROR_MASK){
                 uart_puts("DATA ERROR\n");
                 SDHSTS = 0x7F8;
-    asm volatile("msr daifclr, #2");
-    sdhost_drain_fifo();
-                return -1;
+                goto out;
             }
         }
     }
 
-    // Final error check
-    unsigned int final_status = SDHSTS;
-    if (final_status & SDHSTS_ERROR_MASK){
+    if (SDHSTS & SDHSTS_ERROR_MASK){
         uart_puts("FINAL DATA ERROR status=");
-        uart_puthex(final_status);
+        uart_puthex(SDHSTS);
         uart_puts("\n");
         SDHSTS = 0x7F8;
-    asm volatile("msr daifclr, #2");
-    sdhost_drain_fifo();
-        return -1;
+        goto out;
     }
 
-    // Wait for transfer complete
-//    int timeout = 1000000;
-//    while (!(SDHSTS  (1 << 1)) && timeout--);
-
-//    if (!timeout){
-//        uart_puts("TRANSFER DONE TIMEOUT\n");
-//        return -1;
-//    }
-
-    // Clear status AFTER transfer
     SDHSTS = 0x7F8;
-    asm volatile("msr daifclr, #2");
-    sdhost_drain_fifo();
+    rc = 0;
 
-    // Let controller FSM settle before next command/read.
-    // This replaces the incidental timing side-effect from debug UART prints.
     {
         int settle_timeout = 100000;
         while (settle_timeout--){
-            unsigned int fsm = SDEDM & SDEDM_FSM_MASK;
-            if (fsm == 0){
+            if ((SDEDM & SDEDM_FSM_MASK) == 0){
                 break;
             }
         }
     }
 
-    return 0;
+out:
+    if (irq_masked){
+        asm volatile("msr daifclr, #2");
+    }
+    sdhost_drain_fifo();
+    return rc;
 }
 
 
