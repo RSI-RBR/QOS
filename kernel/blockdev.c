@@ -1,6 +1,7 @@
 #include "blockdev.h"
 #include "emmc.h"
 #include "sdhost.h"
+#include "gpio.h"
 #include "uart.h"
 
 enum {
@@ -18,12 +19,14 @@ const char* blockdev_name(void){
 }
 
 int blockdev_init(void){
+    gpio_init_emmc();
     if (emmc_init() == 0){
         g_backend = BACKEND_EMMC;
         uart_puts("Blockdev: EMMC active\n");
         return 0;
     }
 
+    gpio_init_sd();
     sdhost_reset();
     if (sdhost_init_card() == 0){
         g_backend = BACKEND_SDHOST;
@@ -38,9 +41,11 @@ int blockdev_init(void){
 
 int blockdev_reinit(void){
     if (g_backend == BACKEND_EMMC){
+        gpio_init_emmc();
         return emmc_init();
     }
     if (g_backend == BACKEND_SDHOST){
+        gpio_init_sd();
         sdhost_reset();
         return sdhost_init_card();
     }

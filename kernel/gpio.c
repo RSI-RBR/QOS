@@ -81,3 +81,28 @@ void gpio_init_sd(void) {
 
     uart_puts("GPIO: SD pins configured\n");
 }
+
+void gpio_init_emmc(void) {
+    uart_puts("GPIO: configuring EMMC pins\n");
+
+    // EMMC/SDHCI uses ALT3 on GPIO48..53 (shared pins with SDHOST ALT0).
+    gpio_set_alt(48, 7); // CLK
+    gpio_set_alt(49, 7); // CMD
+    gpio_set_alt(50, 7); // DAT0
+    gpio_set_alt(51, 7); // DAT1
+    gpio_set_alt(52, 7); // DAT2
+    gpio_set_alt(53, 7); // DAT3
+
+    // Pull up CMD/DAT lines; keep CLK without pull.
+    *GPPUD = 2;
+    delay(150);
+    *GPPUDCLK1 = (1 << (49 - 32)) |
+                 (1 << (50 - 32)) |
+                 (1 << (51 - 32)) |
+                 (1 << (52 - 32)) |
+                 (1 << (53 - 32));
+    delay(150);
+    *GPPUDCLK1 = 0;
+
+    uart_puts("GPIO: EMMC pins configured\n");
+}
