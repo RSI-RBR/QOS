@@ -26,6 +26,7 @@
 
 #define SR_CMD_INHIBIT   (1u << 0)
 #define SR_DAT_INHIBIT   (1u << 1)
+#define SR_READ_TRANSFER (1u << 9)
 
 #define C1_CLK_INTLEN    (1u << 0)
 #define C1_CLK_STABLE    (1u << 1)
@@ -106,6 +107,19 @@ static void emmc_cmd12_recover(void){
     // Best-effort stop transmission to recover host/card data state.
     (void)emmc_cmd(12, 0, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN);
     EMMC_INTERRUPT = 0xFFFFFFFFu;
+}
+
+static int emmc_reset_cmd_dat_lines(void){
+    EMMC_CONTROL1 |= (C1_SRST_CMD | C1_SRST_DAT);
+    {
+        unsigned long start = system_ticks;
+        while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
+            if ((system_ticks - start) > 120){
+                return -1;
+            }
+        }
+    }
+    return 0;
 }
 
 static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags){
@@ -285,14 +299,20 @@ int emmc_read_block(unsigned int lba, unsigned char *buffer){
             continue;
         }
 
-        if (wait_interrupt(INT_READ_RDY, 150) != 0){
-            uart_puts("EMMC: READ_RDY timeout irpt=");
-            uart_puthex(EMMC_INTERRUPT);
-            uart_puts(" st=");
-            uart_puthex(EMMC_STATUS);
-            uart_puts("\n");
-            emmc_cmd12_recover();
-            continue;
+    if (wait_interrupt(INT_READ_RDY, 150) != 0){
+            unsigned int st = EMMC_STATUS;
+            // Fallback: some setups never raise READ_RDY reliably, but STATUS
+            // indicates read transfer active.
+            if (!(st & SR_READ_TRANSFER)){
+                uart_puts("EMMC: READ_RDY timeout irpt=");
+                uart_puthex(EMMC_INTERRUPT);
+                uart_puts(" st=");
+                uart_puthex(st);
+                uart_puts("\n");
+                emmc_cmd12_recover();
+                (void)emmc_reset_cmd_dat_lines();
+                continue;
+            }
         }
 
         for (int i = 0; i < 128; i++){
@@ -310,6 +330,7 @@ int emmc_read_block(unsigned int lba, unsigned char *buffer){
             uart_puthex(EMMC_STATUS);
             uart_puts("\n");
             emmc_cmd12_recover();
+            (void)emmc_reset_cmd_dat_lines();
             continue;
         }
 
