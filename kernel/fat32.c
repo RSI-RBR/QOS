@@ -1,5 +1,5 @@
 #include "fat32.h"
-#include "sdhost.h"
+#include "blockdev.h"
 #include "uart.h"
 #include "debug.h"
 
@@ -29,7 +29,7 @@ static unsigned short read16(unsigned char *p){
 
 int fat32_init(void){
     // Read MBR
-    if (sdhost_read_block(0, sector)){
+    if (blockdev_read_block(0, sector)){
         uart_puts("FAT: failed to read MBR\n");
         return -1;
     }
@@ -70,7 +70,7 @@ int fat32_init(void){
     barrier();
     // Read FAT32 boot sector with sanity retries.
     for (int attempt = 0; attempt < 4; attempt++){
-        if (sdhost_read_block(partition_lba, sector)){
+        if (blockdev_read_block(partition_lba, sector)){
             if (attempt == 3){
                 uart_puts("FAT: failed to read boot sector\n");
                 return -1;
@@ -138,7 +138,7 @@ static int name_match(unsigned char *entry, const char *name){
 static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
     for (unsigned int i = 0; i < sectors_per_cluster; i++){
-        if (sdhost_read_block(lba + i, buffer + i * SECTOR_SIZE)){
+        if (blockdev_read_block(lba + i, buffer + i * SECTOR_SIZE)){
             uart_puts("FAT read_cluster fail cl=");
             uart_puthex(cluster);
             uart_puts(" lba=");
@@ -155,7 +155,7 @@ static unsigned int fat_next(unsigned int cluster){
     unsigned int fat_sector = fat_start + (fat_offset / SECTOR_SIZE);
     unsigned int offset = fat_offset % SECTOR_SIZE;
 
-    if (sdhost_read_block(fat_sector, sector)){
+    if (blockdev_read_block(fat_sector, sector)){
         uart_puts("FAT fat_next read fail cl=");
         uart_puthex(cluster);
         uart_puts(" fatsec=");

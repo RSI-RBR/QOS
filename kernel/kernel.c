@@ -9,7 +9,7 @@
 #include "fat32.h"
 //#include "sd.h"
 #include "gpio.h"
-#include "sdhost.h"
+#include "blockdev.h"
 //#include "clock.h"
 //#include "mailbox.h"
 #include "debug.h"
@@ -106,14 +106,11 @@ void kernel_main(void){
 //    extern int sdhost_init_card(void);
 //    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
     gpio_init_sd();
-    sdhost_reset();
-    if (sdhost_init_card() != 0){
-        uart_puts("SD INIT FAILED!\n");
+    if (blockdev_init() != 0){
+        uart_puts("Blockdev init failed!\n");
         return;
     }
-    sdhost_irq_init();
-
-    uart_puts("INIT OK...\n");
+    uart_puts("Storage init OK...\n");
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");

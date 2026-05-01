@@ -1,5 +1,5 @@
 #include "loader.h"
-#include "sdhost.h"
+#include "blockdev.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
@@ -57,12 +57,9 @@ loaded_program_t load_program_from_sd(void)
 
     int size = -1;
 
-    // Force a clean SD controller/card state for every load.
-    // This avoids long-idle drift causing the first read to misbehave.
-    sdhost_reset();
-    if (sdhost_init_card() != 0){
+    if (blockdev_reinit() != 0){
         loader_unlock();
-        uart_puts("SD init failed.\n");
+        uart_puts("Storage reinit failed.\n");
         return prog;
     }
 
@@ -74,9 +71,8 @@ loaded_program_t load_program_from_sd(void)
     }
 
     if (size <= 0){
-        // One-time resync path for long-uptime SDHOST drift.
-        sdhost_reset();
-        sdhost_init_card();
+        // One-time resync path.
+        blockdev_reinit();
         if (fat32_init() == 0){
             size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
         }
