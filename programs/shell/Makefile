@@ -3,7 +3,7 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -O2 -pie -DQOS_USERSPACE -I../../include
+CFLAGS = -ffreestanding -nostdlib -O2 -pie -mgeneral-regs-only -DQOS_USERSPACE -I../../include
 
 all: shell.bin
 

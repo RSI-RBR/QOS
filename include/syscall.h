@@ -25,7 +25,7 @@ static inline unsigned long qos_syscall0(unsigned long n){
         "svc #0"
         : "+r"(x0)
         : "r"(x8)
-        : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "memory");
+        : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 
@@ -36,7 +36,7 @@ static inline unsigned long qos_syscall1(unsigned long n, unsigned long a0){
         "svc #0"
         : "+r"(x0)
         : "r"(x8)
-        : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "memory");
+        : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 
@@ -48,7 +48,7 @@ static inline unsigned long qos_syscall2(unsigned long n, unsigned long a0, unsi
         "svc #0"
         : "+r"(x0), "+r"(x1)
         : "r"(x8)
-        : "x2", "x3", "x4", "x5", "x6", "x7", "memory");
+        : "x2", "x3", "x4", "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 
@@ -64,7 +64,7 @@ static inline unsigned long qos_syscall5(unsigned long n, unsigned long a0, unsi
         "svc #0"
         : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4)
         : "r"(x8)
-        : "x5", "x6", "x7", "memory");
+        : "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 

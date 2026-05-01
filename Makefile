@@ -5,7 +5,7 @@ OBJCOPY = $(CROSS)objcopy
 
 BUILD = build
 
-CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -Iinclude
+CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -Iinclude
 LDFLAGS = -T linker.ld
 
 # ---------------------------
