@@ -90,6 +90,22 @@ static int wait_interrupt(unsigned int mask, unsigned long timeout_ms){
     }
 }
 
+static int emmc_wait_data_inhibit_clear(unsigned long timeout_ms){
+    unsigned long start = system_ticks;
+    while (EMMC_STATUS & SR_DAT_INHIBIT){
+        if ((system_ticks - start) > timeout_ms){
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void emmc_cmd12_recover(void){
+    // Best-effort stop transmission to recover host/card data state.
+    (void)emmc_cmd(12, 0, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN);
+    EMMC_INTERRUPT = 0xFFFFFFFFu;
+}
+
 static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags){
     if (wait_status_clear(SR_CMD_INHIBIT, 120) != 0){
         return -1;
@@ -246,32 +262,57 @@ int emmc_init(void){
 int emmc_read_block(unsigned int lba, unsigned char *buffer){
     unsigned int addr = g_sdhc ? lba : (lba * 512u);
 
-    if (wait_status_clear(SR_CMD_INHIBIT | SR_DAT_INHIBIT, 120) != 0){
-        return -1;
+    for (int attempt = 0; attempt < 3; attempt++){
+        if (wait_status_clear(SR_CMD_INHIBIT, 120) != 0){
+            uart_puts("EMMC: cmd inhibit timeout\n");
+            emmc_cmd12_recover();
+            continue;
+        }
+        if (emmc_wait_data_inhibit_clear(120) != 0){
+            uart_puts("EMMC: data inhibit timeout\n");
+            emmc_cmd12_recover();
+            continue;
+        }
+
+        EMMC_BLKSIZECNT = (1u << 16) | 512u;
+        EMMC_INTERRUPT = 0xFFFFFFFFu;
+
+        if (emmc_cmd(17, addr, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN | CMD_ISDATA | TM_DAT_DIR_CH | TM_BLKCNT_EN) != 0){
+            uart_puts("EMMC: CMD17 fail\n");
+            emmc_cmd12_recover();
+            continue;
+        }
+
+        if (wait_interrupt(INT_READ_RDY, 150) != 0){
+            uart_puts("EMMC: READ_RDY timeout irpt=");
+            uart_puthex(EMMC_INTERRUPT);
+            uart_puts(" st=");
+            uart_puthex(EMMC_STATUS);
+            uart_puts("\n");
+            emmc_cmd12_recover();
+            continue;
+        }
+
+        for (int i = 0; i < 128; i++){
+            unsigned int d = EMMC_DATA;
+            buffer[i*4 + 0] = (unsigned char)(d & 0xFF);
+            buffer[i*4 + 1] = (unsigned char)((d >> 8) & 0xFF);
+            buffer[i*4 + 2] = (unsigned char)((d >> 16) & 0xFF);
+            buffer[i*4 + 3] = (unsigned char)((d >> 24) & 0xFF);
+        }
+
+        if (wait_interrupt(INT_DATA_DONE, 150) != 0){
+            uart_puts("EMMC: DATA_DONE timeout irpt=");
+            uart_puthex(EMMC_INTERRUPT);
+            uart_puts(" st=");
+            uart_puthex(EMMC_STATUS);
+            uart_puts("\n");
+            emmc_cmd12_recover();
+            continue;
+        }
+
+        return 0;
     }
 
-    EMMC_BLKSIZECNT = (1u << 16) | 512u;
-    EMMC_INTERRUPT = 0xFFFFFFFFu;
-
-    if (emmc_cmd(17, addr, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN | CMD_ISDATA | TM_DAT_DIR_CH | TM_BLKCNT_EN) != 0){
-        return -1;
-    }
-
-    if (wait_interrupt(INT_READ_RDY, 120) != 0){
-        return -1;
-    }
-
-    for (int i = 0; i < 128; i++){
-        unsigned int d = EMMC_DATA;
-        buffer[i*4 + 0] = (unsigned char)(d & 0xFF);
-        buffer[i*4 + 1] = (unsigned char)((d >> 8) & 0xFF);
-        buffer[i*4 + 2] = (unsigned char)((d >> 16) & 0xFF);
-        buffer[i*4 + 3] = (unsigned char)((d >> 24) & 0xFF);
-    }
-
-    if (wait_interrupt(INT_DATA_DONE, 120) != 0){
-        return -1;
-    }
-
-    return 0;
+    return -1;
 }
