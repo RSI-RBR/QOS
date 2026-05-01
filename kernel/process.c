@@ -302,7 +302,12 @@ int scheduler_has_runnable(void){
 }
 
 void* scheduler_on_irq(void* irq_frame_sp){
-    if (zombie_pid >= 0){
+    int deferred_current_reap = 0;
+    if (zombie_pid >= 0 && zombie_pid == current_pid){
+        // We are still executing on current_pid's kernel stack/frame.
+        // Defer reaping until after we switch away.
+        deferred_current_reap = 1;
+    } else if (zombie_pid >= 0){
         reap_process_resources(zombie_pid);
         zombie_pid = -1;
     }
@@ -359,6 +364,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
             current_pid = -1;
         }
         return irq_frame_sp;
+    }
+
+    if (deferred_current_reap && zombie_pid >= 0 && zombie_pid != current_pid){
+        reap_process_resources(zombie_pid);
+        zombie_pid = -1;
     }
     return next->sp;
 }

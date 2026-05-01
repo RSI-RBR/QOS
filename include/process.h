@@ -5,7 +5,7 @@
 #include "loader.h"
 
 #define MAX_PROCESSES 8
-#define STACK_SIZE 4096
+#define STACK_SIZE 16384
 
 typedef enum {
     PROC_DEAD = 0,

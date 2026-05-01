@@ -16,6 +16,16 @@ static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
 static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
 
+static unsigned long daif_read(void){
+    unsigned long v;
+    asm volatile("mrs %0, daif" : "=r"(v));
+    return v;
+}
+
+static void daif_write(unsigned long v){
+    asm volatile("msr daif, %0" : : "r"(v));
+}
+
 void loader_mmu_init_pool(void){
     // Keep pool inaccessible to EL0 until a program block is explicitly mapped.
     mmu_map_kernel_private_region(PROGRAM_POOL_START, PROGRAM_POOL_SIZE);
@@ -26,19 +36,21 @@ void loader_mmu_init_pool(void){
 
 static int loader_try_lock(void){
     int taken;
+    unsigned long daif_prev = daif_read();
     asm volatile("msr daifset, #2");
     taken = loader_busy;
     if (!taken){
         loader_busy = 1;
     }
-    asm volatile("msr daifclr, #2");
+    daif_write(daif_prev);
     return !taken;
 }
 
 static void loader_unlock(void){
+    unsigned long daif_prev = daif_read();
     asm volatile("msr daifset, #2");
     loader_busy = 0;
-    asm volatile("msr daifclr, #2");
+    daif_write(daif_prev);
 }
 
 
