@@ -162,6 +162,14 @@ static void hc_force_halt(unsigned int ch){
     }
 }
 
+static void clear_port_change_bits(void){
+    unsigned int hprt = HPRT0;
+    hprt &= ~(HPRT0_RESET);
+    hprt |= HPRT0_PWR;
+    hprt |= (HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
+    HPRT0 = hprt;
+}
+
 static void fifo_write_bytes(const unsigned char* data, unsigned int len){
     unsigned int words = div_round_up(len, 4);
     for (unsigned int i = 0; i < words; i++){
@@ -281,7 +289,9 @@ static int hc_transfer(unsigned int ch,
     }
 
     for (unsigned int attempt = 0; attempt < 128; attempt++){
-        hc_force_halt(ch);
+        if (attempt > 0){
+            hc_force_halt(ch);
+        }
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
@@ -324,6 +334,8 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(HCINT(ch));
             uart_puts(" hctsiz=");
             uart_puthex(HCTSIZ(ch));
+            uart_puts(" hcchar=");
+            uart_puthex(HCCHAR(ch));
             uart_puts(" hprt0=");
             uart_puthex(HPRT0);
             uart_puts("\n");
@@ -354,6 +366,7 @@ int usb_host_reset_root_port(void){
     HPRT0 = hprt;
     spin_delay(400000);
 
+    clear_port_change_bits();
     hprt = HPRT0;
     g_port_speed = hprt & HPRT0_SPD_MASK;
     if (!(hprt & HPRT0_ENA)){
