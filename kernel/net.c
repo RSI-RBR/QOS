@@ -60,7 +60,11 @@ static int net_rxq_pop(net_frame_t* out){
         return -1;
     }
 
-    *out = g_rxq.frames[g_rxq.head];
+    net_frame_t* src = &g_rxq.frames[g_rxq.head];
+    out->len = src->len;
+    for (unsigned int i = 0; i < src->len && i < NET_MAX_FRAME_SIZE; i++){
+        out->data[i] = src->data[i];
+    }
     g_rxq.head = (g_rxq.head + 1) % NET_RX_QUEUE_LEN;
     g_rxq.count--;
     return 0;
