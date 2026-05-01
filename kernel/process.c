@@ -342,7 +342,22 @@ void* scheduler_on_irq(void* irq_frame_sp){
         next = scheduler_next();
     }
     if (!next){
-        current_pid = -1;
+        if (current_pid >= 0 && current_pid < MAX_PROCESSES){
+            if (processes[current_pid].state == PROC_SLEEPING){
+                // No alternate runnable task exists. Avoid desynchronizing
+                // current_pid/state; treat sleep as a no-op in this edge case.
+                processes[current_pid].state = PROC_RUNNING;
+                processes[current_pid].wake_tick = 0;
+                return irq_frame_sp;
+            }
+            if (processes[current_pid].state == PROC_DEAD){
+                current_pid = -1;
+            } else{
+                processes[current_pid].state = PROC_RUNNING;
+            }
+        } else{
+            current_pid = -1;
+        }
         return irq_frame_sp;
     }
     return next->sp;

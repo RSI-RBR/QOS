@@ -33,6 +33,9 @@ static void syscall_write_puts(const char* s){
     }
     unsigned long n = clamp_puts_len(s);
     for (unsigned long i = 0; i < n; i++){
+        if (s[i] == '\n'){
+            uart_send('\r');
+        }
         uart_send(s[i]);
     }
 }
