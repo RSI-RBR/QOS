@@ -31,9 +31,15 @@
 #define C1_CLK_STABLE    (1u << 1)
 #define C1_CLK_EN        (1u << 2)
 #define C1_SRST_HC       (1u << 24)
+#define C1_SRST_CMD      (1u << 25)
+#define C1_SRST_DAT      (1u << 26)
 #define C1_CLK_DIV_MASK  ((0xFFu << 8) | (0x3u << 6))
 #define C1_DATA_TOUNIT_MASK (0xFu << 16)
 #define C1_DATA_TOUNIT_MAX  (0xEu << 16)
+
+#define C0_HCTL_DWIDTH      (1u << 1)
+#define C0_SD_BUS_POWER     (1u << 8)
+#define C0_SD_BUS_VOLT_33   (7u << 9)
 
 #define CMD_RSPNS_NONE   (0u << 16)
 #define CMD_RSPNS_136    (1u << 16)
@@ -108,6 +114,20 @@ static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags){
     return 0;
 }
 
+static int emmc_reset_cmd_dat_lines(void){
+    EMMC_CONTROL1 |= (C1_SRST_CMD | C1_SRST_DAT);
+    {
+        unsigned long start = system_ticks;
+        while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
+            if ((system_ticks - start) > 120){
+                uart_puts("EMMC: cmd/dat reset timeout\n");
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int emmc_acmd41(void){
     unsigned int resp = 0;
     for (int i = 0; i < 2000; i++){
@@ -145,7 +165,10 @@ int emmc_init(void){
     }
     uart_puts("EMMC: reset cleared\n");
 
-    EMMC_CONTROL0 = 0;
+    EMMC_CONTROL0 = C0_SD_BUS_VOLT_33 | C0_SD_BUS_POWER;
+    short_delay(10000);
+    EMMC_CONTROL0 = C0_SD_BUS_VOLT_33 | C0_SD_BUS_POWER | C0_HCTL_DWIDTH;
+    short_delay(10000);
     {
         unsigned int div = 128u;
         unsigned int c1 = EMMC_CONTROL1;
@@ -169,6 +192,10 @@ int emmc_init(void){
     uart_puts("EMMC: clk stable\n");
     EMMC_CONTROL1 |= C1_CLK_EN;
     uart_puts("EMMC: sd clock on\n");
+
+    if (emmc_reset_cmd_dat_lines() != 0){
+        return -1;
+    }
 
     EMMC_INTERRUPT = 0xFFFFFFFFu;
     EMMC_IRPT_MASK = 0xFFFFFFFFu;
