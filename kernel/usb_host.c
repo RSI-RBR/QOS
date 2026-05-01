@@ -478,45 +478,70 @@ static void usb_flush_host_fifos(void){
 
 static int hc_force_halt(unsigned int ch){
     unsigned int hcchar = HCCHAR(ch);
-    unsigned int qspc = (GNPTXSTS & TXSTS_QSPCAVAIL_MASK) >> TXSTS_QSPCAVAIL_SHIFT;
     if ((hcchar & HCCHAR_CHENA) == 0){
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = 0;
+        HCSPLT(ch) = 0;
         return 0;
     }
 
     HCINT(ch) = 0xFFFFFFFFu;
     HCINTMSK(ch) = HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
-    // In slave mode, disable flow depends on NP request queue space:
-    // if queue is full, issue CHDIS only to flush posted requests.
-    if (qspc == 0){
-        hcchar |= HCCHAR_CHDIS;
-        hcchar &= ~HCCHAR_CHENA;
-    } else{
-        hcchar &= ~HCCHAR_EPDIR;
-        hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
-    }
-    HCCHAR(ch) = hcchar;
+    // Try multiple halt-edge retriggers. Some DWC2 revisions can stick in
+    // CHENA|CHDIS until CHDIS is toggled and re-issued.
+    for (unsigned int attempt = 0; attempt < 12; attempt++){
+        hcchar = HCCHAR(ch);
+        if ((hcchar & HCCHAR_CHENA) == 0){
+            HCINT(ch) = 0xFFFFFFFFu;
+            HCINTMSK(ch) = 0;
+            HCSPLT(ch) = 0;
+            return 0;
+        }
 
-    if (hc_wait_idle(ch, 800000) == 0){
-        HCINT(ch) = 0xFFFFFFFFu;
-        HCINTMSK(ch) = 0;
-        return 0;
+        unsigned int qspc = (GNPTXSTS & TXSTS_QSPCAVAIL_MASK) >> TXSTS_QSPCAVAIL_SHIFT;
+        unsigned int base = hcchar & ~HCCHAR_EPDIR;
+
+        // Drop CHDIS first so the next write creates a fresh halt edge.
+        HCCHAR(ch) = base & ~HCCHAR_CHDIS;
+        spin_delay(200);
+
+        // If request queue has space, issue CHENA|CHDIS (normal halt request).
+        // If full, issue CHDIS-only and retry.
+        unsigned int halt_req = base | HCCHAR_CHDIS;
+        if (qspc != 0){
+            halt_req |= HCCHAR_CHENA;
+        } else{
+            halt_req &= ~HCCHAR_CHENA;
+        }
+        HCCHAR(ch) = halt_req;
+
+        if (hc_wait_idle(ch, 300000) == 0){
+            HCINT(ch) = 0xFFFFFFFFu;
+            HCINTMSK(ch) = 0;
+            HCSPLT(ch) = 0;
+            return 0;
+        }
+
+        if ((attempt % 4u) == 3u){
+            usb_flush_host_fifos();
+        }
+        spin_delay(5000);
     }
 
-    // Recovery path for stuck channels.
-    usb_flush_host_fifos();
+    // Final brute-force cleanup.
+    HCSPLT(ch) = 0;
+    HCTSIZ(ch) = 0;
     hcchar = HCCHAR(ch);
-    if (hcchar & HCCHAR_CHENA){
-        hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
-        HCCHAR(ch) = hcchar;
-    }
-    if (hc_wait_idle(ch, 800000) == 0){
+    hcchar &= ~(HCCHAR_CHENA | HCCHAR_CHDIS | HCCHAR_EPDIR | HCCHAR_ODDFRM);
+    HCCHAR(ch) = hcchar;
+    spin_delay(2000);
+    if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = 0;
         return 0;
     }
+
     HCINT(ch) = 0xFFFFFFFFu;
     HCINTMSK(ch) = 0;
     return -1;
@@ -666,28 +691,12 @@ static int hc_transfer_reg(unsigned int ch,
     if (hc_wait_idle(ch, 500000) != 0){
         if (hc_force_halt(ch) != 0){
             uart_puts("USB: HC not idle before xfer\n");
-            uart_puts("USB: pre-idle hcint=");
-            uart_puthex(HCINT(ch));
+            uart_puts("USB: pre-idle hcchar=");
+            uart_puthex(HCCHAR(ch));
             uart_puts(" hctsiz=");
             uart_puthex(HCTSIZ(ch));
-            uart_puts(" hcchar=");
-            uart_puthex(HCCHAR(ch));
-            uart_puts(" hprt0=");
-            uart_puthex(HPRT0);
-            uart_puts(" gintsts=");
-            uart_puthex(GINTSTS);
-            uart_puts(" haint=");
-            uart_puthex(HAINT);
-            uart_puts(" haintmsk=");
-            uart_puthex(HAINTMSK);
-            uart_puts(" gahbcfg=");
-            uart_puthex(GAHBCFG);
-            uart_puts(" gnptxsts=");
-            uart_puthex(GNPTXSTS);
-            uart_puts(" hcfg=");
-            uart_puthex(HCFG);
-            uart_puts(" hcsplt=");
-            uart_puthex(HCSPLT(ch));
+            uart_puts(" hcint=");
+            uart_puthex(HCINT(ch));
             uart_puts("\n");
             return -1;
         }
@@ -747,10 +756,6 @@ static int hc_transfer_reg(unsigned int ch,
             uart_puthex(HCTSIZ(ch));
             uart_puts(" hcchar=");
             uart_puthex(HCCHAR(ch));
-            uart_puts(" hprt0=");
-            uart_puthex(HPRT0);
-            uart_puts(" gnptxsts=");
-            uart_puthex(GNPTXSTS);
             uart_puts(" hcsplt=");
             uart_puthex(HCSPLT(ch));
             uart_puts("\n");

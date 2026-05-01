@@ -85,6 +85,7 @@ static int smsc95xx_init(void){
     int child_cfg_ok = 0;
     unsigned char cfg_value = 0;
     unsigned char active_cfg = 0;
+    int id_ok = 0;
     g_ready = 0;
     g_dev_addr = 0;
     g_id_rev = 0;
@@ -109,33 +110,44 @@ static int smsc95xx_init(void){
 
     cfg_value = info.child_config_value ? info.child_config_value : 1u;
     child_cfg_ok = info.child_configured ? 1 : 0;
-    if (!child_cfg_ok){
-        uart_puts("SMSC95XX: child not configured, trying SET_CONFIGURATION...\n");
-        if (smsc95xx_try_set_configuration(info.child_address, cfg_value) == 0){
-            child_cfg_ok = 1;
-            uart_puts("SMSC95XX: child SET_CONFIGURATION ok\n");
-        } else{
-            uart_puts("SMSC95XX: child SET_CONFIGURATION failed, probing anyway\n");
-        }
-    }
-    if (smsc95xx_get_configuration(info.child_address, &active_cfg) == 0){
-        uart_puts("SMSC95XX: child active configuration=");
-        uart_puthex(active_cfg);
-        uart_puts("\n");
-        if (active_cfg != 0){
-            child_cfg_ok = 1;
-        }
-    } else{
-        uart_puts("SMSC95XX: GET_CONFIGURATION failed\n");
-    }
-
     g_dev_addr = info.child_address;
     uart_puts("SMSC95XX: probing dev addr=");
     uart_puthex(g_dev_addr);
     uart_puts(" cfg=");
     uart_puthex(cfg_value);
-    uart_puts(child_cfg_ok ? " (ok)\n" : " (best-effort)\n");
-    if (smsc95xx_read_reg(SMSC95XX_REG_ID_REV, &g_id_rev) != 0){
+    uart_puts(child_cfg_ok ? " (cached)\n" : " (unknown)\n");
+
+    // Fast path: many LAN95xx children are already configured when reached via
+    // the LAN9514 hub. Avoid extra EP0 traffic until needed.
+    if (smsc95xx_read_reg(SMSC95XX_REG_ID_REV, &g_id_rev) == 0){
+        id_ok = 1;
+    } else{
+        if (!child_cfg_ok){
+            uart_puts("SMSC95XX: child not configured, trying SET_CONFIGURATION...\n");
+            if (smsc95xx_try_set_configuration(info.child_address, cfg_value) == 0){
+                child_cfg_ok = 1;
+                uart_puts("SMSC95XX: child SET_CONFIGURATION ok\n");
+            } else{
+                uart_puts("SMSC95XX: child SET_CONFIGURATION failed, probing anyway\n");
+            }
+        }
+        if (smsc95xx_get_configuration(info.child_address, &active_cfg) == 0){
+            uart_puts("SMSC95XX: child active configuration=");
+            uart_puthex(active_cfg);
+            uart_puts("\n");
+            if (active_cfg != 0){
+                child_cfg_ok = 1;
+            }
+        } else{
+            uart_puts("SMSC95XX: GET_CONFIGURATION failed\n");
+        }
+
+        if (smsc95xx_read_reg(SMSC95XX_REG_ID_REV, &g_id_rev) == 0){
+            id_ok = 1;
+        }
+    }
+
+    if (!id_ok){
         uart_puts("SMSC95XX: ID_REV read failed\n");
         return -1;
     }
