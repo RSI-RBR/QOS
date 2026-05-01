@@ -1,5 +1,6 @@
 #include "sdhost.h"
 #include "interrupt.h"
+#include "timer.h"
 
 #define SDHOST_BASE 0x3F202000
 
@@ -65,11 +66,15 @@ static void delay(int count) {
     while (count--) asm volatile("nop");
 }
 
-static int wait_cmd_done(int timeout) {
-    while ((SDCMD & SDCMD_NEW_FLAG) && timeout--) {
+static int wait_cmd_done_ms(unsigned long timeout_ms) {
+    unsigned long start = system_ticks;
+    while (SDCMD & SDCMD_NEW_FLAG) {
+        if ((system_ticks - start) > timeout_ms) {
+            return -1;
+        }
         barrier();
     }
-    return timeout > 0 ? 0 : -1;
+    return 0;
 }
 
 static void clear_status(void) {
@@ -188,7 +193,7 @@ void sdhost_reset(void) {
 }
 
 int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
-    if (wait_cmd_done(1000000) != 0) {
+    if (wait_cmd_done_ms(120) != 0) {
         return -1;
     }
 
@@ -208,7 +213,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
     barrier();
     SDCMD = sdcmd | SDCMD_NEW_FLAG;
 
-    if (wait_cmd_done(1000000) != 0) {
+    if (wait_cmd_done_ms(120) != 0) {
         return -1;
     }
 
@@ -317,9 +322,14 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
 
     int words_left = 128;
     int out_idx = 0;
-    int timeout = 2000000;
+    unsigned long start = system_ticks;
+    const unsigned long read_timeout_ms = 300;
 
-    while (words_left > 0 && timeout-- > 0) {
+    while (words_left > 0) {
+        if ((system_ticks - start) > read_timeout_ms) {
+            sdhost_recover_after_data_error();
+            return -1;
+        }
         unsigned int status = SDHSTS;
         if (status & SDHSTS_TRANSFER_ERRORS) {
             sdhost_recover_after_data_error();
