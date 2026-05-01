@@ -38,6 +38,8 @@ typedef struct {
     unsigned char dev_protocol;
     unsigned char config_value;
     unsigned char child_config_value;
+    unsigned char child_hub_address;
+    unsigned char child_hub_port;
     unsigned short vid;
     unsigned short pid;
     unsigned short child_vid;

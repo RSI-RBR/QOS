@@ -82,6 +82,14 @@
 #define HCCHAR_CHDIS         (1u << 30)
 #define HCCHAR_CHENA         (1u << 31)
 
+// HCSPLT bits
+#define HCSPLT_SPLTENA       (1u << 31)
+#define HCSPLT_COMPSPLT      (1u << 16)
+#define HCSPLT_XACTPOS_SHIFT 14
+#define HCSPLT_XACTPOS_ALL   3u
+#define HCSPLT_HUBADDR_SHIFT 7
+#define HCSPLT_PRTADDR_SHIFT 0
+
 // HCINT bits
 #define HCINT_XFERCOMPL      (1u << 0)
 #define HCINT_CHHLTD         (1u << 1)
@@ -141,6 +149,10 @@ static int g_usb_ready = 0;
 static unsigned int g_port_speed = HPRT0_SPD_FULL;
 static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
 static usb_root_device_info_t g_root_info;
+static int g_split_ctx_active = 0;
+static unsigned char g_split_ctx_hub_addr = 0;
+static unsigned char g_split_ctx_hub_port = 0;
+static unsigned char g_status_dummy[4];
 
 static int usb_std_request(unsigned char dev_addr,
                            unsigned char bmRequestType,
@@ -155,9 +167,50 @@ static int usb_get_config_descriptor(unsigned char dev_addr,
                                      unsigned char* buf,
                                      unsigned int cap,
                                      unsigned short* total_len_out);
+static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, unsigned char* hub_port);
 
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
+
+static void usb_set_split_context(unsigned char hub_addr, unsigned char hub_port){
+    g_split_ctx_active = 1;
+    g_split_ctx_hub_addr = hub_addr;
+    g_split_ctx_hub_port = hub_port;
+}
+
+static void usb_clear_split_context(void){
+    g_split_ctx_active = 0;
+    g_split_ctx_hub_addr = 0;
+    g_split_ctx_hub_port = 0;
+}
+
+static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, unsigned char* hub_port){
+    if (!hub_addr || !hub_port){
+        return 0;
+    }
+    if (g_port_speed != HPRT0_SPD_HIGH){
+        return 0;
+    }
+
+    // Temporary route during downstream child enumeration (dev_addr may be 0).
+    if (g_split_ctx_active && dev_addr != g_split_ctx_hub_addr){
+        *hub_addr = g_split_ctx_hub_addr;
+        *hub_port = g_split_ctx_hub_port;
+        return 1;
+    }
+
+    // Persistent route for already-enumerated hub child (e.g. SMSC95xx control).
+    if (g_root_info.child_present &&
+        g_root_info.child_hub_address != 0 &&
+        g_root_info.child_hub_port != 0 &&
+        dev_addr == g_root_info.child_address){
+        *hub_addr = g_root_info.child_hub_address;
+        *hub_port = g_root_info.child_hub_port;
+        return 1;
+    }
+
+    return 0;
 }
 
 static int hub_port_set_feature(unsigned char hub_addr, unsigned short port, unsigned short feat){
@@ -235,19 +288,24 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
         }
     }
 
+    usb_set_split_context(hub_addr, (unsigned char)port);
+
     g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
     if (usb_get_device_descriptor_at(0, dev_desc, sizeof(dev_desc)) != 0){
         uart_puts("USB: hub child desc@0 failed\n");
+        usb_clear_split_context();
         return -1;
     }
     if (usb_std_request(0, 0x00, 0x05, child_addr, 0, 0, 0) != 0){
         uart_puts("USB: hub child SET_ADDRESS failed\n");
+        usb_clear_split_context();
         return -1;
     }
     spin_delay(300000);
 
     if (usb_get_device_descriptor_at(child_addr, dev_desc, sizeof(dev_desc)) != 0){
         uart_puts("USB: hub child desc@addr failed\n");
+        usb_clear_split_context();
         return -1;
     }
 
@@ -256,6 +314,8 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     g_root_info.child_class = dev_desc[4];
     g_root_info.child_vid = le16(&dev_desc[8]);
     g_root_info.child_pid = le16(&dev_desc[10]);
+    g_root_info.child_hub_address = hub_addr;
+    g_root_info.child_hub_port = (unsigned char)port;
 
     int cfg_read = usb_get_config_descriptor(child_addr, cfg_desc, sizeof(cfg_desc), &cfg_total);
     if (cfg_read >= 6){
@@ -278,6 +338,7 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     uart_puts(" cfg=");
     uart_puthex(g_root_info.child_config_value);
     uart_puts(g_root_info.child_configured ? " (set)\n" : " (not set)\n");
+    usb_clear_split_context();
     return 0;
 }
 
@@ -525,15 +586,16 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
     return -1;
 }
 
-static int hc_transfer(unsigned int ch,
-                       unsigned char dev_addr,
-                       int ep_in,
-                       unsigned int ep_mps,
-                       unsigned int pid,
-                       const unsigned char* out_data,
-                       unsigned int out_len,
-                       unsigned char* in_data,
-                       unsigned int in_len){
+static int hc_transfer_reg(unsigned int ch,
+                           unsigned char dev_addr,
+                           int ep_in,
+                           unsigned int ep_mps,
+                           unsigned int pid,
+                           const unsigned char* out_data,
+                           unsigned int out_len,
+                           unsigned char* in_data,
+                           unsigned int in_len,
+                           unsigned int hcsplt_reg){
     unsigned int xfer_len = ep_in ? in_len : out_len;
     unsigned int pktcnt = (xfer_len == 0) ? 1u : div_round_up(xfer_len, ep_mps ? ep_mps : 1u);
     if (pktcnt == 0){
@@ -581,8 +643,7 @@ static int hc_transfer(unsigned int ch,
         HAINTMSK |= (1u << ch);
         GINTMSK |= GINTSTS_HCHINT;
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
-        // Default to non-split transactions for EP0 control path.
-        HCSPLT(ch) = 0;
+        HCSPLT(ch) = hcsplt_reg;
 
         unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
             | (pktcnt << HCTSIZ_PKTCNT_SHIFT)
@@ -645,6 +706,68 @@ static int hc_transfer(unsigned int ch,
 
     uart_puts("USB: hc xfer retry exhausted\n");
     return -1;
+}
+
+static int hc_transfer(unsigned int ch,
+                       unsigned char dev_addr,
+                       int ep_in,
+                       unsigned int ep_mps,
+                       unsigned int pid,
+                       const unsigned char* out_data,
+                       unsigned int out_len,
+                       unsigned char* in_data,
+                       unsigned int in_len){
+    return hc_transfer_reg(ch, dev_addr, ep_in, ep_mps, pid, out_data, out_len, in_data, in_len, 0u);
+}
+
+static int hc_transfer_split(unsigned int ch,
+                             unsigned char dev_addr,
+                             int ep_in,
+                             unsigned int ep_mps,
+                             unsigned int pid,
+                             const unsigned char* out_data,
+                             unsigned int out_len,
+                             unsigned char* in_data,
+                             unsigned int in_len,
+                             unsigned char hub_addr,
+                             unsigned char hub_port){
+    unsigned int split_reg = HCSPLT_SPLTENA
+        | ((HCSPLT_XACTPOS_ALL & 0x3u) << HCSPLT_XACTPOS_SHIFT)
+        | (((unsigned int)hub_addr & 0x7Fu) << HCSPLT_HUBADDR_SHIFT)
+        | (((unsigned int)hub_port & 0x7Fu) << HCSPLT_PRTADDR_SHIFT);
+
+    // Align split scheduling to microframe boundary for better stability.
+    for (unsigned int i = 0; i < 2000000; i++){
+        if ((HFNUM & 0x7u) == 0u){
+            break;
+        }
+        if (i == 1999999){
+            uart_puts("USB: split frame wait timeout\n");
+        }
+    }
+
+    if (ep_in){
+        if (hc_transfer_reg(ch, dev_addr, 1, ep_mps, pid, 0, 0, 0, 0, split_reg) != 0){
+            HCSPLT(ch) = 0;
+            return -1;
+        }
+        if (hc_transfer_reg(ch, dev_addr, 1, ep_mps, pid, 0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT) != 0){
+            HCSPLT(ch) = 0;
+            return -1;
+        }
+    } else{
+        if (hc_transfer_reg(ch, dev_addr, 0, ep_mps, pid, out_data, out_len, 0, 0, split_reg) != 0){
+            HCSPLT(ch) = 0;
+            return -1;
+        }
+        if (hc_transfer_reg(ch, dev_addr, 0, ep_mps, pid, g_status_dummy, 0, 0, 0, split_reg | HCSPLT_COMPSPLT) != 0){
+            HCSPLT(ch) = 0;
+            return -1;
+        }
+    }
+
+    HCSPLT(ch) = 0;
+    return 0;
 }
 
 int usb_host_reset_root_port(void){
@@ -847,19 +970,38 @@ int usb_host_control_transfer(unsigned char dev_addr,
     setup_bytes[6] = (unsigned char)(setup->wLength & 0xFFu);
     setup_bytes[7] = (unsigned char)((setup->wLength >> 8) & 0xFFu);
 
-    if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
+    unsigned char split_hub_addr = 0;
+    unsigned char split_hub_port = 0;
+    int use_split = usb_get_split_route(dev_addr, &split_hub_addr, &split_hub_port);
+
+    if (use_split){
+        if (hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
+                              setup_bytes, sizeof(setup_bytes), 0, 0,
+                              split_hub_addr, split_hub_port) != 0){
+            uart_puts("USB: SETUP stage failed (split)\n");
+            return -1;
+        }
+    } else if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
         uart_puts("USB: SETUP stage failed\n");
         return -1;
     }
 
     if (data_len > 0){
         if (in_transfer){
-            if (hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len) != 0){
+            int rc = use_split
+                ? hc_transfer_split(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1,
+                                    0, 0, data, data_len, split_hub_addr, split_hub_port)
+                : hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len);
+            if (rc != 0){
                 uart_puts("USB: DATA IN stage failed\n");
                 return -1;
             }
         } else{
-            if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0) != 0){
+            int rc = use_split
+                ? hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1,
+                                    data, data_len, 0, 0, split_hub_addr, split_hub_port)
+                : hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0);
+            if (rc != 0){
                 uart_puts("USB: DATA OUT stage failed\n");
                 return -1;
             }
@@ -867,7 +1009,11 @@ int usb_host_control_transfer(unsigned char dev_addr,
     }
 
     // Status stage: opposite direction, zero-length DATA1.
-    if (hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0) != 0){
+    int status_rc = use_split
+        ? hc_transfer_split(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1,
+                            0, 0, 0, 0, split_hub_addr, split_hub_port)
+        : hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0);
+    if (status_rc != 0){
         uart_puts("USB: STATUS stage failed\n");
         return -1;
     }
