@@ -62,6 +62,16 @@ loaded_program_t load_program_from_sd(void)
     // interleaving that can cause false FAT chain/end-marker failures.
     asm volatile("msr daifset, #2");
 
+    // Force a clean SD controller/card state for every load.
+    // This avoids long-idle drift causing the first read to misbehave.
+    sdhost_reset();
+    if (sdhost_init_card() != 0){
+        asm volatile("msr daifclr, #2");
+        loader_unlock();
+        uart_puts("SD init failed.\n");
+        return prog;
+    }
+
     if (fat32_init() == 0){
         size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
         if (size <= 0){
