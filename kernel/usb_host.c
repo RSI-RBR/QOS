@@ -60,6 +60,11 @@
 #define HPRT0_SPD_FULL       (1u << 17)
 #define HPRT0_SPD_LOW        (2u << 17)
 
+// HCFG bits
+#define HCFG_FSLSPCLKSEL_MASK      0x3u
+#define HCFG_FSLSPCLKSEL_30_60_MHZ 0u
+#define HCFG_FSLSPCLKSEL_48_MHZ    1u
+
 // GINTSTS bits (subset)
 #define GINTSTS_CURMODE_HOST (1u << 0)
 #define GINTSTS_RXFLVL       (1u << 4)
@@ -752,8 +757,9 @@ int usb_host_init(void){
     GAHBCFG &= ~GAHBCFG_DMA_EN;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
-    // Set full-speed PHY clock (safe default on many Pi bare-metal bring-ups).
-    HCFG = 0x00000003u;
+    // For the Pi DWC2 HS PHY path use 30/60 MHz host clock select.
+    // (0x3 was invalid/reserved and can cause unstable channel behavior.)
+    HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_30_60_MHZ;
     (void)HFIR;
 
     // Enable port power, preserving write-1-to-clear bits.
