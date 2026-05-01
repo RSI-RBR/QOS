@@ -955,9 +955,18 @@ int usb_host_enumerate_root_device(void){
             uart_puthex(ports);
             uart_puts("\n");
             if (ports > 0){
-                // Try port 1 first; LAN9514 internal Ethernet commonly sits there.
-                if (usb_enumerate_hub_downstream_child(g_root_info.address, 1, 2) != 0){
-                    uart_puts("USB: hub port1 child enumerate failed\n");
+                int child_found = 0;
+                unsigned char next_addr = 2;
+                for (unsigned int port = 1; port <= ports && next_addr < 16; port++){
+                    if (usb_enumerate_hub_downstream_child(g_root_info.address, (unsigned short)port, next_addr) == 0){
+                        child_found = 1;
+                        next_addr++;
+                        // Stop at first successful child for now; enough to reach Ethernet function.
+                        break;
+                    }
+                }
+                if (!child_found){
+                    uart_puts("USB: no hub child enumerated on any downstream port\n");
                 }
             }
         } else{
