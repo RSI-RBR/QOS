@@ -137,7 +137,7 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" free \n");
     uart_puts(" memlist \n");
     uart_puts(" load_test\n");
-    uart_puts(" run (executes program at 0x40000) \n");
+    uart_puts(" run (loads PROGRAM.BIN from SD) \n");
     uart_puts(" lsprog \n");
     uart_puts(" ps \n");
     uart_puts(" fbinfo \n");

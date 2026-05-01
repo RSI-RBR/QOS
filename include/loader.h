@@ -24,6 +24,7 @@ void* loader_user_stack_top(void* program_base);
 void loader_mmu_init_pool(void);
 
 loaded_program_t load_program_from_sd(void);
+loaded_program_t load_program_from_sd_named(const char* fat_name_83);
 int loader_is_busy(void);
 
 void execute_program(unsigned long entry_addr);

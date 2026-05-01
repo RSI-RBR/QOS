@@ -10,7 +10,9 @@ enum {
     SYS_FB_GET_WIDTH = 5,
     SYS_FB_GET_HEIGHT = 6,
     SYS_FB_RECT = 7,
-    SYS_FB_PRESENT = 8
+    SYS_FB_PRESENT = 8,
+    SYS_TRY_GETC = 9,
+    SYS_RUN_PROGRAM = 10
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -96,6 +98,14 @@ static inline void qos_fb_rect(unsigned int x, unsigned int y, unsigned int w, u
 
 static inline void qos_fb_present(void){
     (void)qos_syscall0(SYS_FB_PRESENT);
+}
+
+static inline int qos_try_getc(void){
+    return (int)qos_syscall0(SYS_TRY_GETC);
+}
+
+static inline int qos_run_program(void){
+    return (int)qos_syscall0(SYS_RUN_PROGRAM);
 }
 
 __attribute__((noreturn))

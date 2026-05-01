@@ -14,6 +14,7 @@ static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
 
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
+static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
 
 void loader_mmu_init_pool(void){
     // Keep pool inaccessible to EL0 until a program block is explicitly mapped.
@@ -113,10 +114,11 @@ void* loader_user_stack_top(void* program_base){
     return (void*)(top - 16);
 }
 
-loaded_program_t load_program_from_sd(void)
+loaded_program_t load_program_from_sd_named(const char* fat_name_83)
 {
     uart_puts("Loading program from SD...\n");
     loaded_program_t prog = {0};
+    const char* file_83 = fat_name_83 ? fat_name_83 : DEFAULT_PROGRAM_83;
 
     if (!loader_try_lock()){
         uart_puts("Loader busy.\n");
@@ -132,9 +134,9 @@ loaded_program_t load_program_from_sd(void)
     }
 
     if (fat32_init() == 0){
-        size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+        size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
         if (size <= 0){
-            size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+            size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
         }
     }
 
@@ -142,7 +144,7 @@ loaded_program_t load_program_from_sd(void)
         // One-time resync path.
         blockdev_reinit();
         if (fat32_init() == 0){
-            size = fat32_read_file("PROGRAM BIN", buffer, PROGRAM_MAX);
+            size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
         }
     }
 
@@ -216,6 +218,10 @@ loaded_program_t load_program_from_sd(void)
     uart_puthex((unsigned long)prog.entry);
     uart_puts("\n");
     return prog;
+}
+
+loaded_program_t load_program_from_sd(void){
+    return load_program_from_sd_named(DEFAULT_PROGRAM_83);
 }
 
 void execute_program(unsigned long entry_addr){

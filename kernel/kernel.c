@@ -40,6 +40,31 @@ static void shell_process_entry(void){
     shell_run();
 }
 
+static int create_boot_shell_process(void){
+    // SHELL.BIN in FAT 8.3 format.
+    loaded_program_t shell_prog = load_program_from_sd_named("SHELL   BIN");
+    if (shell_prog.entry){
+        int pid = process_create_loaded(shell_prog);
+        if (pid >= 0){
+            uart_puts("User shell started as PID ");
+            uart_send('0' + pid);
+            uart_puts("\n");
+            return pid;
+        }
+
+        if (shell_prog.heap_allocated){
+            kfree_secure(shell_prog.memory, shell_prog.size);
+        } else{
+            loader_free_program_memory(shell_prog.memory, shell_prog.size);
+        }
+        uart_puts("User shell create failed; falling back to kernel shell.\n");
+    } else{
+        uart_puts("SHELL.BIN not found; falling back to kernel shell.\n");
+    }
+
+    return process_create(shell_process_entry);
+}
+
 extern unsigned long stack_bottom;
 
 void kernel_main(void){
@@ -172,7 +197,7 @@ void kernel_main(void){
 //    }
 //    
     
-    int shell_pid = process_create(shell_process_entry);
+    int shell_pid = create_boot_shell_process();
     if (shell_pid < 0){
         uart_puts("Failed to create shell process\n");
         return;

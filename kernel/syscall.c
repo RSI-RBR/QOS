@@ -3,6 +3,8 @@
 #include "process.h"
 #include "framebuffer.h"
 #include "timer.h"
+#include "loader.h"
+#include "memory.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -100,6 +102,42 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             fb_update_buffer_pixels_fast();
             frame[TF_X0] = 0;
             return frame_sp;
+
+        case SYS_TRY_GETC: {
+            char c = 0;
+            if (uart_try_getc(&c)){
+                frame[TF_X0] = (unsigned long)(unsigned char)c;
+            } else{
+                frame[TF_X0] = (unsigned long)-1;
+            }
+            return frame_sp;
+        }
+
+        case SYS_RUN_PROGRAM: {
+            loaded_program_t prog = load_program_from_sd();
+            if (!prog.entry){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            int pid = process_create_loaded(prog);
+            if (pid < 0){
+                if (prog.heap_allocated){
+                    kfree_secure(prog.memory, prog.size);
+                } else{
+                    volatile unsigned char* m = (volatile unsigned char*)prog.memory;
+                    for (unsigned long i = 0; i < prog.size; i++){
+                        m[i] = 0;
+                    }
+                    loader_free_program_memory(prog.memory, prog.size);
+                }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            frame[TF_X0] = (unsigned long)pid;
+            return frame_sp;
+        }
 
         default:
             frame[TF_X0] = (unsigned long)-1;
