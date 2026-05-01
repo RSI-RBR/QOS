@@ -62,7 +62,7 @@ static int smsc95xx_read_reg(unsigned short reg, unsigned int* out){
     req.wIndex = reg;
     req.wLength = 4;
 
-    for (unsigned int attempt = 0; attempt < 3; attempt++){
+    for (unsigned int attempt = 0; attempt < 1; attempt++){
         if (usb_host_control_transfer(g_dev_addr, &req, data, sizeof(data), 1) == 0){
             *out = (unsigned int)data[0]
                  | ((unsigned int)data[1] << 8)

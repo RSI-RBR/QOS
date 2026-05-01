@@ -159,6 +159,7 @@ static unsigned char g_split_ctx_hub_port = 0;
 static int g_child_use_split = 0;
 static int g_child_low_speed = 0;
 static unsigned char g_status_dummy[4];
+static unsigned int g_preidle_fail_logs = 0;
 
 static int usb_std_request(unsigned char dev_addr,
                            unsigned char bmRequestType,
@@ -690,19 +691,23 @@ static int hc_transfer_reg(unsigned int ch,
     // Ensure channel is idle before programming a new transfer.
     if (hc_wait_idle(ch, 500000) != 0){
         if (hc_force_halt(ch) != 0){
-            uart_puts("USB: HC not idle before xfer\n");
-            uart_puts("USB: pre-idle hcchar=");
-            uart_puthex(HCCHAR(ch));
-            uart_puts(" hctsiz=");
-            uart_puthex(HCTSIZ(ch));
-            uart_puts(" hcint=");
-            uart_puthex(HCINT(ch));
-            uart_puts("\n");
+            if (g_preidle_fail_logs < 4 || (g_preidle_fail_logs & 0x3Fu) == 0u){
+                uart_puts("USB: HC not idle before xfer\n");
+                uart_puts("USB: pre-idle hcchar=");
+                uart_puthex(HCCHAR(ch));
+                uart_puts(" hctsiz=");
+                uart_puthex(HCTSIZ(ch));
+                uart_puts(" hcint=");
+                uart_puthex(HCINT(ch));
+                uart_puts("\n");
+            }
+            g_preidle_fail_logs++;
             return -1;
         }
+        g_preidle_fail_logs = 0;
     }
 
-    for (unsigned int attempt = 0; attempt < 192; attempt++){
+    for (unsigned int attempt = 0; attempt < 16; attempt++){
         if (attempt > 0){
             if (hc_force_halt(ch) != 0){
                 return -1;
@@ -746,6 +751,7 @@ static int hc_transfer_reg(unsigned int ch,
 
         int rc = hc_wait_for_done(ch, ep_in, in_data, in_len);
         if (rc == 0){
+            g_preidle_fail_logs = 0;
             // Do not force-halt on success; it can race the next control stage.
             return 0;
         }
@@ -955,8 +961,8 @@ int usb_host_init(void){
     GAHBCFG &= ~GAHBCFG_DMA_EN;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
-    // Use valid FS/LS clock select for the HS PHY path.
-    HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_30_60_MHZ;
+    // Match the common DWC2 host setup path used by Linux/U-Boot on BCM SoCs.
+    HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_48_MHZ;
     (void)HFIR;
 
     // Enable port power, preserving write-1-to-clear bits.
@@ -1040,7 +1046,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
     unsigned char split_hub_addr = 0;
     unsigned char split_hub_port = 0;
     int use_split = usb_get_split_route(dev_addr, &split_hub_addr, &split_hub_port);
-    const unsigned int max_attempts = 6;
+    const unsigned int max_attempts = 1;
 
     // If a previous transfer left CH0 wedged, recover once before issuing a new setup.
     if (hc_wait_idle(0, 200000) != 0){
