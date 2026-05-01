@@ -57,6 +57,7 @@
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
 static volatile unsigned int sdhost_irq_latched = 0;
+static unsigned char sd_verify_buf[512] __attribute__((aligned(16)));
 
 #define IRQ_BASE 0x3F00B000UL
 #define ENABLE_IRQS_2 (*(volatile unsigned int*)(IRQ_BASE + 0x214))
@@ -162,6 +163,15 @@ static void sdhost_recover_after_data_error(void){
     }
     clear_status();
     sdhost_drain_fifo();
+}
+
+static int sd_block_equal(const unsigned char *a, const unsigned char *b){
+    for (int i = 0; i < 512; i++){
+        if (a[i] != b[i]){
+            return 0;
+        }
+    }
+    return 1;
 }
 
 unsigned int sdhost_get_resp(void) {
@@ -394,9 +404,15 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer) {
-    for (int attempt = 0; attempt < 5; attempt++) {
+    for (int attempt = 0; attempt < 6; attempt++) {
         if (sdhost_read_block_once(lba, buffer) == 0) {
-            return 0;
+            // Read-verify guard: catches silent transient corruption
+            // that otherwise surfaces later as FAT chain/end-marker errors.
+            if (sdhost_read_block_once(lba, sd_verify_buf) == 0) {
+                if (sd_block_equal(buffer, sd_verify_buf)) {
+                    return 0;
+                }
+            }
         }
 
         sdhost_recover_after_data_error();
