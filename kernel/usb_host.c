@@ -103,6 +103,11 @@
 static int g_usb_ready = 0;
 static unsigned int g_port_speed = HPRT0_SPD_FULL;
 static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
+static usb_root_device_info_t g_root_info;
+
+static unsigned short le16(const unsigned char* p){
+    return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
 
 static void spin_delay(unsigned int n){
     while (n--){
@@ -435,6 +440,9 @@ int usb_host_reset_root_port(void){
 
 int usb_host_init(void){
     g_usb_ready = 0;
+    for (unsigned int i = 0; i < sizeof(g_root_info); i++){
+        ((unsigned char*)&g_root_info)[i] = 0;
+    }
 
     unsigned int id = GSNPSID;
     uart_puts("USB: GSNPSID=");
@@ -596,6 +604,79 @@ int usb_host_control_transfer(unsigned char dev_addr,
     return 0;
 }
 
+static int usb_std_request(unsigned char dev_addr,
+                           unsigned char bmRequestType,
+                           unsigned char bRequest,
+                           unsigned short wValue,
+                           unsigned short wIndex,
+                           unsigned char* data,
+                           unsigned short wLength){
+    usb_setup_packet_t req;
+    req.bmRequestType = bmRequestType;
+    req.bRequest = bRequest;
+    req.wValue = wValue;
+    req.wIndex = wIndex;
+    req.wLength = wLength;
+    return usb_host_control_transfer(dev_addr, &req, data, wLength, (bmRequestType & 0x80u) ? 1 : 0);
+}
+
+static int usb_get_device_descriptor_at(unsigned char dev_addr, unsigned char* out18, unsigned int len){
+    if (!out18 || len < 18){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < 18; i++){
+        out18[i] = 0;
+    }
+
+    // First 8 bytes to discover bMaxPacketSize0 safely.
+    if (usb_std_request(dev_addr, 0x80, 0x06, 0x0100, 0x0000, out18, 8) != 0){
+        return -1;
+    }
+    if (out18[7] != 0){
+        g_ep0_mps = out18[7];
+    }
+
+    // Full descriptor with established EP0 MPS.
+    if (usb_std_request(dev_addr, 0x80, 0x06, 0x0100, 0x0000, out18, 18) != 0){
+        return -1;
+    }
+    return 0;
+}
+
+static int usb_get_config_descriptor(unsigned char dev_addr,
+                                     unsigned char* buf,
+                                     unsigned int cap,
+                                     unsigned short* total_len_out){
+    if (!buf || cap < 9){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < cap; i++){
+        buf[i] = 0;
+    }
+
+    if (usb_std_request(dev_addr, 0x80, 0x06, 0x0200, 0x0000, buf, 9) != 0){
+        return -1;
+    }
+    unsigned short total = le16(&buf[2]);
+    if (total < 9){
+        return -1;
+    }
+    if (total_len_out){
+        *total_len_out = total;
+    }
+
+    unsigned short want = total;
+    if (want > cap){
+        want = (unsigned short)cap;
+    }
+    if (usb_std_request(dev_addr, 0x80, 0x06, 0x0200, 0x0000, buf, want) != 0){
+        return -1;
+    }
+    return (int)want;
+}
+
 int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
     if (!out18 || len < 18){
         return -1;
@@ -620,40 +701,99 @@ int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
             return -1;
         }
     }
-
-    usb_setup_packet_t req;
-    req.bmRequestType = 0x80; // device-to-host, standard, device
-    req.bRequest = 0x06;      // GET_DESCRIPTOR
-    req.wValue = 0x0100;      // DEVICE descriptor, index 0
-    req.wIndex = 0x0000;
-    req.wLength = 8;
-
-    for (unsigned int i = 0; i < 18; i++){
-        out18[i] = 0;
-    }
-
-    unsigned int saved_mps = g_ep0_mps;
     g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
-    if (usb_host_control_transfer(0, &req, out18, 8, 1) != 0){
-        g_ep0_mps = saved_mps;
+    return usb_get_device_descriptor_at(0, out18, len);
+}
+
+int usb_host_enumerate_root_device(void){
+    unsigned char dev_desc[18];
+    unsigned char cfg_desc[256];
+    unsigned short cfg_total = 0;
+    const unsigned char new_addr = 1;
+
+    for (unsigned int i = 0; i < sizeof(g_root_info); i++){
+        ((unsigned char*)&g_root_info)[i] = 0;
+    }
+
+    if (!g_usb_ready){
+        return -1;
+    }
+    if (!(HPRT0 & HPRT0_CONN_STS)){
+        if (wait_port_connect(6000000) != 0){
+            uart_puts("USB: enumerate: no device connected\n");
+            return -1;
+        }
+    }
+    if (!(HPRT0 & HPRT0_ENA)){
+        if (usb_host_reset_root_port() != 0){
+            uart_puts("USB: enumerate: port enable failed\n");
+            return -1;
+        }
+    }
+
+    g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
+    if (usb_get_device_descriptor_at(0, dev_desc, sizeof(dev_desc)) != 0){
+        uart_puts("USB: enumerate: dev desc@0 failed\n");
         return -1;
     }
 
-    if (out18[7] != 0){
-        g_ep0_mps = out18[7];
-    } else if (saved_mps != 0){
-        g_ep0_mps = saved_mps;
+    if (usb_std_request(0, 0x00, 0x05, new_addr, 0, 0, 0) != 0){
+        uart_puts("USB: enumerate: SET_ADDRESS failed\n");
+        return -1;
     }
+    // USB2 spec: up to 2ms recovery after status stage.
+    spin_delay(300000);
 
-    // Re-read full descriptor now that EP0 MPS is known.
-    req.wLength = 18;
-    if (usb_host_control_transfer(0, &req, out18, 18, 1) != 0){
+    if (usb_get_device_descriptor_at(new_addr, dev_desc, sizeof(dev_desc)) != 0){
+        uart_puts("USB: enumerate: dev desc@addr failed\n");
         return -1;
     }
 
-    // Update EP0 max packet size from descriptor byte 7 for future transfers.
-    if (out18[0] == 18 && out18[1] == 1 && out18[7] != 0){
-        g_ep0_mps = out18[7];
+    g_root_info.present = 1;
+    g_root_info.address = new_addr;
+    g_root_info.ep0_mps = dev_desc[7];
+    g_root_info.dev_class = dev_desc[4];
+    g_root_info.dev_subclass = dev_desc[5];
+    g_root_info.dev_protocol = dev_desc[6];
+    g_root_info.vid = le16(&dev_desc[8]);
+    g_root_info.pid = le16(&dev_desc[10]);
+
+    int cfg_read = usb_get_config_descriptor(new_addr, cfg_desc, sizeof(cfg_desc), &cfg_total);
+    if (cfg_read < 0){
+        uart_puts("USB: enumerate: config desc read failed\n");
+        return -1;
     }
+    g_root_info.config_total_len = cfg_total;
+    if ((unsigned int)cfg_read >= 6){
+        g_root_info.config_value = cfg_desc[5];
+    }
+
+    if (g_root_info.config_value != 0){
+        if (usb_std_request(new_addr, 0x00, 0x09, g_root_info.config_value, 0, 0, 0) == 0){
+            g_root_info.configured = 1;
+        } else{
+            uart_puts("USB: enumerate: SET_CONFIGURATION failed\n");
+        }
+    }
+
+    uart_puts("USB: root dev addr=");
+    uart_puthex(g_root_info.address);
+    uart_puts(" vid=");
+    uart_puthex(g_root_info.vid);
+    uart_puts(" pid=");
+    uart_puthex(g_root_info.pid);
+    uart_puts(" class=");
+    uart_puthex(g_root_info.dev_class);
+    uart_puts(" cfg=");
+    uart_puthex(g_root_info.config_value);
+    uart_puts("\n");
+    return 0;
+}
+
+int usb_host_get_root_device_info(usb_root_device_info_t* out_info){
+    if (!out_info || !g_root_info.present){
+        return -1;
+    }
+    *out_info = g_root_info;
     return 0;
 }

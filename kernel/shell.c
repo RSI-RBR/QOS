@@ -7,6 +7,7 @@
 #include "process.h"
 #include "loader.h"
 #include "net.h"
+#include "usb_host.h"
 
 
 //static kernel_api_t kapi = {
@@ -130,6 +131,28 @@ static void cmd_netloop(int argc, char **argv){
     uart_puts("\n");
 }
 
+static void cmd_usbstat(int argc, char **argv){
+    (void)argc;
+    (void)argv;
+    usb_root_device_info_t info;
+    if (usb_host_get_root_device_info(&info) != 0){
+        uart_puts("USB root: not enumerated\n");
+        return;
+    }
+
+    uart_puts("USB root addr=");
+    uart_puthex(info.address);
+    uart_puts(" vid=");
+    uart_puthex(info.vid);
+    uart_puts(" pid=");
+    uart_puthex(info.pid);
+    uart_puts(" class=");
+    uart_puthex(info.dev_class);
+    uart_puts(" cfg=");
+    uart_puthex(info.config_value);
+    uart_puts(info.configured ? " (set)\n" : " (not set)\n");
+}
+
 static void shell_clear_buffer(){
     for (int i = 0; i < BUF_SIZE; i++) buffer[i] = 0;
     buf_index = 0;
@@ -170,6 +193,7 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" fbinfo \n");
     uart_puts(" netstat \n");
     uart_puts(" netloop \n");
+    uart_puts(" usbstat \n");
 //    uart_puts(" runbin\n");
 
     return;
@@ -274,6 +298,7 @@ static command_t commands[] = {
     {"fbinfo", cmd_fbinfo},
     {"netstat", cmd_netstat},
     {"netloop", cmd_netloop},
+    {"usbstat", cmd_usbstat},
     {"loadtest", cmd_loadtest}
 };
 

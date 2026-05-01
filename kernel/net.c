@@ -2,6 +2,7 @@
 #include "nic.h"
 #include "uart.h"
 #include "ethernet.h"
+#include "usb_host.h"
 
 #define NET_RX_QUEUE_LEN 32
 
@@ -112,6 +113,15 @@ int net_init(void){
     uart_puts("NET: initialized with driver ");
     uart_puts(g_nic->name ? g_nic->name : "unknown");
     uart_puts("\n");
+
+    if (g_nic->name){
+        usb_root_device_info_t root_info;
+        if (usb_host_get_root_device_info(&root_info) == 0 &&
+            root_info.vid == 0x0424 && root_info.pid == 0x9514 &&
+            root_info.configured){
+            uart_puts("NET: USB LAN9514 is enumerated; NIC datapath still using stub backend.\n");
+        }
+    }
     return 0;
 }
 
