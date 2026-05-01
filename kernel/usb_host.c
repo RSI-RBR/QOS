@@ -102,7 +102,7 @@
 #define HCINT_BBLERR         (1u << 8)
 #define HCINT_FRMOVRUN       (1u << 9)
 #define HCINT_DATATGLERR     (1u << 10)
-#define HCINT_ERROR_MASK     (HCINT_AHBERR | HCINT_STALL | HCINT_XACTERR | HCINT_BBLERR | HCINT_FRMOVRUN | HCINT_DATATGLERR)
+#define HCINT_ERROR_MASK     (HCINT_AHBERR | HCINT_STALL | HCINT_BBLERR | HCINT_DATATGLERR)
 
 // Non-periodic Tx status
 #define TXSTS_QSPCAVAIL_SHIFT 16
@@ -486,60 +486,24 @@ static int hc_force_halt(unsigned int ch){
         return 0;
     }
 
-    HCINT(ch) = 0xFFFFFFFFu;
-    HCINTMSK(ch) = HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
-
-    // Try multiple halt-edge retriggers. Some DWC2 revisions can stick in
-    // CHENA|CHDIS until CHDIS is toggled and re-issued.
-    for (unsigned int attempt = 0; attempt < 12; attempt++){
-        hcchar = HCCHAR(ch);
-        if ((hcchar & HCCHAR_CHENA) == 0){
-            HCINT(ch) = 0xFFFFFFFFu;
-            HCINTMSK(ch) = 0;
-            HCSPLT(ch) = 0;
-            return 0;
-        }
-
-        unsigned int qspc = (GNPTXSTS & TXSTS_QSPCAVAIL_MASK) >> TXSTS_QSPCAVAIL_SHIFT;
-        unsigned int base = hcchar & ~HCCHAR_EPDIR;
-
-        // Drop CHDIS first so the next write creates a fresh halt edge.
-        HCCHAR(ch) = base & ~HCCHAR_CHDIS;
-        spin_delay(200);
-
-        // If request queue has space, issue CHENA|CHDIS (normal halt request).
-        // If full, issue CHDIS-only and retry.
-        unsigned int halt_req = base | HCCHAR_CHDIS;
-        if (qspc != 0){
-            halt_req |= HCCHAR_CHENA;
-        } else{
-            halt_req &= ~HCCHAR_CHENA;
-        }
-        HCCHAR(ch) = halt_req;
-
-        if (hc_wait_idle(ch, 300000) == 0){
-            HCINT(ch) = 0xFFFFFFFFu;
-            HCINTMSK(ch) = 0;
-            HCSPLT(ch) = 0;
-            return 0;
-        }
-
-        if ((attempt % 4u) == 3u){
-            usb_flush_host_fifos();
-        }
-        spin_delay(5000);
-    }
-
-    // Final brute-force cleanup.
-    HCSPLT(ch) = 0;
-    HCTSIZ(ch) = 0;
-    hcchar = HCCHAR(ch);
-    hcchar &= ~(HCCHAR_CHENA | HCCHAR_CHDIS | HCCHAR_EPDIR | HCCHAR_ODDFRM);
-    HCCHAR(ch) = hcchar;
-    spin_delay(2000);
-    if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
+    // Known-good DWC2 halt flow used by U-Boot/coreboot style drivers:
+    // request CHDIS while keeping CHENA asserted so the core generates CHHLTD.
+    HCCHAR(ch) = hcchar | HCCHAR_CHDIS | HCCHAR_CHENA;
+    if (hc_wait_idle(ch, 500000) == 0){
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = 0;
+        HCSPLT(ch) = 0;
+        return 0;
+    }
+
+    // One recovery flush/retry path for cores that occasionally wedge CH0.
+    usb_flush_host_fifos();
+    hcchar = HCCHAR(ch);
+    HCCHAR(ch) = hcchar | HCCHAR_CHDIS | HCCHAR_CHENA;
+    if (hc_wait_idle(ch, 500000) == 0){
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = 0;
+        HCSPLT(ch) = 0;
         return 0;
     }
 
@@ -592,10 +556,16 @@ static void fifo_read_bytes(unsigned char* data, unsigned int len){
 //  0 = completed
 //  1 = retry suggested (NAK/NYET transient or halted mid-transaction)
 // -1 = hard error
-static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, unsigned int in_len){
+static int hc_wait_for_done(unsigned int ch,
+                            int is_in,
+                            unsigned char* in_buf,
+                            unsigned int in_len,
+                            unsigned int* out_hcint){
     unsigned int copied = 0;
-    unsigned int loops = 8000000;
-    unsigned int saw_complete = 0;
+    unsigned int loops = 10000000;
+    if (out_hcint){
+        *out_hcint = 0;
+    }
 
     while (loops--){
         if (is_in && (GINTSTS & GINTSTS_RXFLVL)){
@@ -634,41 +604,36 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
         }
 
         unsigned int hcint = HCINT(ch);
-        if (hcint & HCINT_ERROR_MASK){
-            HCINT(ch) = hcint;
+        if (hcint & HCINT_CHHLTD){
+            unsigned int snap = HCINT(ch);
+            HCINT(ch) = snap;
+            if (out_hcint){
+                *out_hcint = snap;
+            }
+            if (snap & (HCINT_XFERCOMPL | HCINT_ACK)){
+                return 0;
+            }
+            if (snap & (HCINT_NAK | HCINT_NYET | HCINT_FRMOVRUN | HCINT_XACTERR)){
+                return 1;
+            }
             return -1;
         }
 
-        if (hcint & (HCINT_NAK | HCINT_NYET)){
-            HCINT(ch) = (hcint & (HCINT_NAK | HCINT_NYET));
+        // Some DWC2 variants expose retryable NAK/FRMOVRUN without CHHLTD.
+        // Abort and return retry so caller can resubmit transaction cleanly.
+        if (hcint & (HCINT_NAK | HCINT_FRMOVRUN)){
+            if (out_hcint){
+                *out_hcint = hcint;
+            }
+            (void)hc_force_halt(ch);
             return 1;
         }
-
-        // Keep a completion breadcrumb, but do not return success until
-        // channel-halt is observed so next stage sees a clean channel state.
-        if (hcint & HCINT_XFERCOMPL){
-            HCINT(ch) = HCINT_XFERCOMPL;
-            saw_complete = 1;
-            hcint &= ~HCINT_XFERCOMPL;
-        }
-        if (hcint & HCINT_ACK){
-            HCINT(ch) = HCINT_ACK;
-            saw_complete = 1;
-            hcint &= ~HCINT_ACK;
-        }
-
-        // Some DWC2 variants complete control stages without a reliable
-        // CHHLTD edge in polling mode. If completion was observed and the
-        // channel is now disabled, treat it as success.
-        if (saw_complete && ((HCCHAR(ch) & HCCHAR_CHENA) == 0)){
-            return 0;
-        }
-
-        if (hcint & HCINT_CHHLTD){
-            HCINT(ch) = HCINT_CHHLTD;
-            return saw_complete ? 0 : 1;
-        }
     }
+
+    if (out_hcint){
+        *out_hcint = HCINT(ch);
+    }
+    (void)hc_force_halt(ch);
     return -1;
 }
 
@@ -707,7 +672,7 @@ static int hc_transfer_reg(unsigned int ch,
         g_preidle_fail_logs = 0;
     }
 
-    for (unsigned int attempt = 0; attempt < 16; attempt++){
+    for (unsigned int attempt = 0; attempt < 8; attempt++){
         if (attempt > 0){
             if (hc_force_halt(ch) != 0){
                 return -1;
@@ -749,15 +714,15 @@ static int hc_transfer_reg(unsigned int ch,
         hcchar &= ~HCCHAR_CHDIS;
         HCCHAR(ch) = hcchar;
 
-        int rc = hc_wait_for_done(ch, ep_in, in_data, in_len);
+        unsigned int done_hcint = 0;
+        int rc = hc_wait_for_done(ch, ep_in, in_data, in_len, &done_hcint);
         if (rc == 0){
             g_preidle_fail_logs = 0;
-            // Do not force-halt on success; it can race the next control stage.
             return 0;
         }
         if (rc < 0){
             uart_puts("USB: hc xfer hard fail hcint=");
-            uart_puthex(HCINT(ch));
+            uart_puthex(done_hcint);
             uart_puts(" hctsiz=");
             uart_puthex(HCTSIZ(ch));
             uart_puts(" hcchar=");
@@ -768,11 +733,11 @@ static int hc_transfer_reg(unsigned int ch,
             (void)hc_force_halt(ch);
             return -1;
         }
-        // Transient NAK/NYET/halt: short settle then retry.
+        // Retryable NAK/NYET/XACTERR path.
         if (hc_force_halt(ch) != 0){
             return -1;
         }
-        spin_delay(90000);
+        spin_delay(50000);
     }
 
     uart_puts("USB: hc xfer retry exhausted\n");
@@ -818,27 +783,35 @@ static int hc_transfer_split(unsigned int ch,
     }
 
     if (ep_in){
+        // Start-split for IN stage: expect ACK/CHHLTD handshake.
         if (hc_transfer_reg(ch, dev_addr, 1, ep_mps, pid, 0, 0, 0, 0, split_reg) != 0){
             HCSPLT(ch) = 0;
             return -1;
         }
-        if (hc_transfer_reg(ch, dev_addr, 1, ep_mps, pid, 0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT) != 0){
-            HCSPLT(ch) = 0;
-            return -1;
+        // Complete-split can return NYET transiently; retry a few times.
+        for (unsigned int tries = 0; tries < 6; tries++){
+            if (hc_transfer_reg(ch, dev_addr, 1, ep_mps, pid, 0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT) == 0){
+                HCSPLT(ch) = 0;
+                return 0;
+            }
+            spin_delay(60000);
         }
     } else{
         if (hc_transfer_reg(ch, dev_addr, 0, ep_mps, pid, out_data, out_len, 0, 0, split_reg) != 0){
             HCSPLT(ch) = 0;
             return -1;
         }
-        if (hc_transfer_reg(ch, dev_addr, 0, ep_mps, pid, g_status_dummy, 0, 0, 0, split_reg | HCSPLT_COMPSPLT) != 0){
-            HCSPLT(ch) = 0;
-            return -1;
+        for (unsigned int tries = 0; tries < 6; tries++){
+            if (hc_transfer_reg(ch, dev_addr, 0, ep_mps, pid, g_status_dummy, 0, 0, 0, split_reg | HCSPLT_COMPSPLT) == 0){
+                HCSPLT(ch) = 0;
+                return 0;
+            }
+            spin_delay(60000);
         }
     }
 
     HCSPLT(ch) = 0;
-    return 0;
+    return -1;
 }
 
 int usb_host_reset_root_port(void){
@@ -961,8 +934,8 @@ int usb_host_init(void){
     GAHBCFG &= ~GAHBCFG_DMA_EN;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
-    // Match the common DWC2 host setup path used by Linux/U-Boot on BCM SoCs.
-    HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_48_MHZ;
+    // Match common DWC2 HS PHY host setup used by Linux/U-Boot on BCM SoCs.
+    HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_30_60_MHZ;
     (void)HFIR;
 
     // Enable port power, preserving write-1-to-clear bits.
