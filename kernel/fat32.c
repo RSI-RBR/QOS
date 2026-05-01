@@ -13,6 +13,11 @@ static unsigned int sectors_per_cluster;
 static unsigned int root_cluster;
 
 static unsigned char sector[SECTOR_SIZE] __attribute__((aligned(4096)));
+static void fat_spin_delay(unsigned int count){
+    while (count--){
+        asm volatile("nop");
+    }
+}
 
 static unsigned int read32(unsigned char *p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1]<<8) | ((unsigned int)p[2]<<16) | ((unsigned int)p[3]<<24);
@@ -76,30 +81,58 @@ int fat32_init(void){
     
 //    uart_puts("Reading partition_lba to sector...\n");
     barrier();
-    // Read FAT32 boot sector
-    if (sdhost_read_block(partition_lba, sector)){
-        uart_puts("FAT: failed to read boot sector\n");
-        return -1;
-    }else{
-        uart_puts("Read boot sector!\n");
+    // Read FAT32 boot sector with sanity retries.
+    for (int attempt = 0; attempt < 4; attempt++){
+        if (sdhost_read_block(partition_lba, sector)){
+            if (attempt == 3){
+                uart_puts("FAT: failed to read boot sector\n");
+                return -1;
+            }
+            fat_spin_delay(300000);
+            continue;
+        }
+
+        barrier();
+        v_sector = (volatile unsigned char*)sector;
+
+        if (v_sector[510] != 0x55 || v_sector[511] != 0xAA){
+            if (attempt == 3){
+                uart_puts("FAT: invalid boot sector signature\n");
+                return -1;
+            }
+            fat_spin_delay(300000);
+            continue;
+        }
+
+        unsigned int bytes_per_sector = v_sector[11] | (v_sector[12] << 8);
+        sectors_per_cluster = v_sector[13];
+        unsigned int reserved = v_sector[14] | (v_sector[15] << 8);
+        unsigned int fats = v_sector[16];
+        unsigned int sectors_per_fat = v_sector[36] | (v_sector[37] << 8) | (v_sector[38] << 16) | (v_sector[39] << 24);
+        root_cluster = v_sector[44] | (v_sector[45] << 8) | (v_sector[46] << 16) | (v_sector[47] << 24);
+
+        int spc_pow2 = sectors_per_cluster &&
+            ((sectors_per_cluster & (sectors_per_cluster - 1)) == 0);
+        if (bytes_per_sector != 512 ||
+            !spc_pow2 ||
+            reserved == 0 ||
+            fats == 0 || fats > 2 ||
+            sectors_per_fat == 0 ||
+            root_cluster < 2){
+            if (attempt == 3){
+                uart_puts("FAT: boot sector sanity failed\n");
+                return -1;
+            }
+            fat_spin_delay(300000);
+            continue;
+        }
+
+        fat_start = partition_lba + reserved;
+        data_start = fat_start + (fats * sectors_per_fat);
+        return 0;
     }
 
-    barrier();
-
-    v_sector = (volatile unsigned char*)sector;
-
-    unsigned int bytes_per_sector = v_sector[11] | (v_sector[12] << 8);
-    sectors_per_cluster = v_sector[13];
-    unsigned int reserved = v_sector[14] | (v_sector[15] << 8);
-    unsigned int fats = v_sector[16];
-    unsigned int sectors_per_fat = v_sector[36] | (v_sector[37] << 8) | (v_sector[38] << 16) | (v_sector[39] << 24);
-
-    root_cluster = v_sector[44] | (v_sector[45] << 8) | (v_sector[46] << 16) | (v_sector[47] << 24);
-
-    fat_start = partition_lba + reserved;
-    data_start = fat_start + (fats * sectors_per_fat);
-
-    return 0;
+    return -1;
 }
 
 static int name_match(unsigned char *entry, const char *name){
