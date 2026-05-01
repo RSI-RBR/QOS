@@ -54,6 +54,8 @@
 static unsigned int g_rca = 0;
 static int g_sdhc = 0;
 
+static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags);
+
 static void short_delay(unsigned int c){
     while (c--) asm volatile("nop");
 }
