@@ -168,7 +168,10 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
         for (int i = 0; i < cluster_size; i += 32){
             unsigned char *entry = &cluster_buf[i];
 
-            if (entry[0] == 0x00) return -1; // end
+            if (entry[0] == 0x00){
+                uart_puts("FAT end marker reached (file not found in chain)\n");
+                return -1; // end
+            }
             if (entry[0] == 0xE5) continue;  // deleted
             if (entry[11] == 0x0F) continue; // long name
 
@@ -221,6 +224,7 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
         cluster = fat_next(cluster);
     }
 
+    uart_puts("FAT root chain exhausted\n");
     uart_puts("File not found\n");
     return -1;
 }
