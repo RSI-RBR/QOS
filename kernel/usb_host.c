@@ -951,12 +951,37 @@ int usb_host_enumerate_root_device(void){
         if (usb_std_request(g_root_info.address, 0xA0, HUB_REQ_GET_DESCRIPTOR,
                             (unsigned short)(USB_HUB_DESC_TYPE << 8), 0, hub_desc, sizeof(hub_desc)) == 0){
             unsigned int ports = hub_desc[2];
+            unsigned int pwr_on_2ms = hub_desc[5];
             uart_puts("USB: hub ports=");
             uart_puthex(ports);
+            uart_puts(" pwr2good=");
+            uart_puthex(pwr_on_2ms);
             uart_puts("\n");
             if (ports > 0){
                 int child_found = 0;
                 unsigned char next_addr = 2;
+                unsigned int settle_loops = 2000000u + (pwr_on_2ms * 800000u);
+
+                // Power all downstream ports first, then wait once.
+                for (unsigned int port = 1; port <= ports; port++){
+                    (void)hub_port_set_feature(g_root_info.address, (unsigned short)port, HUB_FEAT_PORT_POWER);
+                }
+                spin_delay(settle_loops);
+
+                // Dump initial downstream status snapshot for debugging.
+                for (unsigned int port = 1; port <= ports; port++){
+                    unsigned short st = 0, chg = 0;
+                    if (hub_port_get_status(g_root_info.address, (unsigned short)port, &st, &chg) == 0){
+                        uart_puts("USB: hub p");
+                        uart_puthex(port);
+                        uart_puts(" st=");
+                        uart_puthex(st);
+                        uart_puts(" ch=");
+                        uart_puthex(chg);
+                        uart_puts("\n");
+                    }
+                }
+
                 for (unsigned int port = 1; port <= ports && next_addr < 16; port++){
                     if (usb_enumerate_hub_downstream_child(g_root_info.address, (unsigned short)port, next_addr) == 0){
                         child_found = 1;
