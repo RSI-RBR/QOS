@@ -55,17 +55,25 @@ void* irq_handler(void* irq_frame_sp){
 
 void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long elr, unsigned long spsr){
     unsigned long ec = (esr >> 26) & 0x3FUL;
+    unsigned long far = 0;
+    asm volatile("mrs %0, far_el1" : "=r"(far));
+
     if (ec == 0x15UL){
         return syscall_handle(frame_sp, esr);
     }
 
     uart_puts("\nSYNC EXCEPTION\n");
+    uart_puts("EC=");
+    uart_puthex((unsigned int)ec);
+    uart_puts("\n");
     uart_puts("ESR_EL1=");
     uart_puthex((unsigned int)esr);
     uart_puts("\nELR_EL1=");
     uart_puthex((unsigned int)elr);
     uart_puts("\nSPSR_EL1=");
     uart_puthex((unsigned int)spsr);
+    uart_puts("\nFAR_EL1=");
+    uart_puthex((unsigned int)far);
     uart_puts("\n");
 
     if (get_current_process()){
@@ -75,6 +83,8 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         if (next_sp != frame_sp){
             return next_sp;
         }
+        uart_puts("No alternate runnable frame after fault.\n");
+        process_dump();
     }
 
     uart_puts("HALTING\n");

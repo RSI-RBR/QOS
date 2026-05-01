@@ -250,7 +250,7 @@ process_t* scheduler_next(void){
     int start = (current_pid < 0) ? 0 : current_pid + 1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         int next = (start + i) % MAX_PROCESSES;
-        if (processes[next].state == PROC_READY){
+        if (processes[next].state == PROC_READY || processes[next].state == PROC_RUNNING){
             current_pid = next;
             processes[next].state = PROC_RUNNING;
             return &processes[next];
@@ -320,10 +320,27 @@ void* scheduler_on_irq(void* irq_frame_sp){
         }
         processes[current_pid].sp = irq_frame_sp;
     } else{
+        process_t* next = scheduler_next();
+        if (next){
+            return next->sp;
+        }
         return irq_frame_sp;
     }
 
     process_t* next = scheduler_next();
+    if (!next){
+        // Recovery path: if scheduler state was desynced and a non-current task
+        // remained in RUNNING, convert it back to READY and try once more.
+        for (int i = 0; i < MAX_PROCESSES; i++){
+            if (i == current_pid){
+                continue;
+            }
+            if (processes[i].state == PROC_RUNNING){
+                processes[i].state = PROC_READY;
+            }
+        }
+        next = scheduler_next();
+    }
     if (!next){
         current_pid = -1;
         return irq_frame_sp;
