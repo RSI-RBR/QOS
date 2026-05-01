@@ -619,6 +619,18 @@ static int hc_wait_for_done(unsigned int ch,
             return -1;
         }
 
+        // On the BCM DWC2 core we sometimes see XFERCOMPL|ACK with CHENA
+        // already cleared but without a CHHLTD bit. Treat that as a completed
+        // stage; otherwise successful SETUP packets look like hard failures.
+        if ((hcint & (HCINT_XFERCOMPL | HCINT_ACK)) &&
+            ((HCCHAR(ch) & HCCHAR_CHENA) == 0)){
+            HCINT(ch) = hcint;
+            if (out_hcint){
+                *out_hcint = hcint;
+            }
+            return 0;
+        }
+
         // Some DWC2 variants expose retryable NAK/FRMOVRUN without CHHLTD.
         // Abort and return retry so caller can resubmit transaction cleanly.
         if (hcint & (HCINT_NAK | HCINT_FRMOVRUN)){
