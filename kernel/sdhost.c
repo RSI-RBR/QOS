@@ -329,16 +329,19 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         addr = lba * 512;
     }
 
+    // Keep entire single-block transaction non-preemptible.
+    // If timer scheduling preempts between CMD17 and data drain, this controller
+    // can return stale/partial data that later appears as FAT end-marker errors.
+    asm volatile("msr daifset, #2");
+    irq_masked = 1;
+
     SDHSTS = 0x7F8;
 
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0){
         uart_puts("CMD17 FAIL\n");
-        return -1;
+        goto out;
     }
     (void)sdhost_get_resp();
-
-    asm volatile("msr daifset, #2");
-    irq_masked = 1;
 
     int words_left = 128;
     int index = 0;
