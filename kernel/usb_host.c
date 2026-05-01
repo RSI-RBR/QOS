@@ -489,6 +489,13 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
             hcint &= ~HCINT_ACK;
         }
 
+        // Some DWC2 variants complete control stages without a reliable
+        // CHHLTD edge in polling mode. If completion was observed and the
+        // channel is now disabled, treat it as success.
+        if (saw_complete && ((HCCHAR(ch) & HCCHAR_CHENA) == 0)){
+            return 0;
+        }
+
         if (hcint & HCINT_CHHLTD){
             HCINT(ch) = HCINT_CHHLTD;
             return saw_complete ? 0 : 1;
