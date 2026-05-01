@@ -40,6 +40,17 @@
 
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
+static void sdhost_drain_fifo(void){
+    int timeout = 100000;
+    while (timeout-- > 0){
+        unsigned int status = SDHSTS;
+        if (!(status & SDHSTS_DATA_FLAG)){
+            break;
+        }
+        (void)SDDATA;
+        barrier();
+    }
+}
 
 
 static int sdhost_wait_resp(void){
@@ -305,6 +316,7 @@ int sdhost_init_card(void) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer){
+    sdhost_drain_fifo();
 
     // Set block size/count
     SDHBCT = 512;
@@ -384,7 +396,8 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
             if (status & SDHSTS_ERROR_MASK){
                 uart_puts("DATA ERROR\n");
                 SDHSTS = 0x7F8;
-                asm volatile("msr daifclr, #2");
+    asm volatile("msr daifclr, #2");
+    sdhost_drain_fifo();
                 return -1;
             }
         }
@@ -397,7 +410,8 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         uart_puthex(final_status);
         uart_puts("\n");
         SDHSTS = 0x7F8;
-        asm volatile("msr daifclr, #2");
+    asm volatile("msr daifclr, #2");
+    sdhost_drain_fifo();
         return -1;
     }
 
@@ -413,6 +427,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     // Clear status AFTER transfer
     SDHSTS = 0x7F8;
     asm volatile("msr daifclr, #2");
+    sdhost_drain_fifo();
 
     // Let controller FSM settle before next command/read.
     // This replaces the incidental timing side-effect from debug UART prints.
@@ -428,3 +443,7 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
 
     return 0;
 }
+
+
+
+
