@@ -51,16 +51,22 @@ static int smsc95xx_init(void){
     g_id_rev = 0;
 
     if (usb_host_get_root_device_info(&info) != 0){
+        uart_puts("SMSC95XX: root device info unavailable\n");
         return -1;
     }
     if (!info.child_present || !info.child_configured){
+        uart_puts("SMSC95XX: child missing or not configured\n");
         return -1;
     }
     if (info.child_vid != SMSC95XX_VID || info.child_pid != SMSC95XX_PID){
+        uart_puts("SMSC95XX: child VID/PID mismatch\n");
         return -1;
     }
 
     g_dev_addr = info.child_address;
+    uart_puts("SMSC95XX: probing dev addr=");
+    uart_puthex(g_dev_addr);
+    uart_puts("\n");
     if (smsc95xx_read_reg(SMSC95XX_REG_ID_REV, &g_id_rev) != 0){
         uart_puts("SMSC95XX: ID_REV read failed\n");
         return -1;

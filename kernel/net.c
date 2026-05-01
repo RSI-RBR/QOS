@@ -105,8 +105,19 @@ int net_init(void){
         return -1;
     }
     if (g_nic->init() != 0){
-        uart_puts("NET: NIC init failed\n");
-        return -1;
+        uart_puts("NET: NIC init failed for ");
+        uart_puts(g_nic->name ? g_nic->name : "unknown");
+        uart_puts("; falling back to stub-loopback\n");
+
+        g_nic = nic_probe_stub();
+        if (!g_nic || !g_nic->init || !g_nic->poll || !g_nic->send || !g_nic->set_rx_handler){
+            uart_puts("NET: stub backend unavailable\n");
+            return -1;
+        }
+        if (g_nic->set_rx_handler(net_ingest_rx_from_driver) != 0 || g_nic->init() != 0){
+            uart_puts("NET: stub init failed\n");
+            return -1;
+        }
     }
 
     g_net_ready = 1;
