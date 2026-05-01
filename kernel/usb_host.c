@@ -131,6 +131,7 @@ static int usb_std_request(unsigned char dev_addr,
                            unsigned short wIndex,
                            unsigned char* data,
                            unsigned short wLength);
+static void spin_delay(unsigned int n);
 static int usb_get_device_descriptor_at(unsigned char dev_addr, unsigned char* out18, unsigned int len);
 static int usb_get_config_descriptor(unsigned char dev_addr,
                                      unsigned char* buf,
