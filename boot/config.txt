@@ -1,3 +1,16 @@
 arm64_bit=1
 enable_uart=1
 kernel=kernel8.img
+
+# Force 1:1 output (no overscan/underscan border).
+disable_overscan=1
+overscan_left=0
+overscan_right=0
+overscan_top=0
+overscan_bottom=0
+
+# Force 1080p timing and framebuffer size.
+hdmi_group=1
+hdmi_mode=16
+framebuffer_width=1920
+framebuffer_height=1080
