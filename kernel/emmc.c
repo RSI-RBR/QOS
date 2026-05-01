@@ -31,6 +31,9 @@
 #define C1_CLK_STABLE    (1u << 1)
 #define C1_CLK_EN        (1u << 2)
 #define C1_SRST_HC       (1u << 24)
+#define C1_CLK_DIV_MASK  ((0xFFu << 8) | (0x3u << 6))
+#define C1_DATA_TOUNIT_MASK (0xFu << 16)
+#define C1_DATA_TOUNIT_MAX  (0xEu << 16)
 
 #define CMD_RSPNS_NONE   (0u << 16)
 #define CMD_RSPNS_136    (1u << 16)
@@ -91,6 +94,15 @@ static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags){
     EMMC_CMDTM = (cmd << 24) | flags;
 
     if (wait_interrupt(INT_CMD_DONE, 120) != 0){
+        uart_puts("EMMC: cmd fail op=");
+        uart_puthex(cmd);
+        uart_puts(" irpt=");
+        uart_puthex(EMMC_INTERRUPT);
+        uart_puts(" st=");
+        uart_puthex(EMMC_STATUS);
+        uart_puts(" c1=");
+        uart_puthex(EMMC_CONTROL1);
+        uart_puts("\n");
         return -1;
     }
     return 0;
@@ -134,9 +146,15 @@ int emmc_init(void){
     uart_puts("EMMC: reset cleared\n");
 
     EMMC_CONTROL0 = 0;
-    EMMC_CONTROL1 &= ~(0xFFFu << 16);
-    EMMC_CONTROL1 |= (250u << 16); // slow init clock
-    EMMC_CONTROL1 |= C1_CLK_INTLEN;
+    {
+        unsigned int div = 128u;
+        unsigned int c1 = EMMC_CONTROL1;
+        c1 &= ~(C1_CLK_DIV_MASK | C1_DATA_TOUNIT_MASK | C1_CLK_EN);
+        c1 |= C1_CLK_INTLEN | C1_DATA_TOUNIT_MAX;
+        c1 |= ((div & 0xFFu) << 8);
+        c1 |= (((div >> 8) & 0x3u) << 6);
+        EMMC_CONTROL1 = c1;
+    }
     uart_puts("EMMC: int clock enabled\n");
     {
         unsigned long start = system_ticks;
