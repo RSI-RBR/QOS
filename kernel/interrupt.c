@@ -16,6 +16,12 @@ extern void vectors(void);
 
 static void (*g_sdhost_irq_handler)(void) = 0;
 
+// Trap-frame index from vectors.S layout:
+// x0..x30 => 0..30, ELR => 31, SPSR => 32, SP_EL0 => 33
+#define IRQ_FRAME_SPSR_IDX 32
+#define SPSR_MODE_MASK 0xFUL
+#define SPSR_MODE_EL0T 0x0UL
+
 void interrupt_init(void){
     asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
     asm volatile("isb");
@@ -42,7 +48,15 @@ void* irq_handler(void* irq_frame_sp){
     if (local_src & CORE0_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();
         timer_handler();
-        return scheduler_on_irq(irq_frame_sp);
+        // Do not preempt while executing kernel EL1 code (e.g. inside syscall
+        // loader path). Only schedule directly from timer IRQ when interrupted
+        // context was EL0 user-mode.
+        unsigned long* frame = (unsigned long*)irq_frame_sp;
+        unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
+        if ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T){
+            return scheduler_on_irq(irq_frame_sp);
+        }
+        return irq_frame_sp;
     }
 
     if ((IRQ_PENDING_2 & IRQ_SDHOST_PENDING_BIT) && g_sdhost_irq_handler){
