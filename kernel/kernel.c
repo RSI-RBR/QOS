@@ -111,6 +111,7 @@ void kernel_main(void){
         uart_puts("SD INIT FAILED!\n");
         return;
     }
+    sdhost_irq_init();
 
     uart_puts("INIT OK...\n");
 //    check_stack();

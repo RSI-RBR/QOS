@@ -12,3 +12,5 @@ void sdhost_check_status(void);
 int sdhost_init_card(void);
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer);
+void sdhost_irq_init(void);
+void sdhost_irq_handler(void);

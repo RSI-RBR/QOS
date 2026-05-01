@@ -1,4 +1,5 @@
 #include "sdhost.h"
+#include "interrupt.h"
 
 #define SDHOST_BASE 0x3F202000
 
@@ -22,6 +23,9 @@
 #define SDCMD_READ_CMD      0x0040
 
 #define SDHSTS_DATA_FLAG        0x0001
+#define SDHSTS_BUSY_IRPT        0x0400
+#define SDHSTS_BLOCK_IRPT       0x0200
+#define SDHSTS_SDIO_IRPT        0x0100
 #define SDHSTS_FIFO_ERROR       0x0008
 #define SDHSTS_CRC7_ERROR       0x0010
 #define SDHSTS_CRC16_ERROR      0x0020
@@ -51,6 +55,11 @@
 
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
+static volatile unsigned int sdhost_irq_latched = 0;
+
+#define IRQ_BASE 0x3F00B000UL
+#define ENABLE_IRQS_2 (*(volatile unsigned int*)(IRQ_BASE + 0x214))
+#define SDHOST_IRQ_EN_BIT (1u << 30) // IRQ 62 (SDHOST)
 
 static void delay(int count) {
     while (count--) asm volatile("nop");
@@ -65,6 +74,22 @@ static int wait_cmd_done(int timeout) {
 
 static void clear_status(void) {
     SDHSTS = SDHSTS_CLEAR_MASK;
+    barrier();
+}
+
+void sdhost_irq_handler(void){
+    unsigned int st = SDHSTS;
+    sdhost_irq_latched |= st;
+    // Acknowledge interrupt-class bits + data flag.
+    SDHSTS = SDHSTS_BUSY_IRPT | SDHSTS_BLOCK_IRPT | SDHSTS_SDIO_IRPT | SDHSTS_DATA_FLAG;
+    barrier();
+}
+
+void sdhost_irq_init(void){
+    interrupt_register_sdhost_irq(sdhost_irq_handler);
+    ENABLE_IRQS_2 = SDHOST_IRQ_EN_BIT;
+    // Enable busy+data interrupts in host config; block irpt optional.
+    SDHCFG |= (1u << 10) | (1u << 4);
     barrier();
 }
 
@@ -218,7 +243,12 @@ int sdhost_init_card(void) {
     if (sdhost_cmd(7, sd_rca << 16, CMD_NEEDS_RESP) != 0) return -1;
     (void)sdhost_get_resp();
 
-    return sdhost_ensure_transfer_state();
+    if (sdhost_ensure_transfer_state() != 0){
+        return -1;
+    }
+
+    sdhost_irq_init();
+    return 0;
 }
 
 static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
@@ -253,6 +283,7 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
         return -1;
     }
     (void)sdhost_get_resp();
+    sdhost_irq_latched = 0;
 
     int words_left = 128;
     int out_idx = 0;
@@ -281,7 +312,8 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
                     return -1;
                 }
             }
-            barrier();
+            // IRQ-driven wait hint: let CPU sleep until next interrupt source.
+            asm volatile("wfi");
             continue;
         }
 
