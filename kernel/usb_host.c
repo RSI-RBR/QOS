@@ -352,6 +352,8 @@ static int hc_force_halt(unsigned int ch){
     HCINTMSK(ch) = HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
     // Only request halt when channel is already enabled.
+    // Some DWC2 variants are more reliable when EPDIR is cleared on explicit halt.
+    hcchar &= ~HCCHAR_EPDIR;
     hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
     HCCHAR(ch) = hcchar;
 
@@ -425,6 +427,7 @@ static void fifo_read_bytes(unsigned char* data, unsigned int len){
 static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, unsigned int in_len){
     unsigned int copied = 0;
     unsigned int loops = 8000000;
+    unsigned int saw_complete = 0;
 
     while (loops--){
         if (is_in && (GINTSTS & GINTSTS_RXFLVL)){
@@ -468,29 +471,27 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
             return -1;
         }
 
-        // ACK can occur before final completion on some control paths.
-        // Treat it as progress, not a terminal retry condition.
-        if (hcint & HCINT_ACK){
-            HCINT(ch) = HCINT_ACK;
-            if (hcint & HCINT_CHHLTD){
-                return 0;
-            }
-            continue;
-        }
-
-        if (hcint & HCINT_XFERCOMPL){
-            HCINT(ch) = hcint;
-            return 0;
-        }
-
         if (hcint & (HCINT_NAK | HCINT_NYET)){
             HCINT(ch) = (hcint & (HCINT_NAK | HCINT_NYET));
             return 1;
         }
 
+        // Keep a completion breadcrumb, but do not return success until
+        // channel-halt is observed so next stage sees a clean channel state.
+        if (hcint & HCINT_XFERCOMPL){
+            HCINT(ch) = HCINT_XFERCOMPL;
+            saw_complete = 1;
+            hcint &= ~HCINT_XFERCOMPL;
+        }
+        if (hcint & HCINT_ACK){
+            HCINT(ch) = HCINT_ACK;
+            saw_complete = 1;
+            hcint &= ~HCINT_ACK;
+        }
+
         if (hcint & HCINT_CHHLTD){
             HCINT(ch) = HCINT_CHHLTD;
-            return 1;
+            return saw_complete ? 0 : 1;
         }
     }
     return -1;
@@ -515,6 +516,17 @@ static int hc_transfer(unsigned int ch,
     if (hc_wait_idle(ch, 500000) != 0){
         if (hc_force_halt(ch) != 0){
             uart_puts("USB: HC not idle before xfer\n");
+            uart_puts("USB: pre-idle hcint=");
+            uart_puthex(HCINT(ch));
+            uart_puts(" hctsiz=");
+            uart_puthex(HCTSIZ(ch));
+            uart_puts(" hcchar=");
+            uart_puthex(HCCHAR(ch));
+            uart_puts(" hprt0=");
+            uart_puthex(HPRT0);
+            uart_puts(" gintsts=");
+            uart_puthex(GINTSTS);
+            uart_puts("\n");
             return -1;
         }
     }
