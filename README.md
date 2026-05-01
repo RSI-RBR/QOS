@@ -1,195 +1,87 @@
-QOS (Quantum OS for Raspberry Pi)
+# QOS - Quantum OS for Raspberry Pi
 
-Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).
-(WORK IN PROGRESS)
----
+Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).  
+**WORK IN PROGRESS**
 
-## Features
+## Features (Current)
 
-- UART input/output
-- Basic interactive shell
+- UART input/output with basic interactive shell
 - Simple memory allocator
-- Runs without Linux (bare metal)
+- SD card driver with FAT32 support (read-only)
+- Program loading from FAT filesystem (`PROGRAM.BIN`)
+- Basic exception level management (EL2 → EL1)
+- Phase 1 MMU identity mapping
+- Framebuffer size exposure to shell/programs
+- Preemption-safe program loading improvements
+- Timer access in EL1
 
----
+## Current Capabilities & Progress
+
+QOS now successfully boots on Raspberry Pi 3 and provides a functional UART shell. The kernel can read from a FAT32-formatted SD card and load external programs (e.g. `PROGRAM.BIN`).
+
+**Recent Improvements:**
+- Stabilized SD block reads and FAT filesystem access
+- Better program loading with preemption safety
+- Enhanced boot process with EL1 timer support and initial MMU mapping
+- Improved reliability of root directory walking and cluster chain following
+
+**Known Limitation (SD Card Timing):**
+After cold boot, there can be a brief period (~30-60 seconds) where the SD card has not fully initialized. During this window, attempts to read `PROGRAM.BIN` may fail with "end of chain" or `fat read_cluster fail` errors (e.g. settle error 0x20). Once the card settles, reads work reliably. A short delay + retry logic is being added to address cold-boot timing.
 
 ## Requirements
 
 - Raspberry Pi 3 B(+)
-- Micro SD card
-- Linux system (tested on Kali Linux)
-- USB-to-UART adapter (for serial output)
+- Micro SD card (FAT32 formatted)
+- Linux build machine (tested on Kali Linux)
+- USB-to-UART adapter (for serial console)
 
----
+## Build Instructions
 
-1. Install Cross Compiler
+### 1. Install Cross Compiler
 
-Install the AArch64 cross compiler:
-
+```bash
 sudo apt update
 sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-Verify installation:
-
-aarch64-linux-gnu-gcc --version
-
----
-
-2. Build the OS
-
-Clone the repository:
+2. Build the OS bash
 
 git clone https://github.com/RSI-RBR/QOS.git
 cd QOS
-
-Build:
-
 make
 
-This produces:
-
-kernel8.img
-
----
-
-3. Prepare SD Card
-
-⚠️ WARNING: This will erase the SD card.
-
-3.1 Insert SD card and identify it
-
-lsblk
-
-Look for your device (example):
-
-sdb
-└─sdb1
-
-We will assume "/dev/sdX" (replace with your actual device).
-
----
-
-3.2 Unmount existing partitions
-
-sudo umount /dev/sdX*
-
----
-
-3.3 Create partition table
-
-sudo fdisk /dev/sdX
-
-Inside fdisk:
-
-o    (create new DOS partition table)
-n    (new partition)
-p    (primary)
-1    (partition number)
-     (press Enter for default start)
-     (press Enter for default end)
-t    (change type)
-c    (W95 FAT32 (LBA))
-w    (write and exit)
-
----
-
-3.4 Format as FAT32
-
-sudo mkfs.vfat /dev/sdX1
-
----
-
-3.5 Mount the SD card
-
-mkdir -p ~/sdcard
-sudo mount /dev/sdX1 ~/sdcard
-
----
-
-4. Download Raspberry Pi Firmware (Minimal)
-
-Instead of cloning the full firmware repository, download only the required boot files:
-
-mkdir -p ~/rpi-fw
-cd ~/rpi-fw
-
-wget https://github.com/raspberrypi/firmware/raw/master/boot/bootcode.bin
-wget https://github.com/raspberrypi/firmware/raw/master/boot/start.elf
-wget https://github.com/raspberrypi/firmware/raw/master/boot/fixup.dat
-
-Copy them to the SD card:
-
-cp bootcode.bin ~/sdcard/
-cp start.elf ~/sdcard/
-cp fixup.dat ~/sdcard/
-
----
-
-5. Copy OS Files
-
-Copy your kernel and config:
+This produces kernel8.img. SD Card Preparation(Keep your existing detailed SD card preparation steps here — they remain valid) Copy OS Files bash
 
 cp kernel8.img ~/sdcard/
 cp boot/config.txt ~/sdcard/
+# Copy your PROGRAM.BIN (and any other programs) to the root of the SD card
 
----
-
-6. config.txt
-
-Example configuration:
+config.txt
 
 arm_64bit=1
 enable_uart=1
 kernel=kernel8.img
 
----
+Booting Insert SD card into Raspberry Pi 3
+Connect UART (TX/RX/GND)
+Open serial terminal: screen /dev/ttyUSB0 115200
+Power on the Pi
 
-7. Unmount SD Card
+Expected output includes:
 
-sync
-sudo umount ~/sdcard
+init messages and usable shell prompt
 
----
+You should then be able to interact with the shell and load programs from the SD card.Notes Bare-metal (no Linux)
+UART is currently the primary I/O
+Framebuffer support is partially exposed but not yet used for graphics output (except for the test program)
+SD/FAT driver is functional with the noted cold-boot timing caveat
 
-8. Boot
+Future Goals Full process / multitasking system
+Robust file system (read + write)
+Improved SD card initialization (cold boot reliability)
+Networking stack
+Security features
+GPU / 2D framebuffer acceleration
+Raspberry Pi 5 and secure board compatibility
 
-1. Insert SD card into Raspberry Pi
-2. Connect UART (TX/RX/GND)
-3. Open serial:
+License: All rights reserved
 
-screen /dev/ttyUSB0 115200
-
-4. Power on the Pi
-
-You should see:
-
-Kernel booted
-Simple Shell Ready
->
-
----
-
-Notes
-
-- This OS is bare metal (no Linux)
-- No GPU / framebuffer yet
-- UART is the only I/O
-- 
-
----
-
-Future Goals
-
-- Process system
-- File system
-- Networking
-- Security features
-- GPU acceleration (2D)
-- PI 5 compatibility
-- Secure board compatibility
-
----
-
-License
-
-All available rights reserved
