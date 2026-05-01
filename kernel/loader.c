@@ -85,6 +85,13 @@ void* alloc_program_memory(unsigned int size){
         unsigned long base = PROGRAM_POOL_START + ((unsigned long)i * PROGRAM_SLOT_SIZE);
         void* addr = (void*)base;
 
+        // Raw binaries produced via objcopy do not carry .bss contents.
+        // Zero the whole slot at allocation time so globals/statics start at 0.
+        volatile unsigned char* wipe = (volatile unsigned char*)base;
+        for (unsigned long j = 0; j < PROGRAM_SLOT_SIZE; j++){
+            wipe[j] = 0;
+        }
+
         // Entire slot is user-executable to keep block-level isolation simple.
         mmu_map_user_code_region(base, PROGRAM_SLOT_SIZE);
 
