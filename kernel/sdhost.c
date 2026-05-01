@@ -40,6 +40,36 @@
 
 static unsigned int sd_rca = 0;
 static int sd_is_sdhc = 0;
+
+static int sdhost_ensure_transfer_state(void){
+    // R1 card state is bits [12:9], TRANSFER is 4.
+    const unsigned int STATE_MASK = 0xF;
+    const unsigned int STATE_SHIFT = 9;
+    const unsigned int STATE_TRANSFER = 4;
+
+    for (int attempt = 0; attempt < 3; attempt++){
+        if (sdhost_cmd(13, sd_rca << 16, CMD_NEEDS_RESP) != 0){
+            continue;
+        }
+
+        unsigned int st = sdhost_get_resp();
+        unsigned int state = (st >> STATE_SHIFT) & STATE_MASK;
+        unsigned int ready = (st >> 8) & 1;
+
+        if (state == STATE_TRANSFER && ready){
+            return 0;
+        }
+
+        // Re-select card and retry status.
+        if (sdhost_cmd(7, sd_rca << 16, CMD_NEEDS_RESP) == 0){
+            (void)sdhost_get_resp();
+        }
+    }
+
+    uart_puts("SD card not in TRANSFER state\n");
+    return -1;
+}
+
 static void sdhost_drain_fifo(void){
     int timeout = 100000;
     while (timeout-- > 0){
@@ -332,6 +362,10 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     unsigned int addr = lba;
     if (!sd_is_sdhc){
         addr = lba * 512;
+    }
+
+    if (sdhost_ensure_transfer_state() != 0){
+        return -1;
     }
 
     // Keep entire single-block transaction non-preemptible.
