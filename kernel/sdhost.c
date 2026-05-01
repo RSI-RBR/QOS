@@ -272,12 +272,17 @@ int sdhost_init_card(void) {
         return -1;
     }
 
+    unsigned int cmd3_resp = sdhost_get_resp();
     uart_puts("CMD3 RESP = ");
-    uart_puthex(sdhost_get_resp());
+    uart_puthex(cmd3_resp);
     uart_puts("\n");
 
-    sd_rca = sdhost_get_resp() >> 16;
+    sd_rca = cmd3_resp >> 16;
     sd_rca &= 0xFFFF;
+    if (sd_rca == 0){
+        uart_puts("Invalid RCA (0)\n");
+        return -1;
+    }
 
     uart_puts("RCA = ");
     uart_puthex(sd_rca);
