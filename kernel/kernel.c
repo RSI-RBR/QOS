@@ -17,7 +17,7 @@
 #include "mmu.h"
 
 
-extern kernel_api_t kapi;
+//extern kernel_api_t kapi;
 
 //static unsigned char sector[512];
 
@@ -77,7 +77,8 @@ void kernel_main(void){
     fb_init_buffers();
     uart_puts("Frame buffer initialized!\n");
 
-    kapi.clear(0x00000000);
+//    kapi.clear(0x00000000);
+    fb_clear(0x00000000);
 //    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
 
     uart_puts("Kernel booted successfully!\n");
