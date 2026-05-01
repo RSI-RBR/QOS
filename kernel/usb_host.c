@@ -18,6 +18,8 @@
 #define HCFG      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x400))
 #define HFIR      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x404))
 #define HFNUM     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x408))
+#define HAINT     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x414))
+#define HAINTMSK  (*(volatile unsigned int*)(USB_DWC2_BASE + 0x418))
 #define HPRT0     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x440))
 #define PCGCTL    (*(volatile unsigned int*)(USB_DWC2_BASE + 0xE00))
 #define FIFO0     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x1000))
@@ -59,6 +61,7 @@
 // GINTSTS bits (subset)
 #define GINTSTS_CURMODE_HOST (1u << 0)
 #define GINTSTS_RXFLVL       (1u << 4)
+#define GINTSTS_HCHINT       (1u << 25)
 
 // Host channel bits
 #define HCCHAR_MPS_MASK      0x7FFu
@@ -66,6 +69,7 @@
 #define HCCHAR_EPDIR         (1u << 15)
 #define HCCHAR_LSPDDEV       (1u << 17)
 #define HCCHAR_EPTYPE_SHIFT  18
+#define HCCHAR_MULTICNT_SHIFT 20
 #define HCCHAR_DEVADDR_SHIFT 22
 #define HCCHAR_ODDFRM        (1u << 29)
 #define HCCHAR_CHDIS         (1u << 30)
@@ -533,6 +537,10 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(HPRT0);
             uart_puts(" gintsts=");
             uart_puthex(GINTSTS);
+            uart_puts(" haint=");
+            uart_puthex(HAINT);
+            uart_puts(" haintmsk=");
+            uart_puthex(HAINTMSK);
             uart_puts("\n");
             return -1;
         }
@@ -545,6 +553,8 @@ static int hc_transfer(unsigned int ch,
             }
         }
         HCINT(ch) = 0xFFFFFFFFu;
+        HAINTMSK |= (1u << ch);
+        GINTMSK |= GINTSTS_HCHINT;
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
         unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
@@ -555,7 +565,8 @@ static int hc_transfer(unsigned int ch,
         unsigned int hcchar = (ep_mps & HCCHAR_MPS_MASK)
             | ((0u & 0xFu) << HCCHAR_EPNUM_SHIFT)
             | ((dev_addr & 0x7Fu) << HCCHAR_DEVADDR_SHIFT)
-            | (0u << HCCHAR_EPTYPE_SHIFT); // control
+            | (0u << HCCHAR_EPTYPE_SHIFT)   // control
+            | (1u << HCCHAR_MULTICNT_SHIFT);
         if (ep_in){
             hcchar |= HCCHAR_EPDIR;
         }
@@ -717,7 +728,8 @@ int usb_host_init(void){
 
     // Clear and mask interrupts for phase 1 polling path.
     GINTSTS = 0xFFFFFFFFu;
-    GINTMSK = 0;
+    GINTMSK = GINTSTS_HCHINT | GINTSTS_RXFLVL;
+    HAINTMSK = 0xFFFFFFFFu;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
     // Set full-speed PHY clock (safe default on many Pi bare-metal bring-ups).
