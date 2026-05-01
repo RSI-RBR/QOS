@@ -162,6 +162,15 @@ static void hc_force_halt(unsigned int ch){
     }
 }
 
+static int hc_wait_idle(unsigned int ch, unsigned int loops){
+    while (loops--){
+        if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static void clear_port_change_bits(void){
     unsigned int hprt = HPRT0;
     hprt &= ~(HPRT0_ENA | HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG | HPRT0_RESET);
@@ -295,9 +304,21 @@ static int hc_transfer(unsigned int ch,
         pktcnt = 1;
     }
 
+    // Ensure channel is idle before programming a new transfer.
+    if (hc_wait_idle(ch, 500000) != 0){
+        hc_force_halt(ch);
+        if (hc_wait_idle(ch, 500000) != 0){
+            uart_puts("USB: HC not idle before xfer\n");
+            return -1;
+        }
+    }
+
     for (unsigned int attempt = 0; attempt < 128; attempt++){
         if (attempt > 0){
             hc_force_halt(ch);
+            if (hc_wait_idle(ch, 500000) != 0){
+                return -1;
+            }
         }
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
@@ -333,7 +354,7 @@ static int hc_transfer(unsigned int ch,
 
         int rc = hc_wait_for_done(ch, ep_in, in_data, in_len);
         if (rc == 0){
-            hc_force_halt(ch);
+            // Do not force-halt on success; it can race the next control stage.
             return 0;
         }
         if (rc < 0){
