@@ -388,6 +388,25 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         goto out;
     }
 
+    // Wait until controller reports transfer done.
+    // Without this, stale/partial sector data can slip through as "success".
+    {
+        int done_timeout = 1000000;
+        while (!(SDHSTS & (1 << 1)) && done_timeout--){
+            if (SDHSTS & SDHSTS_ERROR_MASK){
+                uart_puts("TRANSFER ERROR status=");
+                uart_puthex(SDHSTS);
+                uart_puts("\n");
+                SDHSTS = 0x7F8;
+                goto out;
+            }
+        }
+        if (done_timeout <= 0){
+            uart_puts("TRANSFER DONE TIMEOUT\n");
+            goto out;
+        }
+    }
+
     SDHSTS = 0x7F8;
     rc = 0;
 
