@@ -130,6 +130,35 @@ static int sdhost_ensure_transfer_state(void) {
     return -1;
 }
 
+static void sdhost_force_data_mode_if_needed(void){
+    unsigned int edm = SDEDM;
+    unsigned int fsm = edm & SDEDM_FSM_MASK;
+    if (fsm == SDEDM_FSM_READWAIT || fsm == SDEDM_FSM_WRITESTART1) {
+        SDEDM = edm | SDEDM_FORCE_DATA_MODE;
+        barrier();
+    }
+}
+
+static int sdhost_stop_transmission(void){
+    if (sdhost_cmd(12, 0, CMD_NEEDS_RESP) == 0){
+        (void)sdhost_get_resp();
+        return 0;
+    }
+    return -1;
+}
+
+static void sdhost_recover_after_data_error(void){
+    sdhost_force_data_mode_if_needed();
+    (void)sdhost_stop_transmission();
+    if (sd_rca != 0){
+        if (sdhost_cmd(7, sd_rca << 16, CMD_NEEDS_RESP) == 0){
+            (void)sdhost_get_resp();
+        }
+    }
+    clear_status();
+    sdhost_drain_fifo();
+}
+
 unsigned int sdhost_get_resp(void) {
     return SDRSP0;
 }
@@ -280,6 +309,7 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
     SDHBLC = 1;
 
     if (sdhost_cmd(17, addr, CMD_NEEDS_RESP | CMD_IS_READ) != 0) {
+        sdhost_recover_after_data_error();
         return -1;
     }
     (void)sdhost_get_resp();
@@ -292,7 +322,7 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
     while (words_left > 0 && timeout-- > 0) {
         unsigned int status = SDHSTS;
         if (status & SDHSTS_TRANSFER_ERRORS) {
-            clear_status();
+            sdhost_recover_after_data_error();
             return -1;
         }
 
@@ -308,7 +338,7 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
                 fsm != SDEDM_FSM_READWAIT &&
                 fsm != SDEDM_FSM_READCRC) {
                 if (SDHSTS & SDHSTS_ERROR_MASK) {
-                    clear_status();
+                    sdhost_recover_after_data_error();
                     return -1;
                 }
             }
@@ -331,18 +361,12 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
     }
 
     if (words_left != 0) {
-        unsigned int edm = SDEDM;
-        unsigned int fsm = edm & SDEDM_FSM_MASK;
-        if (fsm == SDEDM_FSM_READWAIT || fsm == SDEDM_FSM_WRITESTART1) {
-            SDEDM = edm | SDEDM_FORCE_DATA_MODE;
-            barrier();
-        }
-        clear_status();
+        sdhost_recover_after_data_error();
         return -1;
     }
 
     if (SDHSTS & SDHSTS_TRANSFER_ERRORS) {
-        clear_status();
+        sdhost_recover_after_data_error();
         return -1;
     }
 
@@ -360,16 +384,12 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
 }
 
 int sdhost_read_block(unsigned int lba, unsigned char *buffer) {
-    for (int attempt = 0; attempt < 3; attempt++) {
+    for (int attempt = 0; attempt < 5; attempt++) {
         if (sdhost_read_block_once(lba, buffer) == 0) {
             return 0;
         }
 
-        if (sd_rca != 0) {
-            if (sdhost_cmd(7, sd_rca << 16, CMD_NEEDS_RESP) == 0) {
-                (void)sdhost_get_resp();
-            }
-        }
+        sdhost_recover_after_data_error();
 
         delay(20000);
     }
