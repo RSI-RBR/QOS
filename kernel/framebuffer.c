@@ -1,8 +1,10 @@
 #include "framebuffer.h"
 #include "mailbox.h"
+#include "uart.h"
 
 #define MAX_WIDTH 1920
 #define MAX_HEIGHT 1080
+#define MAX_TRACKED_PIXELS (MAX_WIDTH * MAX_HEIGHT)
 
 static unsigned int width = 1920;
 static unsigned int height = 1080;
@@ -16,7 +18,7 @@ static unsigned int back_buffer[MAX_HEIGHT][MAX_WIDTH] __attribute__((aligned(64
 
 
 static unsigned long modified_pixel_count = 0;
-static unsigned int modified_pixel_coords[2][1920*1080];
+static unsigned int modified_pixel_coords[2][MAX_TRACKED_PIXELS];
 
 //static volatile unsigned int mbox[36] __attribute__((aligned(16)));
 
@@ -63,6 +65,27 @@ void fb_init(){
             width = mbox[5];
             height = mbox[6];
         }
+        if (width > MAX_WIDTH || height > MAX_HEIGHT){
+            uart_puts("FB dims exceed static buffers; clamping.\n");
+            uart_puts("Reported width=");
+            uart_puthex(width);
+            uart_puts(" height=");
+            uart_puthex(height);
+            uart_puts("\n");
+            if (width > MAX_WIDTH){
+                width = MAX_WIDTH;
+            }
+            if (height > MAX_HEIGHT){
+                height = MAX_HEIGHT;
+            }
+        }
+        uart_puts("FB active width=");
+        uart_puthex(width);
+        uart_puts(" height=");
+        uart_puthex(height);
+        uart_puts(" pitch=");
+        uart_puthex(pitch);
+        uart_puts("\n");
     }
 }
 
@@ -78,7 +101,7 @@ void fb_init_buffers(void){
             back_buffer[y][x] = 0x00000000;
         }
     }
-    for (unsigned long i = 0; i < 1920*1080; i++){
+    for (unsigned long i = 0; i < MAX_TRACKED_PIXELS; i++){
         modified_pixel_coords[0][i] = 0;
         modified_pixel_coords[1][i] = 0;
     }
@@ -97,6 +120,9 @@ void fb_edit_buffer_pixel(unsigned int x, unsigned int y, unsigned int colour){
 //    }
 
     if (!already_modified){
+        if (modified_pixel_count >= MAX_TRACKED_PIXELS){
+            return;
+        }
         modified_pixel_coords[0][modified_pixel_count] = x;
         modified_pixel_coords[1][modified_pixel_count] = y;
         modified_pixel_count ++;
@@ -132,6 +158,9 @@ void fb_edit_buffer_pixel_fast(unsigned int x, unsigned int y, unsigned int colo
     if (!dirty_map[y][x]){
         dirty_map[y][x] = 1;
 
+        if (modified_pixel_count >= MAX_TRACKED_PIXELS){
+            return;
+        }
         modified_pixel_coords[0][modified_pixel_count] = x;
         modified_pixel_coords[1][modified_pixel_count] = y;
         modified_pixel_count ++;
@@ -143,6 +172,10 @@ void fb_update_buffer_pixels_fast(void){
         unsigned int x = modified_pixel_coords[0][i];
         unsigned int y = modified_pixel_coords[1][i];
 
+        if (x >= width || y >= height){
+            dirty_map[y < MAX_HEIGHT ? y : 0][x < MAX_WIDTH ? x : 0] = 0;
+            continue;
+        }
         fb_draw_pixel_fast(x, y, back_buffer[y][x]);
 
         dirty_map[y][x] = 0;
@@ -162,6 +195,9 @@ void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, un
 
             if (!dirty_map[py][px]){
                 dirty_map[py][px] = 1;
+                if (modified_pixel_count >= MAX_TRACKED_PIXELS){
+                    return;
+                }
                 modified_pixel_coords[0][modified_pixel_count] = px;
                 modified_pixel_coords[1][modified_pixel_count] = py;
                 modified_pixel_count ++;
