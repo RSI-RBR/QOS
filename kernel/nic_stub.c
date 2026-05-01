@@ -73,5 +73,9 @@ static const nic_driver_t g_stub_driver = {
 };
 
 const nic_driver_t* nic_probe_default(void){
+    const nic_driver_t* smsc = nic_probe_smsc95xx();
+    if (smsc){
+        return smsc;
+    }
     return &g_stub_driver;
 }
