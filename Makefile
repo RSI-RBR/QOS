@@ -34,7 +34,9 @@ kernel/interrupt.c \
 kernel/timer.c \
 kernel/mmu.c \
 kernel/blockdev.c \
-kernel/syscall.c
+kernel/syscall.c \
+kernel/net.c \
+kernel/nic_stub.c
 
 
 ASM_SOURCES = \

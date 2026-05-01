@@ -16,6 +16,7 @@
 #include "debug.h"
 #include "interrupt.h"
 #include "mmu.h"
+#include "net.h"
 
 
 //extern kernel_api_t kapi;
@@ -98,6 +99,12 @@ void kernel_main(void){
     interrupt_init();
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");
+
+    if (net_init() != 0){
+        uart_puts("NET init failed (continuing without NIC).\n");
+    } else{
+        net_dump_stats();
+    }
 
     fb_init();
     mmu_map_device_region(fb_get_base(), (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height());
@@ -214,6 +221,7 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
+        net_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{

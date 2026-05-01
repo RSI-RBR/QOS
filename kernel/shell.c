@@ -6,6 +6,7 @@
 #include "context.h"
 #include "process.h"
 #include "loader.h"
+#include "net.h"
 
 
 //static kernel_api_t kapi = {
@@ -103,6 +104,32 @@ static void cmd_fbinfo(int argc, char **argv){
     uart_puts("\n");
 }
 
+static void cmd_netstat(int argc, char **argv){
+    (void)argc;
+    (void)argv;
+    net_dump_stats();
+}
+
+static void cmd_netloop(int argc, char **argv){
+    (void)argc;
+    (void)argv;
+    if (net_send_test_frame() != 0){
+        uart_puts("NET loop send failed.\n");
+        return;
+    }
+
+    net_poll();
+    unsigned char rx[NET_MAX_FRAME_SIZE];
+    int n = net_recv_raw(rx, sizeof(rx));
+    if (n <= 0){
+        uart_puts("NET loop recv empty.\n");
+        return;
+    }
+    uart_puts("NET loop recv bytes=");
+    uart_puthex((unsigned int)n);
+    uart_puts("\n");
+}
+
 static void shell_clear_buffer(){
     for (int i = 0; i < BUF_SIZE; i++) buffer[i] = 0;
     buf_index = 0;
@@ -141,6 +168,8 @@ static void cmd_help(int argc, char **argv){
     uart_puts(" lsprog \n");
     uart_puts(" ps \n");
     uart_puts(" fbinfo \n");
+    uart_puts(" netstat \n");
+    uart_puts(" netloop \n");
 //    uart_puts(" runbin\n");
 
     return;
@@ -243,6 +272,8 @@ static command_t commands[] = {
     {"lsprog", cmd_lsprog},
     {"ps", cmd_ps},
     {"fbinfo", cmd_fbinfo},
+    {"netstat", cmd_netstat},
+    {"netloop", cmd_netloop},
     {"loadtest", cmd_loadtest}
 };
 

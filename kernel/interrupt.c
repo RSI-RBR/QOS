@@ -3,6 +3,7 @@
 #include "timer.h"
 #include "process.h"
 #include "syscall.h"
+#include "net.h"
 
 extern void vectors(void);
 
@@ -15,6 +16,10 @@ extern void vectors(void);
 #define IRQ_SDHOST_PENDING_BIT (1u << 30) // IRQ 62 -> bank2 bit 30
 
 static void (*g_sdhost_irq_handler)(void) = 0;
+
+#define MAX_BANK2_IRQ_HANDLERS 8
+static unsigned int g_bank2_irq_bits[MAX_BANK2_IRQ_HANDLERS];
+static void (*g_bank2_irq_handlers[MAX_BANK2_IRQ_HANDLERS])(void);
 
 // Trap-frame index from vectors.S layout:
 // x0..x30 => 0..30, ELR => 31, SPSR => 32, SP_EL0 => 33
@@ -33,6 +38,28 @@ void interrupt_init(void){
 
 void interrupt_register_sdhost_irq(void (*handler)(void)){
     g_sdhost_irq_handler = handler;
+    interrupt_register_bank2_irq(IRQ_SDHOST_PENDING_BIT, handler);
+}
+
+int interrupt_register_bank2_irq(unsigned int pending_bit_mask, void (*handler)(void)){
+    if (!pending_bit_mask || !handler){
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_BANK2_IRQ_HANDLERS; i++){
+        if (g_bank2_irq_handlers[i] == handler && g_bank2_irq_bits[i] == pending_bit_mask){
+            return 0;
+        }
+    }
+
+    for (int i = 0; i < MAX_BANK2_IRQ_HANDLERS; i++){
+        if (!g_bank2_irq_handlers[i]){
+            g_bank2_irq_bits[i] = pending_bit_mask;
+            g_bank2_irq_handlers[i] = handler;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 void enable_interrupts(void){
@@ -48,6 +75,7 @@ void* irq_handler(void* irq_frame_sp){
     if (local_src & CORE0_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();
         timer_handler();
+        net_poll();
         // Do not preempt while executing kernel EL1 code (e.g. inside syscall
         // loader path). Only schedule directly from timer IRQ when interrupted
         // context was EL0 user-mode.
@@ -59,9 +87,22 @@ void* irq_handler(void* irq_frame_sp){
         return irq_frame_sp;
     }
 
-    if ((IRQ_PENDING_2 & IRQ_SDHOST_PENDING_BIT) && g_sdhost_irq_handler){
-        g_sdhost_irq_handler();
-        return irq_frame_sp;
+    unsigned int bank2_pending = IRQ_PENDING_2;
+    if (bank2_pending){
+        for (int i = 0; i < MAX_BANK2_IRQ_HANDLERS; i++){
+            if (!g_bank2_irq_handlers[i]){
+                continue;
+            }
+            if (bank2_pending & g_bank2_irq_bits[i]){
+                g_bank2_irq_handlers[i]();
+                return irq_frame_sp;
+            }
+        }
+        // Backward compatibility fallback if legacy SDHOST registration is used.
+        if ((bank2_pending & IRQ_SDHOST_PENDING_BIT) && g_sdhost_irq_handler){
+            g_sdhost_irq_handler();
+            return irq_frame_sp;
+        }
     }
 
     return irq_frame_sp;
