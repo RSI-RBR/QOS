@@ -15,6 +15,12 @@ static unsigned char g_dev_addr = 0;
 static int g_ready = 0;
 static unsigned int g_id_rev = 0;
 
+static void smsc95xx_delay(unsigned int n){
+    while (n--){
+        asm volatile("nop");
+    }
+}
+
 static int smsc95xx_try_set_configuration(unsigned char dev_addr, unsigned char cfg_value){
     usb_setup_packet_t req;
     req.bmRequestType = 0x00; // OUT | standard | device
@@ -23,6 +29,24 @@ static int smsc95xx_try_set_configuration(unsigned char dev_addr, unsigned char 
     req.wIndex = 0;
     req.wLength = 0;
     return usb_host_control_transfer(dev_addr, &req, 0, 0, 0);
+}
+
+static int smsc95xx_get_configuration(unsigned char dev_addr, unsigned char* out_cfg){
+    usb_setup_packet_t req;
+    unsigned char cfg = 0;
+    if (!out_cfg){
+        return -1;
+    }
+    req.bmRequestType = 0x80; // IN | standard | device
+    req.bRequest = 0x08;      // GET_CONFIGURATION
+    req.wValue = 0;
+    req.wIndex = 0;
+    req.wLength = 1;
+    if (usb_host_control_transfer(dev_addr, &req, &cfg, 1, 1) != 0){
+        return -1;
+    }
+    *out_cfg = cfg;
+    return 0;
 }
 
 static int smsc95xx_read_reg(unsigned short reg, unsigned int* out){
@@ -38,15 +62,17 @@ static int smsc95xx_read_reg(unsigned short reg, unsigned int* out){
     req.wIndex = reg;
     req.wLength = 4;
 
-    if (usb_host_control_transfer(g_dev_addr, &req, data, sizeof(data), 1) != 0){
-        return -1;
+    for (unsigned int attempt = 0; attempt < 3; attempt++){
+        if (usb_host_control_transfer(g_dev_addr, &req, data, sizeof(data), 1) == 0){
+            *out = (unsigned int)data[0]
+                 | ((unsigned int)data[1] << 8)
+                 | ((unsigned int)data[2] << 16)
+                 | ((unsigned int)data[3] << 24);
+            return 0;
+        }
+        smsc95xx_delay(200000);
     }
-
-    *out = (unsigned int)data[0]
-         | ((unsigned int)data[1] << 8)
-         | ((unsigned int)data[2] << 16)
-         | ((unsigned int)data[3] << 24);
-    return 0;
+    return -1;
 }
 
 static int smsc95xx_set_rx_handler(nic_rx_handler_t handler){
@@ -58,6 +84,7 @@ static int smsc95xx_init(void){
     usb_root_device_info_t info;
     int child_cfg_ok = 0;
     unsigned char cfg_value = 0;
+    unsigned char active_cfg = 0;
     g_ready = 0;
     g_dev_addr = 0;
     g_id_rev = 0;
@@ -91,6 +118,16 @@ static int smsc95xx_init(void){
             uart_puts("SMSC95XX: child SET_CONFIGURATION failed, probing anyway\n");
         }
     }
+    if (smsc95xx_get_configuration(info.child_address, &active_cfg) == 0){
+        uart_puts("SMSC95XX: child active configuration=");
+        uart_puthex(active_cfg);
+        uart_puts("\n");
+        if (active_cfg != 0){
+            child_cfg_ok = 1;
+        }
+    } else{
+        uart_puts("SMSC95XX: GET_CONFIGURATION failed\n");
+    }
 
     g_dev_addr = info.child_address;
     uart_puts("SMSC95XX: probing dev addr=");
@@ -98,10 +135,6 @@ static int smsc95xx_init(void){
     uart_puts(" cfg=");
     uart_puthex(cfg_value);
     uart_puts(child_cfg_ok ? " (ok)\n" : " (best-effort)\n");
-    if (!child_cfg_ok){
-        // Many devices reject vendor register access while unconfigured.
-        return -1;
-    }
     if (smsc95xx_read_reg(SMSC95XX_REG_ID_REV, &g_id_rev) != 0){
         uart_puts("SMSC95XX: ID_REV read failed\n");
         return -1;
