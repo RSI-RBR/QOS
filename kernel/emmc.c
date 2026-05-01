@@ -27,6 +27,7 @@
 #define SR_CMD_INHIBIT   (1u << 0)
 #define SR_DAT_INHIBIT   (1u << 1)
 #define SR_READ_TRANSFER (1u << 9)
+#define SR_READ_AVAILABLE (1u << 11)
 
 #define C1_CLK_INTLEN    (1u << 0)
 #define C1_CLK_STABLE    (1u << 1)
@@ -285,23 +286,31 @@ int emmc_read_block(unsigned int lba, unsigned char *buffer){
             continue;
         }
 
-    if (wait_interrupt(INT_READ_RDY, 150) != 0){
-            unsigned int st = EMMC_STATUS;
-            // Fallback: some setups never raise READ_RDY reliably, but STATUS
-            // indicates read transfer active.
-            if (!(st & SR_READ_TRANSFER)){
-                uart_puts("EMMC: READ_RDY timeout irpt=");
-                uart_puthex(EMMC_INTERRUPT);
-                uart_puts(" st=");
-                uart_puthex(st);
-                uart_puts("\n");
-                emmc_cmd12_recover();
-                (void)emmc_reset_cmd_dat_lines();
-                continue;
-            }
-        }
-
         for (int i = 0; i < 128; i++){
+            unsigned long start_word = system_ticks;
+            while (!(EMMC_STATUS & SR_READ_AVAILABLE)){
+                if ((system_ticks - start_word) > 120){
+                    uart_puts("EMMC: read fifo wait timeout st=");
+                    uart_puthex(EMMC_STATUS);
+                    uart_puts(" irpt=");
+                    uart_puthex(EMMC_INTERRUPT);
+                    uart_puts("\n");
+                    emmc_cmd12_recover();
+                    (void)emmc_reset_cmd_dat_lines();
+                    goto retry_read;
+                }
+                if (EMMC_INTERRUPT & (INT_ERR | INT_ERROR_MASK)){
+                    uart_puts("EMMC: read fifo irq error irpt=");
+                    uart_puthex(EMMC_INTERRUPT);
+                    uart_puts(" st=");
+                    uart_puthex(EMMC_STATUS);
+                    uart_puts("\n");
+                    emmc_cmd12_recover();
+                    (void)emmc_reset_cmd_dat_lines();
+                    goto retry_read;
+                }
+            }
+
             unsigned int d = EMMC_DATA;
             buffer[i*4 + 0] = (unsigned char)(d & 0xFF);
             buffer[i*4 + 1] = (unsigned char)((d >> 8) & 0xFF);
@@ -309,18 +318,21 @@ int emmc_read_block(unsigned int lba, unsigned char *buffer){
             buffer[i*4 + 3] = (unsigned char)((d >> 24) & 0xFF);
         }
 
-        if (wait_interrupt(INT_DATA_DONE, 150) != 0){
-            uart_puts("EMMC: DATA_DONE timeout irpt=");
-            uart_puthex(EMMC_INTERRUPT);
-            uart_puts(" st=");
+        if (emmc_wait_data_inhibit_clear(180) != 0){
+            uart_puts("EMMC: data inhibit stuck after read st=");
             uart_puthex(EMMC_STATUS);
+            uart_puts(" irpt=");
+            uart_puthex(EMMC_INTERRUPT);
             uart_puts("\n");
             emmc_cmd12_recover();
             (void)emmc_reset_cmd_dat_lines();
-            continue;
+            goto retry_read;
         }
 
         return 0;
+
+retry_read:
+        ;
     }
 
     return -1;
