@@ -43,6 +43,7 @@
 
 // GAHBCFG bits
 #define GAHBCFG_GLBL_INTR_EN (1u << 0)
+#define GAHBCFG_DMA_EN       (1u << 5)
 
 // HPRT0 bits
 #define HPRT0_PWR            (1u << 12)
@@ -541,6 +542,8 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(HAINT);
             uart_puts(" haintmsk=");
             uart_puthex(HAINTMSK);
+            uart_puts(" gahbcfg=");
+            uart_puthex(GAHBCFG);
             uart_puts("\n");
             return -1;
         }
@@ -730,6 +733,8 @@ int usb_host_init(void){
     GINTSTS = 0xFFFFFFFFu;
     GINTMSK = GINTSTS_HCHINT | GINTSTS_RXFLVL;
     HAINTMSK = 0xFFFFFFFFu;
+    // Force slave mode path: our host transfer code uses FIFO IO (no HCDMA).
+    GAHBCFG &= ~GAHBCFG_DMA_EN;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
     // Set full-speed PHY clock (safe default on many Pi bare-metal bring-ups).
@@ -752,6 +757,9 @@ int usb_host_init(void){
     if (wait_port_connect(8000000) == 0){
         if (usb_host_reset_root_port() != 0){
             uart_puts("USB: root-port reset failed during init.\n");
+        } else{
+            // Start from a clean FIFO state before first enumeration transfer.
+            usb_flush_host_fifos();
         }
     } else{
         uart_puts("USB: no root-port connect yet.\n");
@@ -768,6 +776,8 @@ void usb_host_dump_state(void){
     uart_puthex(HPRT0);
     uart_puts(" HCFG=");
     uart_puthex(HCFG);
+    uart_puts(" GAHBCFG=");
+    uart_puthex(GAHBCFG);
     uart_puts(" GINTSTS=");
     uart_puthex(GINTSTS);
     uart_puts(" PCGCTL=");
