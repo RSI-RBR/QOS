@@ -144,14 +144,20 @@
 
 #define HUB_PORT_STAT_CONNECTION (1u << 0)
 #define HUB_PORT_STAT_ENABLE     (1u << 1)
+#define HUB_PORT_STAT_LOW_SPEED  (1u << 9)
+#define HUB_PORT_STAT_HIGH_SPEED (1u << 10)
 
 static int g_usb_ready = 0;
 static unsigned int g_port_speed = HPRT0_SPD_FULL;
 static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
 static usb_root_device_info_t g_root_info;
 static int g_split_ctx_active = 0;
+static int g_split_ctx_use_split = 0;
+static int g_split_ctx_low_speed = 0;
 static unsigned char g_split_ctx_hub_addr = 0;
 static unsigned char g_split_ctx_hub_port = 0;
+static int g_child_use_split = 0;
+static int g_child_low_speed = 0;
 static unsigned char g_status_dummy[4];
 
 static int usb_std_request(unsigned char dev_addr,
@@ -168,19 +174,24 @@ static int usb_get_config_descriptor(unsigned char dev_addr,
                                      unsigned int cap,
                                      unsigned short* total_len_out);
 static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, unsigned char* hub_port);
+static int usb_target_is_low_speed(unsigned char dev_addr);
 
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
 }
 
-static void usb_set_split_context(unsigned char hub_addr, unsigned char hub_port){
+static void usb_set_split_context(unsigned char hub_addr, unsigned char hub_port, int use_split, int low_speed){
     g_split_ctx_active = 1;
+    g_split_ctx_use_split = use_split ? 1 : 0;
+    g_split_ctx_low_speed = low_speed ? 1 : 0;
     g_split_ctx_hub_addr = hub_addr;
     g_split_ctx_hub_port = hub_port;
 }
 
 static void usb_clear_split_context(void){
     g_split_ctx_active = 0;
+    g_split_ctx_use_split = 0;
+    g_split_ctx_low_speed = 0;
     g_split_ctx_hub_addr = 0;
     g_split_ctx_hub_port = 0;
 }
@@ -194,7 +205,9 @@ static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, 
     }
 
     // Temporary route during downstream child enumeration (dev_addr may be 0).
-    if (g_split_ctx_active && dev_addr != g_split_ctx_hub_addr){
+    if (g_split_ctx_active &&
+        g_split_ctx_use_split &&
+        dev_addr != g_split_ctx_hub_addr){
         *hub_addr = g_split_ctx_hub_addr;
         *hub_port = g_split_ctx_hub_port;
         return 1;
@@ -202,11 +215,34 @@ static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, 
 
     // Persistent route for already-enumerated hub child (e.g. SMSC95xx control).
     if (g_root_info.child_present &&
+        g_child_use_split &&
         g_root_info.child_hub_address != 0 &&
         g_root_info.child_hub_port != 0 &&
         dev_addr == g_root_info.child_address){
         *hub_addr = g_root_info.child_hub_address;
         *hub_port = g_root_info.child_hub_port;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int usb_target_is_low_speed(unsigned char dev_addr){
+    if (g_port_speed == HPRT0_SPD_LOW){
+        return 1;
+    }
+
+    if (g_split_ctx_active &&
+        g_split_ctx_use_split &&
+        g_split_ctx_low_speed &&
+        dev_addr != g_split_ctx_hub_addr){
+        return 1;
+    }
+
+    if (g_root_info.child_present &&
+        g_child_use_split &&
+        g_child_low_speed &&
+        dev_addr == g_root_info.child_address){
         return 1;
     }
 
@@ -249,6 +285,9 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char dev_desc[18];
     unsigned char cfg_desc[256];
     unsigned short cfg_total = 0;
+    int child_is_high_speed = 0;
+    int child_is_low_speed = 0;
+    int child_use_split = 0;
 
     if (hub_port_set_feature(hub_addr, port, HUB_FEAT_PORT_POWER) != 0){
         uart_puts("USB: hub port power failed\n");
@@ -288,7 +327,21 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
         }
     }
 
-    usb_set_split_context(hub_addr, (unsigned char)port);
+    child_is_high_speed = (st & HUB_PORT_STAT_HIGH_SPEED) ? 1 : 0;
+    child_is_low_speed = (st & HUB_PORT_STAT_LOW_SPEED) ? 1 : 0;
+    child_use_split = child_is_high_speed ? 0 : 1;
+
+    usb_set_split_context(hub_addr, (unsigned char)port, child_use_split, child_is_low_speed);
+
+    uart_puts("USB: hub child speed=");
+    if (child_is_high_speed){
+        uart_puts("high");
+    } else if (child_is_low_speed){
+        uart_puts("low");
+    } else{
+        uart_puts("full");
+    }
+    uart_puts(child_use_split ? " split\n" : " direct\n");
 
     g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
     if (usb_get_device_descriptor_at(0, dev_desc, sizeof(dev_desc)) != 0){
@@ -314,8 +367,15 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     g_root_info.child_class = dev_desc[4];
     g_root_info.child_vid = le16(&dev_desc[8]);
     g_root_info.child_pid = le16(&dev_desc[10]);
-    g_root_info.child_hub_address = hub_addr;
-    g_root_info.child_hub_port = (unsigned char)port;
+    g_child_use_split = child_use_split;
+    g_child_low_speed = child_is_low_speed;
+    if (child_use_split){
+        g_root_info.child_hub_address = hub_addr;
+        g_root_info.child_hub_port = (unsigned char)port;
+    } else{
+        g_root_info.child_hub_address = 0;
+        g_root_info.child_hub_port = 0;
+    }
 
     int cfg_read = usb_get_config_descriptor(child_addr, cfg_desc, sizeof(cfg_desc), &cfg_total);
     if (cfg_read >= 6){
@@ -658,7 +718,7 @@ static int hc_transfer_reg(unsigned int ch,
         if (ep_in){
             hcchar |= HCCHAR_EPDIR;
         }
-        if (g_port_speed == HPRT0_SPD_LOW){
+        if (usb_target_is_low_speed(dev_addr)){
             hcchar |= HCCHAR_LSPDDEV;
         }
         if (HFNUM & 1u){
@@ -829,6 +889,8 @@ int usb_host_init(void){
     for (unsigned int i = 0; i < sizeof(g_root_info); i++){
         ((unsigned char*)&g_root_info)[i] = 0;
     }
+    g_child_use_split = 0;
+    g_child_low_speed = 0;
 
     unsigned int id = GSNPSID;
     uart_puts("USB: GSNPSID=");
@@ -973,13 +1035,22 @@ int usb_host_control_transfer(unsigned char dev_addr,
     unsigned char split_hub_addr = 0;
     unsigned char split_hub_port = 0;
     int use_split = usb_get_split_route(dev_addr, &split_hub_addr, &split_hub_port);
+    int use_split_runtime = use_split;
 
-    if (use_split){
+    if (use_split_runtime){
         if (hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
                               setup_bytes, sizeof(setup_bytes), 0, 0,
                               split_hub_addr, split_hub_port) != 0){
-            uart_puts("USB: SETUP stage failed (split)\n");
-            return -1;
+            // Some children (e.g. HS functions behind LAN9514) must use direct
+            // transactions even though they're downstream of a HS hub.
+            if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
+                            setup_bytes, sizeof(setup_bytes), 0, 0) == 0){
+                uart_puts("USB: split setup failed, fallback direct\n");
+                use_split_runtime = 0;
+            } else{
+                uart_puts("USB: SETUP stage failed (split)\n");
+                return -1;
+            }
         }
     } else if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
         uart_puts("USB: SETUP stage failed\n");
@@ -988,7 +1059,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
 
     if (data_len > 0){
         if (in_transfer){
-            int rc = use_split
+            int rc = use_split_runtime
                 ? hc_transfer_split(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1,
                                     0, 0, data, data_len, split_hub_addr, split_hub_port)
                 : hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len);
@@ -997,7 +1068,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
                 return -1;
             }
         } else{
-            int rc = use_split
+            int rc = use_split_runtime
                 ? hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1,
                                     data, data_len, 0, 0, split_hub_addr, split_hub_port)
                 : hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0);
@@ -1009,7 +1080,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
     }
 
     // Status stage: opposite direction, zero-length DATA1.
-    int status_rc = use_split
+    int status_rc = use_split_runtime
         ? hc_transfer_split(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1,
                             0, 0, 0, 0, split_hub_addr, split_hub_port)
         : hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0);
@@ -1131,6 +1202,8 @@ int usb_host_enumerate_root_device(void){
     for (unsigned int i = 0; i < sizeof(g_root_info); i++){
         ((unsigned char*)&g_root_info)[i] = 0;
     }
+    g_child_use_split = 0;
+    g_child_low_speed = 0;
 
     if (!g_usb_ready){
         return -1;
