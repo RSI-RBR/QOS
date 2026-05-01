@@ -56,20 +56,7 @@ int fat32_init(void){
 
     volatile unsigned char *v_sector = (volatile unsigned char *)sector;
     barrier();
-    unsigned int b0 = v_sector[454];
-//    uart_puts("B");
-    unsigned int b1 = v_sector[455];
-//    uart_puts("B");
-    unsigned int b2 = v_sector[456];
-//    uart_puts("B");
-    unsigned int b3 = v_sector[457];
-
-    unsigned int test = b0 | (b1 << 8);
-
-    unsigned int test2 = test | (b2 << 16);
-
-    unsigned int partition_lba = test2 | (b3 << 24);
-    volatile unsigned int v_partition_lba = (volatile unsigned int)partition_lba;
+    unsigned int partition_lba = read32(&sector[0x1BE + 8]);
     check_stack();
 //    unsigned int test = sector[0x1BE];
 //    unsigned int test2 = sector[0x1BE + 8];

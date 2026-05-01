@@ -97,10 +97,7 @@ static int sdhost_wait_resp(void){
 }
 
 unsigned int sdhost_get_resp(void){
-    unsigned int r = SDRSP0;
-    SDHSTS = 0x7F8;
-
-    return r;
+    return SDRSP0;
 }
 
 
@@ -147,7 +144,7 @@ int sdhost_cmd(unsigned int cmd, unsigned int arg, unsigned int flags) {
         return -1;
     }
 
-    // Clear errors
+    // Clear sticky status/error bits before issuing a new command.
     SDHSTS = 0x7F8;
 
     unsigned int sdcmd = cmd;
