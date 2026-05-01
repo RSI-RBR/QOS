@@ -164,10 +164,17 @@ static void hc_force_halt(unsigned int ch){
 
 static void clear_port_change_bits(void){
     unsigned int hprt = HPRT0;
-    hprt &= ~(HPRT0_RESET);
+    hprt &= ~(HPRT0_ENA | HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG | HPRT0_RESET);
     hprt |= HPRT0_PWR;
     hprt |= (HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
     HPRT0 = hprt;
+}
+
+static unsigned int hprt_base_for_write(void){
+    unsigned int hprt = HPRT0;
+    // Per DWC2 handling: mask write-sensitive bits before composing a write.
+    hprt &= ~(HPRT0_ENA | HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
+    return hprt;
 }
 
 static void fifo_write_bytes(const unsigned char* data, unsigned int len){
@@ -352,39 +359,57 @@ static int hc_transfer(unsigned int ch,
 }
 
 int usb_host_reset_root_port(void){
-    unsigned int hprt = HPRT0;
-    hprt &= ~(HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
-    hprt |= HPRT0_PWR;
-    hprt |= HPRT0_RESET;
-    HPRT0 = hprt;
-    spin_delay(3000000);
-
-    hprt = HPRT0;
-    hprt &= ~(HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
-    hprt |= HPRT0_PWR;
-    hprt &= ~HPRT0_RESET;
-    HPRT0 = hprt;
-    spin_delay(400000);
-
-    clear_port_change_bits();
-    hprt = HPRT0;
-    g_port_speed = hprt & HPRT0_SPD_MASK;
-    if (!(hprt & HPRT0_ENA)){
-        uart_puts("USB: root port did not enable after reset.\n");
+    if (!(HPRT0 & HPRT0_CONN_STS)){
+        uart_puts("USB: reset requested with no connected device.\n");
         return -1;
     }
-    g_ep0_mps = (g_port_speed == HPRT0_SPD_HIGH) ? 64u : USB_CTRL_EP_MPS_DEFAULT;
-    uart_puts("USB: root port reset complete, speed=");
-    if (g_port_speed == HPRT0_SPD_HIGH){
-        uart_puts("high\n");
-    } else if (g_port_speed == HPRT0_SPD_FULL){
-        uart_puts("full\n");
-    } else if (g_port_speed == HPRT0_SPD_LOW){
-        uart_puts("low\n");
-    } else{
-        uart_puts("unknown\n");
+
+    for (unsigned int attempt = 0; attempt < 4; attempt++){
+        unsigned int hprt = hprt_base_for_write();
+        hprt |= HPRT0_PWR | HPRT0_RESET;
+        HPRT0 = hprt;
+
+        // Keep reset asserted long enough for HS negotiation.
+        spin_delay(50000000);
+
+        hprt = hprt_base_for_write();
+        hprt |= HPRT0_PWR;
+        hprt &= ~HPRT0_RESET;
+        HPRT0 = hprt;
+
+        // Let port settle and enable latch.
+        spin_delay(4000000);
+        clear_port_change_bits();
+
+        for (unsigned int poll = 0; poll < 40; poll++){
+            hprt = HPRT0;
+            if (hprt & HPRT0_ENA){
+                g_port_speed = hprt & HPRT0_SPD_MASK;
+                g_ep0_mps = (g_port_speed == HPRT0_SPD_HIGH) ? 64u : USB_CTRL_EP_MPS_DEFAULT;
+                uart_puts("USB: root port reset complete, speed=");
+                if (g_port_speed == HPRT0_SPD_HIGH){
+                    uart_puts("high\n");
+                } else if (g_port_speed == HPRT0_SPD_FULL){
+                    uart_puts("full\n");
+                } else if (g_port_speed == HPRT0_SPD_LOW){
+                    uart_puts("low\n");
+                } else{
+                    uart_puts("unknown\n");
+                }
+                return 0;
+            }
+            if (hprt & (HPRT0_ENA_CHG | HPRT0_CONN_DET | HPRT0_OVRCURR_CHG)){
+                clear_port_change_bits();
+            }
+            spin_delay(250000);
+        }
     }
-    return 0;
+
+    uart_puts("USB: root port did not enable after reset.\n");
+    uart_puts("USB: HPRT0=");
+    uart_puthex(HPRT0);
+    uart_puts("\n");
+    return -1;
 }
 
 int usb_host_init(void){
@@ -463,7 +488,9 @@ int usb_host_init(void){
     usb_host_dump_state();
 
     if (wait_port_connect(8000000) == 0){
-        (void)usb_host_reset_root_port();
+        if (usb_host_reset_root_port() != 0){
+            uart_puts("USB: root-port reset failed during init.\n");
+        }
     } else{
         uart_puts("USB: no root-port connect yet.\n");
     }
@@ -503,6 +530,10 @@ int usb_host_control_transfer(unsigned char dev_addr,
                               unsigned int data_len,
                               int in_transfer){
     if (!g_usb_ready || !setup){
+        return -1;
+    }
+    if (!(HPRT0 & HPRT0_ENA)){
+        uart_puts("USB: control xfer while port disabled\n");
         return -1;
     }
 
@@ -553,12 +584,20 @@ int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
     }
     if (!(HPRT0 & HPRT0_CONN_STS)){
         if (wait_port_connect(6000000) == 0){
-            (void)usb_host_reset_root_port();
+            if (usb_host_reset_root_port() != 0){
+                return -1;
+            }
         }
     }
     if (!(HPRT0 & HPRT0_CONN_STS)){
         uart_puts("USB: no device present for descriptor read\n");
         return -1;
+    }
+    if (!(HPRT0 & HPRT0_ENA)){
+        if (usb_host_reset_root_port() != 0){
+            uart_puts("USB: descriptor read blocked; port not enabled\n");
+            return -1;
+        }
     }
 
     usb_setup_packet_t req;
