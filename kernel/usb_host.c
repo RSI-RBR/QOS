@@ -13,6 +13,7 @@
 #define GRXSTSP   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x020))
 #define GRXFSIZ   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x024))
 #define GNPTXFSIZ (*(volatile unsigned int*)(USB_DWC2_BASE + 0x028))
+#define GNPTXSTS  (*(volatile unsigned int*)(USB_DWC2_BASE + 0x02C))
 #define GCCFG     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x038))
 #define GSNPSID   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x040))
 #define HCFG      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x400))
@@ -89,6 +90,10 @@
 #define HCINT_FRMOVRUN       (1u << 9)
 #define HCINT_DATATGLERR     (1u << 10)
 #define HCINT_ERROR_MASK     (HCINT_AHBERR | HCINT_STALL | HCINT_XACTERR | HCINT_BBLERR | HCINT_FRMOVRUN | HCINT_DATATGLERR)
+
+// Non-periodic Tx status
+#define TXSTS_QSPCAVAIL_SHIFT 16
+#define TXSTS_QSPCAVAIL_MASK  (0xFFu << TXSTS_QSPCAVAIL_SHIFT)
 
 // HCTSIZ bits
 #define HCTSIZ_XFERSIZE_MASK 0x7FFFFu
@@ -347,6 +352,7 @@ static void usb_flush_host_fifos(void){
 
 static int hc_force_halt(unsigned int ch){
     unsigned int hcchar = HCCHAR(ch);
+    unsigned int qspc = (GNPTXSTS & TXSTS_QSPCAVAIL_MASK) >> TXSTS_QSPCAVAIL_SHIFT;
     if ((hcchar & HCCHAR_CHENA) == 0){
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = 0;
@@ -356,10 +362,15 @@ static int hc_force_halt(unsigned int ch){
     HCINT(ch) = 0xFFFFFFFFu;
     HCINTMSK(ch) = HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
-    // Only request halt when channel is already enabled.
-    // Some DWC2 variants are more reliable when EPDIR is cleared on explicit halt.
-    hcchar &= ~HCCHAR_EPDIR;
-    hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
+    // In slave mode, disable flow depends on NP request queue space:
+    // if queue is full, issue CHDIS only to flush posted requests.
+    if (qspc == 0){
+        hcchar |= HCCHAR_CHDIS;
+        hcchar &= ~HCCHAR_CHENA;
+    } else{
+        hcchar &= ~HCCHAR_EPDIR;
+        hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
+    }
     HCCHAR(ch) = hcchar;
 
     if (hc_wait_idle(ch, 800000) == 0){
@@ -544,6 +555,8 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(HAINTMSK);
             uart_puts(" gahbcfg=");
             uart_puthex(GAHBCFG);
+            uart_puts(" gnptxsts=");
+            uart_puthex(GNPTXSTS);
             uart_puts("\n");
             return -1;
         }
@@ -604,6 +617,8 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(HCCHAR(ch));
             uart_puts(" hprt0=");
             uart_puthex(HPRT0);
+            uart_puts(" gnptxsts=");
+            uart_puthex(GNPTXSTS);
             uart_puts("\n");
             (void)hc_force_halt(ch);
             return -1;
