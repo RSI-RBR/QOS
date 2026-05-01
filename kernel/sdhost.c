@@ -388,32 +388,26 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
         goto out;
     }
 
-    // Wait until controller reports transfer done.
-    // Without this, stale/partial sector data can slip through as "success".
-    {
-        int done_timeout = 1000000;
-        while (!(SDHSTS & (1 << 1)) && done_timeout--){
-            if (SDHSTS & SDHSTS_ERROR_MASK){
-                uart_puts("TRANSFER ERROR status=");
-                uart_puthex(SDHSTS);
-                uart_puts("\n");
-                SDHSTS = 0x7F8;
-                goto out;
-            }
-        }
-        if (done_timeout <= 0){
-            uart_puts("TRANSFER DONE TIMEOUT\n");
-            goto out;
-        }
-    }
-
     SDHSTS = 0x7F8;
     rc = 0;
 
+    // Settle using observed-stable conditions on this controller:
+    // FSM idle and no DATA_FLAG, instead of relying on transfer-done bit.
     {
-        int settle_timeout = 100000;
+        int settle_timeout = 200000;
         while (settle_timeout--){
-            if ((SDEDM & SDEDM_FSM_MASK) == 0){
+            unsigned int st = SDHSTS;
+            unsigned int fsm = SDEDM & SDEDM_FSM_MASK;
+
+            if (st & SDHSTS_ERROR_MASK){
+                uart_puts("SETTLE ERROR status=");
+                uart_puthex(st);
+                uart_puts("\n");
+                rc = -1;
+                break;
+            }
+
+            if (fsm == 0 && !(st & SDHSTS_DATA_FLAG)){
                 break;
             }
         }
