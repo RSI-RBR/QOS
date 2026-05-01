@@ -105,7 +105,6 @@ void kernel_main(void){
 //    extern int sdhost_cmd(unsigned int cmd, unsigned int arg);
 //    extern int sdhost_init_card(void);
 //    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
-    gpio_init_sd();
     if (blockdev_init() != 0){
         uart_puts("Blockdev init failed!\n");
         return;
