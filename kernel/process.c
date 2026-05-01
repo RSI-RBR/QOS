@@ -24,6 +24,17 @@ static int tick_reached(unsigned long now, unsigned long target){
     return (long)(now - target) >= 0;
 }
 
+static void normalize_running_states(void){
+    for (int i = 0; i < MAX_PROCESSES; i++){
+        if (i == current_pid){
+            continue;
+        }
+        if (processes[i].state == PROC_RUNNING){
+            processes[i].state = PROC_READY;
+        }
+    }
+}
+
 static void clear_process_descriptor(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES){
         return;
@@ -247,10 +258,12 @@ process_t* get_current_process(void){
 }
 
 process_t* scheduler_next(void){
+    normalize_running_states();
+
     int start = (current_pid < 0) ? 0 : current_pid + 1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         int next = (start + i) % MAX_PROCESSES;
-        if (processes[next].state == PROC_READY || processes[next].state == PROC_RUNNING){
+        if (processes[next].state == PROC_READY){
             current_pid = next;
             processes[next].state = PROC_RUNNING;
             return &processes[next];
@@ -293,10 +306,15 @@ void process_yield(void){
 }
 
 int scheduler_has_runnable(void){
+    normalize_running_states();
+
     for (int i = 0; i < MAX_PROCESSES; i++){
-        if (processes[i].state == PROC_READY || processes[i].state == PROC_RUNNING){
+        if (processes[i].state == PROC_READY){
             return 1;
         }
+    }
+    if (current_pid >= 0 && current_pid < MAX_PROCESSES && processes[current_pid].state == PROC_RUNNING){
+        return 1;
     }
     return 0;
 }
@@ -333,19 +351,6 @@ void* scheduler_on_irq(void* irq_frame_sp){
     }
 
     process_t* next = scheduler_next();
-    if (!next){
-        // Recovery path: if scheduler state was desynced and a non-current task
-        // remained in RUNNING, convert it back to READY and try once more.
-        for (int i = 0; i < MAX_PROCESSES; i++){
-            if (i == current_pid){
-                continue;
-            }
-            if (processes[i].state == PROC_RUNNING){
-                processes[i].state = PROC_READY;
-            }
-        }
-        next = scheduler_next();
-    }
     if (!next){
         if (current_pid >= 0 && current_pid < MAX_PROCESSES){
             if (processes[current_pid].state == PROC_SLEEPING){
