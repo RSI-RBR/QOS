@@ -33,7 +33,8 @@ kernel/cache.c \
 kernel/interrupt.c \
 kernel/timer.c \
 kernel/mmu.c \
-kernel/blockdev.c
+kernel/blockdev.c \
+kernel/syscall.c
 
 
 ASM_SOURCES = \

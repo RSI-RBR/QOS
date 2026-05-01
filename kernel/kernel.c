@@ -34,8 +34,7 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
-static void shell_process_entry(kernel_api_t *api){
-    (void)api;
+static void shell_process_entry(void){
     shell_init();
     shell_run();
 }

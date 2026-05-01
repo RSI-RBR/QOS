@@ -3,7 +3,6 @@
 
 // x0 = entry
 // x1 = stack
-// x2 = api
 
 process_start:
     // Save kernel context before switching stacks
@@ -32,12 +31,8 @@ process_start:
 
     mov x29, sp
 
-    // Preserve entry + api
+    // Preserve entry
     mov x20, x0
-    mov x21, x2
-
-    // Pass api as arg0
-    mov x0, x21
 
     // Run user program
     blr x20

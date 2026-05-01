@@ -1,5 +1,4 @@
 #include "process.h"
-#include "api.h"
 #include "memory.h"
 
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
@@ -10,7 +9,6 @@ static process_t processes[MAX_PROCESSES];
 static int current_pid = -1;
 static int zombie_pid = -1;
 
-extern kernel_api_t kapi;
 extern void restore_context_and_eret(void* frame_sp);
 extern volatile unsigned long system_ticks;
 
@@ -48,7 +46,7 @@ static void process_bootstrap(void){
         return;
     }
 
-    p->entry(&kapi);
+    p->entry();
     process_exit_current();
 }
 

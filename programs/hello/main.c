@@ -1,4 +1,4 @@
-#include "api.h"
+#include "syscall.h"
 
 struct screen_saver_cube{
     int lx;
@@ -10,11 +10,11 @@ struct screen_saver_cube{
     unsigned int c;
 };
 
-void program_main(kernel_api_t *api){
-    api->puts("Hello from external program!\n");
+void program_main(void){
+    qos_puts("Hello from external program!\n");
 
-    int screen_x = (int)api->get_screen_width();
-    int screen_y = (int)api->get_screen_height();
+    int screen_x = (int)qos_get_screen_width();
+    int screen_y = (int)qos_get_screen_height();
     if (screen_x <= 0) screen_x = 1920;
     if (screen_y <= 0) screen_y = 1080;
 //    api->draw_rect(0, 0, 50, 50, 0x00FF0000);
@@ -22,7 +22,7 @@ void program_main(kernel_api_t *api){
     struct screen_saver_cube cube; cube.lx = 0; cube.ly = 0; cube.vx = 1; cube.vy = 1; cube.c = 0x00FFFFFF; cube.sx = 50; cube.sy = 50;
     while (running){
 //        api->clear(0x00000000);
-        api->edit_buffer_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
+        qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
         int nx = cube.lx + cube.vx;
         int ny = cube.ly + cube.vy;
 
@@ -44,9 +44,9 @@ void program_main(kernel_api_t *api){
 
         cube.lx = nx; cube.ly = ny;
 
-        api->edit_buffer_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
-        api->update_buffer_pixels();
-        api->sleep(16);
+        qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
+        qos_fb_present();
+        qos_sleep(16);
     }
     
 

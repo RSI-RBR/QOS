@@ -150,16 +150,13 @@ loaded_program_t load_program_from_sd(void)
 }
 
 void execute_program(unsigned long entry_addr){
-    extern kernel_api_t kapi;
-
     uart_puts("EXEC: jumping ...\n");
 
     asm volatile ("dsb sy");
     asm volatile ("isb");
 
-    void (*entry_fn)(kernel_api_t*) = (void(*)(kernel_api_t*))entry_addr;
-
-    entry_fn(&kapi);
+    void (*entry_fn)(void) = (void(*)(void))entry_addr;
+    entry_fn();
 
     uart_puts("Program returned to kernel.\n");
 }

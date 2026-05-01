@@ -2,6 +2,7 @@
 #include "uart.h"
 #include "timer.h"
 #include "process.h"
+#include "syscall.h"
 
 extern void vectors(void);
 
@@ -53,6 +54,11 @@ void* irq_handler(void* irq_frame_sp){
 }
 
 void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long elr, unsigned long spsr){
+    unsigned long ec = (esr >> 26) & 0x3FUL;
+    if (ec == 0x15UL){
+        return syscall_handle(frame_sp, esr);
+    }
+
     uart_puts("\nSYNC EXCEPTION\n");
     uart_puts("ESR_EL1=");
     uart_puthex((unsigned int)esr);
