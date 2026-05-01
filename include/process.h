@@ -38,6 +38,7 @@ int process_create_loaded(loaded_program_t prog);
 void process_exit(int pid);
 
 void process_exit_current(void);
+void process_fault_current(void);
 
 process_t* get_process(int pid);
 

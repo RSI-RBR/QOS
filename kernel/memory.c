@@ -2,10 +2,12 @@
 #include "uart.h"
 
 #define HEAP_SIZE (16 * 1024 * 1024) // 16MB for now (expand later)
+#define BLOCK_MAGIC 0xB10CB10CUL
 
 static unsigned char heap[HEAP_SIZE];
 
 typedef struct block {
+    unsigned long magic;
     unsigned long size;
     int free;
     struct block *next;
@@ -18,6 +20,7 @@ static block_t *free_list = 0;
 void memory_init(void){
     free_list = (block_t*)heap;
 
+    free_list->magic = BLOCK_MAGIC;
     free_list->size = HEAP_SIZE - sizeof(block_t);
     free_list->free = 1;
     free_list->next = 0;
@@ -28,6 +31,7 @@ void memory_init(void){
 static void split_block(block_t *block, unsigned long size){
     block_t *new_block = (block_t*)((unsigned char*)block + sizeof(block_t) + size);
 
+    new_block->magic = BLOCK_MAGIC;
     new_block->size = block->size - size - sizeof(block_t);
     new_block->free = 1;
     new_block->next = block->next;
@@ -74,18 +78,59 @@ static void merge_blocks(){
     }
 }
 
+static int ptr_in_heap(void *ptr){
+    unsigned char *p = (unsigned char*)ptr;
+    return p >= (heap + sizeof(block_t)) && p < (heap + HEAP_SIZE);
+}
+
+static block_t* ptr_to_block(void *ptr){
+    if (!ptr_in_heap(ptr)){
+        return 0;
+    }
+    block_t *block = (block_t*)((unsigned char*)ptr - sizeof(block_t));
+    if (block->magic != BLOCK_MAGIC){
+        return 0;
+    }
+    return block;
+}
+
 void kfree(void *ptr){
     if (!ptr) return;
 
-    block_t *block = (block_t*)((unsigned char*)ptr - sizeof(block_t));
+    block_t *block = ptr_to_block(ptr);
+    if (!block){
+        uart_puts("kfree invalid ptr\n");
+        return;
+    }
+    if (block->free){
+        uart_puts("kfree double free\n");
+        return;
+    }
     block->free = 1;
 
     merge_blocks();
 }
 
 void kfree_secure(void* ptr, unsigned long size){
-    unsigned char* p = ptr;
+    if (!ptr){
+        return;
+    }
 
+    block_t *block = ptr_to_block(ptr);
+    if (!block){
+        uart_puts("kfree_secure invalid ptr\n");
+        return;
+    }
+    if (block->free){
+        uart_puts("kfree_secure double free\n");
+        return;
+    }
+
+    if (size == 0 || size > block->size){
+        size = block->size;
+    }
+
+    volatile unsigned char* p = (volatile unsigned char*)ptr;
     for (unsigned long i = 0; i < size; i++){
         p[i] = 0;
     }

@@ -52,7 +52,7 @@ void* irq_handler(void* irq_frame_sp){
     return irq_frame_sp;
 }
 
-void sync_exception_handler(unsigned long esr, unsigned long elr, unsigned long spsr){
+void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long elr, unsigned long spsr){
     uart_puts("\nSYNC EXCEPTION\n");
     uart_puts("ESR_EL1=");
     uart_puthex((unsigned int)esr);
@@ -60,6 +60,17 @@ void sync_exception_handler(unsigned long esr, unsigned long elr, unsigned long 
     uart_puthex((unsigned int)elr);
     uart_puts("\nSPSR_EL1=");
     uart_puthex((unsigned int)spsr);
-    uart_puts("\nHALTING\n");
+    uart_puts("\n");
+
+    if (get_current_process()){
+        uart_puts("Fault in process; terminating current PID.\n");
+        process_fault_current();
+        void* next_sp = scheduler_on_irq(frame_sp);
+        if (next_sp != frame_sp){
+            return next_sp;
+        }
+    }
+
+    uart_puts("HALTING\n");
     while (1){}
 }

@@ -41,12 +41,9 @@ static void api_sleep(unsigned int ms){
 //volatile int program_should_exit = 0;
 
 void kexit(int code){
+    (void)code;
     uart_puts("User called exit.\n");
-
-//    program_should_exit = 1;
-
-//    while(1){}
-    return;
+    process_exit_current();
 }
 
 kernel_api_t kapi = {

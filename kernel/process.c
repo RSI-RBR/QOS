@@ -24,6 +24,23 @@ static int tick_reached(unsigned long now, unsigned long target){
     return (long)(now - target) >= 0;
 }
 
+static void clear_process_descriptor(int pid){
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        return;
+    }
+    for (int r = 0; r < 12; r++){
+        processes[pid].regs[r] = 0;
+    }
+    processes[pid].sp = 0;
+    processes[pid].stack = 0;
+    processes[pid].entry = 0;
+    processes[pid].program_memory = 0;
+    processes[pid].program_size = 0;
+    processes[pid].wake_tick = 0;
+    processes[pid].state = PROC_DEAD;
+    processes[pid].pid = pid;
+}
+
 static void process_bootstrap(void){
     process_t* p = get_current_process();
     if (!p || !p->entry){
@@ -50,12 +67,27 @@ static void reap_process_resources(int pid){
         return;
     }
 
-    free_stack(processes[pid].stack);
+    if (processes[pid].stack){
+        free_stack(processes[pid].stack);
+    }
     if (processes[pid].program_memory){
         kfree_secure(processes[pid].program_memory, processes[pid].program_size);
-        processes[pid].program_memory = 0;
-        processes[pid].program_size = 0;
     }
+    clear_process_descriptor(pid);
+}
+
+static void mark_current_for_reap(void){
+    if (current_pid < 0 || current_pid >= MAX_PROCESSES){
+        return;
+    }
+
+    if (processes[current_pid].state == PROC_DEAD){
+        return;
+    }
+
+    zombie_pid = current_pid;
+    processes[current_pid].state = PROC_DEAD;
+    processes[current_pid].wake_tick = 0;
 }
 
 void scheduler_tick(void){
@@ -64,9 +96,7 @@ void scheduler_tick(void){
 
 void process_init(void){
     for (int i = 0; i < MAX_PROCESSES; i++){
-        processes[i].state = PROC_DEAD;
-        processes[i].wake_tick = 0;
-        processes[i].pid = i;
+        clear_process_descriptor(i);
     }
 }
 
@@ -104,6 +134,9 @@ void free_stack(void *stack){
 
 int process_create(program_entry_t entry){
     for (int i = 0; i < MAX_PROCESSES; i++){
+        if (i == zombie_pid){
+            continue;
+        }
         if (processes[i].state == PROC_DEAD){
             void* stack = alloc_stack();
             if (!stack){
@@ -142,20 +175,27 @@ void process_exit(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES) return;
 
     if (processes[pid].state == PROC_DEAD) return;
-    processes[pid].state = PROC_DEAD;
-    reap_process_resources(pid);
+
+    if (pid == current_pid){
+        mark_current_for_reap();
+    } else{
+        reap_process_resources(pid);
+    }
 
     return;
 }
 
 void process_exit_current(void){
-    if (current_pid < 0 || current_pid >= MAX_PROCESSES) return;
-    if (processes[current_pid].state != PROC_DEAD){
-        zombie_pid = current_pid;
-        processes[zombie_pid].state = PROC_DEAD;
+    if (current_pid < 0 || current_pid >= MAX_PROCESSES){
+        return;
     }
+    mark_current_for_reap();
+    // Block until timer IRQ selects another runnable process.
     while (1){ asm volatile("wfi"); }
-    return;
+}
+
+void process_fault_current(void){
+    mark_current_for_reap();
 }
 
 process_t* get_process(int pid){
@@ -172,7 +212,7 @@ process_t* scheduler_next(void){
     int start = (current_pid < 0) ? 0 : current_pid + 1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         int next = (start + i) % MAX_PROCESSES;
-        if (processes[next].state == PROC_READY || processes[next].state == PROC_RUNNING){
+        if (processes[next].state == PROC_READY){
             current_pid = next;
             processes[next].state = PROC_RUNNING;
             return &processes[next];
@@ -247,6 +287,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
 
     process_t* next = scheduler_next();
     if (!next){
+        current_pid = -1;
         return irq_frame_sp;
     }
     return next->sp;
