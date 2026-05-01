@@ -76,21 +76,21 @@ void loader_free_program_memory(void* ptr, unsigned long size){
         return;
     }
 
-    unsigned long p = (unsigned long)ptr;
-    if (p < PROGRAM_POOL_START || p >= (PROGRAM_POOL_START + PROGRAM_POOL_SIZE)){
+    unsigned long addr = (unsigned long)ptr;
+    if (addr < PROGRAM_POOL_START || addr >= (PROGRAM_POOL_START + PROGRAM_POOL_SIZE)){
         return;
     }
 
-    unsigned long off = p - PROGRAM_POOL_START;
+    unsigned long off = addr - PROGRAM_POOL_START;
     unsigned long slot = off / PROGRAM_SLOT_SIZE;
     if (slot >= PROGRAM_SLOT_COUNT){
         return;
     }
 
     unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
-    volatile unsigned char* p = (volatile unsigned char*)slot_base;
+    volatile unsigned char* wipe = (volatile unsigned char*)slot_base;
     for (unsigned long i = 0; i < PROGRAM_SLOT_SIZE; i++){
-        p[i] = 0;
+        wipe[i] = 0;
     }
 
     // Re-lock slot to kernel-only/XN when process exits.
