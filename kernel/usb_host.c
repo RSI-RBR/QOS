@@ -150,6 +150,18 @@ static unsigned int div_round_up(unsigned int n, unsigned int d){
     return (n + d - 1u) / d;
 }
 
+static void hc_force_halt(unsigned int ch){
+    unsigned int hcchar = HCCHAR(ch);
+    hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
+    HCCHAR(ch) = hcchar;
+
+    for (unsigned int i = 0; i < 200000; i++){
+        if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
+            break;
+        }
+    }
+}
+
 static void fifo_write_bytes(const unsigned char* data, unsigned int len){
     unsigned int words = div_round_up(len, 4);
     for (unsigned int i = 0; i < words; i++){
@@ -177,7 +189,7 @@ static void fifo_read_bytes(unsigned char* data, unsigned int len){
 
 // Return codes:
 //  0 = completed
-//  1 = retry suggested (NAK/NYET/ACK transient)
+//  1 = retry suggested (NAK/NYET transient or halted mid-transaction)
 // -1 = hard error
 static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, unsigned int in_len){
     unsigned int copied = 0;
@@ -224,13 +236,30 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
             HCINT(ch) = hcint;
             return -1;
         }
-        if (hcint & (HCINT_NAK | HCINT_NYET | HCINT_ACK)){
-            HCINT(ch) = (hcint & (HCINT_NAK | HCINT_NYET | HCINT_ACK));
-            return 1;
+
+        // ACK can occur before final completion on some control paths.
+        // Treat it as progress, not a terminal retry condition.
+        if (hcint & HCINT_ACK){
+            HCINT(ch) = HCINT_ACK;
+            if (hcint & HCINT_CHHLTD){
+                return 0;
+            }
+            continue;
         }
-        if ((hcint & HCINT_XFERCOMPL) || (hcint & HCINT_CHHLTD)){
+
+        if (hcint & HCINT_XFERCOMPL){
             HCINT(ch) = hcint;
             return 0;
+        }
+
+        if (hcint & (HCINT_NAK | HCINT_NYET)){
+            HCINT(ch) = (hcint & (HCINT_NAK | HCINT_NYET));
+            return 1;
+        }
+
+        if (hcint & HCINT_CHHLTD){
+            HCINT(ch) = HCINT_CHHLTD;
+            return 1;
         }
     }
     return -1;
@@ -251,7 +280,8 @@ static int hc_transfer(unsigned int ch,
         pktcnt = 1;
     }
 
-    for (unsigned int attempt = 0; attempt < 32; attempt++){
+    for (unsigned int attempt = 0; attempt < 128; attempt++){
+        hc_force_halt(ch);
         HCINT(ch) = 0xFFFFFFFFu;
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
@@ -286,6 +316,7 @@ static int hc_transfer(unsigned int ch,
 
         int rc = hc_wait_for_done(ch, ep_in, in_data, in_len);
         if (rc == 0){
+            hc_force_halt(ch);
             return 0;
         }
         if (rc < 0){
@@ -296,10 +327,12 @@ static int hc_transfer(unsigned int ch,
             uart_puts(" hprt0=");
             uart_puthex(HPRT0);
             uart_puts("\n");
+            hc_force_halt(ch);
             return -1;
         }
-        // Transient NAK/NYET/ACK: short settle then retry.
-        spin_delay(10000);
+        // Transient NAK/NYET/halt: short settle then retry.
+        hc_force_halt(ch);
+        spin_delay(30000);
     }
 
     uart_puts("USB: hc xfer retry exhausted\n");
@@ -520,12 +553,27 @@ int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
     req.bRequest = 0x06;      // GET_DESCRIPTOR
     req.wValue = 0x0100;      // DEVICE descriptor, index 0
     req.wIndex = 0x0000;
-    req.wLength = 18;
+    req.wLength = 8;
 
     for (unsigned int i = 0; i < 18; i++){
         out18[i] = 0;
     }
 
+    unsigned int saved_mps = g_ep0_mps;
+    g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
+    if (usb_host_control_transfer(0, &req, out18, 8, 1) != 0){
+        g_ep0_mps = saved_mps;
+        return -1;
+    }
+
+    if (out18[7] != 0){
+        g_ep0_mps = out18[7];
+    } else if (saved_mps != 0){
+        g_ep0_mps = saved_mps;
+    }
+
+    // Re-read full descriptor now that EP0 MPS is known.
+    req.wLength = 18;
     if (usb_host_control_transfer(0, &req, out18, 18, 1) != 0){
         return -1;
     }
