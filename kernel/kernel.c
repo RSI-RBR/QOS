@@ -120,6 +120,15 @@ void kernel_main(void){
 
                 if (root_info.vid == 0x0424 && root_info.pid == 0x9514){
                     uart_puts("USB: LAN9514 hub detected; next phase is hub downstream enumeration.\n");
+                    if (root_info.child_present){
+                        uart_puts("USB: LAN9514 child VID=");
+                        uart_puthex(root_info.child_vid);
+                        uart_puts(" PID=");
+                        uart_puthex(root_info.child_pid);
+                        uart_puts(" CLASS=");
+                        uart_puthex(root_info.child_class);
+                        uart_puts(root_info.child_configured ? " (configured)\n" : " (not configured)\n");
+                    }
                 }
             }
         } else{

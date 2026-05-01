@@ -27,14 +27,21 @@ int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len);
 typedef struct {
     int present;
     int configured;
+    int child_present;
+    int child_configured;
     unsigned char address;
+    unsigned char child_address;
     unsigned char ep0_mps;
     unsigned char dev_class;
+    unsigned char child_class;
     unsigned char dev_subclass;
     unsigned char dev_protocol;
     unsigned char config_value;
+    unsigned char child_config_value;
     unsigned short vid;
     unsigned short pid;
+    unsigned short child_vid;
+    unsigned short child_pid;
     unsigned short config_total_len;
 } usb_root_device_info_t;
 

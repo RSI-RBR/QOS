@@ -42,6 +42,7 @@ static void cmd_help(void){
     qos_puts(" run\n");
     qos_puts(" clear\n");
     qos_puts(" fbinfo\n");
+    qos_puts(" note: usbstat/netstat are kernel-shell commands\n");
 }
 
 static void cmd_run(void){

@@ -151,6 +151,20 @@ static void cmd_usbstat(int argc, char **argv){
     uart_puts(" cfg=");
     uart_puthex(info.config_value);
     uart_puts(info.configured ? " (set)\n" : " (not set)\n");
+
+    if (info.child_present){
+        uart_puts("USB child addr=");
+        uart_puthex(info.child_address);
+        uart_puts(" vid=");
+        uart_puthex(info.child_vid);
+        uart_puts(" pid=");
+        uart_puthex(info.child_pid);
+        uart_puts(" class=");
+        uart_puthex(info.child_class);
+        uart_puts(" cfg=");
+        uart_puthex(info.child_config_value);
+        uart_puts(info.child_configured ? " (set)\n" : " (not set)\n");
+    }
 }
 
 static void shell_clear_buffer(){

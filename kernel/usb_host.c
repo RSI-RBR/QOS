@@ -99,14 +99,167 @@
 #define GRXSTSP_PKTSTS_IN    0x2u
 
 #define USB_CTRL_EP_MPS_DEFAULT 8u
+#define USB_HUB_DESC_TYPE 0x29u
+
+// USB 2.0 Hub class requests/features.
+#define HUB_REQ_GET_STATUS      0x00u
+#define HUB_REQ_CLEAR_FEATURE   0x01u
+#define HUB_REQ_SET_FEATURE     0x03u
+#define HUB_REQ_GET_DESCRIPTOR  0x06u
+#define HUB_REQ_SET_CONFIGURATION 0x09u
+
+#define HUB_FEAT_PORT_RESET       4u
+#define HUB_FEAT_PORT_POWER       8u
+#define HUB_FEAT_C_PORT_CONNECTION 16u
+#define HUB_FEAT_C_PORT_ENABLE     17u
+#define HUB_FEAT_C_PORT_SUSPEND    18u
+#define HUB_FEAT_C_PORT_OVER_CURRENT 19u
+#define HUB_FEAT_C_PORT_RESET      20u
+
+#define HUB_PORT_STAT_CONNECTION (1u << 0)
+#define HUB_PORT_STAT_ENABLE     (1u << 1)
 
 static int g_usb_ready = 0;
 static unsigned int g_port_speed = HPRT0_SPD_FULL;
 static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
 static usb_root_device_info_t g_root_info;
 
+static int usb_std_request(unsigned char dev_addr,
+                           unsigned char bmRequestType,
+                           unsigned char bRequest,
+                           unsigned short wValue,
+                           unsigned short wIndex,
+                           unsigned char* data,
+                           unsigned short wLength);
+static int usb_get_device_descriptor_at(unsigned char dev_addr, unsigned char* out18, unsigned int len);
+static int usb_get_config_descriptor(unsigned char dev_addr,
+                                     unsigned char* buf,
+                                     unsigned int cap,
+                                     unsigned short* total_len_out);
+
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
+}
+
+static int hub_port_set_feature(unsigned char hub_addr, unsigned short port, unsigned short feat){
+    return usb_std_request(hub_addr, 0x23, HUB_REQ_SET_FEATURE, feat, port, 0, 0);
+}
+
+static int hub_port_clear_feature(unsigned char hub_addr, unsigned short port, unsigned short feat){
+    return usb_std_request(hub_addr, 0x23, HUB_REQ_CLEAR_FEATURE, feat, port, 0, 0);
+}
+
+static int hub_port_get_status(unsigned char hub_addr, unsigned short port, unsigned short* stat, unsigned short* change){
+    unsigned char st[4];
+    if (usb_std_request(hub_addr, 0xA3, HUB_REQ_GET_STATUS, 0, port, st, sizeof(st)) != 0){
+        return -1;
+    }
+    if (stat){
+        *stat = le16(&st[0]);
+    }
+    if (change){
+        *change = le16(&st[2]);
+    }
+    return 0;
+}
+
+static void hub_port_clear_change_bits(unsigned char hub_addr, unsigned short port){
+    (void)hub_port_clear_feature(hub_addr, port, HUB_FEAT_C_PORT_CONNECTION);
+    (void)hub_port_clear_feature(hub_addr, port, HUB_FEAT_C_PORT_ENABLE);
+    (void)hub_port_clear_feature(hub_addr, port, HUB_FEAT_C_PORT_SUSPEND);
+    (void)hub_port_clear_feature(hub_addr, port, HUB_FEAT_C_PORT_OVER_CURRENT);
+    (void)hub_port_clear_feature(hub_addr, port, HUB_FEAT_C_PORT_RESET);
+}
+
+static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned short port, unsigned char child_addr){
+    unsigned short st = 0;
+    unsigned short chg = 0;
+    unsigned char dev_desc[18];
+    unsigned char cfg_desc[256];
+    unsigned short cfg_total = 0;
+
+    if (hub_port_set_feature(hub_addr, port, HUB_FEAT_PORT_POWER) != 0){
+        uart_puts("USB: hub port power failed\n");
+        return -1;
+    }
+    spin_delay(1000000);
+
+    if (hub_port_get_status(hub_addr, port, &st, &chg) != 0){
+        uart_puts("USB: hub port status read failed\n");
+        return -1;
+    }
+    if (!(st & HUB_PORT_STAT_CONNECTION)){
+        uart_puts("USB: hub child not connected on port ");
+        uart_puthex(port);
+        uart_puts("\n");
+        return -1;
+    }
+
+    if (hub_port_set_feature(hub_addr, port, HUB_FEAT_PORT_RESET) != 0){
+        uart_puts("USB: hub port reset set failed\n");
+        return -1;
+    }
+    spin_delay(50000000);
+
+    hub_port_clear_change_bits(hub_addr, port);
+
+    for (unsigned int i = 0; i < 40; i++){
+        if (hub_port_get_status(hub_addr, port, &st, &chg) == 0){
+            if ((st & HUB_PORT_STAT_CONNECTION) && (st & HUB_PORT_STAT_ENABLE)){
+                break;
+            }
+        }
+        spin_delay(400000);
+        if (i == 39){
+            uart_puts("USB: hub child port failed to enable\n");
+            return -1;
+        }
+    }
+
+    g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
+    if (usb_get_device_descriptor_at(0, dev_desc, sizeof(dev_desc)) != 0){
+        uart_puts("USB: hub child desc@0 failed\n");
+        return -1;
+    }
+    if (usb_std_request(0, 0x00, 0x05, child_addr, 0, 0, 0) != 0){
+        uart_puts("USB: hub child SET_ADDRESS failed\n");
+        return -1;
+    }
+    spin_delay(300000);
+
+    if (usb_get_device_descriptor_at(child_addr, dev_desc, sizeof(dev_desc)) != 0){
+        uart_puts("USB: hub child desc@addr failed\n");
+        return -1;
+    }
+
+    g_root_info.child_present = 1;
+    g_root_info.child_address = child_addr;
+    g_root_info.child_class = dev_desc[4];
+    g_root_info.child_vid = le16(&dev_desc[8]);
+    g_root_info.child_pid = le16(&dev_desc[10]);
+
+    int cfg_read = usb_get_config_descriptor(child_addr, cfg_desc, sizeof(cfg_desc), &cfg_total);
+    if (cfg_read >= 6){
+        g_root_info.child_config_value = cfg_desc[5];
+        if (g_root_info.child_config_value != 0){
+            if (usb_std_request(child_addr, 0x00, HUB_REQ_SET_CONFIGURATION, g_root_info.child_config_value, 0, 0, 0) == 0){
+                g_root_info.child_configured = 1;
+            }
+        }
+    }
+
+    uart_puts("USB: hub child addr=");
+    uart_puthex(g_root_info.child_address);
+    uart_puts(" vid=");
+    uart_puthex(g_root_info.child_vid);
+    uart_puts(" pid=");
+    uart_puthex(g_root_info.child_pid);
+    uart_puts(" class=");
+    uart_puthex(g_root_info.child_class);
+    uart_puts(" cfg=");
+    uart_puthex(g_root_info.child_config_value);
+    uart_puts(g_root_info.child_configured ? " (set)\n" : " (not set)\n");
+    return 0;
 }
 
 static void spin_delay(unsigned int n){
@@ -787,6 +940,29 @@ int usb_host_enumerate_root_device(void){
     uart_puts(" cfg=");
     uart_puthex(g_root_info.config_value);
     uart_puts("\n");
+
+    // Raspberry Pi 3 onboard path: root device is usually LAN9514 hub.
+    if (g_root_info.vid == 0x0424 && g_root_info.pid == 0x9514 && g_root_info.dev_class == 0x09){
+        unsigned char hub_desc[9];
+        for (unsigned int i = 0; i < sizeof(hub_desc); i++){
+            hub_desc[i] = 0;
+        }
+        if (usb_std_request(g_root_info.address, 0xA0, HUB_REQ_GET_DESCRIPTOR,
+                            (unsigned short)(USB_HUB_DESC_TYPE << 8), 0, hub_desc, sizeof(hub_desc)) == 0){
+            unsigned int ports = hub_desc[2];
+            uart_puts("USB: hub ports=");
+            uart_puthex(ports);
+            uart_puts("\n");
+            if (ports > 0){
+                // Try port 1 first; LAN9514 internal Ethernet commonly sits there.
+                if (usb_enumerate_hub_downstream_child(g_root_info.address, 1, 2) != 0){
+                    uart_puts("USB: hub port1 child enumerate failed\n");
+                }
+            }
+        } else{
+            uart_puts("USB: hub descriptor read failed\n");
+        }
+    }
     return 0;
 }
 

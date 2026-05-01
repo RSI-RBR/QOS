@@ -120,6 +120,13 @@ int net_init(void){
             root_info.vid == 0x0424 && root_info.pid == 0x9514 &&
             root_info.configured){
             uart_puts("NET: USB LAN9514 is enumerated; NIC datapath still using stub backend.\n");
+            if (root_info.child_present){
+                uart_puts("NET: LAN9514 downstream child VID=");
+                uart_puthex(root_info.child_vid);
+                uart_puts(" PID=");
+                uart_puthex(root_info.child_pid);
+                uart_puts(root_info.child_configured ? " (configured)\n" : " (not configured)\n");
+            }
         }
     }
     return 0;
