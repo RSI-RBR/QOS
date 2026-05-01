@@ -116,31 +116,41 @@ static int emmc_acmd41(void){
 }
 
 int emmc_init(void){
+    uart_puts("EMMC: init start\n");
     mailbox_set_emmc_clock(50000000);
+    uart_puts("EMMC: mailbox clock done\n");
 
     EMMC_CONTROL1 |= C1_SRST_HC;
     {
         unsigned long start = system_ticks;
+        unsigned int spin = 20000000;
         while (EMMC_CONTROL1 & C1_SRST_HC){
-            if ((system_ticks - start) > 200){
+            if ((system_ticks - start) > 200 || --spin == 0){
+                uart_puts("EMMC: reset clear timeout\n");
                 return -1;
             }
         }
     }
+    uart_puts("EMMC: reset cleared\n");
 
     EMMC_CONTROL0 = 0;
     EMMC_CONTROL1 &= ~(0xFFFu << 16);
     EMMC_CONTROL1 |= (250u << 16); // slow init clock
     EMMC_CONTROL1 |= C1_CLK_INTLEN;
+    uart_puts("EMMC: int clock enabled\n");
     {
         unsigned long start = system_ticks;
+        unsigned int spin = 20000000;
         while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
-            if ((system_ticks - start) > 200){
+            if ((system_ticks - start) > 200 || --spin == 0){
+                uart_puts("EMMC: clk stable timeout\n");
                 return -1;
             }
         }
     }
+    uart_puts("EMMC: clk stable\n");
     EMMC_CONTROL1 |= C1_CLK_EN;
+    uart_puts("EMMC: sd clock on\n");
 
     EMMC_INTERRUPT = 0xFFFFFFFFu;
     EMMC_IRPT_MASK = 0xFFFFFFFFu;
@@ -149,18 +159,40 @@ int emmc_init(void){
     g_rca = 0;
     g_sdhc = 0;
 
-    if (emmc_cmd(0, 0, CMD_RSPNS_NONE) != 0) return -1;
+    if (emmc_cmd(0, 0, CMD_RSPNS_NONE) != 0){
+        uart_puts("EMMC: CMD0 fail\n");
+        return -1;
+    }
+    uart_puts("EMMC: CMD0 ok\n");
     short_delay(5000);
     (void)emmc_cmd(8, 0x1AA, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN);
-    if (emmc_acmd41() != 0) return -1;
-    if (emmc_cmd(2, 0, CMD_RSPNS_136 | CMD_CRCCHK_EN) != 0) return -1;
-    if (emmc_cmd(3, 0, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0) return -1;
+    uart_puts("EMMC: CMD8 done\n");
+    if (emmc_acmd41() != 0){
+        uart_puts("EMMC: ACMD41 fail\n");
+        return -1;
+    }
+    uart_puts("EMMC: ACMD41 ready\n");
+    if (emmc_cmd(2, 0, CMD_RSPNS_136 | CMD_CRCCHK_EN) != 0){
+        uart_puts("EMMC: CMD2 fail\n");
+        return -1;
+    }
+    if (emmc_cmd(3, 0, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0){
+        uart_puts("EMMC: CMD3 fail\n");
+        return -1;
+    }
+    uart_puts("EMMC: CMD3 ok\n");
 
     g_rca = (EMMC_RESP0 >> 16) & 0xFFFFu;
     if (g_rca == 0) return -1;
 
-    if (emmc_cmd(7, g_rca << 16, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0) return -1;
-    if (emmc_cmd(16, 512, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0) return -1;
+    if (emmc_cmd(7, g_rca << 16, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0){
+        uart_puts("EMMC: CMD7 fail\n");
+        return -1;
+    }
+    if (emmc_cmd(16, 512, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN) != 0){
+        uart_puts("EMMC: CMD16 fail\n");
+        return -1;
+    }
 
     uart_puts("EMMC init OK\n");
     return 0;
