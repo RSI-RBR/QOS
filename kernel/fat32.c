@@ -151,6 +151,7 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     static unsigned char cluster_buf[MAX_CLUSTER_SIZE]; // assume <=8 sectors
     unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
     unsigned int cluster = root_cluster;
+    int retried_root_once = 0;
 
     if (cluster_size > MAX_CLUSTER_SIZE){
         uart_puts("Cluster too big.\n");
@@ -169,6 +170,17 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
             unsigned char *entry = &cluster_buf[i];
 
             if (entry[0] == 0x00){
+                // Rare delayed-run reliability case: if very first root entry looks like end marker,
+                // retry a fresh root-cluster read once before declaring file-not-found.
+                if (!retried_root_once && i == 0 && cluster == root_cluster){
+                    retried_root_once = 1;
+                    if (read_cluster(cluster, cluster_buf) != 0){
+                        uart_puts("FAT root retry read failed\n");
+                        return -1;
+                    }
+                    i = -32; // loop will add +32, re-check entry 0
+                    continue;
+                }
                 uart_puts("FAT end marker reached (file not found in chain)\n");
                 return -1; // end
             }
