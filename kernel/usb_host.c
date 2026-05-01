@@ -175,6 +175,10 @@ static void fifo_read_bytes(unsigned char* data, unsigned int len){
     }
 }
 
+// Return codes:
+//  0 = completed
+//  1 = retry suggested (NAK/NYET/ACK transient)
+// -1 = hard error
 static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, unsigned int in_len){
     unsigned int copied = 0;
     unsigned int loops = 8000000;
@@ -220,10 +224,9 @@ static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, u
             HCINT(ch) = hcint;
             return -1;
         }
-        if ((hcint & HCINT_NAK) && !is_in){
-            // Allow a few host retries by clearing NAK and continuing.
-            HCINT(ch) = HCINT_NAK;
-            continue;
+        if (hcint & (HCINT_NAK | HCINT_NYET | HCINT_ACK)){
+            HCINT(ch) = (hcint & (HCINT_NAK | HCINT_NYET | HCINT_ACK));
+            return 1;
         }
         if ((hcint & HCINT_XFERCOMPL) || (hcint & HCINT_CHHLTD)){
             HCINT(ch) = hcint;
@@ -248,39 +251,59 @@ static int hc_transfer(unsigned int ch,
         pktcnt = 1;
     }
 
-    HCINT(ch) = 0xFFFFFFFFu;
-    HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK;
+    for (unsigned int attempt = 0; attempt < 32; attempt++){
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
 
-    unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
-        | (pktcnt << HCTSIZ_PKTCNT_SHIFT)
-        | ((pid & 0x3u) << HCTSIZ_PID_SHIFT);
-    HCTSIZ(ch) = hctsiz;
+        unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
+            | (pktcnt << HCTSIZ_PKTCNT_SHIFT)
+            | ((pid & 0x3u) << HCTSIZ_PID_SHIFT);
+        HCTSIZ(ch) = hctsiz;
 
-    unsigned int hcchar = (ep_mps & HCCHAR_MPS_MASK)
-        | ((0u & 0xFu) << HCCHAR_EPNUM_SHIFT)
-        | ((dev_addr & 0x7Fu) << HCCHAR_DEVADDR_SHIFT)
-        | (0u << HCCHAR_EPTYPE_SHIFT); // control
-    if (ep_in){
-        hcchar |= HCCHAR_EPDIR;
+        unsigned int hcchar = (ep_mps & HCCHAR_MPS_MASK)
+            | ((0u & 0xFu) << HCCHAR_EPNUM_SHIFT)
+            | ((dev_addr & 0x7Fu) << HCCHAR_DEVADDR_SHIFT)
+            | (0u << HCCHAR_EPTYPE_SHIFT); // control
+        if (ep_in){
+            hcchar |= HCCHAR_EPDIR;
+        }
+        if (g_port_speed == HPRT0_SPD_LOW){
+            hcchar |= HCCHAR_LSPDDEV;
+        }
+        if (HFNUM & 1u){
+            hcchar |= HCCHAR_ODDFRM;
+        }
+
+        HCCHAR(ch) = hcchar;
+
+        if (!ep_in && out_len > 0 && out_data){
+            fifo_write_bytes(out_data, out_len);
+        }
+
+        hcchar |= HCCHAR_CHENA;
+        hcchar &= ~HCCHAR_CHDIS;
+        HCCHAR(ch) = hcchar;
+
+        int rc = hc_wait_for_done(ch, ep_in, in_data, in_len);
+        if (rc == 0){
+            return 0;
+        }
+        if (rc < 0){
+            uart_puts("USB: hc xfer hard fail hcint=");
+            uart_puthex(HCINT(ch));
+            uart_puts(" hctsiz=");
+            uart_puthex(HCTSIZ(ch));
+            uart_puts(" hprt0=");
+            uart_puthex(HPRT0);
+            uart_puts("\n");
+            return -1;
+        }
+        // Transient NAK/NYET/ACK: short settle then retry.
+        spin_delay(10000);
     }
-    if (g_port_speed == HPRT0_SPD_LOW){
-        hcchar |= HCCHAR_LSPDDEV;
-    }
-    if (HFNUM & 1u){
-        hcchar |= HCCHAR_ODDFRM;
-    }
 
-    HCCHAR(ch) = hcchar;
-
-    if (!ep_in && out_len > 0 && out_data){
-        fifo_write_bytes(out_data, out_len);
-    }
-
-    hcchar |= HCCHAR_CHENA;
-    hcchar &= ~HCCHAR_CHDIS;
-    HCCHAR(ch) = hcchar;
-
-    return hc_wait_for_done(ch, ep_in, in_data, in_len);
+    uart_puts("USB: hc xfer retry exhausted\n");
+    return -1;
 }
 
 int usb_host_reset_root_port(void){
@@ -304,6 +327,7 @@ int usb_host_reset_root_port(void){
         uart_puts("USB: root port did not enable after reset.\n");
         return -1;
     }
+    g_ep0_mps = (g_port_speed == HPRT0_SPD_HIGH) ? 64u : USB_CTRL_EP_MPS_DEFAULT;
     uart_puts("USB: root port reset complete, speed=");
     if (g_port_speed == HPRT0_SPD_HIGH){
         uart_puts("high\n");
