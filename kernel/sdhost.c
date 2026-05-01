@@ -32,8 +32,15 @@
 #define SDHSTS_ERROR_MASK       (SDHSTS_CMD_TIME_OUT | SDHSTS_CRC7_ERROR | SDHSTS_TRANSFER_ERRORS)
 
 #define SDEDM_FSM_MASK       0xF
+#define SDEDM_FSM_IDENTMODE  0x0
+#define SDEDM_FSM_DATAMODE   0x1
+#define SDEDM_FSM_READDATA   0x2
+#define SDEDM_FSM_READWAIT   0x4
+#define SDEDM_FSM_READCRC    0x5
+#define SDEDM_FSM_WRITESTART1 0xA
 #define SDEDM_FIFO_FILL_SHIFT 4
 #define SDEDM_FIFO_FILL_MASK  0x1F
+#define SDEDM_FORCE_DATA_MODE (1 << 19)
 #define SDEDM_READ_THRESHOLD_SHIFT 14
 #define SDEDM_WRITE_THRESHOLD_SHIFT 9
 #define SDEDM_THRESHOLD_MASK 0x1F
@@ -224,6 +231,21 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
     sdhost_drain_fifo();
     clear_status();
 
+    // Circle-style guard: controller should be in IDENT/DATA mode before command.
+    {
+        unsigned int edm = SDEDM;
+        unsigned int fsm = edm & SDEDM_FSM_MASK;
+        if (fsm != SDEDM_FSM_IDENTMODE && fsm != SDEDM_FSM_DATAMODE) {
+            if (fsm == SDEDM_FSM_READWAIT || fsm == SDEDM_FSM_WRITESTART1) {
+                SDEDM = edm | SDEDM_FORCE_DATA_MODE;
+                barrier();
+                delay(200);
+            } else {
+                return -1;
+            }
+        }
+    }
+
     SDHBCT = 512;
     SDHBLC = 1;
 
@@ -245,13 +267,25 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
 
         unsigned int edm = SDEDM;
         unsigned int fifo_words = (edm >> SDEDM_FIFO_FILL_SHIFT) & SDEDM_FIFO_FILL_MASK;
+        unsigned int fsm = edm & SDEDM_FSM_MASK;
 
-        if (fifo_words == 0) {
+        int burst = 8;
+        if (burst > words_left) burst = words_left;
+
+        if (fifo_words < (unsigned int)burst) {
+            if (fsm != SDEDM_FSM_READDATA &&
+                fsm != SDEDM_FSM_READWAIT &&
+                fsm != SDEDM_FSM_READCRC) {
+                if (SDHSTS & SDHSTS_ERROR_MASK) {
+                    clear_status();
+                    return -1;
+                }
+            }
             barrier();
             continue;
         }
 
-        int burst = fifo_words;
+        burst = (int)fifo_words;
         if (burst > words_left) burst = words_left;
 
         for (int i = 0; i < burst; i++) {
@@ -265,6 +299,12 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
     }
 
     if (words_left != 0) {
+        unsigned int edm = SDEDM;
+        unsigned int fsm = edm & SDEDM_FSM_MASK;
+        if (fsm == SDEDM_FSM_READWAIT || fsm == SDEDM_FSM_WRITESTART1) {
+            SDEDM = edm | SDEDM_FORCE_DATA_MODE;
+            barrier();
+        }
         clear_status();
         return -1;
     }
