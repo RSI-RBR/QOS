@@ -4,7 +4,7 @@
 
 
 #define PROGRAM_MAX (8 * 1024)
-#define PROGRAM_POOL_START 0x02000000UL
+#define PROGRAM_POOL_START 0x08000000UL
 #define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_SIZE  (2UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_SLOT_SIZE)
@@ -27,6 +27,17 @@ static void daif_write(unsigned long v){
 }
 
 void loader_mmu_init_pool(void){
+    extern unsigned long bss_end;
+    if ((unsigned long)&bss_end >= PROGRAM_POOL_START){
+        uart_puts("ERROR: program pool overlaps kernel BSS.\n");
+        uart_puts("bss_end=");
+        uart_puthex((unsigned int)(unsigned long)&bss_end);
+        uart_puts(" pool_start=");
+        uart_puthex((unsigned int)PROGRAM_POOL_START);
+        uart_puts("\n");
+        while (1){}
+    }
+
     // Keep pool inaccessible to EL0 until a program block is explicitly mapped.
     mmu_map_kernel_private_region(PROGRAM_POOL_START, PROGRAM_POOL_SIZE);
     for (unsigned int i = 0; i < PROGRAM_SLOT_COUNT; i++){
