@@ -190,7 +190,9 @@ void process_exit_current(void){
         return;
     }
     mark_current_for_reap();
-    // Block until timer IRQ selects another runnable process.
+    // Immediate handoff: do not wait for timer tick to switch away.
+    current_pid = -1;
+    scheduler_run_once();
     while (1){ asm volatile("wfi"); }
 }
 
