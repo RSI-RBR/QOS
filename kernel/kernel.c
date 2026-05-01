@@ -4,6 +4,7 @@
 //#include "task.h"
 #include "framebuffer.h"
 #include "context.h"
+#include "api.h"
 #include "loader.h"
 #include "process.h"
 #include "fat32.h"
@@ -57,6 +58,7 @@ void kernel_main(void){
 
     mmu_init();
     uart_puts("MMU (phase 1 identity map) enabled.\n");
+    loader_mmu_init_pool();
 
     uart_puts("STACK GUARD INIT = ");
     uart_puthex(*(unsigned long*)&stack_bottom);

@@ -63,7 +63,15 @@ static void cmd_run(int argc, char **argv){
 
     if (p < 0){
         uart_puts("Process creation failed (process limit reached).\n");
-        kfree_secure(prog.memory, prog.size);
+        if (prog.heap_allocated){
+            kfree_secure(prog.memory, prog.size);
+        } else{
+            volatile unsigned char* m = (volatile unsigned char*)prog.memory;
+            for (unsigned long i = 0; i < prog.size; i++){
+                m[i] = 0;
+            }
+            loader_free_program_memory(prog.memory, prog.size);
+        }
         return;
     }
 

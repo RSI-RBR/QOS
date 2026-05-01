@@ -16,7 +16,9 @@ extern volatile unsigned long system_ticks;
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
 #define IRQ_FRAME_ELR_IDX 31
 #define IRQ_FRAME_SPSR_IDX 32
+#define IRQ_FRAME_USER_SP_IDX 33
 #define INITIAL_SPSR_EL1H 0x345
+#define INITIAL_SPSR_EL0T 0x000
 
 static int tick_reached(unsigned long now, unsigned long target){
     return (long)(now - target) >= 0;
@@ -31,9 +33,12 @@ static void clear_process_descriptor(int pid){
     }
     processes[pid].sp = 0;
     processes[pid].stack = 0;
+    processes[pid].user_sp = 0;
     processes[pid].entry = 0;
     processes[pid].program_memory = 0;
     processes[pid].program_size = 0;
+    processes[pid].program_heap_alloc = 0;
+    processes[pid].user_mode = 0;
     processes[pid].wake_tick = 0;
     processes[pid].state = PROC_DEAD;
     processes[pid].pid = pid;
@@ -50,13 +55,25 @@ static void process_bootstrap(void){
     process_exit_current();
 }
 
-static void* build_initial_context(void* stack_top){
+static void* build_initial_context_el1(void* stack_top){
     unsigned long* frame = (unsigned long*)((unsigned long)stack_top - IRQ_FRAME_SIZE);
     for (int i = 0; i < IRQ_FRAME_WORDS; i++){
         frame[i] = 0;
     }
     frame[IRQ_FRAME_ELR_IDX] = (unsigned long)process_bootstrap;
     frame[IRQ_FRAME_SPSR_IDX] = INITIAL_SPSR_EL1H;
+    frame[IRQ_FRAME_USER_SP_IDX] = 0;
+    return frame;
+}
+
+static void* build_initial_context_el0(void* stack_top, unsigned long entry, void* user_sp){
+    unsigned long* frame = (unsigned long*)((unsigned long)stack_top - IRQ_FRAME_SIZE);
+    for (int i = 0; i < IRQ_FRAME_WORDS; i++){
+        frame[i] = 0;
+    }
+    frame[IRQ_FRAME_ELR_IDX] = entry;
+    frame[IRQ_FRAME_SPSR_IDX] = INITIAL_SPSR_EL0T;
+    frame[IRQ_FRAME_USER_SP_IDX] = (unsigned long)user_sp;
     return frame;
 }
 
@@ -69,7 +86,15 @@ static void reap_process_resources(int pid){
         free_stack(processes[pid].stack);
     }
     if (processes[pid].program_memory){
-        kfree_secure(processes[pid].program_memory, processes[pid].program_size);
+        if (processes[pid].program_heap_alloc){
+            kfree_secure(processes[pid].program_memory, processes[pid].program_size);
+        } else{
+            volatile unsigned char* p = (volatile unsigned char*)processes[pid].program_memory;
+            for (unsigned long i = 0; i < processes[pid].program_size; i++){
+                p[i] = 0;
+            }
+            loader_free_program_memory(processes[pid].program_memory, processes[pid].program_size);
+        }
     }
     clear_process_descriptor(pid);
 }
@@ -143,10 +168,13 @@ int process_create(program_entry_t entry){
             }
             processes[i].entry = entry;
             processes[i].stack = stack;
-            processes[i].sp = build_initial_context(stack);
+            processes[i].sp = build_initial_context_el1(stack);
+            processes[i].user_sp = 0;
             processes[i].state = PROC_READY;
             processes[i].program_memory = 0;
             processes[i].program_size = 0;
+            processes[i].program_heap_alloc = 0;
+            processes[i].user_mode = 0;
             processes[i].wake_tick = 0;
 
             for (int r = 0; r < 12; r++){
@@ -164,8 +192,18 @@ int process_create_loaded(loaded_program_t prog){
         return pid;
     }
 
+    void* user_sp = loader_user_stack_top(prog.memory);
+    if (!user_sp){
+        reap_process_resources(pid);
+        return -1;
+    }
+
     processes[pid].program_memory = prog.memory;
     processes[pid].program_size = prog.size;
+    processes[pid].program_heap_alloc = prog.heap_allocated;
+    processes[pid].user_mode = 1;
+    processes[pid].user_sp = user_sp;
+    processes[pid].sp = build_initial_context_el0(processes[pid].stack, (unsigned long)prog.entry, user_sp);
     return pid;
 }
 

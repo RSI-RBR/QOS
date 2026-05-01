@@ -1,17 +1,27 @@
 #include "loader.h"
 #include "blockdev.h"
+#include "mmu.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
-//#define PROGRAM_ADDR ((unsigned long)0x40000)
-#define PROGRAM_POOL_START 0x40000
-#define PROGRAM_POOL_SIZE (1024*1024)
+#define PROGRAM_POOL_START 0x02000000UL
+#define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
+#define PROGRAM_SLOT_SIZE  (2UL * 1024UL * 1024UL)
+#define PROGRAM_SLOT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_SLOT_SIZE)
 
-static unsigned long program_next = PROGRAM_POOL_START;
+static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
 
 
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
+
+void loader_mmu_init_pool(void){
+    // Keep pool inaccessible to EL0 until a program block is explicitly mapped.
+    mmu_map_kernel_private_region(PROGRAM_POOL_START, PROGRAM_POOL_SIZE);
+    for (unsigned int i = 0; i < PROGRAM_SLOT_COUNT; i++){
+        program_slot_used[i] = 0;
+    }
+}
 
 static int loader_try_lock(void){
     int taken;
@@ -38,11 +48,69 @@ int loader_is_busy(void){
 void* alloc_program_memory(unsigned int size){
     size = (size+15) & ~15;
 
-    if (program_next + size > PROGRAM_POOL_START + PROGRAM_POOL_SIZE){ return 0; }
+    if (size == 0 || size > PROGRAM_SLOT_SIZE){
+        return 0;
+    }
 
-    void* addr = (void*)program_next;
-    program_next += size;
-    return addr;
+    for (unsigned int i = 0; i < PROGRAM_SLOT_COUNT; i++){
+        if (program_slot_used[i]){
+            continue;
+        }
+        program_slot_used[i] = 1;
+
+        unsigned long base = PROGRAM_POOL_START + ((unsigned long)i * PROGRAM_SLOT_SIZE);
+        void* addr = (void*)base;
+
+        // Entire slot is user-executable to keep block-level isolation simple.
+        mmu_map_user_code_region(base, PROGRAM_SLOT_SIZE);
+
+        return addr;
+    }
+
+    return 0;
+}
+
+void loader_free_program_memory(void* ptr, unsigned long size){
+    (void)size;
+    if (!ptr){
+        return;
+    }
+
+    unsigned long p = (unsigned long)ptr;
+    if (p < PROGRAM_POOL_START || p >= (PROGRAM_POOL_START + PROGRAM_POOL_SIZE)){
+        return;
+    }
+
+    unsigned long off = p - PROGRAM_POOL_START;
+    unsigned long slot = off / PROGRAM_SLOT_SIZE;
+    if (slot >= PROGRAM_SLOT_COUNT){
+        return;
+    }
+
+    unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
+    volatile unsigned char* p = (volatile unsigned char*)slot_base;
+    for (unsigned long i = 0; i < PROGRAM_SLOT_SIZE; i++){
+        p[i] = 0;
+    }
+
+    // Re-lock slot to kernel-only/XN when process exits.
+    mmu_map_kernel_private_region(slot_base, PROGRAM_SLOT_SIZE);
+    program_slot_used[slot] = 0;
+}
+
+void* loader_user_stack_top(void* program_base){
+    if (!program_base){
+        return 0;
+    }
+    unsigned long p = (unsigned long)program_base;
+    if (p < PROGRAM_POOL_START || p >= (PROGRAM_POOL_START + PROGRAM_POOL_SIZE)){
+        return 0;
+    }
+    unsigned long off = p - PROGRAM_POOL_START;
+    unsigned long slot = off / PROGRAM_SLOT_SIZE;
+    unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
+    unsigned long top = (slot_base + PROGRAM_SLOT_SIZE) & ~0xFUL;
+    return (void*)(top - 16);
 }
 
 loaded_program_t load_program_from_sd(void)
@@ -119,7 +187,7 @@ loaded_program_t load_program_from_sd(void)
     unsigned char *src = buffer + sizeof(program_header_t);
 //    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
 //    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
-    void* dst = kmalloc(code_size);
+    void* dst = alloc_program_memory(code_size);
     unsigned char* d = (unsigned char*)dst;
     if (!dst){
         uart_puts("No memory for program!\n");
@@ -140,6 +208,7 @@ loaded_program_t load_program_from_sd(void)
     prog.entry = (program_entry_t)((unsigned long)dst + entry_offset);
     prog.memory = dst;
     prog.size = code_size;
+    prog.heap_allocated = 0;
     uart_puts("Program loaded at: ");
     uart_puthex((unsigned long)dst);
     uart_puts("\n");

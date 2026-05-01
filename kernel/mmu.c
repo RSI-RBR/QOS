@@ -22,6 +22,17 @@
 #define DEVICE_BASE         0x3F000000UL
 #define DEVICE_END          0x40200000UL
 
+#define AP_SHIFT            6
+#define AP_EL1_RW_EL0_NONE  (0UL << AP_SHIFT)
+#define AP_EL1_RW_EL0_RW    (1UL << AP_SHIFT)
+
+typedef struct {
+    unsigned long attridx;
+    unsigned long sh;
+    unsigned long ap;
+    unsigned long xn;
+} mmu_block_attrs_t;
+
 static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table[L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
@@ -36,17 +47,13 @@ static void zero_tables(void){
     }
 }
 
-static unsigned long block_desc(unsigned long pa, int is_device){
+static unsigned long block_desc(unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long desc = (pa & 0xFFFFFFFFFFE00000UL) | DESC_VALID | DESC_BLOCK | AF_BIT;
-    if (is_device){
-        desc |= (ATTRIDX_DEVICE << ATTRIDX_SHIFT) | SH_OUTER | PXN_BIT | UXN_BIT;
-    } else{
-        desc |= (ATTRIDX_NORMAL << ATTRIDX_SHIFT) | SH_INNER;
-    }
+    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn;
     return desc;
 }
 
-static void set_block_attr(unsigned long pa, int is_device){
+static void set_block_attr(unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long l1_index = pa >> 30;            // 1GB region
     unsigned long l2_index = (pa >> 21) & 0x1FF; // 2MB block
     unsigned long* table = 0;
@@ -59,7 +66,24 @@ static void set_block_attr(unsigned long pa, int is_device){
         return;
     }
 
-    table[l2_index] = block_desc(pa, is_device);
+    table[l2_index] = block_desc(pa, attrs);
+}
+
+static void apply_region_attrs(unsigned long pa_start, unsigned long size, const mmu_block_attrs_t* attrs){
+    if (size == 0){
+        return;
+    }
+
+    unsigned long start = pa_start & ~((1UL << 21) - 1);
+    unsigned long end = (pa_start + size + ((1UL << 21) - 1)) & ~((1UL << 21) - 1);
+    for (unsigned long pa = start; pa < end; pa += (1UL << 21)){
+        set_block_attr(pa, attrs);
+    }
+
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
+    asm volatile("isb");
 }
 
 void mmu_init(void){
@@ -69,14 +93,27 @@ void mmu_init(void){
     l1_table[0] = ((unsigned long)l2_table & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
     l1_table[1] = ((unsigned long)l2_table_1 & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
 
+    static const mmu_block_attrs_t kernel_normal = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_NONE,
+        .xn = 0
+    };
+    static const mmu_block_attrs_t kernel_device = {
+        .attridx = ATTRIDX_DEVICE,
+        .sh = SH_OUTER,
+        .ap = AP_EL1_RW_EL0_NONE,
+        .xn = PXN_BIT | UXN_BIT
+    };
+
     for (unsigned long i = 0; i < L2_ENTRIES; i++){
         unsigned long pa = i << 21; // 2MB blocks
         int is_device = (pa >= DEVICE_BASE && pa < DEVICE_END);
-        l2_table[i] = block_desc(pa, is_device);
+        l2_table[i] = block_desc(pa, is_device ? &kernel_device : &kernel_normal);
 
         unsigned long pa1 = (1UL << 30) + (i << 21); // 1GB..2GB
         int is_device1 = (pa1 >= DEVICE_BASE && pa1 < DEVICE_END);
-        l2_table_1[i] = block_desc(pa1, is_device1);
+        l2_table_1[i] = block_desc(pa1, is_device1 ? &kernel_device : &kernel_normal);
     }
 
     // MAIR index0: normal WBWA cacheable, index1: device nGnRnE.
@@ -112,19 +149,41 @@ void mmu_init(void){
 }
 
 void mmu_map_device_region(unsigned long pa_start, unsigned long size){
-    if (size == 0){
-        return;
-    }
+    static const mmu_block_attrs_t kernel_device = {
+        .attridx = ATTRIDX_DEVICE,
+        .sh = SH_OUTER,
+        .ap = AP_EL1_RW_EL0_NONE,
+        .xn = PXN_BIT | UXN_BIT
+    };
+    apply_region_attrs(pa_start, size, &kernel_device);
+}
 
-    unsigned long start = pa_start & ~((1UL << 21) - 1); // 2MB aligned
-    unsigned long end = (pa_start + size + ((1UL << 21) - 1)) & ~((1UL << 21) - 1);
+void mmu_map_user_code_region(unsigned long pa_start, unsigned long size){
+    static const mmu_block_attrs_t user_code = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_RW,
+        .xn = PXN_BIT
+    };
+    apply_region_attrs(pa_start, size, &user_code);
+}
 
-    for (unsigned long pa = start; pa < end; pa += (1UL << 21)){
-        set_block_attr(pa, 1);
-    }
+void mmu_map_user_data_region(unsigned long pa_start, unsigned long size){
+    static const mmu_block_attrs_t user_data = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_RW,
+        .xn = PXN_BIT | UXN_BIT
+    };
+    apply_region_attrs(pa_start, size, &user_data);
+}
 
-    asm volatile("dsb ishst");
-    asm volatile("tlbi vmalle1");
-    asm volatile("dsb ish");
-    asm volatile("isb");
+void mmu_map_kernel_private_region(unsigned long pa_start, unsigned long size){
+    static const mmu_block_attrs_t kernel_private = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_NONE,
+        .xn = PXN_BIT | UXN_BIT
+    };
+    apply_region_attrs(pa_start, size, &kernel_private);
 }

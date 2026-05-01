@@ -47,7 +47,7 @@ vectors:
 
 irq_entry:
     // Frame layout (272 bytes):
-    // x0-x29 at 0..239, x30 at 240, ELR_EL1 at 248, SPSR_EL1 at 256, pad at 264
+    // x0-x29 at 0..239, x30 at 240, ELR_EL1 at 248, SPSR_EL1 at 256, SP_EL0 at 264
     sub sp, sp, #272
 
     stp x0, x1, [sp, #16 * 0]
@@ -71,6 +71,8 @@ irq_entry:
     str x1, [sp, #248]
     mrs x1, spsr_el1
     str x1, [sp, #256]
+    mrs x1, sp_el0
+    str x1, [sp, #264]
 
     mov x0, sp
     bl irq_handler
@@ -85,6 +87,8 @@ restore_from_frame:
     msr elr_el1, x1
     ldr x1, [sp, #256]
     msr spsr_el1, x1
+    ldr x1, [sp, #264]
+    msr sp_el0, x1
 
     ldp x0, x1, [sp, #16 * 0]
     ldp x2, x3, [sp, #16 * 1]
@@ -131,6 +135,8 @@ sync_entry:
     str x1, [sp, #248]
     mrs x1, spsr_el1
     str x1, [sp, #256]
+    mrs x1, sp_el0
+    str x1, [sp, #264]
 
     mov x0, sp
     mrs x1, esr_el1

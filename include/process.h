@@ -18,9 +18,12 @@ typedef struct{
     unsigned long regs[12];
     void* sp;
     void* stack;
+    void* user_sp;
     program_entry_t entry;
     void* program_memory;
     unsigned long program_size;
+    int program_heap_alloc;
+    int user_mode;
     process_state_t state;
     unsigned long wake_tick;
     int pid;

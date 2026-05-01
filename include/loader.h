@@ -14,10 +14,14 @@ typedef struct{
     program_entry_t entry;
     void* memory;
     unsigned long size;
+    int heap_allocated;
 } loaded_program_t;
 
 
 void* alloc_program_memory(unsigned int size);
+void loader_free_program_memory(void* ptr, unsigned long size);
+void* loader_user_stack_top(void* program_base);
+void loader_mmu_init_pool(void);
 
 loaded_program_t load_program_from_sd(void);
 int loader_is_busy(void);

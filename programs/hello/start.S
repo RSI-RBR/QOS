@@ -7,5 +7,8 @@ _start:
     bl program_main
 
     ldp x29, x30, [sp], 16
-
-    ret
+    mov x0, #0
+    mov x8, #3      // SYS_EXIT
+    svc #0
+1:
+    b 1b
