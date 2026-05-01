@@ -693,7 +693,7 @@ static int hc_transfer_reg(unsigned int ch,
         }
     }
 
-    for (unsigned int attempt = 0; attempt < 128; attempt++){
+    for (unsigned int attempt = 0; attempt < 192; attempt++){
         if (attempt > 0){
             if (hc_force_halt(ch) != 0){
                 return -1;
@@ -761,7 +761,7 @@ static int hc_transfer_reg(unsigned int ch,
         if (hc_force_halt(ch) != 0){
             return -1;
         }
-        spin_delay(30000);
+        spin_delay(90000);
     }
 
     uart_puts("USB: hc xfer retry exhausted\n");
@@ -1035,61 +1035,95 @@ int usb_host_control_transfer(unsigned char dev_addr,
     unsigned char split_hub_addr = 0;
     unsigned char split_hub_port = 0;
     int use_split = usb_get_split_route(dev_addr, &split_hub_addr, &split_hub_port);
-    int use_split_runtime = use_split;
+    const unsigned int max_attempts = 6;
 
-    if (use_split_runtime){
-        if (hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
-                              setup_bytes, sizeof(setup_bytes), 0, 0,
-                              split_hub_addr, split_hub_port) != 0){
-            // Some children (e.g. HS functions behind LAN9514) must use direct
-            // transactions even though they're downstream of a HS hub.
-            if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
-                            setup_bytes, sizeof(setup_bytes), 0, 0) == 0){
-                uart_puts("USB: split setup failed, fallback direct\n");
-                use_split_runtime = 0;
+    // If a previous transfer left CH0 wedged, recover once before issuing a new setup.
+    if (hc_wait_idle(0, 200000) != 0){
+        (void)hc_force_halt(0);
+        HCSPLT(0) = 0;
+        usb_flush_host_fifos();
+    }
+
+    for (unsigned int attempt = 0; attempt < max_attempts; attempt++){
+        int use_split_runtime = use_split;
+        int failed_stage = 0; // 1=SETUP, 2=DATA, 3=STATUS
+
+        if (use_split_runtime){
+            if (hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
+                                  setup_bytes, sizeof(setup_bytes), 0, 0,
+                                  split_hub_addr, split_hub_port) != 0){
+                // Some children (e.g. HS functions behind LAN9514) must use direct
+                // transactions even though they're downstream of a HS hub.
+                if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP,
+                                setup_bytes, sizeof(setup_bytes), 0, 0) == 0){
+                    uart_puts("USB: split setup failed, fallback direct\n");
+                    use_split_runtime = 0;
+                } else{
+                    failed_stage = 1;
+                }
+            }
+        } else if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
+            failed_stage = 1;
+        }
+
+        if (failed_stage == 0 && data_len > 0){
+            if (in_transfer){
+                int rc = use_split_runtime
+                    ? hc_transfer_split(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1,
+                                        0, 0, data, data_len, split_hub_addr, split_hub_port)
+                    : hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len);
+                if (rc != 0){
+                    failed_stage = 2;
+                }
             } else{
-                uart_puts("USB: SETUP stage failed (split)\n");
-                return -1;
+                int rc = use_split_runtime
+                    ? hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1,
+                                        data, data_len, 0, 0, split_hub_addr, split_hub_port)
+                    : hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0);
+                if (rc != 0){
+                    failed_stage = 2;
+                }
             }
         }
-    } else if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
-        uart_puts("USB: SETUP stage failed\n");
-        return -1;
-    }
 
-    if (data_len > 0){
-        if (in_transfer){
-            int rc = use_split_runtime
-                ? hc_transfer_split(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1,
-                                    0, 0, data, data_len, split_hub_addr, split_hub_port)
-                : hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len);
-            if (rc != 0){
-                uart_puts("USB: DATA IN stage failed\n");
-                return -1;
-            }
-        } else{
-            int rc = use_split_runtime
-                ? hc_transfer_split(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1,
-                                    data, data_len, 0, 0, split_hub_addr, split_hub_port)
-                : hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0);
-            if (rc != 0){
-                uart_puts("USB: DATA OUT stage failed\n");
-                return -1;
+        if (failed_stage == 0){
+            // Status stage: opposite direction, zero-length DATA1.
+            int status_rc = use_split_runtime
+                ? hc_transfer_split(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1,
+                                    0, 0, 0, 0, split_hub_addr, split_hub_port)
+                : hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0);
+            if (status_rc != 0){
+                failed_stage = 3;
             }
         }
+
+        if (failed_stage == 0){
+            return 0;
+        }
+
+        if (attempt + 1u >= max_attempts){
+            if (failed_stage == 1){
+                uart_puts(use_split_runtime ? "USB: SETUP stage failed (split)\n" : "USB: SETUP stage failed\n");
+            } else if (failed_stage == 2){
+                uart_puts(in_transfer ? "USB: DATA IN stage failed\n" : "USB: DATA OUT stage failed\n");
+            } else{
+                uart_puts("USB: STATUS stage failed\n");
+            }
+            return -1;
+        }
+
+        // Recovery before retrying the full control transfer.
+        (void)hc_force_halt(0);
+        HCSPLT(0) = 0;
+        HCINT(0) = 0xFFFFFFFFu;
+        HCINTMSK(0) = 0;
+        if (attempt & 1u){
+            usb_flush_host_fifos();
+        }
+        spin_delay(120000);
     }
 
-    // Status stage: opposite direction, zero-length DATA1.
-    int status_rc = use_split_runtime
-        ? hc_transfer_split(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1,
-                            0, 0, 0, 0, split_hub_addr, split_hub_port)
-        : hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0);
-    if (status_rc != 0){
-        uart_puts("USB: STATUS stage failed\n");
-        return -1;
-    }
-
-    return 0;
+    return -1;
 }
 
 static int usb_std_request(unsigned char dev_addr,
