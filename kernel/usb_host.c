@@ -64,6 +64,7 @@
 #define HCFG_FSLSPCLKSEL_MASK      0x3u
 #define HCFG_FSLSPCLKSEL_30_60_MHZ 0u
 #define HCFG_FSLSPCLKSEL_48_MHZ    1u
+#define HCFG_FSLSSUPP              (1u << 2)
 
 // GINTSTS bits (subset)
 #define GINTSTS_CURMODE_HOST (1u << 0)
@@ -562,6 +563,8 @@ static int hc_transfer(unsigned int ch,
             uart_puthex(GAHBCFG);
             uart_puts(" gnptxsts=");
             uart_puthex(GNPTXSTS);
+            uart_puts(" hcfg=");
+            uart_puthex(HCFG);
             uart_puts("\n");
             return -1;
         }
@@ -757,9 +760,10 @@ int usb_host_init(void){
     GAHBCFG &= ~GAHBCFG_DMA_EN;
     GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
 
-    // For the Pi DWC2 HS PHY path use 30/60 MHz host clock select.
-    // (0x3 was invalid/reserved and can cause unstable channel behavior.)
+    // Stability mode: force FS/LS-only host operation.
+    // This avoids HS split-transaction requirements for downstream FS devices.
     HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_30_60_MHZ;
+    HCFG |= HCFG_FSLSSUPP;
     (void)HFIR;
 
     // Enable port power, preserving write-1-to-clear bits.
@@ -773,6 +777,7 @@ int usb_host_init(void){
 
     g_usb_ready = 1;
     uart_puts("USB: host phase1 init OK.\n");
+    uart_puts("USB: mode=FS/LS-only (split-free bring-up)\n");
     usb_host_dump_state();
 
     if (wait_port_connect(8000000) == 0){
