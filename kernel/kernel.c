@@ -103,6 +103,17 @@ void kernel_main(void){
 
     if (usb_host_init() != 0){
         uart_puts("USB host init failed (network over onboard ETH unavailable).\n");
+    } else{
+        unsigned char dev_desc[18];
+        if (usb_host_read_device_descriptor(dev_desc, sizeof(dev_desc)) == 0){
+            uart_puts("USB: dev desc ok VID=");
+            uart_puthex((unsigned int)dev_desc[9] << 8 | dev_desc[8]);
+            uart_puts(" PID=");
+            uart_puthex((unsigned int)dev_desc[11] << 8 | dev_desc[10]);
+            uart_puts("\n");
+        } else{
+            uart_puts("USB: device descriptor read failed (phase2 WIP).\n");
+        }
     }
 
     if (net_init() != 0){

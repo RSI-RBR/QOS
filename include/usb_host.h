@@ -13,6 +13,7 @@ typedef struct {
 int usb_host_init(void);
 int usb_host_ready(void);
 void usb_host_dump_state(void);
+int usb_host_reset_root_port(void);
 
 // Phase 1 scaffold for next step (EP0 control transfer engine).
 int usb_host_control_transfer(unsigned char dev_addr,
@@ -20,5 +21,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
                               unsigned char* data,
                               unsigned int data_len,
                               int in_transfer);
+
+int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len);
 
 #endif

@@ -59,13 +59,26 @@ Phase 1 is now in place:
 - Root port power
 - Status dump (`HPRT0/HCFG/GINTSTS/PCGCTL`)
 
-Next step (Phase 2) is EP0 control transfer support:
+Phase 2 (initial EP0 path) is now partially in place:
+
+- root-port reset helper (`usb_host_reset_root_port`)
+- blocking control transfer scaffold on host channel 0
+- first `GET_DESCRIPTOR(Device)` attempt at address 0
+
+Current limitations of Phase 2:
+
+- no hub enumeration yet (LAN9514 behind root hub not reached yet)
+- control path is polling and minimal (good for first descriptor experiments)
+- no retry/state machine for all NAK/NYET cases
+
+Next step (Phase 3) is robust enumeration:
 
 1. Host-channel allocation for control endpoint
 2. `SETUP` stage transfer
 3. optional `DATA` stage (IN/OUT)
 4. `STATUS` stage
-5. read device descriptor for root-port device
+5. hub descriptor + downstream port power/reset
+6. enumerate LAN9514 and bind USB-Ethernet function
 
 ## IRQ hook
 

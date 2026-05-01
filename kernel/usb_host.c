@@ -10,14 +10,23 @@
 #define GRSTCTL   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x010))
 #define GINTSTS   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x014))
 #define GINTMSK   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x018))
+#define GRXSTSP   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x020))
 #define GRXFSIZ   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x024))
 #define GNPTXFSIZ (*(volatile unsigned int*)(USB_DWC2_BASE + 0x028))
 #define GCCFG     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x038))
 #define GSNPSID   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x040))
 #define HCFG      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x400))
 #define HFIR      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x404))
+#define HFNUM     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x408))
 #define HPRT0     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x440))
 #define PCGCTL    (*(volatile unsigned int*)(USB_DWC2_BASE + 0xE00))
+#define FIFO0     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x1000))
+
+#define HC_REG_BASE(ch)   (USB_DWC2_BASE + 0x500 + ((ch) * 0x20))
+#define HCCHAR(ch)        (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x00))
+#define HCINT(ch)         (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x08))
+#define HCINTMSK(ch)      (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x0C))
+#define HCTSIZ(ch)        (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x10))
 
 // GRSTCTL bits
 #define GRSTCTL_CSRST        (1u << 0)
@@ -33,11 +42,66 @@
 // HPRT0 bits
 #define HPRT0_PWR            (1u << 12)
 #define HPRT0_CONN_STS       (1u << 0)
+#define HPRT0_CONN_DET       (1u << 1)
 #define HPRT0_ENA            (1u << 2)
+#define HPRT0_ENA_CHG        (1u << 3)
 #define HPRT0_OVRCURR        (1u << 4)
+#define HPRT0_OVRCURR_CHG    (1u << 5)
 #define HPRT0_RESET          (1u << 8)
+#define HPRT0_SPD_MASK       (3u << 17)
+#define HPRT0_SPD_HIGH       (0u << 17)
+#define HPRT0_SPD_FULL       (1u << 17)
+#define HPRT0_SPD_LOW        (2u << 17)
+
+// GINTSTS bits (subset)
+#define GINTSTS_RXFLVL       (1u << 4)
+
+// Host channel bits
+#define HCCHAR_MPS_MASK      0x7FFu
+#define HCCHAR_EPNUM_SHIFT   11
+#define HCCHAR_EPDIR         (1u << 15)
+#define HCCHAR_LSPDDEV       (1u << 17)
+#define HCCHAR_EPTYPE_SHIFT  18
+#define HCCHAR_DEVADDR_SHIFT 22
+#define HCCHAR_ODDFRM        (1u << 29)
+#define HCCHAR_CHDIS         (1u << 30)
+#define HCCHAR_CHENA         (1u << 31)
+
+// HCINT bits
+#define HCINT_XFERCOMPL      (1u << 0)
+#define HCINT_CHHLTD         (1u << 1)
+#define HCINT_AHBERR         (1u << 2)
+#define HCINT_STALL          (1u << 3)
+#define HCINT_NAK            (1u << 4)
+#define HCINT_ACK            (1u << 5)
+#define HCINT_NYET           (1u << 6)
+#define HCINT_XACTERR        (1u << 7)
+#define HCINT_BBLERR         (1u << 8)
+#define HCINT_FRMOVRUN       (1u << 9)
+#define HCINT_DATATGLERR     (1u << 10)
+#define HCINT_ERROR_MASK     (HCINT_AHBERR | HCINT_STALL | HCINT_XACTERR | HCINT_BBLERR | HCINT_FRMOVRUN | HCINT_DATATGLERR)
+
+// HCTSIZ bits
+#define HCTSIZ_XFERSIZE_MASK 0x7FFFFu
+#define HCTSIZ_PKTCNT_SHIFT  19
+#define HCTSIZ_PID_SHIFT     29
+#define HCTSIZ_PID_DATA0     0u
+#define HCTSIZ_PID_DATA1     2u
+#define HCTSIZ_PID_SETUP     3u
+
+// GRXSTSP fields
+#define GRXSTSP_CHNUM_MASK   0xFu
+#define GRXSTSP_BCNT_SHIFT   4
+#define GRXSTSP_BCNT_MASK    (0x7FFu << GRXSTSP_BCNT_SHIFT)
+#define GRXSTSP_PKTSTS_SHIFT 17
+#define GRXSTSP_PKTSTS_MASK  (0xFu << GRXSTSP_PKTSTS_SHIFT)
+#define GRXSTSP_PKTSTS_IN    0x2u
+
+#define USB_CTRL_EP_MPS_DEFAULT 8u
 
 static int g_usb_ready = 0;
+static unsigned int g_port_speed = HPRT0_SPD_FULL;
+static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
 
 static void spin_delay(unsigned int n){
     while (n--){
@@ -61,6 +125,177 @@ static int wait_mask_clear(volatile unsigned int* reg, unsigned int mask, unsign
         }
     }
     return -1;
+}
+
+static unsigned int div_round_up(unsigned int n, unsigned int d){
+    return (n + d - 1u) / d;
+}
+
+static void fifo_write_bytes(const unsigned char* data, unsigned int len){
+    unsigned int words = div_round_up(len, 4);
+    for (unsigned int i = 0; i < words; i++){
+        unsigned int w = 0;
+        unsigned int base = i * 4;
+        if (base + 0 < len) w |= (unsigned int)data[base + 0];
+        if (base + 1 < len) w |= (unsigned int)data[base + 1] << 8;
+        if (base + 2 < len) w |= (unsigned int)data[base + 2] << 16;
+        if (base + 3 < len) w |= (unsigned int)data[base + 3] << 24;
+        FIFO0 = w;
+    }
+}
+
+static void fifo_read_bytes(unsigned char* data, unsigned int len){
+    unsigned int words = div_round_up(len, 4);
+    for (unsigned int i = 0; i < words; i++){
+        unsigned int w = FIFO0;
+        unsigned int base = i * 4;
+        if (base + 0 < len) data[base + 0] = (unsigned char)(w & 0xFFu);
+        if (base + 1 < len) data[base + 1] = (unsigned char)((w >> 8) & 0xFFu);
+        if (base + 2 < len) data[base + 2] = (unsigned char)((w >> 16) & 0xFFu);
+        if (base + 3 < len) data[base + 3] = (unsigned char)((w >> 24) & 0xFFu);
+    }
+}
+
+static int hc_wait_for_done(unsigned int ch, int is_in, unsigned char* in_buf, unsigned int in_len){
+    unsigned int copied = 0;
+    unsigned int loops = 8000000;
+
+    while (loops--){
+        if (is_in && (GINTSTS & GINTSTS_RXFLVL)){
+            unsigned int rxst = GRXSTSP;
+            unsigned int rx_ch = rxst & GRXSTSP_CHNUM_MASK;
+            unsigned int pktsts = (rxst & GRXSTSP_PKTSTS_MASK) >> GRXSTSP_PKTSTS_SHIFT;
+            unsigned int bcnt = (rxst & GRXSTSP_BCNT_MASK) >> GRXSTSP_BCNT_SHIFT;
+
+            if (rx_ch == ch && pktsts == GRXSTSP_PKTSTS_IN && bcnt > 0 && in_buf){
+                unsigned int room = (copied < in_len) ? (in_len - copied) : 0;
+                unsigned int take = (bcnt < room) ? bcnt : room;
+                if (take > 0){
+                    fifo_read_bytes(&in_buf[copied], take);
+                    copied += take;
+                    // Drain remainder if packet larger than target buffer.
+                    if (bcnt > take){
+                        unsigned int skip_words = div_round_up(bcnt - take, 4);
+                        for (unsigned int i = 0; i < skip_words; i++){
+                            (void)FIFO0;
+                        }
+                    }
+                } else{
+                    // No room left: drain packet.
+                    unsigned int skip_words = div_round_up(bcnt, 4);
+                    for (unsigned int i = 0; i < skip_words; i++){
+                        (void)FIFO0;
+                    }
+                }
+            } else if (bcnt > 0){
+                // Unexpected packet; drain to keep RX FIFO consistent.
+                unsigned int skip_words = div_round_up(bcnt, 4);
+                for (unsigned int i = 0; i < skip_words; i++){
+                    (void)FIFO0;
+                }
+            }
+        }
+
+        unsigned int hcint = HCINT(ch);
+        if (hcint & HCINT_ERROR_MASK){
+            HCINT(ch) = hcint;
+            return -1;
+        }
+        if ((hcint & HCINT_NAK) && !is_in){
+            // Allow a few host retries by clearing NAK and continuing.
+            HCINT(ch) = HCINT_NAK;
+            continue;
+        }
+        if ((hcint & HCINT_XFERCOMPL) || (hcint & HCINT_CHHLTD)){
+            HCINT(ch) = hcint;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int hc_transfer(unsigned int ch,
+                       unsigned char dev_addr,
+                       int ep_in,
+                       unsigned int ep_mps,
+                       unsigned int pid,
+                       const unsigned char* out_data,
+                       unsigned int out_len,
+                       unsigned char* in_data,
+                       unsigned int in_len){
+    unsigned int xfer_len = ep_in ? in_len : out_len;
+    unsigned int pktcnt = (xfer_len == 0) ? 1u : div_round_up(xfer_len, ep_mps ? ep_mps : 1u);
+    if (pktcnt == 0){
+        pktcnt = 1;
+    }
+
+    HCINT(ch) = 0xFFFFFFFFu;
+    HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK;
+
+    unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
+        | (pktcnt << HCTSIZ_PKTCNT_SHIFT)
+        | ((pid & 0x3u) << HCTSIZ_PID_SHIFT);
+    HCTSIZ(ch) = hctsiz;
+
+    unsigned int hcchar = (ep_mps & HCCHAR_MPS_MASK)
+        | ((0u & 0xFu) << HCCHAR_EPNUM_SHIFT)
+        | ((dev_addr & 0x7Fu) << HCCHAR_DEVADDR_SHIFT)
+        | (0u << HCCHAR_EPTYPE_SHIFT); // control
+    if (ep_in){
+        hcchar |= HCCHAR_EPDIR;
+    }
+    if (g_port_speed == HPRT0_SPD_LOW){
+        hcchar |= HCCHAR_LSPDDEV;
+    }
+    if (HFNUM & 1u){
+        hcchar |= HCCHAR_ODDFRM;
+    }
+
+    HCCHAR(ch) = hcchar;
+
+    if (!ep_in && out_len > 0 && out_data){
+        fifo_write_bytes(out_data, out_len);
+    }
+
+    hcchar |= HCCHAR_CHENA;
+    hcchar &= ~HCCHAR_CHDIS;
+    HCCHAR(ch) = hcchar;
+
+    return hc_wait_for_done(ch, ep_in, in_data, in_len);
+}
+
+int usb_host_reset_root_port(void){
+    unsigned int hprt = HPRT0;
+    hprt &= ~(HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
+    hprt |= HPRT0_PWR;
+    hprt |= HPRT0_RESET;
+    HPRT0 = hprt;
+    spin_delay(3000000);
+
+    hprt = HPRT0;
+    hprt &= ~(HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
+    hprt |= HPRT0_PWR;
+    hprt &= ~HPRT0_RESET;
+    HPRT0 = hprt;
+    spin_delay(400000);
+
+    hprt = HPRT0;
+    g_port_speed = hprt & HPRT0_SPD_MASK;
+    if (!(hprt & HPRT0_ENA)){
+        uart_puts("USB: root port did not enable after reset.\n");
+        return -1;
+    }
+    uart_puts("USB: root port reset complete, speed=");
+    if (g_port_speed == HPRT0_SPD_HIGH){
+        uart_puts("high\n");
+    } else if (g_port_speed == HPRT0_SPD_FULL){
+        uart_puts("full\n");
+    } else if (g_port_speed == HPRT0_SPD_LOW){
+        uart_puts("low\n");
+    } else{
+        uart_puts("unknown\n");
+    }
+    return 0;
 }
 
 int usb_host_init(void){
@@ -118,6 +353,7 @@ int usb_host_init(void){
 
     // Enable port power, preserving write-1-to-clear bits.
     unsigned int hprt = HPRT0;
+    hprt &= ~(HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG);
     hprt |= HPRT0_PWR;
     hprt &= ~HPRT0_RESET;
     HPRT0 = hprt;
@@ -127,6 +363,9 @@ int usb_host_init(void){
     g_usb_ready = 1;
     uart_puts("USB: host phase1 init OK.\n");
     usb_host_dump_state();
+    if (HPRT0 & HPRT0_CONN_STS){
+        (void)usb_host_reset_root_port();
+    }
     return 0;
 }
 
@@ -162,11 +401,78 @@ int usb_host_control_transfer(unsigned char dev_addr,
                               unsigned char* data,
                               unsigned int data_len,
                               int in_transfer){
-    (void)dev_addr;
-    (void)setup;
-    (void)data;
-    (void)data_len;
-    (void)in_transfer;
-    // Phase 2: implement channel/transfer scheduling for EP0 setup/data/status.
-    return -1;
+    if (!g_usb_ready || !setup){
+        return -1;
+    }
+
+    unsigned char setup_bytes[8];
+    setup_bytes[0] = setup->bmRequestType;
+    setup_bytes[1] = setup->bRequest;
+    setup_bytes[2] = (unsigned char)(setup->wValue & 0xFFu);
+    setup_bytes[3] = (unsigned char)((setup->wValue >> 8) & 0xFFu);
+    setup_bytes[4] = (unsigned char)(setup->wIndex & 0xFFu);
+    setup_bytes[5] = (unsigned char)((setup->wIndex >> 8) & 0xFFu);
+    setup_bytes[6] = (unsigned char)(setup->wLength & 0xFFu);
+    setup_bytes[7] = (unsigned char)((setup->wLength >> 8) & 0xFFu);
+
+    if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_SETUP, setup_bytes, sizeof(setup_bytes), 0, 0) != 0){
+        uart_puts("USB: SETUP stage failed\n");
+        return -1;
+    }
+
+    if (data_len > 0){
+        if (in_transfer){
+            if (hc_transfer(0, dev_addr, 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, data, data_len) != 0){
+                uart_puts("USB: DATA IN stage failed\n");
+                return -1;
+            }
+        } else{
+            if (hc_transfer(0, dev_addr, 0, g_ep0_mps, HCTSIZ_PID_DATA1, data, data_len, 0, 0) != 0){
+                uart_puts("USB: DATA OUT stage failed\n");
+                return -1;
+            }
+        }
+    }
+
+    // Status stage: opposite direction, zero-length DATA1.
+    if (hc_transfer(0, dev_addr, in_transfer ? 0 : 1, g_ep0_mps, HCTSIZ_PID_DATA1, 0, 0, 0, 0) != 0){
+        uart_puts("USB: STATUS stage failed\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
+    if (!out18 || len < 18){
+        return -1;
+    }
+    if (!g_usb_ready){
+        return -1;
+    }
+    if (!(HPRT0 & HPRT0_CONN_STS)){
+        uart_puts("USB: no device present for descriptor read\n");
+        return -1;
+    }
+
+    usb_setup_packet_t req;
+    req.bmRequestType = 0x80; // device-to-host, standard, device
+    req.bRequest = 0x06;      // GET_DESCRIPTOR
+    req.wValue = 0x0100;      // DEVICE descriptor, index 0
+    req.wIndex = 0x0000;
+    req.wLength = 18;
+
+    for (unsigned int i = 0; i < 18; i++){
+        out18[i] = 0;
+    }
+
+    if (usb_host_control_transfer(0, &req, out18, 18, 1) != 0){
+        return -1;
+    }
+
+    // Update EP0 max packet size from descriptor byte 7 for future transfers.
+    if (out18[0] == 18 && out18[1] == 1 && out18[7] != 0){
+        g_ep0_mps = out18[7];
+    }
+    return 0;
 }
