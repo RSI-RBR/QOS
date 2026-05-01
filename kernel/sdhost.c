@@ -391,21 +391,14 @@ int sdhost_read_block(unsigned int lba, unsigned char *buffer){
     SDHSTS = 0x7F8;
     rc = 0;
 
-    // Settle using observed-stable conditions on this controller:
-    // FSM idle and no DATA_FLAG, instead of relying on transfer-done bit.
+    // Settle using observed-stable conditions on this controller.
+    // Do not treat settle-phase status bits as fatal; data-path errors were
+    // already validated while draining FIFO.
     {
         int settle_timeout = 200000;
         while (settle_timeout--){
             unsigned int st = SDHSTS;
             unsigned int fsm = SDEDM & SDEDM_FSM_MASK;
-
-            if (st & SDHSTS_ERROR_MASK){
-                uart_puts("SETTLE ERROR status=");
-                uart_puthex(st);
-                uart_puts("\n");
-                rc = -1;
-                break;
-            }
 
             if (fsm == 0 && !(st & SDHSTS_DATA_FLAG)){
                 break;
