@@ -31,6 +31,9 @@
 // GRSTCTL bits
 #define GRSTCTL_CSRST        (1u << 0)
 #define GRSTCTL_AHB_IDLE     (1u << 31)
+#define GRSTCTL_RXFFLSH      (1u << 4)
+#define GRSTCTL_TXFFLSH      (1u << 5)
+#define GRSTCTL_TXFNUM_SHIFT 6
 
 // GUSBCFG bits
 #define GUSBCFG_FHMOD        (1u << 29)
@@ -309,24 +312,69 @@ static unsigned int div_round_up(unsigned int n, unsigned int d){
     return (n + d - 1u) / d;
 }
 
-static void hc_force_halt(unsigned int ch){
+static int hc_wait_idle(unsigned int ch, unsigned int loops){
+    while (loops--){
+        unsigned int hcchar = HCCHAR(ch);
+        if ((hcchar & HCCHAR_CHENA) == 0){
+            return 0;
+        }
+        if (HCINT(ch) & HCINT_CHHLTD){
+            HCINT(ch) = HCINT_CHHLTD;
+            if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+static void usb_flush_host_fifos(void){
+    // DWC2 recommends flushing FIFOs when endpoint/channel state gets stuck.
+    if (wait_mask_set((volatile unsigned int*)&GRSTCTL, GRSTCTL_AHB_IDLE, 2000000) != 0){
+        return;
+    }
+
+    unsigned int reset = GRSTCTL_RXFFLSH | GRSTCTL_TXFFLSH | (0x10u << GRSTCTL_TXFNUM_SHIFT);
+    GRSTCTL = reset;
+    (void)wait_mask_clear((volatile unsigned int*)&GRSTCTL, GRSTCTL_RXFFLSH | GRSTCTL_TXFFLSH, 2000000);
+    spin_delay(1000);
+}
+
+static int hc_force_halt(unsigned int ch){
     unsigned int hcchar = HCCHAR(ch);
+    if ((hcchar & HCCHAR_CHENA) == 0){
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = 0;
+        return 0;
+    }
+
+    HCINT(ch) = 0xFFFFFFFFu;
+    HCINTMSK(ch) = HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
+
+    // Only request halt when channel is already enabled.
     hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
     HCCHAR(ch) = hcchar;
 
-    for (unsigned int i = 0; i < 200000; i++){
-        if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
-            break;
-        }
+    if (hc_wait_idle(ch, 800000) == 0){
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = 0;
+        return 0;
     }
-}
 
-static int hc_wait_idle(unsigned int ch, unsigned int loops){
-    while (loops--){
-        if ((HCCHAR(ch) & HCCHAR_CHENA) == 0){
-            return 0;
-        }
+    // Recovery path for stuck channels.
+    usb_flush_host_fifos();
+    hcchar = HCCHAR(ch);
+    if (hcchar & HCCHAR_CHENA){
+        hcchar |= (HCCHAR_CHDIS | HCCHAR_CHENA);
+        HCCHAR(ch) = hcchar;
     }
+    if (hc_wait_idle(ch, 800000) == 0){
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = 0;
+        return 0;
+    }
+    HCINT(ch) = 0xFFFFFFFFu;
+    HCINTMSK(ch) = 0;
     return -1;
 }
 
@@ -465,8 +513,7 @@ static int hc_transfer(unsigned int ch,
 
     // Ensure channel is idle before programming a new transfer.
     if (hc_wait_idle(ch, 500000) != 0){
-        hc_force_halt(ch);
-        if (hc_wait_idle(ch, 500000) != 0){
+        if (hc_force_halt(ch) != 0){
             uart_puts("USB: HC not idle before xfer\n");
             return -1;
         }
@@ -474,8 +521,7 @@ static int hc_transfer(unsigned int ch,
 
     for (unsigned int attempt = 0; attempt < 128; attempt++){
         if (attempt > 0){
-            hc_force_halt(ch);
-            if (hc_wait_idle(ch, 500000) != 0){
+            if (hc_force_halt(ch) != 0){
                 return -1;
             }
         }
@@ -526,11 +572,13 @@ static int hc_transfer(unsigned int ch,
             uart_puts(" hprt0=");
             uart_puthex(HPRT0);
             uart_puts("\n");
-            hc_force_halt(ch);
+            (void)hc_force_halt(ch);
             return -1;
         }
         // Transient NAK/NYET/halt: short settle then retry.
-        hc_force_halt(ch);
+        if (hc_force_halt(ch) != 0){
+            return -1;
+        }
         spin_delay(30000);
     }
 
