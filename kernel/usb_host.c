@@ -54,6 +54,7 @@
 #define HPRT0_SPD_LOW        (2u << 17)
 
 // GINTSTS bits (subset)
+#define GINTSTS_CURMODE_HOST (1u << 0)
 #define GINTSTS_RXFLVL       (1u << 4)
 
 // Host channel bits
@@ -121,6 +122,24 @@ static int wait_mask_set(volatile unsigned int* reg, unsigned int mask, unsigned
 static int wait_mask_clear(volatile unsigned int* reg, unsigned int mask, unsigned int loops){
     while (loops--){
         if (((*reg) & mask) == 0){
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int wait_host_mode(unsigned int loops){
+    while (loops--){
+        if (GINTSTS & GINTSTS_CURMODE_HOST){
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int wait_port_connect(unsigned int loops){
+    while (loops--){
+        if (HPRT0 & HPRT0_CONN_STS){
             return 0;
         }
     }
@@ -337,6 +356,15 @@ int usb_host_init(void){
     asm volatile("dsb sy");
     asm volatile("isb");
     spin_delay(200000);
+    if (wait_host_mode(4000000) != 0){
+        uart_puts("USB: failed to enter host mode.\n");
+        uart_puts("USB: GINTSTS=");
+        uart_puthex(GINTSTS);
+        uart_puts(" GUSBCFG=");
+        uart_puthex(GUSBCFG);
+        uart_puts("\n");
+        return -1;
+    }
 
     // Basic FIFO defaults suitable for initial control transfer work.
     GRXFSIZ = 512;
@@ -363,8 +391,11 @@ int usb_host_init(void){
     g_usb_ready = 1;
     uart_puts("USB: host phase1 init OK.\n");
     usb_host_dump_state();
-    if (HPRT0 & HPRT0_CONN_STS){
+
+    if (wait_port_connect(8000000) == 0){
         (void)usb_host_reset_root_port();
+    } else{
+        uart_puts("USB: no root-port connect yet.\n");
     }
     return 0;
 }
@@ -449,6 +480,11 @@ int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len){
     }
     if (!g_usb_ready){
         return -1;
+    }
+    if (!(HPRT0 & HPRT0_CONN_STS)){
+        if (wait_port_connect(6000000) == 0){
+            (void)usb_host_reset_root_port();
+        }
     }
     if (!(HPRT0 & HPRT0_CONN_STS)){
         uart_puts("USB: no device present for descriptor read\n");

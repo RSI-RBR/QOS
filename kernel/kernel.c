@@ -12,7 +12,7 @@
 #include "gpio.h"
 #include "blockdev.h"
 //#include "clock.h"
-//#include "mailbox.h"
+#include "mailbox.h"
 #include "debug.h"
 #include "interrupt.h"
 #include "mmu.h"
@@ -82,6 +82,7 @@ void kernel_main(void){
 
     uart_init();
     uart_puts("Uart initialized!\n");
+    (void)mailbox_power_on_usb();
 
     mmu_init();
     uart_puts("MMU (phase 1 identity map) enabled.\n");
