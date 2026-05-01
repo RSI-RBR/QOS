@@ -7,6 +7,7 @@ This repository now includes a minimal network core and NIC abstraction:
 - `include/ethernet.h` Ethernet header helpers
 - `kernel/net.c` queueing/stats/core logic
 - `kernel/nic_stub.c` loopback NIC (for protocol testing without hardware)
+- `include/usb_host.h`, `kernel/usb_host.c` DWC2 host phase-1 bring-up scaffold
 
 ## Current behavior
 
@@ -47,6 +48,24 @@ Implement a new driver module that satisfies `nic_driver_t`:
    - return PHY link state
 
 Then switch `nic_probe_default()` to return your hardware driver.
+
+## USB (Pi 3 onboard Ethernet path) status
+
+Phase 1 is now in place:
+
+- DWC2 core ID probe
+- Core reset
+- Forced host mode
+- Root port power
+- Status dump (`HPRT0/HCFG/GINTSTS/PCGCTL`)
+
+Next step (Phase 2) is EP0 control transfer support:
+
+1. Host-channel allocation for control endpoint
+2. `SETUP` stage transfer
+3. optional `DATA` stage (IN/OUT)
+4. `STATUS` stage
+5. read device descriptor for root-port device
 
 ## IRQ hook
 

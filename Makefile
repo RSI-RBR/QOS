@@ -36,7 +36,8 @@ kernel/mmu.c \
 kernel/blockdev.c \
 kernel/syscall.c \
 kernel/net.c \
-kernel/nic_stub.c
+kernel/nic_stub.c \
+kernel/usb_host.c
 
 
 ASM_SOURCES = \

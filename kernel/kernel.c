@@ -17,6 +17,7 @@
 #include "interrupt.h"
 #include "mmu.h"
 #include "net.h"
+#include "usb_host.h"
 
 
 //extern kernel_api_t kapi;
@@ -99,6 +100,10 @@ void kernel_main(void){
     interrupt_init();
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");
+
+    if (usb_host_init() != 0){
+        uart_puts("USB host init failed (network over onboard ETH unavailable).\n");
+    }
 
     if (net_init() != 0){
         uart_puts("NET init failed (continuing without NIC).\n");
