@@ -146,20 +146,6 @@ static int emmc_cmd(unsigned int cmd, unsigned int arg, unsigned int flags){
     return 0;
 }
 
-static int emmc_reset_cmd_dat_lines(void){
-    EMMC_CONTROL1 |= (C1_SRST_CMD | C1_SRST_DAT);
-    {
-        unsigned long start = system_ticks;
-        while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
-            if ((system_ticks - start) > 120){
-                uart_puts("EMMC: cmd/dat reset timeout\n");
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
 static int emmc_acmd41(void){
     unsigned int resp = 0;
     for (int i = 0; i < 2000; i++){
