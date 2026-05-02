@@ -1,6 +1,5 @@
 #include "arp.h"
 #include "net.h"
-#include "net_proto.h"
 #include "uart.h"
 
 typedef struct {
@@ -23,10 +22,6 @@ static int g_periodic_enabled = 0;
 static int g_gateway_resolved = 0;
 static unsigned char g_gateway_ip[4];
 static unsigned char g_gateway_mac[ETH_ADDR_LEN];
-
-static int ip_eq4(const unsigned char a[4], const unsigned char b[4]){
-    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
-}
 
 static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -92,10 +87,12 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
         }
         uart_puts("\n");
 
-        // Always learn/refresh the configured gateway mapping from replies.
-        unsigned char cfg_gateway_ip[4];
-        net_proto_get_gateway_ip(cfg_gateway_ip);
-        if (ip_eq4(arp->spa, cfg_gateway_ip)){
+        // If this reply is for our periodic gateway probe, store it and stop retries.
+        if (g_periodic_enabled &&
+            arp->spa[0] == g_periodic_target_ip[0] &&
+            arp->spa[1] == g_periodic_target_ip[1] &&
+            arp->spa[2] == g_periodic_target_ip[2] &&
+            arp->spa[3] == g_periodic_target_ip[3]){
             for (unsigned int i = 0; i < 4; i++){
                 g_gateway_ip[i] = arp->spa[i];
             }
@@ -103,12 +100,8 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
                 g_gateway_mac[i] = arp->sha[i];
             }
             g_gateway_resolved = 1;
-            if (g_periodic_enabled){
-                g_periodic_enabled = 0;
-                uart_puts("ARP gateway learned; periodic requests stopped\n");
-            } else{
-                uart_puts("ARP gateway refreshed\n");
-            }
+            g_periodic_enabled = 0;
+            uart_puts("ARP gateway learned; periodic requests stopped\n");
         }
     } else{
         g_arp_stats.rx_unsupported++;

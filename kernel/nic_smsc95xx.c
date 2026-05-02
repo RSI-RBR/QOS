@@ -61,6 +61,7 @@ static int g_ready = 0;
 static unsigned int g_id_rev = 0;
 static unsigned long g_rx_frames = 0;
 static unsigned long g_rx_parse_miss = 0;
+static unsigned int g_rx_hard_fail_streak = 0;
 static unsigned char g_mac[ETH_ADDR_LEN] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
 static unsigned char g_rx_buf[SMSC95XX_RX_BUF_SIZE] __attribute__((aligned(64)));
 static unsigned char g_tx_buf[SMSC95XX_TX_BUF_SIZE] __attribute__((aligned(64)));
@@ -265,6 +266,7 @@ static int smsc95xx_init(void){
     g_id_rev = 0;
     g_rx_frames = 0;
     g_rx_parse_miss = 0;
+    g_rx_hard_fail_streak = 0;
 
     if (usb_host_get_root_device_info(&info) != 0){
         uart_puts("SMSC95XX: root device info unavailable\n");
@@ -373,9 +375,21 @@ static int smsc95xx_poll(void){
     for (unsigned int poll = 0; poll < 4; poll++){
         int n = usb_host_bulk_transfer(g_dev_addr, g_bulk_in_ep, g_bulk_in_mps,
                                        g_rx_buf, sizeof(g_rx_buf), 1);
-        if (n <= 0){
+        if (n < 0){
+            g_rx_hard_fail_streak++;
+            // Recover from stuck BULK IN path: observed as TX still works
+            // while RX goes silent after runtime errors.
+            if (g_rx_hard_fail_streak >= 4){
+                uart_puts("SMSC95XX: RX path recover\n");
+                (void)smsc95xx_start_chip();
+                g_rx_hard_fail_streak = 0;
+            }
             break;
         }
+        if (n == 0){
+            break;
+        }
+        g_rx_hard_fail_streak = 0;
 
         unsigned int off = 0;
         while (off + 4u <= (unsigned int)n){
