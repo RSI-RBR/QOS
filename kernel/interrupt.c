@@ -115,17 +115,19 @@ void* irq_handler(void* irq_frame_sp){
     unsigned int local_src = CORE_IRQ_SOURCE(core);
     if (local_src & CORE_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();
-        if (core != 0){
-            return irq_frame_sp;
+        if (core == 0){
+            timer_handler();
+            arp_periodic_tick(system_ticks);
+            net_poll();
+        } else{
+            scheduler_tick();
         }
-        timer_handler();
-        arp_periodic_tick(system_ticks);
-        net_poll();
         // By default, preempt only EL0 user-mode. For selected long-running
         // kernel paths, syscall code can opt in to cooperative EL1 preemption.
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
-        if ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T || kernel_preempt_enabled()){
+        if (((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T || kernel_preempt_enabled()) &&
+            scheduler_consume_need_resched()){
             return scheduler_on_irq(irq_frame_sp);
         }
         return irq_frame_sp;

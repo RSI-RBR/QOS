@@ -55,6 +55,8 @@ process_t* scheduler_next(void);
 void schedule(void);
 
 void scheduler_tick(void);
+void scheduler_request_resched_core(unsigned int core_id);
+int scheduler_consume_need_resched(void);
 void scheduler_run_once(void);
 void process_yield(void);
 int scheduler_has_runnable(void);

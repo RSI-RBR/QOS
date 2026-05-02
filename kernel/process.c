@@ -18,6 +18,7 @@ static int used[MAX_PROCESSES] = {0};
 static process_t processes[MAX_PROCESSES];
 static int current_pid[MAX_CPU_CORES];
 static int zombie_pid[MAX_CPU_CORES];
+static unsigned int need_resched[MAX_CPU_CORES];
 static run_queue_t runq[MAX_CPU_CORES];
 static spinlock_t g_process_lock;
 
@@ -270,7 +271,27 @@ static process_t* scheduler_next_for_core(unsigned int core){
 }
 
 void scheduler_tick(void){
-    return;
+    scheduler_request_resched_core(scheduler_core_id());
+}
+
+void scheduler_request_resched_core(unsigned int core_id){
+    if (core_id >= MAX_CPU_CORES){
+        return;
+    }
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    need_resched[core_id] = 1;
+    asm volatile("dmb ishst" : : : "memory");
+    spin_unlock_irqrestore(&g_process_lock, irq);
+}
+
+int scheduler_consume_need_resched(void){
+    unsigned int core = scheduler_core_id();
+    int pending = 0;
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    pending = (need_resched[core] != 0u) ? 1 : 0;
+    need_resched[core] = 0;
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return pending;
 }
 
 void process_init(void){
@@ -281,6 +302,7 @@ void process_init(void){
     for (unsigned int core = 0; core < MAX_CPU_CORES; core++){
         current_pid[core] = -1;
         zombie_pid[core] = -1;
+        need_resched[core] = 0;
         runq_reset(core);
     }
 }
