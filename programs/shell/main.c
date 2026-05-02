@@ -113,6 +113,9 @@ static void cmd_web(void){
         qos_puts("WEBBROWS.BIN load failed.\n");
         return;
     }
+    if (qos_tty_set_owner(pid) != 0){
+        qos_puts("Warning: could not transfer TTY ownership.\n");
+    }
     qos_puts("WebBrowser queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");

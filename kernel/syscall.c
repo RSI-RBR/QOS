@@ -11,6 +11,7 @@
 #include "usb_host.h"
 #include "interrupt.h"
 #include "socket.h"
+#include "console.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -157,7 +158,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TRY_GETC: {
             char c = 0;
-            if (uart_try_getc(&c)){
+            if (console_try_getc_for_pid(process_current_pid(), &c)){
                 frame[TF_X0] = (unsigned long)(unsigned char)c;
             } else{
                 frame[TF_X0] = (unsigned long)-1;
@@ -347,6 +348,22 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                          (unsigned int)frame[TF_X2]);
             return frame_sp;
         }
+
+        case SYS_TTY_SET_OWNER: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)console_set_owner(pid, (int)frame[TF_X0]);
+            return frame_sp;
+        }
+
+        case SYS_TTY_RELEASE: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)console_release_owner(pid);
+            return frame_sp;
+        }
+
+        case SYS_TTY_GET_OWNER:
+            frame[TF_X0] = (unsigned long)console_get_owner();
+            return frame_sp;
 
         default:
             frame[TF_X0] = (unsigned long)-1;

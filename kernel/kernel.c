@@ -18,6 +18,7 @@
 #include "net.h"
 #include "usb_host.h"
 #include "socket.h"
+#include "console.h"
 
 
 //extern kernel_api_t kapi;
@@ -145,6 +146,7 @@ void kernel_main(void){
         net_dump_stats();
     }
     socket_layer_init();
+    console_init();
 
     fb_init();
     mmu_map_device_region(fb_get_base(), (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height());

@@ -1,6 +1,7 @@
 #include "process.h"
 #include "memory.h"
 #include "socket.h"
+#include "console.h"
 
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
 static int used[MAX_PROCESSES] = {0};
@@ -108,6 +109,7 @@ static void reap_process_resources(int pid){
             loader_free_program_memory(processes[pid].program_memory, processes[pid].program_size);
         }
     }
+    console_owner_on_process_exit(pid);
     socket_close_all_for_pid(pid);
     clear_process_descriptor(pid);
 }

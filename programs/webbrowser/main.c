@@ -294,6 +294,7 @@ static void execute_line(void){
         return;
     }
     if (str_eq(g_input, "exit")){
+        (void)qos_tty_release();
         qos_exit(0);
     }
 

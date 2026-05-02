@@ -20,6 +20,7 @@ kernel/string.c \
 kernel/process.c \
 kernel/mailbox.c \
 kernel/framebuffer.c \
+kernel/console.c \
 kernel/sd.c \
 kernel/loader.c \
 kernel/api.c \
