@@ -26,6 +26,27 @@ static void print_u32(unsigned long v){
     }
 }
 
+static unsigned long cycles_to_us(unsigned long cycles, unsigned long hz){
+    if (hz == 0){
+        return 0;
+    }
+    return (cycles * 1000000UL) / hz;
+}
+
+static void print_ms_3(unsigned long us){
+    unsigned long ms_whole = us / 1000UL;
+    unsigned long ms_frac = us % 1000UL;
+    print_u32(ms_whole);
+    qos_putc('.');
+    if (ms_frac < 100UL){
+        qos_putc('0');
+    }
+    if (ms_frac < 10UL){
+        qos_putc('0');
+    }
+    print_u32(ms_frac);
+}
+
 void program_main(void){
 //    qos_puts("Hello from external program!\n");
 
@@ -50,16 +71,20 @@ void program_main(void){
 
     unsigned long frame_count = 0;
     unsigned long report_start_ticks = qos_get_ticks();
-    unsigned long accum_update_ms = 0;
-    unsigned long accum_draw_ms = 0;
-    unsigned long accum_present_ms = 0;
-    unsigned long accum_total_ms = 0;
-    unsigned long max_frame_ms = 0;
+    unsigned long counter_hz = qos_get_counter_hz();
+    if (counter_hz == 0){
+        counter_hz = 1;
+    }
+    unsigned long accum_update_us = 0;
+    unsigned long accum_draw_us = 0;
+    unsigned long accum_present_us = 0;
+    unsigned long accum_total_us = 0;
+    unsigned long max_frame_us = 0;
     const unsigned long report_every = 120;
     int reporter = (pid == 1);
 
     while (running){
-        unsigned long t0 = qos_get_ticks();
+        unsigned long t0 = qos_get_counter_cycles();
 //        api->clear(0x00000000);
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
         int nx = cube.lx + cube.vx;
@@ -82,28 +107,28 @@ void program_main(void){
         }
 
         cube.lx = nx; cube.ly = ny;
-        unsigned long t1 = qos_get_ticks();
+        unsigned long t1 = qos_get_counter_cycles();
 
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
-        unsigned long t2 = qos_get_ticks();
+        unsigned long t2 = qos_get_counter_cycles();
 
         qos_fb_present();
-        unsigned long t3 = qos_get_ticks();
+        unsigned long t3 = qos_get_counter_cycles();
 
         qos_sleep(16);
-        unsigned long t4 = qos_get_ticks();
+        unsigned long t4 = qos_get_counter_cycles();
 
-        unsigned long update_ms = t1 - t0;
-        unsigned long draw_ms = t2 - t1;
-        unsigned long present_ms = t3 - t2;
-        unsigned long total_ms = t4 - t0;
+        unsigned long update_us = cycles_to_us(t1 - t0, counter_hz);
+        unsigned long draw_us = cycles_to_us(t2 - t1, counter_hz);
+        unsigned long present_us = cycles_to_us(t3 - t2, counter_hz);
+        unsigned long total_us = cycles_to_us(t4 - t0, counter_hz);
 
-        accum_update_ms += update_ms;
-        accum_draw_ms += draw_ms;
-        accum_present_ms += present_ms;
-        accum_total_ms += total_ms;
-        if (total_ms > max_frame_ms){
-            max_frame_ms = total_ms;
+        accum_update_us += update_us;
+        accum_draw_us += draw_us;
+        accum_present_us += present_us;
+        accum_total_us += total_us;
+        if (total_us > max_frame_us){
+            max_frame_us = total_us;
         }
         frame_count++;
 
@@ -122,23 +147,23 @@ void program_main(void){
             qos_putc('.');
             print_u32(fps_x10 % 10UL);
             qos_puts(" upd=");
-            print_u32(accum_update_ms / report_every);
+            print_ms_3(accum_update_us / report_every);
             qos_puts(" draw=");
-            print_u32(accum_draw_ms / report_every);
+            print_ms_3(accum_draw_us / report_every);
             qos_puts(" present=");
-            print_u32(accum_present_ms / report_every);
+            print_ms_3(accum_present_us / report_every);
             qos_puts(" frame=");
-            print_u32(accum_total_ms / report_every);
+            print_ms_3(accum_total_us / report_every);
             qos_puts(" max=");
-            print_u32(max_frame_ms);
+            print_ms_3(max_frame_us);
             qos_puts(" ms\n");
 
             report_start_ticks = now;
-            accum_update_ms = 0;
-            accum_draw_ms = 0;
-            accum_present_ms = 0;
-            accum_total_ms = 0;
-            max_frame_ms = 0;
+            accum_update_us = 0;
+            accum_draw_us = 0;
+            accum_present_us = 0;
+            accum_total_us = 0;
+            max_frame_us = 0;
         }
     }
     

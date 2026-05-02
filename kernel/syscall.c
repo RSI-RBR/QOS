@@ -372,6 +372,20 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = system_ticks;
             return frame_sp;
 
+        case SYS_GET_COUNTER_HZ: {
+            unsigned long hz = 0;
+            asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+            frame[TF_X0] = hz;
+            return frame_sp;
+        }
+
+        case SYS_GET_COUNTER_CYCLES: {
+            unsigned long cyc = 0;
+            asm volatile("mrs %0, cntpct_el0" : "=r"(cyc));
+            frame[TF_X0] = cyc;
+            return frame_sp;
+        }
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;
