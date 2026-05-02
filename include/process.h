@@ -6,6 +6,7 @@
 
 #define MAX_PROCESSES 8
 #define STACK_SIZE 16384
+#define MAX_CPU_CORES 4
 
 typedef enum {
     PROC_DEAD = 0,
@@ -24,6 +25,7 @@ typedef struct{
     unsigned long program_size;
     int program_heap_alloc;
     int user_mode;
+    unsigned int owner_core;
     process_state_t state;
     unsigned long wake_tick;
     int pid;
