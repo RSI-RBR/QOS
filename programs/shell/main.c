@@ -5,6 +5,7 @@
 
 static char g_buf[BUF_SIZE];
 static int g_len = 0;
+static int g_tty_owned = 1;
 
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
@@ -115,6 +116,8 @@ static void cmd_web(void){
     }
     if (qos_tty_set_owner(pid) != 0){
         qos_puts("Warning: could not transfer TTY ownership.\n");
+    } else{
+        g_tty_owned = 0;
     }
     qos_puts("WebBrowser queued as PID ");
     print_uint((unsigned int)pid);
@@ -278,6 +281,16 @@ void program_main(void){
     print_prompt();
 
     while (1){
+        int owner = qos_tty_get_owner();
+        int shell_has_tty = (owner < 0 || owner == 0);
+        if (shell_has_tty && !g_tty_owned){
+            g_tty_owned = 1;
+            qos_puts("\nReturned to shell.");
+            print_prompt();
+        } else if (!shell_has_tty){
+            g_tty_owned = 0;
+        }
+
         int ch = qos_try_getc();
         if (ch < 0){
             // Keep shell RUNNING; timer IRQ preemption will schedule peers.

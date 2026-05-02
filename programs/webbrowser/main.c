@@ -99,16 +99,71 @@ static int match_entity(const unsigned char* p, int rem, const char* ent){
     return i;
 }
 
+static unsigned char ascii_lower(unsigned char c){
+    if (c >= 'A' && c <= 'Z'){
+        return (unsigned char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int tag_name_is(const unsigned char* s, int len, const char* name){
+    int i = 0;
+    while (name[i]){
+        if (i >= len){
+            return 0;
+        }
+        if (ascii_lower(s[i]) != (unsigned char)name[i]){
+            return 0;
+        }
+        i++;
+    }
+    if (i < len){
+        unsigned char c = s[i];
+        if (!(c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '/' || c == '>')){
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void print_html_text(const unsigned char* html, int len){
     int in_tag = 0;
     int last_space = 1;
+    int suppress_style = 0;
+    int suppress_script = 0;
+    int suppress_head = 0;
+    int tag_start = -1;
 
     for (int i = 0; i < len; i++){
         unsigned char c = html[i];
 
         if (in_tag){
             if (c == '>'){
+                int ts = tag_start >= 0 ? tag_start : i;
+                int te = i;
+                while (ts < te && (html[ts] == ' ' || html[ts] == '\t' || html[ts] == '\r' || html[ts] == '\n')){
+                    ts++;
+                }
+                int closing = 0;
+                if (ts < te && html[ts] == '/'){
+                    closing = 1;
+                    ts++;
+                }
+                while (ts < te && (html[ts] == ' ' || html[ts] == '\t' || html[ts] == '\r' || html[ts] == '\n')){
+                    ts++;
+                }
+                int nlen = te - ts;
+                if (nlen > 0){
+                    if (tag_name_is(&html[ts], nlen, "style")){
+                        suppress_style = closing ? 0 : 1;
+                    } else if (tag_name_is(&html[ts], nlen, "script")){
+                        suppress_script = closing ? 0 : 1;
+                    } else if (tag_name_is(&html[ts], nlen, "head")){
+                        suppress_head = closing ? 0 : 1;
+                    }
+                }
                 in_tag = 0;
+                tag_start = -1;
                 if (!last_space){
                     qos_putc(' ');
                     last_space = 1;
@@ -119,6 +174,11 @@ static void print_html_text(const unsigned char* html, int len){
 
         if (c == '<'){
             in_tag = 1;
+            tag_start = i + 1;
+            continue;
+        }
+
+        if (suppress_style || suppress_script || suppress_head){
             continue;
         }
 

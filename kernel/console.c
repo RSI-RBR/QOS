@@ -42,6 +42,11 @@ int console_get_owner(void){
 
 void console_owner_on_process_exit(int pid){
     if (g_console_owner_pid == pid){
-        g_console_owner_pid = -1;
+        process_t* shell = get_process(0);
+        if (pid != 0 && shell && shell->state != PROC_DEAD){
+            g_console_owner_pid = 0;
+        } else{
+            g_console_owner_pid = -1;
+        }
     }
 }
