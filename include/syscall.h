@@ -32,7 +32,8 @@ enum {
     SYS_SOCKET_SEND = 24,
     SYS_SOCKET_RECV = 25,
     SYS_SOCKET_CLOSE = 26,
-    SYS_SOCKET_SETOPT = 27
+    SYS_SOCKET_SETOPT = 27,
+    SYS_RUN_PROGRAM_NAMED = 28
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -154,6 +155,10 @@ static inline int qos_try_getc(void){
 
 static inline int qos_run_program(void){
     return (int)qos_syscall0(SYS_RUN_PROGRAM);
+}
+
+static inline int qos_run_program_named(const char* fat_name_83){
+    return (int)qos_syscall1(SYS_RUN_PROGRAM_NAMED, (unsigned long)fat_name_83);
 }
 
 static inline void qos_net_dump_stats(void){

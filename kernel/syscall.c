@@ -195,6 +195,42 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
         }
 
+        case SYS_RUN_PROGRAM_NAMED: {
+            const char* fat_name_83 = (const char*)frame[TF_X0];
+            if (!fat_name_83){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kernel_preempt_enter();
+            loaded_program_t prog = load_program_from_sd_named(fat_name_83);
+            if (!prog.entry){
+                kernel_preempt_exit();
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            int pid = process_create_loaded(prog);
+            if (pid < 0){
+                if (prog.heap_allocated){
+                    kfree_secure(prog.memory, prog.size);
+                } else{
+                    volatile unsigned char* m = (volatile unsigned char*)prog.memory;
+                    for (unsigned long i = 0; i < prog.size; i++){
+                        m[i] = 0;
+                    }
+                    loader_free_program_memory(prog.memory, prog.size);
+                }
+                kernel_preempt_exit();
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kernel_preempt_exit();
+            frame[TF_X0] = (unsigned long)pid;
+            return frame_sp;
+        }
+
         case SYS_NET_DUMP_STATS:
             net_dump_stats();
             frame[TF_X0] = 0;

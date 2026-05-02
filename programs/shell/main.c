@@ -84,6 +84,7 @@ static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
     qos_puts(" run\n");
+    qos_puts(" web\n");
     qos_puts(" clear\n");
     qos_puts(" fbinfo\n");
     qos_puts(" usbstat\n");
@@ -100,6 +101,19 @@ static void cmd_run(void){
         return;
     }
     qos_puts("Program queued as PID ");
+    print_uint((unsigned int)pid);
+    qos_puts("\n");
+}
+
+static void cmd_web(void){
+    // FAT 8.3 uppercase, space-padded: "WEBBROWSBIN"
+    static const char web_file_83[] = "WEBBROWSBIN";
+    int pid = qos_run_program_named(web_file_83);
+    if (pid < 0){
+        qos_puts("WEBBROWS.BIN load failed.\n");
+        return;
+    }
+    qos_puts("WebBrowser queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
 }
@@ -204,6 +218,8 @@ static void execute_line(void){
         cmd_help();
     } else if (str_eq(g_buf, "run")){
         cmd_run();
+    } else if (str_eq(g_buf, "web")){
+        cmd_web();
     } else if (str_eq(g_buf, "clear")){
         qos_fb_clear(0x00000000);
     } else if (str_eq(g_buf, "fbinfo")){
