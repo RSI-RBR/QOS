@@ -241,10 +241,22 @@ void process_exit_current(void){
         return;
     }
     mark_current_for_reap();
-    // Immediate handoff: do not wait for timer tick to switch away.
+    // Immediate handoff: switch away without reaping on this same stack.
+    // The zombie process is reaped later from scheduler_on_irq/scheduler_run_once
+    // when we are executing on a different process stack.
     current_pid = -1;
-    scheduler_run_once();
-    while (1){ asm volatile("wfi"); }
+
+    process_t* next = scheduler_next();
+    if (next){
+        restore_context_and_eret(next->sp);
+    }
+
+    // No runnable task right now. Enable IRQs so timer can wake sleepers,
+    // then idle until a future interrupt schedules work.
+    asm volatile("msr daifclr, #2" : : : "memory");
+    while (1){
+        asm volatile("wfi");
+    }
 }
 
 void process_fault_current(void){
