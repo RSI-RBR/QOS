@@ -6,6 +6,7 @@
 static char g_buf[BUF_SIZE];
 static int g_len = 0;
 static int g_tty_owned = 1;
+static int g_shell_pid = 0;
 
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
@@ -284,12 +285,20 @@ static void execute_line(void){
 }
 
 void program_main(void){
+    g_shell_pid = qos_getpid();
+    if (g_shell_pid < 0){
+        g_shell_pid = 0;
+    }
+    // Claim foreground console ownership explicitly on startup.
+    (void)qos_tty_set_owner(g_shell_pid);
+    g_tty_owned = 1;
+
     qos_puts("User shell ready.");
     print_prompt();
 
     while (1){
         int owner = qos_tty_get_owner();
-        int shell_has_tty = (owner < 0 || owner == 0);
+        int shell_has_tty = (owner == g_shell_pid);
         if (shell_has_tty && !g_tty_owned){
             g_tty_owned = 1;
             qos_puts("\nReturned to shell.");

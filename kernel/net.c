@@ -36,6 +36,7 @@ static int g_net_ready = 0;
 static volatile int g_net_poll_active = 0;
 static spinlock_t g_net_state_lock;
 static spinlock_t g_net_rxq_lock;
+static spinlock_t g_net_io_lock;
 
 static void net_rxq_reset(void){
     g_rxq.head = 0;
@@ -107,6 +108,7 @@ void net_set_rx_callback(net_rx_callback_t cb){
 int net_init(void){
     spinlock_init(&g_net_state_lock);
     spinlock_init(&g_net_rxq_lock);
+    spinlock_init(&g_net_io_lock);
     g_nic = nic_probe_default();
     {
         unsigned long irq = spin_lock_irqsave(&g_net_rxq_lock);
@@ -207,7 +209,11 @@ int net_send_raw(const unsigned char* frame, unsigned int len){
         return -1;
     }
 
-    if (nic->send(frame, len) == 0){
+    unsigned long io_irq = spin_lock_irqsave(&g_net_io_lock);
+    int send_rc = nic->send(frame, len);
+    spin_unlock_irqrestore(&g_net_io_lock, io_irq);
+
+    if (send_rc == 0){
         irq = spin_lock_irqsave(&g_net_state_lock);
         g_stats.tx_ok++;
         spin_unlock_irqrestore(&g_net_state_lock, irq);
@@ -257,9 +263,11 @@ int net_poll(void){
     cb = g_rx_cb;
     spin_unlock_irqrestore(&g_net_state_lock, irq);
 
+    unsigned long io_irq = spin_lock_irqsave(&g_net_io_lock);
     if (nic->poll){
         nic->poll();
     }
+    spin_unlock_irqrestore(&g_net_io_lock, io_irq);
 
     int delivered = 0;
     net_frame_t frame;
