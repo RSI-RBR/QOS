@@ -38,6 +38,7 @@ kernel/timer.c \
 kernel/mmu.c \
 kernel/blockdev.c \
 kernel/syscall.c \
+kernel/kernel_verify.c \
 kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \

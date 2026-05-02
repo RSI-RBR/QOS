@@ -12,15 +12,19 @@ SECTIONS
 
     /* Code (read + execute) */
     .text.boot : {
+        __kernel_text_start = .;
         *(.text.boot)
     } :text
 
     .text : {
         *(.text*)
+        __kernel_text_end = .;
     } :text
 
     .rodata : {
+        __kernel_rodata_start = .;
         *(.rodata*)
+        __kernel_rodata_end = .;
     } :text
 
     /* Data (read + write) */
