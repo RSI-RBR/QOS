@@ -123,6 +123,7 @@ int net_init(void){
 
     g_net_ready = 1;
     net_proto_init();
+    net_proto_configure_defaults();
     uart_puts("NET: initialized with driver ");
     uart_puts(g_nic->name ? g_nic->name : "unknown");
     uart_puts("\n");

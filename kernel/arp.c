@@ -19,6 +19,9 @@ static unsigned char g_periodic_target_ip[4];
 static unsigned long g_periodic_interval = 0;
 static unsigned long g_periodic_next_tick = 0;
 static int g_periodic_enabled = 0;
+static int g_gateway_resolved = 0;
+static unsigned char g_gateway_ip[4];
+static unsigned char g_gateway_mac[ETH_ADDR_LEN];
 
 static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -35,6 +38,7 @@ void arp_init(void){
     g_periodic_interval = 0;
     g_periodic_next_tick = 0;
     g_periodic_enabled = 0;
+    g_gateway_resolved = 0;
 }
 
 void arp_handle_frame(const unsigned char* frame, unsigned int len){
@@ -82,6 +86,23 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
             }
         }
         uart_puts("\n");
+
+        // If this reply is for our periodic gateway probe, store it and stop retries.
+        if (g_periodic_enabled &&
+            arp->spa[0] == g_periodic_target_ip[0] &&
+            arp->spa[1] == g_periodic_target_ip[1] &&
+            arp->spa[2] == g_periodic_target_ip[2] &&
+            arp->spa[3] == g_periodic_target_ip[3]){
+            for (unsigned int i = 0; i < 4; i++){
+                g_gateway_ip[i] = arp->spa[i];
+            }
+            for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+                g_gateway_mac[i] = arp->sha[i];
+            }
+            g_gateway_resolved = 1;
+            g_periodic_enabled = 0;
+            uart_puts("ARP gateway learned; periodic requests stopped\n");
+        }
     } else{
         g_arp_stats.rx_unsupported++;
     }
@@ -152,6 +173,7 @@ void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int inte
     g_periodic_interval = interval_ms;
     g_periodic_next_tick = 0;
     g_periodic_enabled = 1;
+    g_gateway_resolved = 0;
 }
 
 void arp_periodic_tick(unsigned long now_ticks){
@@ -188,5 +210,21 @@ void arp_dump_stats(void){
     uart_puthex((unsigned int)g_arp_stats.rx_unsupported);
     uart_puts(" tx_req=");
     uart_puthex((unsigned int)g_tx_req);
+    uart_puts(" gw=");
+    uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts("\n");
+}
+
+int arp_gateway_resolved(void){
+    return g_gateway_resolved ? 1 : 0;
+}
+
+int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]){
+    if (!out_mac || !g_gateway_resolved){
+        return -1;
+    }
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        out_mac[i] = g_gateway_mac[i];
+    }
+    return 0;
 }

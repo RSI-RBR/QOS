@@ -13,6 +13,9 @@ typedef struct {
 } net_proto_stats_t;
 
 static net_proto_stats_t g_np_stats;
+static const unsigned char g_default_local_mac[6] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
+static const unsigned char g_default_local_ip[4] = {10, 0, 0, 88};
+static const unsigned char g_default_gateway_ip[4] = {10, 0, 0, 1};
 
 static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -26,6 +29,12 @@ void net_proto_init(void){
     g_np_stats.eth_short = 0;
     arp_init();
     ipv4_init();
+}
+
+void net_proto_configure_defaults(void){
+    arp_set_local_interface(g_default_local_mac, g_default_local_ip);
+    arp_set_periodic_target(g_default_gateway_ip, 2000); // 2s retries until first reply.
+    uart_puts("NET defaults: local ip 10.0.0.88, gateway 10.0.0.1\n");
 }
 
 void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
