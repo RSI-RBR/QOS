@@ -144,8 +144,6 @@ static void cmd_help(void){
     qos_puts(" fbinfo\n");
     qos_puts(" usbstat\n");
     qos_puts(" netstat\n");
-    qos_puts(" netloop\n");
-    qos_puts(" netpoll\n");
     qos_puts(" ping\n");
     qos_puts(" dnscheck <domain>\n");
 }
@@ -177,31 +175,6 @@ static void cmd_usbstat(void){
 
 static void cmd_netstat(void){
     qos_net_dump_stats();
-}
-
-static void cmd_netpoll(void){
-    int delivered = qos_net_poll();
-    qos_puts("NET poll delivered=");
-    print_uint((unsigned int)(delivered < 0 ? 0 : delivered));
-    qos_puts("\n");
-}
-
-static void cmd_netloop(void){
-    static unsigned char rx[1536];
-    int rc = qos_net_send_test_frame();
-    if (rc != 0){
-        qos_puts("NET loop send failed.\n");
-        return;
-    }
-    (void)qos_net_poll();
-    int n = qos_net_recv_raw(rx, sizeof(rx));
-    if (n <= 0){
-        qos_puts("NET loop recv empty.\n");
-        return;
-    }
-    qos_puts("NET loop recv bytes=");
-    print_uint((unsigned int)n);
-    qos_puts("\n");
 }
 
 static void cmd_ping(void){
@@ -370,10 +343,6 @@ static void execute_line(void){
         cmd_usbstat();
     } else if (str_eq(g_buf, "netstat")){
         cmd_netstat();
-    } else if (str_eq(g_buf, "netloop")){
-        cmd_netloop();
-    } else if (str_eq(g_buf, "netpoll")){
-        cmd_netpoll();
     } else if (str_eq(g_buf, "ping")){
         cmd_ping();
     } else if (str_starts_with(g_buf, "dnscheck ")){
