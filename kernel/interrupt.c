@@ -126,8 +126,10 @@ void* irq_handler(void* irq_frame_sp){
         // kernel paths, syscall code can opt in to cooperative EL1 preemption.
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
-        if (((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T || kernel_preempt_enabled()) &&
-            scheduler_consume_need_resched()){
+        int need_resched = scheduler_consume_need_resched();
+        int in_el0 = ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T);
+        int idle_kernel = (get_current_process() == 0);
+        if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel)){
             return scheduler_on_irq(irq_frame_sp);
         }
         return irq_frame_sp;

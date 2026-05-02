@@ -91,6 +91,34 @@ static void runq_enqueue(unsigned int core, int pid){
     q->count++;
 }
 
+static unsigned int core_load_locked(unsigned int core){
+    if (core >= MAX_CPU_CORES){
+        return 0;
+    }
+    unsigned int load = runq[core].count;
+    int cur = current_pid[core];
+    if (cur >= 0 && cur < MAX_PROCESSES && processes[cur].state == PROC_RUNNING){
+        load++;
+    }
+    return load;
+}
+
+static unsigned int choose_least_loaded_core_locked(unsigned int preferred_core){
+    if (preferred_core >= MAX_CPU_CORES){
+        preferred_core = 0;
+    }
+    unsigned int best_core = preferred_core;
+    unsigned int best_load = core_load_locked(preferred_core);
+    for (unsigned int core = 0; core < MAX_CPU_CORES; core++){
+        unsigned int load = core_load_locked(core);
+        if (load < best_load){
+            best_load = load;
+            best_core = core;
+        }
+    }
+    return best_core;
+}
+
 static int runq_dequeue_ready(unsigned int core){
     if (core >= MAX_CPU_CORES){
         return -1;
@@ -117,6 +145,35 @@ static int runq_dequeue_ready(unsigned int core){
         return pid;
     }
     return -1;
+}
+
+static int runq_steal_ready(unsigned int thief_core){
+    if (thief_core >= MAX_CPU_CORES){
+        return -1;
+    }
+
+    unsigned int victim_core = MAX_CPU_CORES;
+    unsigned int victim_load = 0;
+    for (unsigned int core = 0; core < MAX_CPU_CORES; core++){
+        if (core == thief_core){
+            continue;
+        }
+        unsigned int load = runq[core].count;
+        if (load > victim_load){
+            victim_load = load;
+            victim_core = core;
+        }
+    }
+    if (victim_core >= MAX_CPU_CORES || victim_load == 0){
+        return -1;
+    }
+
+    int pid = runq_dequeue_ready(victim_core);
+    if (pid < 0){
+        return -1;
+    }
+    processes[pid].owner_core = thief_core;
+    return pid;
 }
 
 static int runq_has_ready(unsigned int core){
@@ -262,12 +319,23 @@ static process_t* scheduler_next_for_core(unsigned int core){
 
     int next = runq_dequeue_ready(core);
     if (next < 0){
+        next = runq_steal_ready(core);
+    }
+    if (next < 0){
         return 0;
     }
 
     current_pid[core] = next;
     processes[next].state = PROC_RUNNING;
     return &processes[next];
+}
+
+static void mark_need_resched_locked(unsigned int core_id){
+    if (core_id >= MAX_CPU_CORES){
+        return;
+    }
+    need_resched[core_id] = 1;
+    asm volatile("dmb ishst" : : : "memory");
 }
 
 void scheduler_tick(void){
@@ -279,8 +347,7 @@ void scheduler_request_resched_core(unsigned int core_id){
         return;
     }
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
-    need_resched[core_id] = 1;
-    asm volatile("dmb ishst" : : : "memory");
+    mark_need_resched_locked(core_id);
     spin_unlock_irqrestore(&g_process_lock, irq);
 }
 
@@ -340,7 +407,7 @@ void free_stack(void *stack){
 }
 
 int process_create(program_entry_t entry){
-    unsigned int owner_core = scheduler_core_id();
+    unsigned int preferred_core = scheduler_core_id();
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
 
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -363,6 +430,7 @@ int process_create(program_entry_t entry){
             processes[i].program_size = 0;
             processes[i].program_heap_alloc = 0;
             processes[i].user_mode = 0;
+            unsigned int owner_core = choose_least_loaded_core_locked(preferred_core);
             processes[i].owner_core = owner_core;
             processes[i].wake_tick = 0;
 
@@ -370,6 +438,9 @@ int process_create(program_entry_t entry){
                 processes[i].regs[r] = 0;
             }
             runq_enqueue(owner_core, i);
+            if (owner_core != preferred_core){
+                mark_need_resched_locked(owner_core);
+            }
             spin_unlock_irqrestore(&g_process_lock, irq);
             return i;
         }
@@ -560,11 +631,12 @@ void* scheduler_on_irq(void* irq_frame_sp){
         if (processes[i].state == PROC_SLEEPING && tick_reached(system_ticks, processes[i].wake_tick)){
             processes[i].state = PROC_READY;
             processes[i].wake_tick = 0;
-            unsigned int owner_core = processes[i].owner_core;
-            if (owner_core >= MAX_CPU_CORES){
-                owner_core = 0;
-            }
+            unsigned int owner_core = choose_least_loaded_core_locked(core);
+            processes[i].owner_core = owner_core;
             runq_enqueue(owner_core, i);
+            if (owner_core != core){
+                mark_need_resched_locked(owner_core);
+            }
         }
     }
 
