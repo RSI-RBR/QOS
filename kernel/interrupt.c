@@ -5,6 +5,7 @@
 #include "syscall.h"
 #include "net.h"
 #include "arp.h"
+#include "mmu.h"
 #include "cpu.h"
 #include "smp.h"
 
@@ -144,6 +145,7 @@ void* irq_handler(void* irq_frame_sp){
 
     if (local_src & CORE_MAILBOX0_PENDING){
         smp_clear_ipi_for_core(core);
+        mmu_handle_ipi();
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
         int need_resched = scheduler_consume_need_resched();
