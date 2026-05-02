@@ -121,7 +121,9 @@ void* irq_handler(void* irq_frame_sp){
         if (core == 0){
             timer_handler();
             arp_periodic_tick(system_ticks);
-            net_poll();
+            // Keep timer IRQ short and non-blocking; NIC polling can stall
+            // and starve scheduling when done in interrupt context.
+            // Networking paths invoke net_poll() from syscall/foreground flow.
         } else{
             scheduler_tick();
         }
