@@ -11,7 +11,7 @@ struct screen_saver_cube{
 };
 
 void program_main(void){
-    qos_puts("Hello from external program!\n");
+//    qos_puts("Hello from external program!\n");
 
     int screen_x = (int)qos_get_screen_width();
     int screen_y = (int)qos_get_screen_height();

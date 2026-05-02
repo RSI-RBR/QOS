@@ -9,6 +9,10 @@
 #define ETH_TYPE_IPV4 0x0800
 #define ETH_TYPE_ARP  0x0806
 
+#define DEFAULT_GATEWAY_IP 0x0A000001
+#define DEFAULT_SUBNET_MASK 0xFFFFFF00
+#define DEFAULT_LOCAL_IP 0x0A000061
+
 typedef struct __attribute__((packed)) {
     unsigned char dst[ETH_ADDR_LEN];
     unsigned char src[ETH_ADDR_LEN];
