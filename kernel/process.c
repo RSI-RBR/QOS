@@ -667,8 +667,9 @@ void process_exit_current(void){
     }
 
     mark_current_for_reap(core);
-    // Immediate handoff: switch away without reaping on this same stack/frame.
-    current_pid[core] = -1;
+    // Keep current_pid pointing at this dead task until we actually switch
+    // stacks. If there is no runnable task yet, this core idles on the current
+    // kernel stack and it must not be reaped underneath us.
 
     process_t* next = scheduler_next_for_core(core);
     void* next_sp = next ? next->sp : 0;
@@ -801,7 +802,10 @@ void* scheduler_on_irq(void* irq_frame_sp){
                 return irq_frame_sp;
             }
             if (processes[cur].state == PROC_DEAD){
-                current_pid[core] = -1;
+                // Still returning to the dead task's kernel frame, usually the
+                // idle WFI loop in process_exit_current(). Keep ownership so
+                // reap_pending_zombie() skips this stack until a real switch.
+                current_pid[core] = cur;
             } else{
                 processes[cur].state = PROC_RUNNING;
                 current_pid[core] = cur;
@@ -813,7 +817,6 @@ void* scheduler_on_irq(void* irq_frame_sp){
         return irq_frame_sp;
     }
 
-    reap_pending_zombie(core);
     void* out_sp = next->sp;
     spin_unlock_irqrestore(&g_process_lock, irq);
     return out_sp;
