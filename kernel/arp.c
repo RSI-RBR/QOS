@@ -1,5 +1,6 @@
 #include "arp.h"
 #include "net.h"
+#include "timer.h"
 #include "uart.h"
 
 typedef struct {
@@ -117,12 +118,12 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
         }
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
-        // If this reply is for our periodic gateway probe, store it and stop retries.
-        if (g_periodic_enabled &&
-            arp->spa[0] == g_periodic_target_ip[0] &&
-            arp->spa[1] == g_periodic_target_ip[1] &&
-            arp->spa[2] == g_periodic_target_ip[2] &&
-            arp->spa[3] == g_periodic_target_ip[3]){
+        // Learn gateway MAC from replies addressed to our local IP.
+        // Accept either the configured gateway IP hint or the current periodic target.
+        int reply_for_us = g_iface_ready && ip4_eq(arp->tpa, g_local_ip);
+        int sender_is_gateway_hint = ip4_eq(arp->spa, g_gateway_ip);
+        int sender_is_periodic_target = ip4_eq(arp->spa, g_periodic_target_ip);
+        if (reply_for_us && (sender_is_gateway_hint || sender_is_periodic_target)){
             for (unsigned int i = 0; i < 4; i++){
                 g_gateway_ip[i] = arp->spa[i];
             }
@@ -200,6 +201,7 @@ void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int inte
     }
     for (unsigned int i = 0; i < 4; i++){
         g_periodic_target_ip[i] = target_ip[i];
+        g_gateway_ip[i] = target_ip[i];
     }
     g_periodic_interval = interval_ms;
     g_periodic_next_tick = 0;
@@ -271,4 +273,32 @@ int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]){
         out_mac[i] = g_gateway_mac[i];
     }
     return 0;
+}
+
+int arp_resolve_gateway(unsigned int timeout_ms){
+    if (g_gateway_resolved){
+        return 0;
+    }
+    if (!g_iface_ready || !net_link_up()){
+        return -1;
+    }
+
+    if (timeout_ms == 0u){
+        timeout_ms = 1000u;
+    }
+
+    unsigned long start = system_ticks;
+    unsigned long next_req = start;
+    while ((unsigned long)(system_ticks - start) < (unsigned long)timeout_ms){
+        if ((long)(system_ticks - next_req) >= 0){
+            (void)arp_send_request(g_gateway_ip);
+            next_req = system_ticks + 200u;
+        }
+        (void)net_poll();
+        if (g_gateway_resolved){
+            return 0;
+        }
+        asm volatile("nop");
+    }
+    return -1;
 }

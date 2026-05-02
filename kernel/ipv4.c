@@ -116,6 +116,9 @@ int ipv4_send_via_gateway(unsigned char protocol,
         return -1;
     }
     if (arp_get_gateway_mac(gateway_mac) != 0){
+        (void)arp_resolve_gateway(1200u);
+    }
+    if (arp_get_gateway_mac(gateway_mac) != 0){
         g_ipv4_stats.tx_fail++;
         return -2;
     }

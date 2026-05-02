@@ -174,7 +174,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
         return -3;
     }
     if (!arp_gateway_resolved() || arp_get_gateway_mac(gateway_mac) != 0){
-        return -2;
+        if (arp_resolve_gateway(timeout_ms) != 0 || arp_get_gateway_mac(gateway_mac) != 0){
+            return -2;
+        }
     }
 
     net_proto_get_gateway_ip(gateway_ip);
