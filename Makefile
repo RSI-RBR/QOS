@@ -36,6 +36,9 @@ kernel/mmu.c \
 kernel/blockdev.c \
 kernel/syscall.c \
 kernel/net.c \
+kernel/net_proto.c \
+kernel/arp.c \
+kernel/ipv4.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c

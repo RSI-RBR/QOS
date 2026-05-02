@@ -3,6 +3,7 @@
 #include "uart.h"
 #include "ethernet.h"
 #include "usb_host.h"
+#include "net_proto.h"
 
 #define NET_RX_QUEUE_LEN 32
 
@@ -121,6 +122,7 @@ int net_init(void){
     }
 
     g_net_ready = 1;
+    net_proto_init();
     uart_puts("NET: initialized with driver ");
     uart_puts(g_nic->name ? g_nic->name : "unknown");
     uart_puts("\n");
@@ -209,14 +211,14 @@ int net_poll(void){
         g_nic->poll();
     }
 
-    if (!g_rx_cb){
-        return 0;
-    }
-
     int delivered = 0;
     net_frame_t frame;
     while (net_rxq_pop(&frame) == 0){
-        g_rx_cb(frame.data, frame.len);
+        // Kernel protocol stack entry point for every received raw frame.
+        net_proto_handle_frame(frame.data, frame.len);
+        if (g_rx_cb){
+            g_rx_cb(frame.data, frame.len);
+        }
         delivered++;
     }
     return delivered;
@@ -257,4 +259,5 @@ void net_dump_stats(void){
     uart_puts(" rxq=");
     uart_puthex(g_rxq.count);
     uart_puts("\n");
+    net_proto_dump_stats();
 }
