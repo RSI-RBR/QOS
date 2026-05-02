@@ -214,6 +214,13 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
     uart_puts("\nFAR_EL1=");
     uart_puthex((unsigned int)far);
     uart_puts("\n");
+    if (ec == 0x24UL || ec == 0x25UL){
+        uart_puts("DFSC=");
+        uart_puthex((unsigned int)(esr & 0x3FUL));
+        uart_puts(" WnR=");
+        uart_puthex((unsigned int)((esr >> 6) & 1UL));
+        uart_puts("\n");
+    }
     if (ec == 0x00UL){
         volatile unsigned int* ip = (volatile unsigned int*)(elr & ~0x3UL);
         uart_puts("INSN@ELR=");

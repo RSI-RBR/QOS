@@ -341,11 +341,7 @@ static int pid_running_on_other_core_locked(int pid, unsigned int core){
         if (c == core){
             continue;
         }
-        int cur = current_pid[c];
-        if (cur != pid){
-            continue;
-        }
-        if (processes[pid].state == PROC_RUNNING){
+        if (current_pid[c] == pid){
             return 1;
         }
     }
