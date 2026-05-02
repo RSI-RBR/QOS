@@ -40,8 +40,24 @@ SECTIONS
     . += 0x1000;
     . = ALIGN(16);
 
-    /* Stack */
-    stack_bottom = .;
+    /* Per-core stacks */
+    core0_stack_bottom = .;
     . += 0x10000;
-    stack_top = .;
+    core0_stack_top = .;
+
+    core1_stack_bottom = .;
+    . += 0x10000;
+    core1_stack_top = .;
+
+    core2_stack_bottom = .;
+    . += 0x10000;
+    core2_stack_top = .;
+
+    core3_stack_bottom = .;
+    . += 0x10000;
+    core3_stack_top = .;
+
+    /* Backward-compatible aliases used by existing code */
+    stack_bottom = core0_stack_bottom;
+    stack_top = core0_stack_top;
 }

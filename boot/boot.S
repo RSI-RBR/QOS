@@ -1,26 +1,38 @@
 .section .text.boot
 
 .global _start
+.global secondary_start
+
+.extern smp_boot_release_mask
 
 _start:
-    mrs x0, mpidr_el1
-    and x0, x0, #0xFF
-    cbz x0, master
-hang:
-    b hang
+    mrs x19, mpidr_el1
+    and x19, x19, #0xFF
+    cbz x19, master
+
+secondary_park:
+    // Wait until core0 releases this core via smp_boot_release_mask bit.
+    ldr x1, =smp_boot_release_mask
+1:
+    ldr w2, [x1]
+    mov w3, #1
+    lsl w3, w3, w19
+    tst w2, w3
+    b.ne secondary_start
+    wfe
+    b 1b
 
 master:
-    // Clear BSS
+    // Clear BSS once on core0.
     ldr x0, =bss_begin
     ldr x1, =bss_end
     sub x1, x1, x0
     bl memzero
 
-    // Set stack pointer
-    ldr x0, =stack_top
-    mov sp, x0
+    bl set_core_stack
+    bl program_secondary_mailboxes
 
-    // 🔴 Initialize stack guard at bottom
+    // Initialize stack guard at core0 stack bottom.
     ldr x0, =stack_bottom
     ldr x1, =0xAAAAAAAA
     str x1, [x0]
@@ -43,7 +55,7 @@ master:
     isb
 
     msr sctlr_el1, xzr
-    ldr x0, =stack_top
+    mov x0, sp
     msr sp_el1, x0
 
     adr x0, enter_kernel
@@ -55,9 +67,85 @@ master:
     eret
 
 enter_kernel:
-    ldr x0, =stack_top
-    mov sp, x0
+    bl set_core_stack
     bl kernel_main
 
-loop:
-    b loop
+primary_hang:
+    b primary_hang
+
+secondary_start:
+    bl set_core_stack
+
+    // Ensure kernel runs in EL1h.
+    mrs x0, CurrentEL
+    cmp x0, #0x8
+    b.ne secondary_enter_kernel
+
+    // Drop EL2 -> EL1
+    mov x0, #(1 << 31)      // HCR_EL2.RW = 1 (EL1 AArch64)
+    msr hcr_el2, x0
+    isb
+
+    // Allow EL1 access to physical counter/timer registers.
+    mrs x0, cnthctl_el2
+    orr x0, x0, #3          // EL1PCTEN=1, EL1PCEN=1
+    msr cnthctl_el2, x0
+    msr cntvoff_el2, xzr
+    isb
+
+    msr sctlr_el1, xzr
+    mov x0, sp
+    msr sp_el1, x0
+
+    adr x0, secondary_enter_kernel
+    msr elr_el2, x0
+
+    mov x0, #0x3C5          // EL1h with DAIF masked
+    msr spsr_el2, x0
+    isb
+    eret
+
+secondary_enter_kernel:
+    bl kernel_secondary_main
+
+secondary_hang:
+    b secondary_hang
+
+set_core_stack:
+    cmp x19, #0
+    b.eq 2f
+    cmp x19, #1
+    b.eq 3f
+    cmp x19, #2
+    b.eq 4f
+    cmp x19, #3
+    b.eq 5f
+    b secondary_hang
+2:
+    ldr x0, =core0_stack_top
+    mov sp, x0
+    ret
+3:
+    ldr x0, =core1_stack_top
+    mov sp, x0
+    ret
+4:
+    ldr x0, =core2_stack_top
+    mov sp, x0
+    ret
+5:
+    ldr x0, =core3_stack_top
+    mov sp, x0
+    ret
+
+program_secondary_mailboxes:
+    // Raspberry Pi local core mailbox-3 wakeup addresses.
+    ldr x0, =secondary_start
+    ldr x1, =0x4000009C   // CORE1_MBOX3_SET
+    str w0, [x1]
+    ldr x1, =0x400000AC   // CORE2_MBOX3_SET
+    str w0, [x1]
+    ldr x1, =0x400000BC   // CORE3_MBOX3_SET
+    str w0, [x1]
+    sev
+    ret

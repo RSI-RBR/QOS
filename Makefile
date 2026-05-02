@@ -18,6 +18,7 @@ kernel/shell.c \
 kernel/memory.c \
 kernel/string.c \
 kernel/process.c \
+kernel/smp.c \
 kernel/mailbox.c \
 kernel/framebuffer.c \
 kernel/console.c \

@@ -5,12 +5,13 @@
 #include "syscall.h"
 #include "net.h"
 #include "arp.h"
+#include "cpu.h"
 
 extern void vectors(void);
 
 #define LOCAL_BASE 0x40000000UL
-#define CORE0_IRQ_SOURCE (*(volatile unsigned int*)(LOCAL_BASE + 0x60))
-#define CORE0_CNTPNSIRQ_PENDING (1u << 1)
+#define CORE_IRQ_SOURCE(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x60 + ((core) * 4u)))
+#define CORE_CNTPNSIRQ_PENDING (1u << 1)
 
 #define IRQ_BASE 0x3F00B000UL
 #define IRQ_PENDING_2 (*(volatile unsigned int*)(IRQ_BASE + 0x204))
@@ -36,7 +37,9 @@ void interrupt_init(void){
 
     timer_init();
 
-    uart_puts("Interrupts initialized\n");
+    if (cpu_get_id() == 0){
+        uart_puts("Interrupts initialized\n");
+    }
 }
 
 void interrupt_register_sdhost_irq(void (*handler)(void)){
@@ -108,9 +111,13 @@ int kernel_preempt_enabled(void){
 }
 
 void* irq_handler(void* irq_frame_sp){
-    unsigned int local_src = CORE0_IRQ_SOURCE;
-    if (local_src & CORE0_CNTPNSIRQ_PENDING){
+    unsigned int core = cpu_get_id();
+    unsigned int local_src = CORE_IRQ_SOURCE(core);
+    if (local_src & CORE_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();
+        if (core != 0){
+            return irq_frame_sp;
+        }
         timer_handler();
         arp_periodic_tick(system_ticks);
         net_poll();

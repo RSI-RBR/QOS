@@ -19,6 +19,8 @@
 #include "usb_host.h"
 #include "socket.h"
 #include "console.h"
+#include "cpu.h"
+#include "smp.h"
 
 
 //extern kernel_api_t kapi;
@@ -64,6 +66,30 @@ static int create_boot_shell_process(void){
 }
 
 extern unsigned long stack_bottom;
+
+void kernel_secondary_main(void){
+    // Per-core EL1 init path for cores 1..3.
+    asm volatile(
+        "mrs x0, cpacr_el1\n"
+        "orr x0, x0, #(3 << 20)\n"
+        "msr cpacr_el1, x0\n"
+        "isb\n"
+        :
+        :
+        : "x0");
+
+    mmu_init();
+    interrupt_init();
+    enable_interrupts();
+
+    uart_puts("Secondary core online: ");
+    uart_send((char)('0' + (cpu_get_id() & 0xF)));
+    uart_puts("\n");
+
+    while (1){
+        asm volatile("wfi");
+    }
+}
 
 void kernel_main(void){
     // Enable FP/ASIMD at EL1 to avoid EC=0x07 traps on generated code paths.
@@ -158,6 +184,9 @@ void kernel_main(void){
 //    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
 
     uart_puts("Kernel booted successfully!\n");
+
+    smp_release_secondary_cores();
+    uart_puts("SMP: released cores 1-3\n");
 
     // -----------------------------
     // OPTION 1: RUN SHELL (RECOMMENDED)
