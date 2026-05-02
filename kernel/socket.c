@@ -3,11 +3,13 @@
 #include "udp.h"
 #include "net.h"
 #include "timer.h"
+#include "tcp.h"
 
 #define SOCKET_MAX_GLOBAL 32
 #define SOCKET_MAX_PER_PROCESS 8
 #define SOCKET_EPHEMERAL_PORT_BASE 49152u
 #define SOCKET_EPHEMERAL_PORT_LAST 65535u
+#define SOCKET_STREAM_RX_CAP 16384u
 
 typedef struct {
     int used;
@@ -21,14 +23,105 @@ typedef struct {
     unsigned short remote_port;
     unsigned char remote_ip[4];
     int connected;
+    unsigned int stream_rx_len;
+    unsigned int stream_rx_off;
+    unsigned char stream_rx[SOCKET_STREAM_RX_CAP];
 } kernel_socket_t;
 
 static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
 static int g_fd_map[MAX_PROCESSES][SOCKET_MAX_PER_PROCESS];
 static unsigned short g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
 
-static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
-    return (a[0] == b[0]) && (a[1] == b[1]) && (a[2] == b[2]) && (a[3] == b[3]);
+static unsigned char ascii_lower(unsigned char c){
+    if (c >= 'A' && c <= 'Z'){
+        return (unsigned char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int parse_http_get_request(const unsigned char* data,
+                                  unsigned int len,
+                                  char* host,
+                                  unsigned int host_cap,
+                                  char* path,
+                                  unsigned int path_cap){
+    if (!data || len == 0 || !host || host_cap < 2u || !path || path_cap < 2u){
+        return -1;
+    }
+    host[0] = 0;
+    path[0] = '/';
+    path[1] = 0;
+
+    unsigned int line0_end = 0;
+    while (line0_end < len && data[line0_end] != '\r' && data[line0_end] != '\n'){
+        line0_end++;
+    }
+    if (line0_end >= 5u &&
+        data[0] == 'G' && data[1] == 'E' && data[2] == 'T' && data[3] == ' '){
+        unsigned int s = 4u;
+        unsigned int e = s;
+        while (e < line0_end && data[e] != ' '){
+            e++;
+        }
+        unsigned int n = e > s ? (e - s) : 0u;
+        if (n >= path_cap){
+            n = path_cap - 1u;
+        }
+        if (n > 0){
+            for (unsigned int i = 0; i < n; i++){
+                path[i] = (char)data[s + i];
+            }
+            path[n] = 0;
+        }
+    }
+
+    unsigned int i = line0_end;
+    while (i < len && (data[i] == '\r' || data[i] == '\n')){
+        i++;
+    }
+
+    while (i < len){
+        unsigned int ls = i;
+        unsigned int le = ls;
+        while (le < len && data[le] != '\r' && data[le] != '\n'){
+            le++;
+        }
+        if (le == ls){
+            break;
+        }
+
+        if ((le - ls) >= 5u &&
+            ascii_lower(data[ls + 0]) == 'h' &&
+            ascii_lower(data[ls + 1]) == 'o' &&
+            ascii_lower(data[ls + 2]) == 's' &&
+            ascii_lower(data[ls + 3]) == 't' &&
+            data[ls + 4] == ':'){
+            unsigned int vs = ls + 5u;
+            while (vs < le && (data[vs] == ' ' || data[vs] == '\t')){
+                vs++;
+            }
+            unsigned int ve = le;
+            while (ve > vs && (data[ve - 1] == ' ' || data[ve - 1] == '\t')){
+                ve--;
+            }
+            unsigned int n = ve > vs ? (ve - vs) : 0u;
+            if (n >= host_cap){
+                n = host_cap - 1u;
+            }
+            for (unsigned int k = 0; k < n; k++){
+                host[k] = (char)data[vs + k];
+            }
+            host[n] = 0;
+            break;
+        }
+
+        i = le;
+        while (i < len && (data[i] == '\r' || data[i] == '\n')){
+            i++;
+        }
+    }
+
+    return host[0] ? 0 : -1;
 }
 
 static void clear_socket(kernel_socket_t* s){
@@ -49,6 +142,8 @@ static void clear_socket(kernel_socket_t* s){
     s->remote_ip[2] = 0;
     s->remote_ip[3] = 0;
     s->connected = 0;
+    s->stream_rx_len = 0;
+    s->stream_rx_off = 0;
 }
 
 static int valid_pid(int pid){
@@ -164,6 +259,8 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     s->remote_ip[2] = 0;
     s->remote_ip[3] = 0;
     s->connected = 0;
+    s->stream_rx_len = 0;
+    s->stream_rx_off = 0;
 
     g_fd_map[pid][fd] = si;
     return fd;
@@ -210,8 +307,25 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         return (int)len;
     }
 
-    // TCP stream backend is scaffolded but not wired yet.
-    return -2;
+    if (s->type == QOS_SOCK_STREAM){
+        char host[128];
+        char path[256];
+        int rc = parse_http_get_request(data, len, host, sizeof(host), path, sizeof(path));
+        if (rc != 0){
+            return -1;
+        }
+        int n = tcp_http_get(s->remote_ip, host, path, s->stream_rx, SOCKET_STREAM_RX_CAP - 1u);
+        if (n < 0){
+            s->stream_rx_len = 0;
+            s->stream_rx_off = 0;
+            return -1;
+        }
+        s->stream_rx_len = (unsigned int)n;
+        s->stream_rx_off = 0;
+        return (int)len;
+    }
+
+    return -1;
 }
 
 int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsigned int timeout_ms){
@@ -262,8 +376,20 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
         }
     }
 
-    // TCP stream backend is scaffolded but not wired yet.
-    return -2;
+    if (s->type == QOS_SOCK_STREAM){
+        if (s->stream_rx_off >= s->stream_rx_len){
+            return 0;
+        }
+        unsigned int available = s->stream_rx_len - s->stream_rx_off;
+        unsigned int n = out_cap < available ? out_cap : available;
+        for (unsigned int i = 0; i < n; i++){
+            out[i] = s->stream_rx[s->stream_rx_off + i];
+        }
+        s->stream_rx_off += n;
+        return (int)n;
+    }
+
+    return -1;
 }
 
 int ksocket_close(int pid, int fd){
