@@ -113,15 +113,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_SLEEP: {
             unsigned int ms = (unsigned int)frame[TF_X0];
-            process_t* cur = get_current_process();
-            if (!cur){
-                frame[TF_X0] = (unsigned long)-1;
-                return frame_sp;
-            }
-            cur->wake_tick = system_ticks + ms;
-            cur->state = PROC_SLEEPING;
+            process_sleep(ms);
             frame[TF_X0] = 0;
-            return scheduler_on_irq(frame_sp);
+            return frame_sp;
         }
 
         case SYS_EXIT:

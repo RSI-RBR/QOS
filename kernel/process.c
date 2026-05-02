@@ -701,10 +701,17 @@ void process_sleep(unsigned int ms){
     processes[pid].state = PROC_SLEEPING;
     spin_unlock_irqrestore(&g_process_lock, irq);
 
+    // Ensure timer IRQ can wake this sleeper even when called from EL0 SVC path.
+    unsigned long daif_prev;
+    asm volatile("mrs %0, daif" : "=r"(daif_prev));
+    asm volatile("msr daifclr, #2" : : : "memory");
+
     // Block cooperatively until the timer IRQ path wakes us.
     while (processes[pid].state == PROC_SLEEPING){
         asm volatile("wfi");
     }
+
+    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
 }
 
 void process_dump(void){
