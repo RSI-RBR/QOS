@@ -33,6 +33,8 @@ static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
 static int g_fd_map[MAX_PROCESSES][SOCKET_MAX_PER_PROCESS];
 static unsigned short g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
 static spinlock_t g_socket_lock;
+static spinlock_t g_socket_stream_lock;
+static unsigned char g_stream_http_tmp[SOCKET_STREAM_RX_CAP];
 
 static unsigned char ascii_lower(unsigned char c){
     if (c >= 'A' && c <= 'Z'){
@@ -203,6 +205,7 @@ static int lookup_socket_index(int pid, int fd){
 
 void socket_layer_init(void){
     spinlock_init(&g_socket_lock);
+    spinlock_init(&g_socket_stream_lock);
     unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
     for (int i = 0; i < SOCKET_MAX_GLOBAL; i++){
@@ -353,10 +356,11 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         stream_remote_ip[1] = s->remote_ip[1];
         stream_remote_ip[2] = s->remote_ip[2];
         stream_remote_ip[3] = s->remote_ip[3];
-        unsigned char* stream_out = s->stream_rx;
         spin_unlock_irqrestore(&g_socket_lock, irq);
 
-        int n = tcp_http_get(stream_remote_ip, stream_host, stream_path, stream_out, stream_out_cap);
+        unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
+        int n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+        spin_unlock_irqrestore(&g_socket_stream_lock, sio_irq);
 
         irq = spin_lock_irqsave(&g_socket_lock);
         si = lookup_socket_index(pid, fd);
@@ -377,6 +381,9 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         }
         if ((unsigned int)n > stream_out_cap){
             n = (int)stream_out_cap;
+        }
+        for (int i = 0; i < n; i++){
+            s->stream_rx[i] = g_stream_http_tmp[i];
         }
         s->stream_rx_len = (unsigned int)n;
         s->stream_rx_off = 0;

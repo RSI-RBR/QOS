@@ -19,6 +19,7 @@ static unsigned long g_tx_rep = 0;
 static unsigned char g_periodic_target_ip[4];
 static unsigned long g_periodic_interval = 0;
 static unsigned long g_periodic_next_tick = 0;
+static unsigned long g_periodic_attempts = 0;
 static int g_periodic_enabled = 0;
 static int g_gateway_resolved = 0;
 static unsigned char g_gateway_ip[4];
@@ -84,6 +85,7 @@ void arp_init(void){
     g_tx_rep = 0;
     g_periodic_interval = 0;
     g_periodic_next_tick = 0;
+    g_periodic_attempts = 0;
     g_periodic_enabled = 0;
     g_gateway_resolved = 0;
 }
@@ -111,35 +113,10 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
     if (oper == ARP_OP_REQUEST){
         g_arp_stats.rx_request++;
         if (g_iface_ready && ip4_eq(arp->tpa, g_local_ip)){
-            if (arp_send_reply(arp->sha, arp->spa) == 0){
-                uart_puts("ARP reply sent\n");
-            } else{
-                uart_puts("ARP reply send failed\n");
-            }
+            (void)arp_send_reply(arp->sha, arp->spa);
         }
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
-        uart_puts("ARP reply from ");
-        uart_putdec((unsigned long)arp->spa[0]);
-        uart_puts(".");
-        uart_putdec((unsigned long)arp->spa[1]);
-        uart_puts(".");
-        uart_putdec((unsigned long)arp->spa[2]);
-        uart_puts(".");
-        uart_putdec((unsigned long)arp->spa[3]);
-        uart_puts(" mac=");
-        for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
-            unsigned char b = arp->sha[i];
-            unsigned char hi = (unsigned char)((b >> 4) & 0x0Fu);
-            unsigned char lo = (unsigned char)(b & 0x0Fu);
-            uart_send((char)(hi < 10 ? ('0' + hi) : ('A' + (hi - 10))));
-            uart_send((char)(lo < 10 ? ('0' + lo) : ('A' + (lo - 10))));
-            if (i + 1u < ETH_ADDR_LEN){
-                uart_send(':');
-            }
-        }
-        uart_puts("\n");
-
         // If this reply is for our periodic gateway probe, store it and stop retries.
         if (g_periodic_enabled &&
             arp->spa[0] == g_periodic_target_ip[0] &&
@@ -153,6 +130,7 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
                 g_gateway_mac[i] = arp->sha[i];
             }
             g_gateway_resolved = 1;
+            g_periodic_attempts = 0;
             g_periodic_enabled = 0;
             uart_puts("ARP gateway learned; periodic requests stopped\n");
         }
@@ -225,6 +203,7 @@ void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int inte
     }
     g_periodic_interval = interval_ms;
     g_periodic_next_tick = 0;
+    g_periodic_attempts = 0;
     g_periodic_enabled = 1;
     g_gateway_resolved = 0;
 }
@@ -233,21 +212,29 @@ void arp_periodic_tick(unsigned long now_ticks){
     if (!g_periodic_enabled || !g_iface_ready){
         return;
     }
+    if (g_gateway_resolved){
+        g_periodic_enabled = 0;
+        return;
+    }
     if ((long)(now_ticks - g_periodic_next_tick) < 0){
         return;
     }
+
+    unsigned long interval = g_periodic_interval;
+    // Rate-limit unresolved ARP retries after initial probes.
+    if (g_periodic_attempts >= 10u){
+        interval = 60000u;
+    }
+
     if (!net_link_up()){
-        uart_puts("ARP periodic skip: link down\n");
-        g_periodic_next_tick = now_ticks + g_periodic_interval;
+        g_periodic_next_tick = now_ticks + interval;
         return;
     }
 
-    if (arp_send_request(g_periodic_target_ip) == 0){
-        uart_puts("ARP who-has sent\n");
-    } else{
-        uart_puts("ARP who-has send failed\n");
+    if (arp_send_request(g_periodic_target_ip) == 0 && g_periodic_attempts < 0xFFFFFFFFUL){
+        g_periodic_attempts++;
     }
-    g_periodic_next_tick = now_ticks + g_periodic_interval;
+    g_periodic_next_tick = now_ticks + interval;
 }
 
 void arp_dump_stats(void){
@@ -267,6 +254,8 @@ void arp_dump_stats(void){
     uart_putdec(g_tx_rep);
     uart_puts(" gw=");
     uart_puts(g_gateway_resolved ? "yes" : "no");
+    uart_puts(" arp_retry=");
+    uart_putdec(g_periodic_attempts);
     uart_puts("\n");
 }
 

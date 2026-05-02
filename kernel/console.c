@@ -66,11 +66,6 @@ int console_set_owner(int requester_pid, int target_pid){
 
     g_console_owner_pid = target_pid;
     spin_unlock_irqrestore(&g_console_lock, irq);
-    uart_puts("DBG TTY set req=");
-    uart_putdec((unsigned long)requester_pid);
-    uart_puts(" -> ");
-    uart_putdec((unsigned long)target_pid);
-    uart_puts("\n");
     return 0;
 }
 
@@ -82,9 +77,6 @@ int console_release_owner(int requester_pid){
     if (g_console_owner_pid == requester_pid){
         g_console_owner_pid = -1;
         spin_unlock_irqrestore(&g_console_lock, irq);
-        uart_puts("DBG TTY release req=");
-        uart_putdec((unsigned long)requester_pid);
-        uart_puts("\n");
         return 0;
     }
     spin_unlock_irqrestore(&g_console_lock, irq);
