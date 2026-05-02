@@ -164,6 +164,15 @@ static void cmd_usbstat(int argc, char **argv){
         uart_puts(" cfg=");
         uart_puthex(info.child_config_value);
         uart_puts(info.child_configured ? " (set)\n" : " (not set)\n");
+        uart_puts("USB child bulk in=");
+        uart_puthex(info.child_bulk_in_ep);
+        uart_puts(" mps=");
+        uart_puthex(info.child_bulk_in_mps);
+        uart_puts(" out=");
+        uart_puthex(info.child_bulk_out_ep);
+        uart_puts(" mps=");
+        uart_puthex(info.child_bulk_out_mps);
+        uart_puts("\n");
     }
 }
 

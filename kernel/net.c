@@ -125,7 +125,11 @@ int net_init(void){
     uart_puts(g_nic->name ? g_nic->name : "unknown");
     uart_puts("\n");
 
-    if (g_nic->name){
+    if (g_nic->name &&
+        g_nic->name[0] == 's' &&
+        g_nic->name[1] == 't' &&
+        g_nic->name[2] == 'u' &&
+        g_nic->name[3] == 'b'){
         usb_root_device_info_t root_info;
         if (usb_host_get_root_device_info(&root_info) == 0 &&
             root_info.vid == 0x0424 && root_info.pid == 0x9514 &&

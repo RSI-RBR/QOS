@@ -23,6 +23,12 @@ int usb_host_control_transfer(unsigned char dev_addr,
                               int in_transfer);
 
 int usb_host_read_device_descriptor(unsigned char* out18, unsigned int len);
+int usb_host_bulk_transfer(unsigned char dev_addr,
+                           unsigned char ep_addr,
+                           unsigned int ep_mps,
+                           unsigned char* data,
+                           unsigned int len,
+                           int in_transfer);
 
 typedef struct {
     int present;
@@ -40,6 +46,10 @@ typedef struct {
     unsigned char child_config_value;
     unsigned char child_hub_address;
     unsigned char child_hub_port;
+    unsigned char child_bulk_in_ep;
+    unsigned char child_bulk_out_ep;
+    unsigned short child_bulk_in_mps;
+    unsigned short child_bulk_out_mps;
     unsigned short vid;
     unsigned short pid;
     unsigned short child_vid;
