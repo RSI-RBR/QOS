@@ -2,6 +2,7 @@
 #include "ethernet.h"
 #include "arp.h"
 #include "ipv4.h"
+#include "icmp.h"
 #include "uart.h"
 
 typedef struct {
@@ -29,6 +30,7 @@ void net_proto_init(void){
     g_np_stats.eth_short = 0;
     arp_init();
     ipv4_init();
+    icmp_init();
 }
 
 void net_proto_configure_defaults(void){
@@ -77,4 +79,32 @@ void net_proto_dump_stats(void){
     uart_puts("\n");
     arp_dump_stats();
     ipv4_dump_stats();
+    icmp_dump_stats();
+}
+
+void net_proto_get_local_mac(unsigned char out_mac[6]){
+    if (!out_mac){
+        return;
+    }
+    for (unsigned int i = 0; i < 6; i++){
+        out_mac[i] = g_default_local_mac[i];
+    }
+}
+
+void net_proto_get_local_ip(unsigned char out_ip[4]){
+    if (!out_ip){
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        out_ip[i] = g_default_local_ip[i];
+    }
+}
+
+void net_proto_get_gateway_ip(unsigned char out_ip[4]){
+    if (!out_ip){
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        out_ip[i] = g_default_gateway_ip[i];
+    }
 }

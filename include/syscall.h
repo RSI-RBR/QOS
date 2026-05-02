@@ -18,7 +18,8 @@ enum {
     SYS_NET_POLL = 13,
     SYS_NET_RECV_RAW = 14,
     SYS_NET_SEND_RAW = 15,
-    SYS_USB_DUMP_INFO = 16
+    SYS_USB_DUMP_INFO = 16,
+    SYS_NET_PING_GATEWAY = 17
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -136,6 +137,10 @@ static inline int qos_net_send_raw(const unsigned char* frame, unsigned int len)
 
 static inline void qos_usb_dump_info(void){
     (void)qos_syscall0(SYS_USB_DUMP_INFO);
+}
+
+static inline int qos_net_ping_gateway(unsigned int timeout_ms){
+    return (int)qos_syscall1(SYS_NET_PING_GATEWAY, (unsigned long)timeout_ms);
 }
 
 __attribute__((noreturn))

@@ -4,6 +4,7 @@
 #include "ethernet.h"
 #include "usb_host.h"
 #include "net_proto.h"
+#include "icmp.h"
 
 #define NET_RX_QUEUE_LEN 32
 
@@ -241,6 +242,10 @@ int net_send_test_frame(void){
     frame[16] = 'S';
 
     return net_send_raw(frame, sizeof(frame));
+}
+
+int net_ping_gateway(unsigned int timeout_ms){
+    return icmp_ping_gateway(timeout_ms);
 }
 
 void net_dump_stats(void){

@@ -14,6 +14,7 @@ int net_send_raw(const unsigned char* frame, unsigned int len);
 int net_recv_raw(unsigned char* out, unsigned int out_cap);
 int net_poll(void);
 int net_send_test_frame(void);
+int net_ping_gateway(unsigned int timeout_ms);
 
 void net_set_rx_callback(net_rx_callback_t cb);
 void net_dump_stats(void);

@@ -1,4 +1,5 @@
 #include "ipv4.h"
+#include "icmp.h"
 #include "uart.h"
 
 typedef struct {
@@ -50,7 +51,9 @@ void ipv4_handle_frame(const unsigned char* frame, unsigned int len){
     }
 
     g_ipv4_stats.rx_valid++;
-    // Scaffold hook: dispatch by protocol (ICMP/UDP/TCP) using ip->protocol.
+    if (ip->protocol == 1u){
+        icmp_handle_ipv4_packet(ip->src, ip->dst, frame + ihl_bytes, total_len - ihl_bytes);
+    }
 }
 
 void ipv4_dump_stats(void){

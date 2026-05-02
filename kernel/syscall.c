@@ -215,6 +215,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
 
+        case SYS_NET_PING_GATEWAY:
+            frame[TF_X0] = (unsigned long)net_ping_gateway((unsigned int)frame[TF_X0]);
+            return frame_sp;
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;

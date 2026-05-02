@@ -46,6 +46,7 @@ static void cmd_help(void){
     qos_puts(" netstat\n");
     qos_puts(" netloop\n");
     qos_puts(" netpoll\n");
+    qos_puts(" ping\n");
 }
 
 static void cmd_run(void){
@@ -102,6 +103,23 @@ static void cmd_netloop(void){
     qos_puts("\n");
 }
 
+static void cmd_ping(void){
+    int rtt = qos_net_ping_gateway(1000);
+    if (rtt >= 0){
+        qos_puts("PING reply time=");
+        print_uint((unsigned int)rtt);
+        qos_puts(" ms\n");
+        return;
+    }
+    if (rtt == -1){
+        qos_puts("PING timeout\n");
+    } else if (rtt == -2){
+        qos_puts("PING blocked: gateway MAC unresolved\n");
+    } else{
+        qos_puts("PING send failed\n");
+    }
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -124,6 +142,8 @@ static void execute_line(void){
         cmd_netloop();
     } else if (str_eq(g_buf, "netpoll")){
         cmd_netpoll();
+    } else if (str_eq(g_buf, "ping")){
+        cmd_ping();
     } else{
         qos_puts("Unknown command.\n");
     }
