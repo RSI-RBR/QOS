@@ -15,6 +15,7 @@ static unsigned char g_local_mac[ETH_ADDR_LEN];
 static unsigned char g_local_ip[4];
 static int g_iface_ready = 0;
 static unsigned long g_tx_req = 0;
+static unsigned long g_tx_rep = 0;
 static unsigned char g_periodic_target_ip[4];
 static unsigned long g_periodic_interval = 0;
 static unsigned long g_periodic_next_tick = 0;
@@ -27,6 +28,51 @@ static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
 }
 
+static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+static int arp_send_reply(const unsigned char target_mac[ETH_ADDR_LEN],
+                          const unsigned char target_ip[4]){
+    unsigned char frame[ETH_MIN_FRAME_LEN];
+    arp_packet_t* arp;
+    if (!g_iface_ready || !target_mac || !target_ip){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < sizeof(frame); i++){
+        frame[i] = 0;
+    }
+
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        frame[i] = target_mac[i];
+        frame[6 + i] = g_local_mac[i];
+    }
+    frame[12] = (unsigned char)(ETH_TYPE_ARP >> 8);
+    frame[13] = (unsigned char)(ETH_TYPE_ARP & 0xFFu);
+
+    arp = (arp_packet_t*)(frame + ETH_HEADER_LEN);
+    arp->htype_be = (unsigned short)((ARP_HTYPE_ETHERNET >> 8) | (ARP_HTYPE_ETHERNET << 8));
+    arp->ptype_be = (unsigned short)((ARP_PTYPE_IPV4 >> 8) | (ARP_PTYPE_IPV4 << 8));
+    arp->hlen = ARP_HLEN_ETHERNET;
+    arp->plen = ARP_PLEN_IPV4;
+    arp->oper_be = (unsigned short)((ARP_OP_REPLY >> 8) | (ARP_OP_REPLY << 8));
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        arp->sha[i] = g_local_mac[i];
+        arp->tha[i] = target_mac[i];
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        arp->spa[i] = g_local_ip[i];
+        arp->tpa[i] = target_ip[i];
+    }
+
+    if (net_send_raw(frame, sizeof(frame)) != 0){
+        return -1;
+    }
+    g_tx_rep++;
+    return 0;
+}
+
 void arp_init(void){
     g_arp_stats.rx_total = 0;
     g_arp_stats.rx_valid = 0;
@@ -35,6 +81,7 @@ void arp_init(void){
     g_arp_stats.rx_unsupported = 0;
     g_iface_ready = 0;
     g_tx_req = 0;
+    g_tx_rep = 0;
     g_periodic_interval = 0;
     g_periodic_next_tick = 0;
     g_periodic_enabled = 0;
@@ -63,7 +110,13 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
     g_arp_stats.rx_valid++;
     if (oper == ARP_OP_REQUEST){
         g_arp_stats.rx_request++;
-        // Scaffold hook: respond if target IP matches local IP.
+        if (g_iface_ready && ip4_eq(arp->tpa, g_local_ip)){
+            if (arp_send_reply(arp->sha, arp->spa) == 0){
+                uart_puts("ARP reply sent\n");
+            } else{
+                uart_puts("ARP reply send failed\n");
+            }
+        }
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
         uart_puts("ARP reply from ");
@@ -210,6 +263,8 @@ void arp_dump_stats(void){
     uart_putdec(g_arp_stats.rx_unsupported);
     uart_puts(" tx_req=");
     uart_putdec(g_tx_req);
+    uart_puts(" tx_rep=");
+    uart_putdec(g_tx_rep);
     uart_puts(" gw=");
     uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts("\n");
