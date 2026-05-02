@@ -4,6 +4,7 @@
 #include "console.h"
 #include "cpu.h"
 #include "spinlock.h"
+#include "smp.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -346,9 +347,13 @@ void scheduler_request_resched_core(unsigned int core_id){
     if (core_id >= MAX_CPU_CORES){
         return;
     }
+    unsigned int local_core = scheduler_core_id();
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     mark_need_resched_locked(core_id);
     spin_unlock_irqrestore(&g_process_lock, irq);
+    if (core_id != local_core){
+        smp_send_ipi(core_id);
+    }
 }
 
 int scheduler_consume_need_resched(void){
@@ -440,6 +445,7 @@ int process_create(program_entry_t entry){
             runq_enqueue(owner_core, i);
             if (owner_core != preferred_core){
                 mark_need_resched_locked(owner_core);
+                smp_send_ipi(owner_core);
             }
             spin_unlock_irqrestore(&g_process_lock, irq);
             return i;
@@ -639,6 +645,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
             runq_enqueue(owner_core, i);
             if (owner_core != core){
                 mark_need_resched_locked(owner_core);
+                smp_send_ipi(owner_core);
             }
         }
     }

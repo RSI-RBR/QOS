@@ -4,6 +4,9 @@
 #define CORE1_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0x9C))
 #define CORE2_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0xAC))
 #define CORE3_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0xBC))
+#define LOCAL_MAILBOX_INT_CONTROL(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x50 + ((core) * 4u)))
+#define LOCAL_MAILBOX0_SET(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x80 + ((core) * 0x10u)))
+#define LOCAL_MAILBOX0_CLR(core) (*(volatile unsigned int*)(LOCAL_BASE + 0xC0 + ((core) * 0x10u)))
 
 // armstub8 secondary spin-table slots (64-bit entry addresses).
 #define SPIN_CPU1 (*(volatile unsigned long*)0x000000E0UL)
@@ -69,4 +72,35 @@ void smp_mark_core_online(unsigned int core_id){
 
 unsigned int smp_online_mask(void){
     return g_smp_online_mask;
+}
+
+void smp_init_ipi_for_core(unsigned int core_id){
+    if (core_id >= 4u){
+        return;
+    }
+    // Enable mailbox0 as IRQ source on this core.
+    LOCAL_MAILBOX_INT_CONTROL(core_id) |= (1u << 0);
+    asm volatile("dmb ishst" : : : "memory");
+}
+
+void smp_send_ipi(unsigned int target_core){
+    if (target_core >= 4u){
+        return;
+    }
+    // Mailbox interrupt remains asserted while any bit is set.
+    LOCAL_MAILBOX0_SET(target_core) = 1u;
+    asm volatile("dmb ishst" : : : "memory");
+    asm volatile("sev" : : : "memory");
+}
+
+void smp_clear_ipi_for_core(unsigned int core_id){
+    if (core_id >= 4u){
+        return;
+    }
+    unsigned int pending = LOCAL_MAILBOX0_CLR(core_id);
+    if (pending == 0u){
+        pending = 1u;
+    }
+    LOCAL_MAILBOX0_CLR(core_id) = pending;
+    asm volatile("dmb ishst" : : : "memory");
 }

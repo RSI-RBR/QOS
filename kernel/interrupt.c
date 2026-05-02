@@ -6,12 +6,14 @@
 #include "net.h"
 #include "arp.h"
 #include "cpu.h"
+#include "smp.h"
 
 extern void vectors(void);
 
 #define LOCAL_BASE 0x40000000UL
 #define CORE_IRQ_SOURCE(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x60 + ((core) * 4u)))
 #define CORE_CNTPNSIRQ_PENDING (1u << 1)
+#define CORE_MAILBOX0_PENDING (1u << 4)
 
 #define IRQ_BASE 0x3F00B000UL
 #define IRQ_PENDING_2 (*(volatile unsigned int*)(IRQ_BASE + 0x204))
@@ -36,6 +38,7 @@ void interrupt_init(void){
     asm volatile("isb");
 
     timer_init();
+    smp_init_ipi_for_core(cpu_get_id());
 
     if (cpu_get_id() == 0){
         uart_puts("Interrupts initialized\n");
@@ -124,6 +127,21 @@ void* irq_handler(void* irq_frame_sp){
         }
         // By default, preempt only EL0 user-mode. For selected long-running
         // kernel paths, syscall code can opt in to cooperative EL1 preemption.
+        unsigned long* frame = (unsigned long*)irq_frame_sp;
+        unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
+        int need_resched = scheduler_consume_need_resched();
+        int in_el0 = ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T);
+        process_t* cur = get_current_process();
+        int sleeping_syscall = (cur && cur->state == PROC_SLEEPING);
+        int idle_kernel = (cur == 0);
+        if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel || sleeping_syscall)){
+            return scheduler_on_irq(irq_frame_sp);
+        }
+        return irq_frame_sp;
+    }
+
+    if (local_src & CORE_MAILBOX0_PENDING){
+        smp_clear_ipi_for_core(core);
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
         int need_resched = scheduler_consume_need_resched();
