@@ -97,11 +97,7 @@ void console_owner_on_process_exit(int pid){
         return;
     }
 
-    // Return ownership to shell if alive, otherwise clear owner.
-    if (pid != 0 && process_is_alive_locked(0)){
-        g_console_owner_pid = 0;
-    } else{
-        g_console_owner_pid = -1;
-    }
+    // Do not hardcode a shell PID here; userspace shell reclaims ownership.
+    g_console_owner_pid = -1;
     spin_unlock_irqrestore(&g_console_lock, irq);
 }
