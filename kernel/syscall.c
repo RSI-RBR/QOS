@@ -6,6 +6,7 @@
 #include "loader.h"
 #include "memory.h"
 #include "net.h"
+#include "udp.h"
 #include "usb_host.h"
 
 #define ESR_EC_SHIFT 26
@@ -217,6 +218,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_NET_PING_GATEWAY:
             frame[TF_X0] = (unsigned long)net_ping_gateway((unsigned int)frame[TF_X0]);
+            return frame_sp;
+
+        case SYS_NET_UDP_SEND_PROBE:
+            frame[TF_X0] = (unsigned long)udp_send_probe_gateway();
+            return frame_sp;
+
+        case SYS_NET_UDP_RECV:
+            frame[TF_X0] = (unsigned long)udp_recv_next((unsigned char*)frame[TF_X1],
+                                                        (unsigned int)frame[TF_X2],
+                                                        (udp_meta_t*)frame[TF_X0]);
             return frame_sp;
 
         default:

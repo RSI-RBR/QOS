@@ -36,6 +36,16 @@ static void print_uint(unsigned int v){
     }
 }
 
+static void print_ip4(const unsigned char ip[4]){
+    print_uint((unsigned int)ip[0]);
+    qos_putc('.');
+    print_uint((unsigned int)ip[1]);
+    qos_putc('.');
+    print_uint((unsigned int)ip[2]);
+    qos_putc('.');
+    print_uint((unsigned int)ip[3]);
+}
+
 static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
@@ -47,6 +57,8 @@ static void cmd_help(void){
     qos_puts(" netloop\n");
     qos_puts(" netpoll\n");
     qos_puts(" ping\n");
+    qos_puts(" udpprobe\n");
+    qos_puts(" udprecv\n");
 }
 
 static void cmd_run(void){
@@ -120,6 +132,44 @@ static void cmd_ping(void){
     }
 }
 
+static void cmd_udpprobe(void){
+    int rc = qos_net_udp_send_probe();
+    if (rc == 0){
+        qos_puts("UDP probe sent.\n");
+    } else{
+        qos_puts("UDP probe send failed.\n");
+    }
+}
+
+static void cmd_udprecv(void){
+    udp_meta_t meta;
+    unsigned char buf[256];
+    int n = qos_net_udp_recv(&meta, buf, sizeof(buf));
+    if (n <= 0){
+        qos_puts("UDP recv empty.\n");
+        return;
+    }
+
+    qos_puts("UDP src=");
+    print_ip4(meta.src_ip);
+    qos_putc(':');
+    print_uint((unsigned int)meta.src_port);
+    qos_puts(" dst=");
+    print_uint((unsigned int)meta.dst_port);
+    qos_puts(" len=");
+    print_uint((unsigned int)meta.len);
+    qos_puts(" data=\"");
+    for (int i = 0; i < n; i++){
+        unsigned char c = buf[i];
+        if (c >= 32u && c <= 126u){
+            qos_putc((char)c);
+        } else{
+            qos_putc('.');
+        }
+    }
+    qos_puts("\"\n");
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -144,6 +194,10 @@ static void execute_line(void){
         cmd_netpoll();
     } else if (str_eq(g_buf, "ping")){
         cmd_ping();
+    } else if (str_eq(g_buf, "udpprobe")){
+        cmd_udpprobe();
+    } else if (str_eq(g_buf, "udprecv")){
+        cmd_udprecv();
     } else{
         qos_puts("Unknown command.\n");
     }

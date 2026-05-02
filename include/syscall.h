@@ -1,6 +1,8 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
+#include "udp.h"
+
 enum {
     SYS_PUTC = 0,
     SYS_PUTS = 1,
@@ -19,7 +21,9 @@ enum {
     SYS_NET_RECV_RAW = 14,
     SYS_NET_SEND_RAW = 15,
     SYS_USB_DUMP_INFO = 16,
-    SYS_NET_PING_GATEWAY = 17
+    SYS_NET_PING_GATEWAY = 17,
+    SYS_NET_UDP_SEND_PROBE = 18,
+    SYS_NET_UDP_RECV = 19
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -56,6 +60,19 @@ static inline unsigned long qos_syscall2(unsigned long n, unsigned long a0, unsi
         : "+r"(x0), "+r"(x1)
         : "r"(x8)
         : "x2", "x3", "x4", "x5", "x6", "x7", "cc", "memory");
+    return x0;
+}
+
+static inline unsigned long qos_syscall3(unsigned long n, unsigned long a0, unsigned long a1, unsigned long a2){
+    register unsigned long x0 asm("x0") = a0;
+    register unsigned long x1 asm("x1") = a1;
+    register unsigned long x2 asm("x2") = a2;
+    register unsigned long x8 asm("x8") = n;
+    asm volatile(
+        "svc #0"
+        : "+r"(x0), "+r"(x1), "+r"(x2)
+        : "r"(x8)
+        : "x3", "x4", "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 
@@ -141,6 +158,14 @@ static inline void qos_usb_dump_info(void){
 
 static inline int qos_net_ping_gateway(unsigned int timeout_ms){
     return (int)qos_syscall1(SYS_NET_PING_GATEWAY, (unsigned long)timeout_ms);
+}
+
+static inline int qos_net_udp_send_probe(void){
+    return (int)qos_syscall0(SYS_NET_UDP_SEND_PROBE);
+}
+
+static inline int qos_net_udp_recv(udp_meta_t* meta, unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall3(SYS_NET_UDP_RECV, (unsigned long)meta, (unsigned long)out, (unsigned long)out_cap);
 }
 
 __attribute__((noreturn))

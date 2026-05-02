@@ -3,6 +3,7 @@
 #include "arp.h"
 #include "ipv4.h"
 #include "icmp.h"
+#include "udp.h"
 #include "uart.h"
 
 typedef struct {
@@ -31,10 +32,12 @@ void net_proto_init(void){
     arp_init();
     ipv4_init();
     icmp_init();
+    udp_init();
 }
 
 void net_proto_configure_defaults(void){
     arp_set_local_interface(g_default_local_mac, g_default_local_ip);
+    ipv4_set_local_endpoint(g_default_local_mac, g_default_local_ip, g_default_gateway_ip);
     arp_set_periodic_target(g_default_gateway_ip, 2000); // 2s retries until first reply.
     uart_puts("NET defaults: local ip 10.0.0.88, gateway 10.0.0.1\n");
 }
@@ -80,6 +83,7 @@ void net_proto_dump_stats(void){
     arp_dump_stats();
     ipv4_dump_stats();
     icmp_dump_stats();
+    udp_dump_stats();
 }
 
 void net_proto_get_local_mac(unsigned char out_mac[6]){
