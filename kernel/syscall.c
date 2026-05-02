@@ -125,9 +125,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         }
 
         case SYS_EXIT:
-            process_fault_current();
+            process_exit_current();
             frame[TF_X0] = 0;
-            return scheduler_on_irq(frame_sp);
+            return frame_sp;
 
         case SYS_FB_CLEAR:
             fb_clear((unsigned int)frame[TF_X0]);
