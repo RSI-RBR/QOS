@@ -311,7 +311,6 @@ void program_main(void){
             print_prompt();
         } else if (!shell_has_tty){
             g_tty_owned = 0;
-            qos_sleep(1);
             continue;
         }
 
@@ -319,7 +318,6 @@ void program_main(void){
         if (ch < 0){
             // Keep shell RUNNING; timer IRQ preemption will schedule peers.
             // This avoids sleep edge-cases when no alternate runnable task exists.
-            qos_sleep(1);
             continue;
         }
 
