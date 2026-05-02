@@ -1,87 +1,114 @@
 # QOS - Quantum OS for Raspberry Pi
 
 Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).  
-**WORK IN PROGRESS**
+Work in progress.
 
-## Features (Current)
+## Current Status
 
-- UART input/output with basic interactive shell
-- Simple memory allocator
-- SD card driver with FAT32 support (read-only)
-- Program loading from FAT filesystem (`PROGRAM.BIN`)
-- Basic exception level management (EL2 → EL1)
-- Phase 1 MMU identity mapping
-- Framebuffer size exposure to shell/programs
-- Preemption-safe program loading improvements
-- Timer access in EL1
+QOS now boots reliably to a user-mode shell process and supports preemptive multitasking, dynamic program loading, MMU-based isolation foundations, and early networking with user-mode socket APIs.
 
-## Current Capabilities & Progress
+## Current Capabilities
 
-QOS now successfully boots on Raspberry Pi 3 and provides a functional UART shell. The kernel can read from a FAT32-formatted SD card and load external programs (e.g. `PROGRAM.BIN`).
+- AArch64 bare-metal boot to EL1
+- UART console and interactive user shell
+- Preemptive scheduler (timer IRQ driven)
+- Process model with PID/state/exit/cleanup
+- External program loading from FAT32 (`*.BIN`, 8.3 naming)
+- Secure process teardown and memory wipe on exit
+- Phase-1 MMU enabled with kernel/user mapping foundations
+- Framebuffer init and drawing syscalls
+- USB host + LAN9514/SMSC95xx networking path
+- IPv4/ARP/ICMP/UDP basics
+- Socket syscall scaffold for user programs:
+  - `socket`, `connect`, `send`, `recv`, `close`
+  - blocking/non-blocking mode
+  - recv timeout configuration
+- User-mode DNS over UDP via socket syscalls
+- User-mode text web browser demo (`programs/webbrowser`)
 
-**Recent Improvements:**
-- Stabilized SD block reads and FAT filesystem access
-- Better program loading with preemption safety
-- Enhanced boot process with EL1 timer support and initial MMU mapping
-- Improved reliability of root directory walking and cluster chain following
+## Progress Notes
 
-**Known Limitation (SD Card Timing):**
-After cold boot, there can be a brief period (~30-60 seconds) where the SD card has not fully initialized. During this window, attempts to read `PROGRAM.BIN` may fail with "end of chain" or `fat read_cluster fail` errors (e.g. settle error 0x20). Once the card settles, reads work reliably. A short delay + retry logic is being added to address cold-boot timing.
+- Shell is a scheduled user process (not a permanent privileged loop).
+- Scheduler now stays responsive during long operations (program load / network waits).
+- TTY ownership handoff was added so foreground apps (like webbrowser) can exclusively read input and return cleanly to shell.
+
+## Known Limitations
+
+- FAT loader is currently 8.3 filename based.
+- Socket `SOCK_STREAM` path is currently minimal and HTTP-oriented for demo usage.
+- Networking is early-stage and not yet full POSIX-like behavior.
+- No TLS yet.
 
 ## Requirements
 
-- Raspberry Pi 3 B(+)
-- Micro SD card (FAT32 formatted)
-- Linux build machine (tested on Kali Linux)
-- USB-to-UART adapter (for serial console)
+- Raspberry Pi 3 B/B+
+- FAT32 microSD card
+- Linux build machine
+- USB-UART adapter for serial console
 
-## Build Instructions
+## Build
 
-### 1. Install Cross Compiler
+### 1) Install Cross Toolchain
 
 ```bash
 sudo apt update
 sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+```
 
-2. Build the OS bash
+### 2) Build Kernel
 
+```bash
 git clone https://github.com/RSI-RBR/QOS.git
 cd QOS
 make
+```
 
-This produces kernel8.img. SD Card Preparation(Keep your existing detailed SD card preparation steps here — they remain valid) Copy OS Files bash
+Build output: `kernel8.img`
 
-cp kernel8.img ~/sdcard/
-cp boot/config.txt ~/sdcard/
-# Copy your PROGRAM.BIN (and any other programs) to the root of the SD card
+## SD Card Setup
 
-config.txt
+Copy files to the SD card boot/root FAT partition:
 
+```bash
+cp kernel8.img /path/to/sd/
+cp boot/config.txt /path/to/sd/
+```
+
+Copy user programs (`*.BIN`) to SD root as needed (8.3 names for loader lookup).
+
+Example `config.txt`:
+
+```txt
 arm_64bit=1
 enable_uart=1
 kernel=kernel8.img
+```
 
-Booting Insert SD card into Raspberry Pi 3
-Connect UART (TX/RX/GND)
-Open serial terminal: screen /dev/ttyUSB0 115200
-Power on the Pi
+## Boot
 
-Expected output includes:
+1. Insert SD card into Pi
+2. Connect UART (`TX/RX/GND`)
+3. Open serial terminal:
 
-init messages and usable shell prompt
+```bash
+screen /dev/ttyUSB0 115200
+```
 
-You should then be able to interact with the shell and load programs from the SD card.Notes Bare-metal (no Linux)
-UART is currently the primary I/O
-Framebuffer support is partially exposed but not yet used for graphics output (except for the test program)
-SD/FAT driver is functional with the noted cold-boot timing caveat
+4. Power on the Pi
 
-Future Goals Full process / multitasking system
-Robust file system (read + write)
-Improved SD card initialization (cold boot reliability)
-Networking stack
-Security features
-GPU / 2D framebuffer acceleration
-Raspberry Pi 5 and secure board compatibility
+## Shell / Program Notes
 
-License: All rights reserved
+- Default shell command: `run` loads default `PROGRAM.BIN`
+- Web browser demo command: `web` (expects `WEBBROWS.BIN` on SD root)
+
+## Roadmap Direction (Near Term)
+
+- Make stream sockets fully generic (not HTTP-specialized)
+- Complete TCP socket semantics for user apps
+- Continue syscall surface hardening (reduce low-level direct net calls)
+- Expand user-mode networking clients
+
+## License
+
+All rights reserved.
 
