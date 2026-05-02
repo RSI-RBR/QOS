@@ -80,9 +80,7 @@ void kernel_secondary_main(void){
 
     mmu_enable_secondary();
     interrupt_init();
-    uart_puts("Secondary core online: ");
-    uart_send((char)('0' + (cpu_get_id() & 0xF)));
-    uart_puts("\n");
+    smp_mark_core_online(cpu_get_id());
     enable_interrupts();
 
     while (1){
@@ -148,8 +146,18 @@ void kernel_main(void){
 
     uart_puts("Kernel booted successfully!\n");
 
+    smp_mark_core_online(cpu_get_id());
     smp_release_secondary_cores();
     uart_puts("SMP: released cores 1-3\n");
+    for (unsigned int i = 0; i < 2000000u; i++){
+        if (smp_online_mask() == 0x0Fu){
+            break;
+        }
+        asm volatile("nop");
+    }
+    uart_puts("SMP: online mask=");
+    uart_puthex(smp_online_mask());
+    uart_puts("\n");
 
     // -----------------------------
     // OPTION 1: RUN SHELL (RECOMMENDED)
