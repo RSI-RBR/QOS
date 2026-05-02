@@ -22,6 +22,13 @@ int udp_send(const unsigned char dst_ip[4],
              unsigned int len);
 int udp_send_probe_gateway(void);
 int udp_recv_next(unsigned char* out, unsigned int out_cap, udp_meta_t* meta);
+int udp_recv_filtered(unsigned short dst_port,
+                      int require_src,
+                      const unsigned char src_ip[4],
+                      unsigned short src_port,
+                      unsigned char* out,
+                      unsigned int out_cap,
+                      udp_meta_t* meta);
 void udp_dump_stats(void);
 
 #endif

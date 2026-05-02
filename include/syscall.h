@@ -2,6 +2,7 @@
 #define SYSCALL_H
 
 #include "udp.h"
+#include "socket.h"
 
 enum {
     SYS_PUTC = 0,
@@ -25,7 +26,12 @@ enum {
     SYS_NET_UDP_SEND_PROBE = 18,
     SYS_NET_UDP_RECV = 19,
     SYS_NET_UDP_SEND = 20,
-    SYS_NET_TCP_HTTP_GET = 21
+    SYS_NET_TCP_HTTP_GET = 21,
+    SYS_SOCKET_CREATE = 22,
+    SYS_SOCKET_CONNECT = 23,
+    SYS_SOCKET_SEND = 24,
+    SYS_SOCKET_RECV = 25,
+    SYS_SOCKET_CLOSE = 26
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -75,6 +81,21 @@ static inline unsigned long qos_syscall3(unsigned long n, unsigned long a0, unsi
         : "+r"(x0), "+r"(x1), "+r"(x2)
         : "r"(x8)
         : "x3", "x4", "x5", "x6", "x7", "cc", "memory");
+    return x0;
+}
+
+static inline unsigned long qos_syscall4(unsigned long n, unsigned long a0, unsigned long a1,
+                                         unsigned long a2, unsigned long a3){
+    register unsigned long x0 asm("x0") = a0;
+    register unsigned long x1 asm("x1") = a1;
+    register unsigned long x2 asm("x2") = a2;
+    register unsigned long x3 asm("x3") = a3;
+    register unsigned long x8 asm("x8") = n;
+    asm volatile(
+        "svc #0"
+        : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
+        : "r"(x8)
+        : "x4", "x5", "x6", "x7", "cc", "memory");
     return x0;
 }
 
@@ -194,6 +215,40 @@ static inline int qos_net_tcp_http_get(const unsigned char dst_ip[4],
                              (unsigned long)path,
                              (unsigned long)out,
                              (unsigned long)out_cap);
+}
+
+static inline int qos_socket(int domain, int type, int protocol){
+    return (int)qos_syscall3(SYS_SOCKET_CREATE,
+                             (unsigned long)domain,
+                             (unsigned long)type,
+                             (unsigned long)protocol);
+}
+
+static inline int qos_connect(int fd, const qos_sockaddr_in_t* addr, unsigned int addr_len){
+    return (int)qos_syscall3(SYS_SOCKET_CONNECT,
+                             (unsigned long)fd,
+                             (unsigned long)addr,
+                             (unsigned long)addr_len);
+}
+
+static inline int qos_send(int fd, const void* buf, unsigned int len, unsigned int flags){
+    return (int)qos_syscall4(SYS_SOCKET_SEND,
+                             (unsigned long)fd,
+                             (unsigned long)buf,
+                             (unsigned long)len,
+                             (unsigned long)flags);
+}
+
+static inline int qos_recv(int fd, void* out, unsigned int out_cap, unsigned int timeout_ms){
+    return (int)qos_syscall4(SYS_SOCKET_RECV,
+                             (unsigned long)fd,
+                             (unsigned long)out,
+                             (unsigned long)out_cap,
+                             (unsigned long)timeout_ms);
+}
+
+static inline int qos_close(int fd){
+    return (int)qos_syscall1(SYS_SOCKET_CLOSE, (unsigned long)fd);
 }
 
 __attribute__((noreturn))

@@ -44,6 +44,7 @@ void process_exit_current(void);
 void process_fault_current(void);
 
 process_t* get_process(int pid);
+int process_current_pid(void);
 
 process_t* get_current_process(void);
 

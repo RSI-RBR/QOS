@@ -1,0 +1,261 @@
+#include "socket.h"
+#include "process.h"
+#include "udp.h"
+#include "net.h"
+#include "timer.h"
+
+#define SOCKET_MAX_GLOBAL 32
+#define SOCKET_MAX_PER_PROCESS 8
+#define SOCKET_EPHEMERAL_PORT_BASE 49152u
+#define SOCKET_EPHEMERAL_PORT_LAST 65535u
+
+typedef struct {
+    int used;
+    int owner_pid;
+    int domain;
+    int type;
+    int protocol;
+    unsigned short local_port;
+    unsigned short remote_port;
+    unsigned char remote_ip[4];
+    int connected;
+} kernel_socket_t;
+
+static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
+static int g_fd_map[MAX_PROCESSES][SOCKET_MAX_PER_PROCESS];
+static unsigned short g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
+
+static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
+    return (a[0] == b[0]) && (a[1] == b[1]) && (a[2] == b[2]) && (a[3] == b[3]);
+}
+
+static void clear_socket(kernel_socket_t* s){
+    if (!s){
+        return;
+    }
+    s->used = 0;
+    s->owner_pid = -1;
+    s->domain = 0;
+    s->type = 0;
+    s->protocol = 0;
+    s->local_port = 0;
+    s->remote_port = 0;
+    s->remote_ip[0] = 0;
+    s->remote_ip[1] = 0;
+    s->remote_ip[2] = 0;
+    s->remote_ip[3] = 0;
+    s->connected = 0;
+}
+
+static int valid_pid(int pid){
+    return pid >= 0 && pid < MAX_PROCESSES;
+}
+
+static int valid_fd(int fd){
+    return fd >= 0 && fd < SOCKET_MAX_PER_PROCESS;
+}
+
+static int allocate_global_socket(void){
+    for (int i = 0; i < SOCKET_MAX_GLOBAL; i++){
+        if (!g_sockets[i].used){
+            g_sockets[i].used = 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int allocate_process_fd(int pid){
+    for (int i = 0; i < SOCKET_MAX_PER_PROCESS; i++){
+        if (g_fd_map[pid][i] < 0){
+            return i;
+        }
+    }
+    return -1;
+}
+
+static unsigned short allocate_ephemeral_port(void){
+    unsigned short p = g_next_ephemeral_port;
+    g_next_ephemeral_port++;
+    if (g_next_ephemeral_port < SOCKET_EPHEMERAL_PORT_BASE || g_next_ephemeral_port > SOCKET_EPHEMERAL_PORT_LAST){
+        g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
+    }
+    if (p == 0){
+        p = SOCKET_EPHEMERAL_PORT_BASE;
+    }
+    return p;
+}
+
+static int lookup_socket_index(int pid, int fd){
+    if (!valid_pid(pid) || !valid_fd(fd)){
+        return -1;
+    }
+    int si = g_fd_map[pid][fd];
+    if (si < 0 || si >= SOCKET_MAX_GLOBAL){
+        return -1;
+    }
+    if (!g_sockets[si].used || g_sockets[si].owner_pid != pid){
+        return -1;
+    }
+    return si;
+}
+
+void socket_layer_init(void){
+    g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
+    for (int i = 0; i < SOCKET_MAX_GLOBAL; i++){
+        clear_socket(&g_sockets[i]);
+    }
+    for (int p = 0; p < MAX_PROCESSES; p++){
+        for (int fd = 0; fd < SOCKET_MAX_PER_PROCESS; fd++){
+            g_fd_map[p][fd] = -1;
+        }
+    }
+}
+
+void socket_close_all_for_pid(int pid){
+    if (!valid_pid(pid)){
+        return;
+    }
+    for (int fd = 0; fd < SOCKET_MAX_PER_PROCESS; fd++){
+        int si = g_fd_map[pid][fd];
+        if (si >= 0 && si < SOCKET_MAX_GLOBAL){
+            clear_socket(&g_sockets[si]);
+        }
+        g_fd_map[pid][fd] = -1;
+    }
+}
+
+int ksocket_create(int pid, int domain, int type, int protocol){
+    if (!valid_pid(pid)){
+        return -1;
+    }
+    if (domain != QOS_AF_INET){
+        return -1;
+    }
+    if (type != QOS_SOCK_DGRAM && type != QOS_SOCK_STREAM){
+        return -1;
+    }
+
+    int si = allocate_global_socket();
+    if (si < 0){
+        return -1;
+    }
+    int fd = allocate_process_fd(pid);
+    if (fd < 0){
+        clear_socket(&g_sockets[si]);
+        return -1;
+    }
+
+    kernel_socket_t* s = &g_sockets[si];
+    s->owner_pid = pid;
+    s->domain = domain;
+    s->type = type;
+    s->protocol = protocol;
+    s->local_port = 0;
+    s->remote_port = 0;
+    s->remote_ip[0] = 0;
+    s->remote_ip[1] = 0;
+    s->remote_ip[2] = 0;
+    s->remote_ip[3] = 0;
+    s->connected = 0;
+
+    g_fd_map[pid][fd] = si;
+    return fd;
+}
+
+int ksocket_connect(int pid, int fd, const qos_sockaddr_in_t* addr, unsigned int addr_len){
+    int si = lookup_socket_index(pid, fd);
+    if (si < 0 || !addr || addr_len < sizeof(qos_sockaddr_in_t)){
+        return -1;
+    }
+
+    kernel_socket_t* s = &g_sockets[si];
+    if (addr->family != QOS_AF_INET || addr->port == 0){
+        return -1;
+    }
+    s->remote_port = addr->port;
+    s->remote_ip[0] = addr->addr[0];
+    s->remote_ip[1] = addr->addr[1];
+    s->remote_ip[2] = addr->addr[2];
+    s->remote_ip[3] = addr->addr[3];
+    s->connected = 1;
+    return 0;
+}
+
+int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, unsigned int flags){
+    (void)flags;
+    int si = lookup_socket_index(pid, fd);
+    if (si < 0 || !data || len == 0){
+        return -1;
+    }
+
+    kernel_socket_t* s = &g_sockets[si];
+    if (!s->connected){
+        return -1;
+    }
+
+    if (s->type == QOS_SOCK_DGRAM){
+        if (s->local_port == 0){
+            s->local_port = allocate_ephemeral_port();
+        }
+        if (udp_send(s->remote_ip, s->local_port, s->remote_port, data, len) != 0){
+            return -1;
+        }
+        return (int)len;
+    }
+
+    // TCP stream backend is scaffolded but not wired yet.
+    return -2;
+}
+
+int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsigned int timeout_ms){
+    int si = lookup_socket_index(pid, fd);
+    if (si < 0 || !out || out_cap == 0){
+        return -1;
+    }
+
+    kernel_socket_t* s = &g_sockets[si];
+    if (!s->connected){
+        return -1;
+    }
+
+    if (s->type == QOS_SOCK_DGRAM){
+        unsigned long start = system_ticks;
+        while (1){
+            udp_meta_t meta;
+            int n;
+
+            (void)net_poll();
+            n = udp_recv_filtered(s->local_port,
+                                  1,
+                                  s->remote_ip,
+                                  s->remote_port,
+                                  out,
+                                  out_cap,
+                                  &meta);
+            if (n != 0){
+                return n;
+            }
+
+            if (timeout_ms == 0){
+                return 0;
+            }
+            if ((unsigned long)(system_ticks - start) >= (unsigned long)timeout_ms){
+                return 0;
+            }
+        }
+    }
+
+    // TCP stream backend is scaffolded but not wired yet.
+    return -2;
+}
+
+int ksocket_close(int pid, int fd){
+    int si = lookup_socket_index(pid, fd);
+    if (si < 0){
+        return -1;
+    }
+    clear_socket(&g_sockets[si]);
+    g_fd_map[pid][fd] = -1;
+    return 0;
+}

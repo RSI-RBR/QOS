@@ -10,6 +10,7 @@
 #include "tcp.h"
 #include "usb_host.h"
 #include "interrupt.h"
+#include "socket.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -255,6 +256,52 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                        (unsigned int)frame[TF_X4]);
             kernel_preempt_exit();
             return frame_sp;
+
+        case SYS_SOCKET_CREATE: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ksocket_create(pid,
+                                                         (int)frame[TF_X0],
+                                                         (int)frame[TF_X1],
+                                                         (int)frame[TF_X2]);
+            return frame_sp;
+        }
+
+        case SYS_SOCKET_CONNECT: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ksocket_connect(pid,
+                                                          (int)frame[TF_X0],
+                                                          (const qos_sockaddr_in_t*)frame[TF_X1],
+                                                          (unsigned int)frame[TF_X2]);
+            return frame_sp;
+        }
+
+        case SYS_SOCKET_SEND: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ksocket_send(pid,
+                                                       (int)frame[TF_X0],
+                                                       (const unsigned char*)frame[TF_X1],
+                                                       (unsigned int)frame[TF_X2],
+                                                       (unsigned int)frame[TF_X3]);
+            return frame_sp;
+        }
+
+        case SYS_SOCKET_RECV: {
+            int pid = process_current_pid();
+            kernel_preempt_enter();
+            frame[TF_X0] = (unsigned long)ksocket_recv(pid,
+                                                       (int)frame[TF_X0],
+                                                       (unsigned char*)frame[TF_X1],
+                                                       (unsigned int)frame[TF_X2],
+                                                       (unsigned int)frame[TF_X3]);
+            kernel_preempt_exit();
+            return frame_sp;
+        }
+
+        case SYS_SOCKET_CLOSE: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ksocket_close(pid, (int)frame[TF_X0]);
+            return frame_sp;
+        }
 
         default:
             frame[TF_X0] = (unsigned long)-1;

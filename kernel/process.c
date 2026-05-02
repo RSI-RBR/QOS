@@ -1,5 +1,6 @@
 #include "process.h"
 #include "memory.h"
+#include "socket.h"
 
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
 static int used[MAX_PROCESSES] = {0};
@@ -107,6 +108,7 @@ static void reap_process_resources(int pid){
             loader_free_program_memory(processes[pid].program_memory, processes[pid].program_size);
         }
     }
+    socket_close_all_for_pid(pid);
     clear_process_descriptor(pid);
 }
 
@@ -250,6 +252,10 @@ void process_fault_current(void){
 process_t* get_process(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES) return 0;
     return &processes[pid];
+}
+
+int process_current_pid(void){
+    return current_pid;
 }
 
 process_t* get_current_process(void){

@@ -39,6 +39,10 @@ static unsigned short be16_read(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
 }
 
+static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
+    return (a[0] == b[0]) && (a[1] == b[1]) && (a[2] == b[2]) && (a[3] == b[3]);
+}
+
 static void be16_write(unsigned char* p, unsigned short v){
     p[0] = (unsigned char)(v >> 8);
     p[1] = (unsigned char)(v & 0xFFu);
@@ -202,6 +206,64 @@ int udp_recv_next(unsigned char* out, unsigned int out_cap, udp_meta_t* meta){
     }
 
     g_rx_head = (g_rx_head + 1u) % UDP_RX_QUEUE_LEN;
+    g_rx_count--;
+    return (int)n;
+}
+
+int udp_recv_filtered(unsigned short dst_port,
+                      int require_src,
+                      const unsigned char src_ip[4],
+                      unsigned short src_port,
+                      unsigned char* out,
+                      unsigned int out_cap,
+                      udp_meta_t* meta){
+    if (!out || out_cap == 0 || !meta){
+        return -1;
+    }
+    if (g_rx_count == 0){
+        return 0;
+    }
+
+    int found = -1;
+    for (unsigned int i = 0; i < g_rx_count; i++){
+        unsigned int idx = (g_rx_head + i) % UDP_RX_QUEUE_LEN;
+        udp_slot_t* slot = &g_rxq[idx];
+        if (slot->meta.dst_port != dst_port){
+            continue;
+        }
+        if (require_src){
+            if (slot->meta.src_port != src_port){
+                continue;
+            }
+            if (!src_ip || !ip4_eq(slot->meta.src_ip, src_ip)){
+                continue;
+            }
+        }
+        found = (int)i;
+        break;
+    }
+
+    if (found < 0){
+        return 0;
+    }
+
+    unsigned int slot_idx = (g_rx_head + (unsigned int)found) % UDP_RX_QUEUE_LEN;
+    udp_slot_t* slot = &g_rxq[slot_idx];
+    unsigned int n = slot->meta.len;
+    if (n > out_cap){
+        n = out_cap;
+    }
+    *meta = slot->meta;
+    for (unsigned int i = 0; i < n; i++){
+        out[i] = slot->data[i];
+    }
+
+    for (unsigned int j = (unsigned int)found; (j + 1u) < g_rx_count; j++){
+        unsigned int to = (g_rx_head + j) % UDP_RX_QUEUE_LEN;
+        unsigned int from = (g_rx_head + j + 1u) % UDP_RX_QUEUE_LEN;
+        g_rxq[to] = g_rxq[from];
+    }
+    g_rx_tail = (g_rx_tail + UDP_RX_QUEUE_LEN - 1u) % UDP_RX_QUEUE_LEN;
     g_rx_count--;
     return (int)n;
 }
