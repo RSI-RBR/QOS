@@ -165,7 +165,7 @@ void kernel_main(void){
     // Kernel-level network identity and first ARP probe.
     // Adjust local_ip to your subnet as needed.
     static const unsigned char local_mac[6] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
-    static const unsigned char local_ip[4] = {10, 0, 0, 42};
+    static const unsigned char local_ip[4] = {10, 0, 0, 88};
     static const unsigned char router_ip[4] = {10, 0, 0, 1};
     arp_set_local_interface(local_mac, local_ip);
     if (arp_send_request(router_ip) == 0){
