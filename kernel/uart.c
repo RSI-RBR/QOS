@@ -15,6 +15,7 @@
 #include "spinlock.h"
 
 static spinlock_t g_uart_lock;
+static volatile unsigned int g_uart_ready = 0;
 
 static void delay(int count){
     while (count--) { asm volatile("nop"); }
@@ -26,6 +27,7 @@ static void uart_send_raw(char c){
 }
 
 void uart_init(void){
+    g_uart_ready = 0;
     spinlock_init(&g_uart_lock);
     //disable uart
     *(volatile unsigned int*)UART0_CR = 0;
@@ -51,10 +53,15 @@ void uart_init(void){
 
     // enable uart
     *(volatile unsigned int*)UART0_CR = (1 << 0) | (1 << 8) | (1 << 9);
+    g_uart_ready = 1;
 
 }
 
 void uart_send(char c){
+    if (!g_uart_ready){
+        uart_send_raw(c);
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_uart_lock);
     uart_send_raw(c);
     spin_unlock_irqrestore(&g_uart_lock, irq);
@@ -75,6 +82,15 @@ int uart_try_getc(char *c){
 }
 
 void uart_puts(const char* str){
+    if (!g_uart_ready){
+        while (*str){
+            if (*str == '\n'){
+                uart_send_raw('\r');
+            }
+            uart_send_raw(*str++);
+        }
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_uart_lock);
     while (*str){
         if (*str == '\n'){
@@ -91,6 +107,17 @@ void uart_puthex(unsigned int val){
 //    for (int i = 28; i >= 0; i -= 4){
 //        uart_send(hex[(val >> i) & 0xF]);
 //    }
+    if (!g_uart_ready){
+        for (int i = 28; i >= 0; i -= 4){
+            unsigned int digit = (val >> i) & 0xF;
+            if (digit < 10){
+                uart_send_raw((char)('0' + digit));
+            } else{
+                uart_send_raw((char)('A' + digit - 10));
+            }
+        }
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_uart_lock);
     for (int i = 28; i >= 0; i -= 4){
         unsigned int digit = (val >> i) & 0xF;
@@ -109,6 +136,10 @@ void uart_putdec(unsigned long val){
     int i = 0;
 
     if (val == 0){
+        if (!g_uart_ready){
+            uart_send_raw('0');
+            return;
+        }
         unsigned long irq0 = spin_lock_irqsave(&g_uart_lock);
         uart_send_raw('0');
         spin_unlock_irqrestore(&g_uart_lock, irq0);
@@ -120,6 +151,12 @@ void uart_putdec(unsigned long val){
         val /= 10UL;
     }
 
+    if (!g_uart_ready){
+        while (i > 0){
+            uart_send_raw(buf[--i]);
+        }
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_uart_lock);
     while (i > 0){
         uart_send_raw(buf[--i]);
