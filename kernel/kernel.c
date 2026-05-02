@@ -1,5 +1,4 @@
 #include "uart.h"
-#include "shell.h"
 #include "memory.h"
 //#include "task.h"
 #include "framebuffer.h"
@@ -37,11 +36,6 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
-static void shell_process_entry(void){
-    shell_init();
-    shell_run();
-}
-
 static int create_boot_shell_process(void){
     // SHELL.BIN in FAT 8.3 format.
     loaded_program_t shell_prog = load_program_from_sd_named("SHELL   BIN");
@@ -59,12 +53,12 @@ static int create_boot_shell_process(void){
         } else{
             loader_free_program_memory(shell_prog.memory, shell_prog.size);
         }
-        uart_puts("User shell create failed; falling back to kernel shell.\n");
+        uart_puts("User shell create failed; boot shell disabled by policy.\n");
     } else{
-        uart_puts("SHELL.BIN not found; falling back to kernel shell.\n");
+        uart_puts("SHELL.BIN not found; boot shell disabled by policy.\n");
     }
 
-    return process_create(shell_process_entry);
+    return -1;
 }
 
 extern unsigned long stack_bottom;
@@ -250,8 +244,10 @@ void kernel_main(void){
     
     int shell_pid = create_boot_shell_process();
     if (shell_pid < 0){
-        uart_puts("Failed to create shell process\n");
-        return;
+        uart_puts("No boot shell process available; halting in idle loop.\n");
+        while (1){
+            asm volatile("wfi");
+        }
     }
 
     // -----------------------------
