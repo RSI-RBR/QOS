@@ -18,6 +18,7 @@ extern void vectors(void);
 
 static void (*g_sdhost_irq_handler)(void) = 0;
 static volatile unsigned int g_kernel_preempt_depth = 0;
+static volatile unsigned long g_kernel_preempt_saved_daif = 0;
 
 #define MAX_BANK2_IRQ_HANDLERS 8
 static unsigned int g_bank2_irq_bits[MAX_BANK2_IRQ_HANDLERS];
@@ -76,18 +77,30 @@ void kernel_preempt_enter(void){
     unsigned long daif_prev;
     asm volatile("mrs %0, daif" : "=r"(daif_prev));
     asm volatile("msr daifset, #2");
+    if (g_kernel_preempt_depth == 0){
+        g_kernel_preempt_saved_daif = daif_prev;
+    }
     g_kernel_preempt_depth++;
-    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
+    // Sync exceptions (SVC) typically enter EL1 with IRQ masked. Unmask IRQ
+    // inside opted-in long kernel paths so timer IRQ can drive scheduling.
+    asm volatile("msr daifclr, #2" : : : "memory");
 }
 
 void kernel_preempt_exit(void){
-    unsigned long daif_prev;
-    asm volatile("mrs %0, daif" : "=r"(daif_prev));
+    unsigned long restore_daif = 0;
     asm volatile("msr daifset, #2");
     if (g_kernel_preempt_depth > 0){
         g_kernel_preempt_depth--;
+        if (g_kernel_preempt_depth == 0){
+            restore_daif = g_kernel_preempt_saved_daif;
+        }
     }
-    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
+    if (g_kernel_preempt_depth == 0){
+        asm volatile("msr daif, %0" : : "r"(restore_daif) : "memory");
+    } else{
+        // Keep IRQ enabled for outer opted-in region.
+        asm volatile("msr daifclr, #2" : : : "memory");
+    }
 }
 
 int kernel_preempt_enabled(void){
