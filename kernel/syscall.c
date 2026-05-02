@@ -364,6 +364,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
 
+        case SYS_GETPID:
+            frame[TF_X0] = (unsigned long)process_current_pid();
+            return frame_sp;
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;

@@ -15,11 +15,22 @@ void program_main(void){
 
     int screen_x = (int)qos_get_screen_width();
     int screen_y = (int)qos_get_screen_height();
+    int pid = qos_getpid();
+    if (pid < 0){
+        pid = 0;
+    }
     if (screen_x <= 0) screen_x = 1920;
     if (screen_y <= 0) screen_y = 1080;
 //    api->draw_rect(0, 0, 50, 50, 0x00FF0000);
     char running = 1;
-    struct screen_saver_cube cube; cube.lx = 0; cube.ly = 0; cube.vx = 1; cube.vy = 1; cube.c = 0x00FFFFFF; cube.sx = 50; cube.sy = 50;
+    struct screen_saver_cube cube;
+    cube.sx = 50;
+    cube.sy = 50;
+    cube.lx = (pid * 73) % (screen_x > cube.sx ? (screen_x - cube.sx) : 1);
+    cube.ly = (pid * 47) % (screen_y > cube.sy ? (screen_y - cube.sy) : 1);
+    cube.vx = (pid & 1) ? 1 : -1;
+    cube.vy = (pid & 2) ? 1 : -1;
+    cube.c = 0x00FFFFFF;
     while (running){
 //        api->clear(0x00000000);
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);

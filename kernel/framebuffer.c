@@ -1,6 +1,7 @@
 #include "framebuffer.h"
 #include "mailbox.h"
 #include "uart.h"
+#include "spinlock.h"
 
 #define MAX_WIDTH 1920
 #define MAX_HEIGHT 1080
@@ -19,10 +20,12 @@ static unsigned int back_buffer[MAX_HEIGHT][MAX_WIDTH] __attribute__((aligned(64
 
 static unsigned long modified_pixel_count = 0;
 static unsigned int modified_pixel_coords[2][MAX_TRACKED_PIXELS];
+static spinlock_t g_fb_lock;
 
 //static volatile unsigned int mbox[36] __attribute__((aligned(16)));
 
 void fb_init(){
+    spinlock_init(&g_fb_lock);
     mbox[0] = 35 * 4;
     mbox[1] = 0;
 
@@ -95,6 +98,7 @@ static inline void fb_draw_pixel_fast(unsigned int x, unsigned int y, unsigned i
 }
 
 void fb_init_buffers(void){
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
     for (unsigned long y = 0; y < height; y++){
         for (unsigned long x = 0; x < width; x++){
 //            front_buffer[x][y] = 0x00000000;
@@ -105,6 +109,7 @@ void fb_init_buffers(void){
         modified_pixel_coords[0][i] = 0;
         modified_pixel_coords[1][i] = 0;
     }
+    spin_unlock_irqrestore(&g_fb_lock, irq);
 }
 
 void fb_edit_buffer_pixel(unsigned int x, unsigned int y, unsigned int colour){
@@ -168,6 +173,7 @@ void fb_edit_buffer_pixel_fast(unsigned int x, unsigned int y, unsigned int colo
 }
 
 void fb_update_buffer_pixels_fast(void){
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
     for (unsigned long i = 0; i < modified_pixel_count; i++){
         unsigned int x = modified_pixel_coords[0][i];
         unsigned int y = modified_pixel_coords[1][i];
@@ -181,9 +187,11 @@ void fb_update_buffer_pixels_fast(void){
         dirty_map[y][x] = 0;
     }
     modified_pixel_count = 0;
+    spin_unlock_irqrestore(&g_fb_lock, irq);
 }
 
 void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, unsigned int h, unsigned int colour){
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
     for (unsigned int j = 0; j < h; j++){
         unsigned int py = y + j;
         if (py >= height) break;
@@ -196,6 +204,7 @@ void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, un
             if (!dirty_map[py][px]){
                 dirty_map[py][px] = 1;
                 if (modified_pixel_count >= MAX_TRACKED_PIXELS){
+                    spin_unlock_irqrestore(&g_fb_lock, irq);
                     return;
                 }
                 modified_pixel_coords[0][modified_pixel_count] = px;
@@ -204,14 +213,17 @@ void fb_edit_buffer_rect_fast(unsigned int x, unsigned int y, unsigned int w, un
             }
         }
     }
+    spin_unlock_irqrestore(&g_fb_lock, irq);
 }
 
 void fb_clear(unsigned int color){
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
     for (unsigned int y = 0; y < height; y++){
         for (unsigned int x = 0; x < width; x++){
             fb_draw_pixel(x, y, color);
         }
     }
+    spin_unlock_irqrestore(&g_fb_lock, irq);
 }
 
 void fb_draw_pixel(unsigned int x, unsigned int y, unsigned int color){

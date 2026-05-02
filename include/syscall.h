@@ -37,7 +37,8 @@ enum {
     SYS_TTY_SET_OWNER = 29,
     SYS_TTY_RELEASE = 30,
     SYS_TTY_GET_OWNER = 31,
-    SYS_PROCESS_DUMP = 32
+    SYS_PROCESS_DUMP = 32,
+    SYS_GETPID = 33
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -179,6 +180,10 @@ static inline int qos_tty_get_owner(void){
 
 static inline void qos_process_dump(void){
     (void)qos_syscall0(SYS_PROCESS_DUMP);
+}
+
+static inline int qos_getpid(void){
+    return (int)qos_syscall0(SYS_GETPID);
 }
 
 static inline void qos_net_dump_stats(void){
