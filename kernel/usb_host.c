@@ -31,6 +31,7 @@
 #define HCINT(ch)         (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x08))
 #define HCINTMSK(ch)      (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x0C))
 #define HCTSIZ(ch)        (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x10))
+#define HCDMA(ch)         (*(volatile unsigned int*)(HC_REG_BASE(ch) + 0x14))
 
 // GRSTCTL bits
 #define GRSTCTL_CSRST        (1u << 0)
@@ -126,6 +127,9 @@
 
 #define USB_CTRL_EP_MPS_DEFAULT 8u
 #define USB_HUB_DESC_TYPE 0x29u
+#define USB_DMA_BUFFER_SIZE 2048u
+#define USB_DWC2_CHANNELS 8u
+#define GPU_UNCACHED_BASE 0xC0000000UL
 
 // USB 2.0 Hub class requests/features.
 #define HUB_REQ_GET_STATUS      0x00u
@@ -160,6 +164,8 @@ static int g_child_use_split = 0;
 static int g_child_low_speed = 0;
 static unsigned char g_status_dummy[4];
 static unsigned int g_preidle_fail_logs = 0;
+static int g_usb_dma_mode = 1;
+static unsigned char g_usb_dma_buffer[USB_DMA_BUFFER_SIZE] __attribute__((aligned(64)));
 
 static int usb_std_request(unsigned char dev_addr,
                            unsigned char bmRequestType,
@@ -176,6 +182,8 @@ static int usb_get_config_descriptor(unsigned char dev_addr,
                                      unsigned short* total_len_out);
 static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, unsigned char* hub_port);
 static int usb_target_is_low_speed(unsigned char dev_addr);
+static void usb_dcache_clean_invalidate_range(unsigned long start, unsigned long size);
+static void usb_dcache_invalidate_range(unsigned long start, unsigned long size);
 
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
@@ -409,6 +417,58 @@ static void spin_delay(unsigned int n){
     }
 }
 
+static unsigned long usb_cache_line_size(void){
+    unsigned long ctr;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    return 4UL << ((ctr >> 16) & 0xFUL);
+}
+
+static void usb_dcache_clean_invalidate_range(unsigned long start, unsigned long size){
+    if (size == 0){
+        return;
+    }
+    unsigned long line = usb_cache_line_size();
+    unsigned long addr = start & ~(line - 1);
+    unsigned long end = (start + size + line - 1) & ~(line - 1);
+    for (; addr < end; addr += line){
+        asm volatile("dc civac, %0" : : "r"(addr) : "memory");
+    }
+    asm volatile("dsb ish");
+}
+
+static void usb_dcache_invalidate_range(unsigned long start, unsigned long size){
+    if (size == 0){
+        return;
+    }
+    unsigned long line = usb_cache_line_size();
+    unsigned long addr = start & ~(line - 1);
+    unsigned long end = (start + size + line - 1) & ~(line - 1);
+    for (; addr < end; addr += line){
+        asm volatile("dc ivac, %0" : : "r"(addr) : "memory");
+    }
+    asm volatile("dsb ish");
+}
+
+static unsigned int usb_bus_address(const void* p){
+    unsigned long addr = (unsigned long)p;
+    return (unsigned int)((addr & ~0xC0000000UL) | GPU_UNCACHED_BASE);
+}
+
+static void usb_copy_to_dma(const unsigned char* src, unsigned int len){
+    for (unsigned int i = 0; i < len; i++){
+        g_usb_dma_buffer[i] = src ? src[i] : 0;
+    }
+}
+
+static void usb_copy_from_dma(unsigned char* dst, unsigned int len){
+    if (!dst){
+        return;
+    }
+    for (unsigned int i = 0; i < len; i++){
+        dst[i] = g_usb_dma_buffer[i];
+    }
+}
+
 static int wait_mask_set(volatile unsigned int* reg, unsigned int mask, unsigned int loops){
     while (loops--){
         if ((*reg) & mask){
@@ -512,6 +572,23 @@ static int hc_force_halt(unsigned int ch){
     return -1;
 }
 
+static void usb_halt_all_channels(void){
+    for (unsigned int ch = 0; ch < USB_DWC2_CHANNELS; ch++){
+        HCINTMSK(ch) = 0;
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCSPLT(ch) = 0;
+        HCCHAR(ch) = (HCCHAR(ch) & ~HCCHAR_EPDIR) | HCCHAR_CHDIS;
+    }
+    for (unsigned int ch = 0; ch < USB_DWC2_CHANNELS; ch++){
+        unsigned int hcchar = (HCCHAR(ch) & ~HCCHAR_EPDIR) | HCCHAR_CHENA | HCCHAR_CHDIS;
+        HCCHAR(ch) = hcchar;
+        (void)hc_wait_idle(ch, 500000);
+        HCINT(ch) = 0xFFFFFFFFu;
+        HCINTMSK(ch) = 0;
+        HCSPLT(ch) = 0;
+    }
+}
+
 static void clear_port_change_bits(void){
     unsigned int hprt = HPRT0;
     hprt &= ~(HPRT0_ENA | HPRT0_CONN_DET | HPRT0_ENA_CHG | HPRT0_OVRCURR_CHG | HPRT0_RESET);
@@ -568,7 +645,7 @@ static int hc_wait_for_done(unsigned int ch,
     }
 
     while (loops--){
-        if (is_in && (GINTSTS & GINTSTS_RXFLVL)){
+        if (!g_usb_dma_mode && is_in && (GINTSTS & GINTSTS_RXFLVL)){
             unsigned int rxst = GRXSTSP;
             unsigned int rx_ch = rxst & GRXSTSP_CHNUM_MASK;
             unsigned int pktsts = (rxst & GRXSTSP_PKTSTS_MASK) >> GRXSTSP_PKTSTS_SHIFT;
@@ -659,10 +736,22 @@ static int hc_transfer_reg(unsigned int ch,
                            unsigned char* in_data,
                            unsigned int in_len,
                            unsigned int hcsplt_reg){
+    if (ep_mps == 0){
+        ep_mps = USB_CTRL_EP_MPS_DEFAULT;
+    }
+
     unsigned int xfer_len = ep_in ? in_len : out_len;
     unsigned int pktcnt = (xfer_len == 0) ? 1u : div_round_up(xfer_len, ep_mps ? ep_mps : 1u);
     if (pktcnt == 0){
         pktcnt = 1;
+    }
+    unsigned int programmed_len = xfer_len;
+    if (ep_in && xfer_len > 0){
+        programmed_len = pktcnt * ep_mps;
+    }
+    if (programmed_len > USB_DMA_BUFFER_SIZE){
+        uart_puts("USB: EP0 DMA buffer too small\n");
+        return -1;
     }
 
     // Ensure channel is idle before programming a new transfer.
@@ -696,10 +785,23 @@ static int hc_transfer_reg(unsigned int ch,
         HCINTMSK(ch) = HCINT_XFERCOMPL | HCINT_CHHLTD | HCINT_ERROR_MASK | HCINT_NAK | HCINT_ACK | HCINT_NYET;
         HCSPLT(ch) = hcsplt_reg;
 
-        unsigned int hctsiz = (xfer_len & HCTSIZ_XFERSIZE_MASK)
+        unsigned int hctsiz = (programmed_len & HCTSIZ_XFERSIZE_MASK)
             | (pktcnt << HCTSIZ_PKTCNT_SHIFT)
             | ((pid & 0x3u) << HCTSIZ_PID_SHIFT);
         HCTSIZ(ch) = hctsiz;
+
+        if (g_usb_dma_mode){
+            if (ep_in){
+                usb_copy_to_dma(0, programmed_len);
+            } else if (out_len > 0){
+                usb_copy_to_dma(out_data, out_len);
+            } else{
+                usb_copy_to_dma(0, 4);
+            }
+            usb_dcache_clean_invalidate_range((unsigned long)g_usb_dma_buffer,
+                                              programmed_len ? programmed_len : 4);
+            HCDMA(ch) = usb_bus_address(g_usb_dma_buffer);
+        }
 
         unsigned int hcchar = (ep_mps & HCCHAR_MPS_MASK)
             | ((0u & 0xFu) << HCCHAR_EPNUM_SHIFT)
@@ -718,7 +820,7 @@ static int hc_transfer_reg(unsigned int ch,
 
         HCCHAR(ch) = hcchar;
 
-        if (!ep_in && out_len > 0 && out_data){
+        if (!g_usb_dma_mode && !ep_in && out_len > 0 && out_data){
             fifo_write_bytes(out_data, out_len);
         }
 
@@ -729,6 +831,15 @@ static int hc_transfer_reg(unsigned int ch,
         unsigned int done_hcint = 0;
         int rc = hc_wait_for_done(ch, ep_in, in_data, in_len, &done_hcint);
         if (rc == 0){
+            if (g_usb_dma_mode && ep_in && in_data && in_len > 0){
+                usb_dcache_invalidate_range((unsigned long)g_usb_dma_buffer, programmed_len);
+                unsigned int remaining = HCTSIZ(ch) & HCTSIZ_XFERSIZE_MASK;
+                unsigned int actual = (programmed_len >= remaining) ? (programmed_len - remaining) : in_len;
+                if (actual > in_len){
+                    actual = in_len;
+                }
+                usb_copy_from_dma(in_data, actual);
+            }
             g_preidle_fail_logs = 0;
             return 0;
         }
@@ -940,15 +1051,15 @@ int usb_host_init(void){
 
     // Clear and mask interrupts for phase 1 polling path.
     GINTSTS = 0xFFFFFFFFu;
-    GINTMSK = GINTSTS_HCHINT | GINTSTS_RXFLVL;
+    GINTMSK = GINTSTS_HCHINT;
     HAINTMSK = 0xFFFFFFFFu;
-    // Force slave mode path: our host transfer code uses FIFO IO (no HCDMA).
-    GAHBCFG &= ~GAHBCFG_DMA_EN;
-    GAHBCFG |= GAHBCFG_GLBL_INTR_EN;
+    // Circle/U-Boot style path: use DWC2 internal DMA with a small EP0 bounce buffer.
+    GAHBCFG |= GAHBCFG_GLBL_INTR_EN | GAHBCFG_DMA_EN;
 
     // Match common DWC2 HS PHY host setup used by Linux/U-Boot on BCM SoCs.
     HCFG = (HCFG & ~HCFG_FSLSPCLKSEL_MASK) | HCFG_FSLSPCLKSEL_30_60_MHZ;
     (void)HFIR;
+    usb_halt_all_channels();
 
     // Enable port power, preserving write-1-to-clear bits.
     unsigned int hprt = HPRT0;
