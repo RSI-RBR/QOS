@@ -6,7 +6,7 @@
 static char g_buf[BUF_SIZE];
 static int g_len = 0;
 static int g_tty_owned = 1;
-static int g_shell_pid = 0;
+static int g_shell_pid = -1;
 
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
@@ -32,6 +32,17 @@ static int str_starts_with(const char* s, const char* prefix){
 
 static void print_prompt(void){
     qos_puts("\nUQOS> ");
+}
+
+static int shell_claim_tty(void){
+    int rc = qos_tty_claim_self();
+    if (rc == 0){
+        g_tty_owned = 1;
+        if (g_shell_pid < 0){
+            g_shell_pid = qos_getpid();
+        }
+    }
+    return rc;
 }
 
 static void print_uint(unsigned int v){
@@ -311,23 +322,25 @@ static void execute_line(void){
 void program_main(void){
     g_shell_pid = qos_getpid();
     if (g_shell_pid < 0){
-        g_shell_pid = 0;
+        g_shell_pid = -1;
     }
     // Claim foreground console ownership explicitly on startup.
-    (void)qos_tty_set_owner(g_shell_pid);
-    g_tty_owned = 1;
+    (void)shell_claim_tty();
 
     qos_puts("User shell ready.");
     print_prompt();
 
     while (1){
+        if (g_shell_pid < 0){
+            g_shell_pid = qos_getpid();
+        }
         int owner = qos_tty_get_owner();
-        int shell_has_tty = (owner == g_shell_pid);
+        int shell_has_tty = (g_shell_pid >= 0 && owner == g_shell_pid);
         // Recover ownership when console is unowned or owned by a dead/exited task.
         if (!shell_has_tty){
-            if (qos_tty_set_owner(g_shell_pid) == 0){
-                owner = g_shell_pid;
-                shell_has_tty = 1;
+            if (shell_claim_tty() == 0){
+                owner = qos_tty_get_owner();
+                shell_has_tty = (g_shell_pid >= 0 && owner == g_shell_pid);
             }
         }
         if (shell_has_tty && !g_tty_owned){

@@ -1,10 +1,19 @@
 #include "memory.h"
 #include "uart.h"
+#include "mailbox.h"
+#include "spinlock.h"
 
-#define HEAP_SIZE (16 * 1024 * 1024) // 16MB stable baseline
+#define HEAP_FALLBACK_SIZE (16UL * 1024UL * 1024UL)
+#define HEAP_MIN_SIZE      (2UL * 1024UL * 1024UL)
+#define HEAP_ALIGN         16UL
 #define BLOCK_MAGIC 0xB10CB10CUL
+// Keep in sync with loader PROGRAM_POOL_START.
+#define HEAP_HARD_STOP     0x08000000UL
 
-static unsigned char heap[HEAP_SIZE];
+static unsigned char heap_fallback[HEAP_FALLBACK_SIZE] __attribute__((aligned(16)));
+static unsigned char* heap_base = heap_fallback;
+static unsigned long heap_size = HEAP_FALLBACK_SIZE;
+static spinlock_t heap_lock;
 
 typedef struct block {
     unsigned long magic;
@@ -17,15 +26,61 @@ static block_t *free_list = 0;
 
 #define ALIGN16(x) (((x) + 15) & ~15)
 
-void memory_init(void){
-    free_list = (block_t*)heap;
+static unsigned long align_up(unsigned long v, unsigned long a){
+    return (v + (a - 1UL)) & ~(a - 1UL);
+}
 
+static void heap_init_region(unsigned char* base, unsigned long size){
+    heap_base = base;
+    heap_size = size;
+    free_list = (block_t*)heap_base;
     free_list->magic = BLOCK_MAGIC;
-    free_list->size = HEAP_SIZE - sizeof(block_t);
+    free_list->size = heap_size - sizeof(block_t);
     free_list->free = 1;
     free_list->next = 0;
+}
+
+static int heap_init_dynamic(void){
+    extern unsigned long core3_stack_top;
+    unsigned int arm_base = 0;
+    unsigned int arm_size = 0;
+
+    if (mailbox_get_arm_memory(&arm_base, &arm_size) != 0 || arm_size == 0u){
+        return -1;
+    }
+
+    unsigned long dyn_start = align_up((unsigned long)&core3_stack_top + 0x1000UL, HEAP_ALIGN);
+    unsigned long dyn_end = (unsigned long)arm_base + (unsigned long)arm_size;
+    if (dyn_end > HEAP_HARD_STOP){
+        dyn_end = HEAP_HARD_STOP;
+    }
+    if (dyn_end <= dyn_start){
+        return -1;
+    }
+
+    unsigned long dyn_size = dyn_end - dyn_start;
+    dyn_size &= ~(HEAP_ALIGN - 1UL);
+    if (dyn_size < HEAP_MIN_SIZE || dyn_size <= sizeof(block_t)){
+        return -1;
+    }
+
+    heap_init_region((unsigned char*)dyn_start, dyn_size);
+    return 0;
+}
+
+void memory_init(void){
+    spinlock_init(&heap_lock);
+
+    if (heap_init_dynamic() != 0){
+        heap_init_region(heap_fallback, HEAP_FALLBACK_SIZE);
+    }
 
     uart_puts("Heap initialized\n");
+    uart_puts("Heap base=");
+    uart_puthex((unsigned int)(unsigned long)heap_base);
+    uart_puts(" size=");
+    uart_puthex((unsigned int)heap_size);
+    uart_puts("\n");
 }
 
 static void split_block(block_t *block, unsigned long size){
@@ -46,6 +101,7 @@ void *kmalloc(unsigned long size){
     }
 
     size = ALIGN16(size);
+    unsigned long irq = spin_lock_irqsave(&heap_lock);
 
     block_t *curr = free_list;
 
@@ -56,12 +112,15 @@ void *kmalloc(unsigned long size){
             }
 
             curr->free = 0;
-            return (void*)((unsigned char*)curr + sizeof(block_t));
+            void* out = (void*)((unsigned char*)curr + sizeof(block_t));
+            spin_unlock_irqrestore(&heap_lock, irq);
+            return out;
         }
 
         curr = curr->next;
     }
 
+    spin_unlock_irqrestore(&heap_lock, irq);
     uart_puts("kmalloc failed!\n");
     return 0;
 }
@@ -81,7 +140,7 @@ static void merge_blocks(){
 
 static int ptr_in_heap(void *ptr){
     unsigned char *p = (unsigned char*)ptr;
-    return p >= (heap + sizeof(block_t)) && p < (heap + HEAP_SIZE);
+    return p >= (heap_base + sizeof(block_t)) && p < (heap_base + heap_size);
 }
 
 static block_t* ptr_to_block(void *ptr){
@@ -100,18 +159,22 @@ void kfree(void *ptr){
         return;
     }
 
+    unsigned long irq = spin_lock_irqsave(&heap_lock);
     block_t *block = ptr_to_block(ptr);
     if (!block){
+        spin_unlock_irqrestore(&heap_lock, irq);
         uart_puts("kfree invalid ptr\n");
         return;
     }
     if (block->free){
+        spin_unlock_irqrestore(&heap_lock, irq);
         uart_puts("kfree double free\n");
         return;
     }
     block->free = 1;
 
     merge_blocks();
+    spin_unlock_irqrestore(&heap_lock, irq);
 }
 
 void kfree_secure(void* ptr, unsigned long size){
@@ -119,12 +182,15 @@ void kfree_secure(void* ptr, unsigned long size){
         return;
     }
 
+    unsigned long irq = spin_lock_irqsave(&heap_lock);
     block_t *block = ptr_to_block(ptr);
     if (!block){
+        spin_unlock_irqrestore(&heap_lock, irq);
         uart_puts("kfree_secure invalid ptr\n");
         return;
     }
     if (block->free){
+        spin_unlock_irqrestore(&heap_lock, irq);
         uart_puts("kfree_secure double free\n");
         return;
     }
@@ -138,5 +204,7 @@ void kfree_secure(void* ptr, unsigned long size){
         p[i] = 0;
     }
 
-    kfree(ptr);
+    block->free = 1;
+    merge_blocks();
+    spin_unlock_irqrestore(&heap_lock, irq);
 }
