@@ -88,6 +88,7 @@ static void cmd_help(void){
     qos_puts(" run\n");
     qos_puts(" web\n");
     qos_puts(" ps\n");
+    qos_puts(" validate\n");
     qos_puts(" clear\n");
     qos_puts(" fbinfo\n");
     qos_puts(" usbstat\n");
@@ -241,6 +242,8 @@ static void execute_line(void){
     } else if (str_eq(g_buf, "netstat")){
         cmd_netstat();
     } else if (str_eq(g_buf, "ps")){
+        cmd_ps();
+    } else if (str_eq(g_buf, "validate")){
         cmd_ps();
     } else if (str_eq(g_buf, "ping")){
         cmd_ping();

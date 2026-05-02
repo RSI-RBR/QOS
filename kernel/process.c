@@ -22,6 +22,8 @@ static int zombie_pid[MAX_CPU_CORES];
 static unsigned int need_resched[MAX_CPU_CORES];
 static run_queue_t runq[MAX_CPU_CORES];
 static volatile int g_process_ready = 0;
+static unsigned long sched_ticks[MAX_CPU_CORES];
+static unsigned long double_run_blocked = 0;
 static int sleep_head = -1;
 static int sleep_next[MAX_PROCESSES];
 static unsigned char sleep_in_queue[MAX_PROCESSES];
@@ -41,6 +43,7 @@ extern volatile unsigned long system_ticks;
 static void runq_enqueue(unsigned int core, int pid);
 static void mark_need_resched_locked(unsigned int core_id);
 static int is_pid_pending_zombie(int pid);
+static int pid_running_on_other_core_locked(int pid, unsigned int core);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -330,6 +333,25 @@ static int is_pid_pending_zombie(int pid){
     return 0;
 }
 
+static int pid_running_on_other_core_locked(int pid, unsigned int core){
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        return 0;
+    }
+    for (unsigned int c = 0; c < MAX_CPU_CORES; c++){
+        if (c == core){
+            continue;
+        }
+        int cur = current_pid[c];
+        if (cur != pid){
+            continue;
+        }
+        if (processes[pid].state == PROC_RUNNING){
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void clear_process_descriptor(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES){
         return;
@@ -506,12 +528,20 @@ static process_t* scheduler_next_for_core(unsigned int core){
         return 0;
     }
 
-    int next = runq_dequeue_ready(core);
-    if (next < 0){
-        next = runq_steal_ready(core);
-    }
-    if (next < 0){
-        return 0;
+    int next = -1;
+    while (1){
+        next = runq_dequeue_ready(core);
+        if (next < 0){
+            next = runq_steal_ready(core);
+        }
+        if (next < 0){
+            return 0;
+        }
+        if (!pid_running_on_other_core_locked(next, core)){
+            break;
+        }
+        double_run_blocked++;
+        // This PID is still marked RUNNING on another core; skip it.
     }
 
     current_pid[core] = next;
@@ -530,6 +560,7 @@ static void mark_need_resched_locked(unsigned int core_id){
 void scheduler_tick(void){
     unsigned int core = scheduler_core_id();
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    sched_ticks[core]++;
     wake_due_sleepers_locked(core);
     mark_need_resched_locked(core);
     spin_unlock_irqrestore(&g_process_lock, irq);
@@ -569,8 +600,10 @@ void process_init(void){
         current_pid[core] = -1;
         zombie_pid[core] = -1;
         need_resched[core] = 0;
+        sched_ticks[core] = 0;
         runq_reset(core);
     }
+    double_run_blocked = 0;
     g_process_ready = 1;
 }
 
@@ -904,6 +937,20 @@ void process_dump(void){
     uart_puts("\n");
     uart_puts("ticks=");
     uart_puthex((unsigned int)system_ticks);
+    uart_puts("\n");
+    uart_puts("ONLINE_MASK=");
+    uart_puthex(smp_online_mask());
+    uart_puts("\n");
+    uart_puts("SCHED_TICKS ");
+    for (unsigned int core = 0; core < MAX_CPU_CORES; core++){
+        uart_send((char)('0' + (core & 0xF)));
+        uart_puts("=");
+        uart_puthex((unsigned int)sched_ticks[core]);
+        uart_puts(" ");
+    }
+    uart_puts("\n");
+    uart_puts("DOUBLE_RUN_BLOCKED=");
+    uart_puthex((unsigned int)double_run_blocked);
     uart_puts("\n");
     spin_unlock_irqrestore(&g_process_lock, irq);
 }
