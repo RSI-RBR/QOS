@@ -37,6 +37,36 @@ static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table[L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
 
+static unsigned long mmu_build_mair(void){
+    // MAIR index0: normal WBWA cacheable, index1: device nGnRnE.
+    return (0xFFUL << 0) | (0x00UL << 8);
+}
+
+static unsigned long mmu_build_tcr(void){
+    // TCR: TTBR0, 4KB granule, inner-shareable WBWA, 4GB VA space (T0SZ=32).
+    return (32UL << 0) | (0UL << 6) | (3UL << 8) | (1UL << 10) | (1UL << 12);
+}
+
+static void mmu_program_core_registers(void){
+    unsigned long mair = mmu_build_mair();
+    unsigned long tcr = mmu_build_tcr();
+
+    asm volatile("msr mair_el1, %0" : : "r"(mair));
+    asm volatile("msr tcr_el1, %0" : : "r"(tcr));
+    asm volatile("msr ttbr0_el1, %0" : : "r"(l1_table));
+    asm volatile("isb");
+}
+
+static void mmu_enable_current_core(void){
+    unsigned long sctlr;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr |= (1UL << 0);  // M
+    sctlr |= (1UL << 2);  // C
+    sctlr |= (1UL << 12); // I
+    asm volatile("msr sctlr_el1, %0" : : "r"(sctlr));
+    asm volatile("isb");
+}
+
 static void zero_tables(void){
     for (int i = 0; i < L1_ENTRIES; i++){
         l1_table[i] = 0;
@@ -116,36 +146,23 @@ void mmu_init(void){
         l2_table_1[i] = block_desc(pa1, is_device1 ? &kernel_device : &kernel_normal);
     }
 
-    // MAIR index0: normal WBWA cacheable, index1: device nGnRnE.
-    unsigned long mair =
-        (0xFFUL << 0) |   // AttrIdx 0
-        (0x00UL << 8);    // AttrIdx 1
-
-    // TCR: TTBR0, 4KB granule, inner-shareable WBWA, 4GB VA space (T0SZ=32).
-    unsigned long tcr =
-        (32UL << 0)  |    // T0SZ
-        (0UL << 6)   |    // TG0 = 4KB
-        (3UL << 8)   |    // SH0 = Inner shareable
-        (1UL << 10)  |    // ORGN0 = WBWA
-        (1UL << 12);      // IRGN0 = WBWA
-
     asm volatile("dsb ishst");
     asm volatile("tlbi vmalle1");
     asm volatile("dsb ish");
     asm volatile("isb");
 
-    asm volatile("msr mair_el1, %0" : : "r"(mair));
-    asm volatile("msr tcr_el1, %0" : : "r"(tcr));
-    asm volatile("msr ttbr0_el1, %0" : : "r"(l1_table));
-    asm volatile("isb");
+    mmu_program_core_registers();
+    mmu_enable_current_core();
+}
 
-    unsigned long sctlr;
-    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr |= (1UL << 0);  // M
-    sctlr |= (1UL << 2);  // C
-    sctlr |= (1UL << 12); // I
-    asm volatile("msr sctlr_el1, %0" : : "r"(sctlr));
+void mmu_enable_secondary(void){
+    // Reuse primary-built tables; each core must still program its own EL1 MMU regs.
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
     asm volatile("isb");
+    mmu_program_core_registers();
+    mmu_enable_current_core();
 }
 
 void mmu_map_device_region(unsigned long pa_start, unsigned long size){

@@ -126,29 +126,6 @@ int net_init(void){
     g_net_ready = 1;
     net_proto_init();
     net_proto_configure_defaults();
-    uart_puts("NET: initialized with driver ");
-    uart_puts(g_nic->name ? g_nic->name : "unknown");
-    uart_puts("\n");
-
-    if (g_nic->name &&
-        g_nic->name[0] == 's' &&
-        g_nic->name[1] == 't' &&
-        g_nic->name[2] == 'u' &&
-        g_nic->name[3] == 'b'){
-        usb_root_device_info_t root_info;
-        if (usb_host_get_root_device_info(&root_info) == 0 &&
-            root_info.vid == 0x0424 && root_info.pid == 0x9514 &&
-            root_info.configured){
-            uart_puts("NET: USB LAN9514 is enumerated; NIC datapath still using stub backend.\n");
-            if (root_info.child_present){
-                uart_puts("NET: LAN9514 downstream child VID=");
-                uart_puthex(root_info.child_vid);
-                uart_puts(" PID=");
-                uart_puthex(root_info.child_pid);
-                uart_puts(root_info.child_configured ? " (configured)\n" : " (not configured)\n");
-            }
-        }
-    }
     return 0;
 }
 

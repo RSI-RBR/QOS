@@ -3,24 +3,11 @@
 .global _start
 .global secondary_start
 
-.extern smp_boot_release_mask
-
 _start:
     mrs x19, mpidr_el1
     and x19, x19, #0xFF
     cbz x19, master
-
-secondary_park:
-    // Wait until core0 releases this core via smp_boot_release_mask bit.
-    ldr x1, =smp_boot_release_mask
-1:
-    ldr w2, [x1]
-    mov w3, #1
-    lsl w3, w3, w19
-    tst w2, w3
-    b.ne secondary_start
-    wfe
-    b 1b
+    b secondary_start
 
 master:
     // Clear BSS once on core0.
@@ -30,7 +17,6 @@ master:
     bl memzero
 
     bl set_core_stack
-    bl program_secondary_mailboxes
 
     // Initialize stack guard at core0 stack bottom.
     ldr x0, =stack_bottom
@@ -141,14 +127,3 @@ set_core_stack:
     mov sp, x0
     ret
 
-program_secondary_mailboxes:
-    // Raspberry Pi local core mailbox-3 wakeup addresses.
-    ldr x0, =_start
-    ldr x1, =0x4000009C   // CORE1_MBOX3_SET
-    str w0, [x1]
-    ldr x1, =0x400000AC   // CORE2_MBOX3_SET
-    str w0, [x1]
-    ldr x1, =0x400000BC   // CORE3_MBOX3_SET
-    str w0, [x1]
-    sev
-    ret

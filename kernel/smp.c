@@ -10,9 +10,23 @@
 #define SPIN_CPU2 (*(volatile unsigned long*)0x000000E8UL)
 #define SPIN_CPU3 (*(volatile unsigned long*)0x000000F0UL)
 
-volatile unsigned int smp_boot_release_mask = 0;
-
 extern void _start(void);
+
+static unsigned long cache_line_size(void){
+    unsigned long ctr;
+    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+    return 4UL << ((ctr >> 16) & 0xFUL);
+}
+
+static void dcache_clean_poc(unsigned long start, unsigned long size){
+    unsigned long line = cache_line_size();
+    unsigned long addr = start & ~(line - 1UL);
+    unsigned long end = (start + size + line - 1UL) & ~(line - 1UL);
+    for (; addr < end; addr += line){
+        asm volatile("dc cvac, %0" : : "r"(addr) : "memory");
+    }
+    asm volatile("dsb ishst" : : : "memory");
+}
 
 void smp_release_secondary_cores(void){
     unsigned long entry64 = (unsigned long)&_start;
@@ -28,8 +42,8 @@ void smp_release_secondary_cores(void){
     CORE2_MBOX3_SET = entry32;
     CORE3_MBOX3_SET = entry32;
 
-    // Allow cores 1..3 to leave boot park loop.
-    smp_boot_release_mask = 0x0EU;
+    // Ensure spin-table writes are visible to parked cores before wakeup.
+    dcache_clean_poc(0x000000E0UL, 24UL);
     asm volatile("dmb ishst" : : : "memory");
     asm volatile("sev");
 }

@@ -78,13 +78,12 @@ void kernel_secondary_main(void){
         :
         : "x0");
 
-    mmu_init();
+    mmu_enable_secondary();
     interrupt_init();
-    enable_interrupts();
-
     uart_puts("Secondary core online: ");
     uart_send((char)('0' + (cpu_get_id() & 0xF)));
     uart_puts("\n");
+    enable_interrupts();
 
     while (1){
         asm volatile("wfi");
@@ -127,49 +126,13 @@ void kernel_main(void){
     if (usb_host_init() != 0){
         uart_puts("USB host init failed (network over onboard ETH unavailable).\n");
     } else{
-        if (usb_host_enumerate_root_device() == 0){
-            usb_root_device_info_t root_info;
-            if (usb_host_get_root_device_info(&root_info) == 0){
-                uart_puts("USB: enumerated root VID=");
-                uart_puthex(root_info.vid);
-                uart_puts(" PID=");
-                uart_puthex(root_info.pid);
-                uart_puts(" CLASS=");
-                uart_puthex(root_info.dev_class);
-                uart_puts(" CFG=");
-                uart_puthex(root_info.config_value);
-                uart_puts(root_info.configured ? " (set)\n" : " (not set)\n");
-
-                if (root_info.vid == 0x0424 && root_info.pid == 0x9514){
-                    uart_puts("USB: LAN9514 hub detected; next phase is hub downstream enumeration.\n");
-                    if (root_info.child_present){
-                        uart_puts("USB: LAN9514 child VID=");
-                        uart_puthex(root_info.child_vid);
-                        uart_puts(" PID=");
-                        uart_puthex(root_info.child_pid);
-                        uart_puts(" CLASS=");
-                        uart_puthex(root_info.child_class);
-                        uart_puts(root_info.child_configured ? " (configured)\n" : " (not configured)\n");
-                    }
-                }
-            }
-        } else{
+        if (usb_host_enumerate_root_device() != 0){
             uart_puts("USB: root enumeration failed.\n");
-            unsigned char dev_desc[18];
-            if (usb_host_read_device_descriptor(dev_desc, sizeof(dev_desc)) == 0){
-                uart_puts("USB: fallback desc VID=");
-                uart_puthex((unsigned int)dev_desc[9] << 8 | dev_desc[8]);
-                uart_puts(" PID=");
-                uart_puthex((unsigned int)dev_desc[11] << 8 | dev_desc[10]);
-                uart_puts("\n");
-            }
         }
     }
 
     if (net_init() != 0){
         uart_puts("NET init failed (continuing without NIC).\n");
-    } else{
-        net_dump_stats();
     }
     socket_layer_init();
     console_init();

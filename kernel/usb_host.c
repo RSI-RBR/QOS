@@ -1,6 +1,13 @@
 #include "usb_host.h"
 #include "uart.h"
 
+#define USBHOST_VERBOSE 0
+#if USBHOST_VERBOSE == 0
+#define uart_puts(...) ((void)0)
+#define uart_puthex(...) ((void)0)
+#define uart_putdec(...) ((void)0)
+#endif
+
 // Raspberry Pi USB OTG (DWC2) base on Pi 2/3 peripheral map.
 #define USB_DWC2_BASE 0x3F980000UL
 
