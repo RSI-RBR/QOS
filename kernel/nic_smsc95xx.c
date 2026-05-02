@@ -420,10 +420,9 @@ static int smsc95xx_send(const unsigned char* frame, unsigned int len){
         return -1;
     }
 
+    // LAN95xx TX command length fields describe the real Ethernet frame length
+    // and must not include software padding bytes.
     unsigned int frame_len = len;
-    if (frame_len < ETH_MIN_FRAME_LEN){
-        frame_len = ETH_MIN_FRAME_LEN;
-    }
     unsigned int total = frame_len + 8u;
     if (total > sizeof(g_tx_buf)){
         return -1;
