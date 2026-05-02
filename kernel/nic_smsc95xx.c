@@ -59,6 +59,8 @@ static unsigned short g_bulk_in_mps = 0;
 static unsigned short g_bulk_out_mps = 0;
 static int g_ready = 0;
 static unsigned int g_id_rev = 0;
+static unsigned long g_rx_frames = 0;
+static unsigned long g_rx_parse_miss = 0;
 static unsigned char g_mac[ETH_ADDR_LEN] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
 static unsigned char g_rx_buf[SMSC95XX_RX_BUF_SIZE] __attribute__((aligned(64)));
 static unsigned char g_tx_buf[SMSC95XX_TX_BUF_SIZE] __attribute__((aligned(64)));
@@ -208,8 +210,9 @@ static int smsc95xx_start_chip(void){
         return -1;
     }
     value |= SMSC95XX_HW_CFG_BIR | SMSC95XX_HW_CFG_MEF | SMSC95XX_HW_CFG_BCE;
+    // Keep RX offset at 0 for now so each RX payload begins directly with
+    // Ethernet header after the 4-byte RX status word.
     value &= ~SMSC95XX_HW_CFG_RXDOFF;
-    value |= (2u << 9); // Align received IP payloads on a word boundary.
     if (smsc95xx_write_reg(SMSC95XX_REG_HW_CFG, value) != 0){
         return -1;
     }
@@ -260,6 +263,8 @@ static int smsc95xx_init(void){
     g_bulk_in_mps = 0;
     g_bulk_out_mps = 0;
     g_id_rev = 0;
+    g_rx_frames = 0;
+    g_rx_parse_miss = 0;
 
     if (usb_host_get_root_device_info(&info) != 0){
         uart_puts("SMSC95XX: root device info unavailable\n");
@@ -378,11 +383,13 @@ static int smsc95xx_poll(void){
             unsigned int rx_len = (status & SMSC95XX_RX_STS_FRAME_LEN) >> SMSC95XX_RX_STS_LEN_SHIFT;
             off += 4;
             if (rx_len < 4 || off + rx_len > (unsigned int)n){
+                g_rx_parse_miss++;
                 break;
             }
             if ((status & SMSC95XX_RX_STS_ERROR) == 0){
                 unsigned int frame_len = rx_len - 4u; // Strip Ethernet FCS.
                 if (frame_len > 0 && frame_len <= ETH_MAX_FRAME_LEN){
+                    g_rx_frames++;
                     g_rx_handler(&g_rx_buf[off], frame_len);
                     delivered++;
                 }
