@@ -67,15 +67,15 @@ void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
 
 void net_proto_dump_stats(void){
     uart_puts("L2 rx=");
-    uart_puthex((unsigned int)g_np_stats.eth_total);
+    uart_putdec(g_np_stats.eth_total);
     uart_puts(" arp=");
-    uart_puthex((unsigned int)g_np_stats.eth_arp);
+    uart_putdec(g_np_stats.eth_arp);
     uart_puts(" ip=");
-    uart_puthex((unsigned int)g_np_stats.eth_ipv4);
+    uart_putdec(g_np_stats.eth_ipv4);
     uart_puts(" other=");
-    uart_puthex((unsigned int)g_np_stats.eth_other);
+    uart_putdec(g_np_stats.eth_other);
     uart_puts(" short=");
-    uart_puthex((unsigned int)g_np_stats.eth_short);
+    uart_putdec(g_np_stats.eth_short);
     uart_puts("\n");
     arp_dump_stats();
     ipv4_dump_stats();

@@ -236,14 +236,14 @@ int icmp_ping_gateway(unsigned int timeout_ms){
 
 void icmp_dump_stats(void){
     uart_puts("ICMP tx=");
-    uart_puthex((unsigned int)g_icmp_stats.tx_echo_req);
+    uart_putdec(g_icmp_stats.tx_echo_req);
     uart_puts(" rx_rep=");
-    uart_puthex((unsigned int)g_icmp_stats.rx_echo_rep);
+    uart_putdec(g_icmp_stats.rx_echo_rep);
     uart_puts(" other=");
-    uart_puthex((unsigned int)g_icmp_stats.rx_other);
+    uart_putdec(g_icmp_stats.rx_other);
     uart_puts(" bad=");
-    uart_puthex((unsigned int)g_icmp_stats.bad_reply);
+    uart_putdec(g_icmp_stats.bad_reply);
     uart_puts(" to=");
-    uart_puthex((unsigned int)g_icmp_stats.timeouts);
+    uart_putdec(g_icmp_stats.timeouts);
     uart_puts("\n");
 }

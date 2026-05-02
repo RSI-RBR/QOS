@@ -58,14 +58,14 @@ void ipv4_handle_frame(const unsigned char* frame, unsigned int len){
 
 void ipv4_dump_stats(void){
     uart_puts("IPv4 rx=");
-    uart_puthex((unsigned int)g_ipv4_stats.rx_total);
+    uart_putdec(g_ipv4_stats.rx_total);
     uart_puts(" valid=");
-    uart_puthex((unsigned int)g_ipv4_stats.rx_valid);
+    uart_putdec(g_ipv4_stats.rx_valid);
     uart_puts(" short=");
-    uart_puthex((unsigned int)g_ipv4_stats.rx_too_short);
+    uart_putdec(g_ipv4_stats.rx_too_short);
     uart_puts(" ver=");
-    uart_puthex((unsigned int)g_ipv4_stats.rx_bad_version);
+    uart_putdec(g_ipv4_stats.rx_bad_version);
     uart_puts(" ihl=");
-    uart_puthex((unsigned int)g_ipv4_stats.rx_bad_ihl);
+    uart_putdec(g_ipv4_stats.rx_bad_ihl);
     uart_puts("\n");
 }

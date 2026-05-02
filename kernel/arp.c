@@ -67,13 +67,13 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
         uart_puts("ARP reply from ");
-        uart_puthex((unsigned int)arp->spa[0]);
+        uart_putdec((unsigned long)arp->spa[0]);
         uart_puts(".");
-        uart_puthex((unsigned int)arp->spa[1]);
+        uart_putdec((unsigned long)arp->spa[1]);
         uart_puts(".");
-        uart_puthex((unsigned int)arp->spa[2]);
+        uart_putdec((unsigned long)arp->spa[2]);
         uart_puts(".");
-        uart_puthex((unsigned int)arp->spa[3]);
+        uart_putdec((unsigned long)arp->spa[3]);
         uart_puts(" mac=");
         for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
             unsigned char b = arp->sha[i];
@@ -199,17 +199,17 @@ void arp_periodic_tick(unsigned long now_ticks){
 
 void arp_dump_stats(void){
     uart_puts("ARP rx=");
-    uart_puthex((unsigned int)g_arp_stats.rx_total);
+    uart_putdec(g_arp_stats.rx_total);
     uart_puts(" valid=");
-    uart_puthex((unsigned int)g_arp_stats.rx_valid);
+    uart_putdec(g_arp_stats.rx_valid);
     uart_puts(" req=");
-    uart_puthex((unsigned int)g_arp_stats.rx_request);
+    uart_putdec(g_arp_stats.rx_request);
     uart_puts(" rep=");
-    uart_puthex((unsigned int)g_arp_stats.rx_reply);
+    uart_putdec(g_arp_stats.rx_reply);
     uart_puts(" bad=");
-    uart_puthex((unsigned int)g_arp_stats.rx_unsupported);
+    uart_putdec(g_arp_stats.rx_unsupported);
     uart_puts(" tx_req=");
-    uart_puthex((unsigned int)g_tx_req);
+    uart_putdec(g_tx_req);
     uart_puts(" gw=");
     uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts("\n");

@@ -255,15 +255,15 @@ void net_dump_stats(void){
     uart_puts(net_link_up() ? "up" : "down");
     uart_puts("\n");
     uart_puts("NET rx_ok=");
-    uart_puthex((unsigned int)g_stats.rx_ok);
+    uart_putdec(g_stats.rx_ok);
     uart_puts(" rx_drop=");
-    uart_puthex((unsigned int)g_stats.rx_drop);
+    uart_putdec(g_stats.rx_drop);
     uart_puts(" tx_ok=");
-    uart_puthex((unsigned int)g_stats.tx_ok);
+    uart_putdec(g_stats.tx_ok);
     uart_puts(" tx_fail=");
-    uart_puthex((unsigned int)g_stats.tx_fail);
+    uart_putdec(g_stats.tx_fail);
     uart_puts(" rxq=");
-    uart_puthex(g_rxq.count);
+    uart_putdec(g_rxq.count);
     uart_puts("\n");
     net_proto_dump_stats();
 }

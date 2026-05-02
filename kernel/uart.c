@@ -85,5 +85,24 @@ void uart_puthex(unsigned int val){
     }
 }
 
+void uart_putdec(unsigned long val){
+    char buf[21];
+    int i = 0;
+
+    if (val == 0){
+        uart_send('0');
+        return;
+    }
+
+    while (val > 0 && i < (int)sizeof(buf)){
+        buf[i++] = (char)('0' + (val % 10UL));
+        val /= 10UL;
+    }
+
+    while (i > 0){
+        uart_send(buf[--i]);
+    }
+}
+
 //void uart_puthex64(unsigned long value
 
