@@ -299,7 +299,8 @@ void program_main(void){
     while (1){
         int owner = qos_tty_get_owner();
         int shell_has_tty = (owner == g_shell_pid);
-        if (!shell_has_tty && owner < 0){
+        // Recover ownership when console is unowned or owned by a dead/exited task.
+        if (!shell_has_tty){
             if (qos_tty_set_owner(g_shell_pid) == 0){
                 owner = g_shell_pid;
                 shell_has_tty = 1;
