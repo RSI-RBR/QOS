@@ -23,7 +23,8 @@ enum {
     SYS_USB_DUMP_INFO = 16,
     SYS_NET_PING_GATEWAY = 17,
     SYS_NET_UDP_SEND_PROBE = 18,
-    SYS_NET_UDP_RECV = 19
+    SYS_NET_UDP_RECV = 19,
+    SYS_NET_UDP_SEND = 20
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -166,6 +167,19 @@ static inline int qos_net_udp_send_probe(void){
 
 static inline int qos_net_udp_recv(udp_meta_t* meta, unsigned char* out, unsigned int out_cap){
     return (int)qos_syscall3(SYS_NET_UDP_RECV, (unsigned long)meta, (unsigned long)out, (unsigned long)out_cap);
+}
+
+static inline int qos_net_udp_send(const unsigned char dst_ip[4],
+                                   unsigned short src_port,
+                                   unsigned short dst_port,
+                                   const unsigned char* data,
+                                   unsigned int len){
+    return (int)qos_syscall5(SYS_NET_UDP_SEND,
+                             (unsigned long)dst_ip,
+                             (unsigned long)src_port,
+                             (unsigned long)dst_port,
+                             (unsigned long)data,
+                             (unsigned long)len);
 }
 
 __attribute__((noreturn))

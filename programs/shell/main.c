@@ -46,6 +46,13 @@ static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[3]);
 }
 
+static void print_hex_u8(unsigned char v){
+    unsigned char hi = (unsigned char)((v >> 4) & 0x0Fu);
+    unsigned char lo = (unsigned char)(v & 0x0Fu);
+    qos_putc((char)(hi < 10 ? ('0' + hi) : ('A' + (hi - 10))));
+    qos_putc((char)(lo < 10 ? ('0' + lo) : ('A' + (lo - 10))));
+}
+
 static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
@@ -59,6 +66,8 @@ static void cmd_help(void){
     qos_puts(" ping\n");
     qos_puts(" udpprobe\n");
     qos_puts(" udprecv\n");
+    qos_puts(" udprecvhex\n");
+    qos_puts(" dnstest\n");
 }
 
 static void cmd_run(void){
@@ -170,6 +179,62 @@ static void cmd_udprecv(void){
     qos_puts("\"\n");
 }
 
+static void cmd_udprecvhex(void){
+    udp_meta_t meta;
+    unsigned char buf[512];
+    int n = qos_net_udp_recv(&meta, buf, sizeof(buf));
+    if (n <= 0){
+        qos_puts("UDP recv empty.\n");
+        return;
+    }
+
+    qos_puts("UDP src=");
+    print_ip4(meta.src_ip);
+    qos_putc(':');
+    print_uint((unsigned int)meta.src_port);
+    qos_puts(" dst=");
+    print_uint((unsigned int)meta.dst_port);
+    qos_puts(" len=");
+    print_uint((unsigned int)meta.len);
+    qos_puts("\nHEX: ");
+    for (int i = 0; i < n; i++){
+        print_hex_u8(buf[i]);
+        qos_putc(' ');
+    }
+    qos_puts("\n");
+}
+
+static void cmd_dnstest(void){
+    static const unsigned char dns_server[4] = {10, 0, 0, 1};
+    unsigned char q[64];
+    unsigned int i = 0;
+    int rc;
+
+    // DNS header
+    q[i++] = 0x51; q[i++] = 0x53; // ID
+    q[i++] = 0x01; q[i++] = 0x00; // RD=1
+    q[i++] = 0x00; q[i++] = 0x01; // QDCOUNT=1
+    q[i++] = 0x00; q[i++] = 0x00; // ANCOUNT=0
+    q[i++] = 0x00; q[i++] = 0x00; // NSCOUNT=0
+    q[i++] = 0x00; q[i++] = 0x00; // ARCOUNT=0
+
+    // QNAME: example.com
+    q[i++] = 7; q[i++] = 'e'; q[i++] = 'x'; q[i++] = 'a'; q[i++] = 'm'; q[i++] = 'p'; q[i++] = 'l'; q[i++] = 'e';
+    q[i++] = 3; q[i++] = 'c'; q[i++] = 'o'; q[i++] = 'm';
+    q[i++] = 0;
+
+    // QTYPE=A, QCLASS=IN
+    q[i++] = 0x00; q[i++] = 0x01;
+    q[i++] = 0x00; q[i++] = 0x01;
+
+    rc = qos_net_udp_send(dns_server, 4053u, 53u, q, i);
+    if (rc == 0){
+        qos_puts("DNS query sent (example.com to 10.0.0.1:53).\n");
+    } else{
+        qos_puts("DNS query send failed.\n");
+    }
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -198,6 +263,10 @@ static void execute_line(void){
         cmd_udpprobe();
     } else if (str_eq(g_buf, "udprecv")){
         cmd_udprecv();
+    } else if (str_eq(g_buf, "udprecvhex")){
+        cmd_udprecvhex();
+    } else if (str_eq(g_buf, "dnstest")){
+        cmd_dnstest();
     } else{
         qos_puts("Unknown command.\n");
     }

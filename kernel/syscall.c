@@ -230,6 +230,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                         (udp_meta_t*)frame[TF_X0]);
             return frame_sp;
 
+        case SYS_NET_UDP_SEND:
+            frame[TF_X0] = (unsigned long)udp_send((const unsigned char*)frame[TF_X0],
+                                                   (unsigned short)frame[TF_X1],
+                                                   (unsigned short)frame[TF_X2],
+                                                   (const unsigned char*)frame[TF_X3],
+                                                   (unsigned int)frame[TF_X4]);
+            return frame_sp;
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;
