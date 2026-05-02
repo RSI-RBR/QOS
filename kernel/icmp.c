@@ -16,6 +16,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
     unsigned long tx_echo_req;
+    unsigned long tx_retx;
     unsigned long rx_echo_rep;
     unsigned long rx_other;
     unsigned long timeouts;
@@ -80,6 +81,7 @@ static unsigned short inet_checksum(const unsigned char* data, unsigned int len)
 
 void icmp_init(void){
     g_icmp_stats.tx_echo_req = 0;
+    g_icmp_stats.tx_retx = 0;
     g_icmp_stats.rx_echo_rep = 0;
     g_icmp_stats.rx_other = 0;
     g_icmp_stats.timeouts = 0;
@@ -160,7 +162,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     unsigned long poll_div = 0;
     unsigned long freq;
     unsigned long start_cnt;
+    unsigned long resend_cnt;
     unsigned long timeout_cycles;
+    int did_retry = 0;
     unsigned long saved_daif;
 
     if (timeout_ms == 0){
@@ -245,6 +249,10 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     if (timeout_cycles == 0){
         timeout_cycles = freq / 10UL; // fallback ~100ms minimum window
     }
+    resend_cnt = timeout_cycles / 2UL;
+    if (resend_cnt == 0){
+        resend_cnt = timeout_cycles;
+    }
     // Fallback budget so ping can time out even if timer IRQ is stalled/masked.
     // Tuned conservatively to avoid hanging the shell forever in syscall path.
     spin_budget = ((unsigned long)timeout_ms * 1000000UL) + 1000000UL;
@@ -253,7 +261,15 @@ int icmp_ping_gateway(unsigned int timeout_ms){
             (void)net_poll();
         }
         unsigned long now_cnt = read_cntpct_lo();
-        if ((now_cnt - start_cnt) >= timeout_cycles){
+        unsigned long elapsed_cnt = now_cnt - start_cnt;
+        if (!did_retry && elapsed_cnt >= resend_cnt){
+            if (net_send_raw(frame, frame_len) == 0){
+                g_icmp_stats.tx_echo_req++;
+                g_icmp_stats.tx_retx++;
+            }
+            did_retry = 1;
+        }
+        if (elapsed_cnt >= timeout_cycles){
             g_ping_waiting = 0;
             g_icmp_stats.timeouts++;
             write_daif(saved_daif);
@@ -282,6 +298,8 @@ int icmp_ping_gateway(unsigned int timeout_ms){
 void icmp_dump_stats(void){
     uart_puts("ICMP tx=");
     uart_putdec(g_icmp_stats.tx_echo_req);
+    uart_puts(" retx=");
+    uart_putdec(g_icmp_stats.tx_retx);
     uart_puts(" rx_rep=");
     uart_putdec(g_icmp_stats.rx_echo_rep);
     uart_puts(" other=");
