@@ -3,6 +3,7 @@
 #include "socket.h"
 #include "console.h"
 #include "cpu.h"
+#include "spinlock.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -18,6 +19,7 @@ static process_t processes[MAX_PROCESSES];
 static int current_pid[MAX_CPU_CORES];
 static int zombie_pid[MAX_CPU_CORES];
 static run_queue_t runq[MAX_CPU_CORES];
+static spinlock_t g_process_lock;
 
 extern void restore_context_and_eret(void* frame_sp);
 extern volatile unsigned long system_ticks;
@@ -83,6 +85,7 @@ static void runq_enqueue(unsigned int core, int pid){
     }
 
     q->pid[q->tail] = pid;
+    asm volatile("dmb ishst" : : : "memory");
     q->tail = (q->tail + 1) % MAX_PROCESSES;
     q->count++;
 }
@@ -96,6 +99,7 @@ static int runq_dequeue_ready(unsigned int core){
     unsigned int checks = q->count;
     while (checks-- > 0 && q->count > 0){
         int pid = q->pid[q->head];
+        asm volatile("dmb ish" : : : "memory");
         q->pid[q->head] = -1;
         q->head = (q->head + 1) % MAX_PROCESSES;
         q->count--;
@@ -270,6 +274,7 @@ void scheduler_tick(void){
 }
 
 void process_init(void){
+    spinlock_init(&g_process_lock);
     for (int i = 0; i < MAX_PROCESSES; i++){
         clear_process_descriptor(i);
     }
@@ -314,6 +319,7 @@ void free_stack(void *stack){
 
 int process_create(program_entry_t entry){
     unsigned int owner_core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
 
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (is_pid_pending_zombie(i)){
@@ -323,6 +329,7 @@ int process_create(program_entry_t entry){
             void* stack = alloc_stack();
             if (!stack){
                 uart_puts("No stack available.\n");
+                spin_unlock_irqrestore(&g_process_lock, irq);
                 return -1;
             }
             processes[i].entry = entry;
@@ -341,9 +348,11 @@ int process_create(program_entry_t entry){
                 processes[i].regs[r] = 0;
             }
             runq_enqueue(owner_core, i);
+            spin_unlock_irqrestore(&g_process_lock, irq);
             return i;
         }
     }
+    spin_unlock_irqrestore(&g_process_lock, irq);
     return -1;
 }
 
@@ -355,24 +364,44 @@ int process_create_loaded(loaded_program_t prog){
 
     void* user_sp = loader_user_stack_top(prog.memory);
     if (!user_sp){
+        unsigned long irq = spin_lock_irqsave(&g_process_lock);
         reap_process_resources(pid);
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return -1;
     }
 
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    if (processes[pid].state == PROC_DEAD){
+        spin_unlock_irqrestore(&g_process_lock, irq);
+        if (prog.heap_allocated){
+            kfree_secure(prog.memory, prog.size);
+        } else{
+            volatile unsigned char* m = (volatile unsigned char*)prog.memory;
+            for (unsigned long i = 0; i < prog.size; i++){
+                m[i] = 0;
+            }
+            loader_free_program_memory(prog.memory, prog.size);
+        }
+        return -1;
+    }
     processes[pid].program_memory = prog.memory;
     processes[pid].program_size = prog.size;
     processes[pid].program_heap_alloc = prog.heap_allocated;
     processes[pid].user_mode = 1;
     processes[pid].user_sp = user_sp;
     processes[pid].sp = build_initial_context_el0(processes[pid].stack, (unsigned long)prog.entry, user_sp);
+    spin_unlock_irqrestore(&g_process_lock, irq);
     return pid;
 }
 
 void process_exit(int pid){
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     if (pid < 0 || pid >= MAX_PROCESSES){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
     if (processes[pid].state == PROC_DEAD){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
 
@@ -386,12 +415,15 @@ void process_exit(int pid){
     } else{
         reap_process_resources(pid);
     }
+    spin_unlock_irqrestore(&g_process_lock, irq);
 }
 
 void process_exit_current(void){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
 
@@ -400,8 +432,10 @@ void process_exit_current(void){
     current_pid[core] = -1;
 
     process_t* next = scheduler_next_for_core(core);
-    if (next){
-        restore_context_and_eret(next->sp);
+    void* next_sp = next ? next->sp : 0;
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    if (next_sp){
+        restore_context_and_eret(next_sp);
     }
 
     // No runnable task right now. Enable IRQs so timer can wake sleepers,
@@ -413,7 +447,9 @@ void process_exit_current(void){
 }
 
 void process_fault_current(void){
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     mark_current_for_reap(scheduler_core_id());
+    spin_unlock_irqrestore(&g_process_lock, irq);
 }
 
 process_t* get_process(int pid){
@@ -445,43 +481,55 @@ void schedule(void){
 
 void scheduler_run_once(void){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     reap_pending_zombie(core);
 
     if (current_pid[core] >= 0){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
 
     process_t* next = scheduler_next_for_core(core);
     if (!next){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
-
-    restore_context_and_eret(next->sp);
+    void* next_sp = next->sp;
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    restore_context_and_eret(next_sp);
 }
 
 void process_yield(void){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
 
     processes[pid].state = PROC_READY;
     runq_enqueue(core, pid);
+    spin_unlock_irqrestore(&g_process_lock, irq);
     asm volatile("wfi");
 }
 
 int scheduler_has_runnable(void){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid >= 0 && pid < MAX_PROCESSES && processes[pid].state == PROC_RUNNING){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return 1;
     }
-    return runq_has_ready(core);
+    int r = runq_has_ready(core);
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return r;
 }
 
 void* scheduler_on_irq(void* irq_frame_sp){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int cur = current_pid[core];
 
     reap_pending_zombie(core);
@@ -507,8 +555,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
     } else{
         process_t* next = scheduler_next_for_core(core);
         if (next){
-            return next->sp;
+            void* out_sp = next->sp;
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            return out_sp;
         }
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return irq_frame_sp;
     }
 
@@ -520,6 +571,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
                 // current_pid/state; treat sleep as a no-op in this edge case.
                 processes[cur].state = PROC_RUNNING;
                 processes[cur].wake_tick = 0;
+                spin_unlock_irqrestore(&g_process_lock, irq);
                 return irq_frame_sp;
             }
             if (processes[cur].state == PROC_DEAD){
@@ -531,22 +583,28 @@ void* scheduler_on_irq(void* irq_frame_sp){
         } else{
             current_pid[core] = -1;
         }
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return irq_frame_sp;
     }
 
     reap_pending_zombie(core);
-    return next->sp;
+    void* out_sp = next->sp;
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    return out_sp;
 }
 
 void process_sleep(unsigned int ms){
     unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
+        spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
 
     processes[pid].wake_tick = system_ticks + ms;
     processes[pid].state = PROC_SLEEPING;
+    spin_unlock_irqrestore(&g_process_lock, irq);
 
     // Block cooperatively until the timer IRQ path wakes us.
     while (processes[pid].state == PROC_SLEEPING){
@@ -555,6 +613,7 @@ void process_sleep(unsigned int ms){
 }
 
 void process_dump(void){
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     uart_puts("PID STATE CORE WAKE\n");
     for (int i = 0; i < MAX_PROCESSES; i++){
         uart_send('0' + i);
@@ -586,4 +645,5 @@ void process_dump(void){
     uart_puts("ticks=");
     uart_puthex((unsigned int)system_ticks);
     uart_puts("\n");
+    spin_unlock_irqrestore(&g_process_lock, irq);
 }

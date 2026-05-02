@@ -4,6 +4,7 @@
 #include "net.h"
 #include "timer.h"
 #include "tcp.h"
+#include "spinlock.h"
 
 #define SOCKET_MAX_GLOBAL 32
 #define SOCKET_MAX_PER_PROCESS 8
@@ -31,6 +32,7 @@ typedef struct {
 static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
 static int g_fd_map[MAX_PROCESSES][SOCKET_MAX_PER_PROCESS];
 static unsigned short g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
+static spinlock_t g_socket_lock;
 
 static unsigned char ascii_lower(unsigned char c){
     if (c >= 'A' && c <= 'Z'){
@@ -200,6 +202,8 @@ static int lookup_socket_index(int pid, int fd){
 }
 
 void socket_layer_init(void){
+    spinlock_init(&g_socket_lock);
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
     for (int i = 0; i < SOCKET_MAX_GLOBAL; i++){
         clear_socket(&g_sockets[i]);
@@ -209,12 +213,14 @@ void socket_layer_init(void){
             g_fd_map[p][fd] = -1;
         }
     }
+    spin_unlock_irqrestore(&g_socket_lock, irq);
 }
 
 void socket_close_all_for_pid(int pid){
     if (!valid_pid(pid)){
         return;
     }
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     for (int fd = 0; fd < SOCKET_MAX_PER_PROCESS; fd++){
         int si = g_fd_map[pid][fd];
         if (si >= 0 && si < SOCKET_MAX_GLOBAL){
@@ -222,6 +228,7 @@ void socket_close_all_for_pid(int pid){
         }
         g_fd_map[pid][fd] = -1;
     }
+    spin_unlock_irqrestore(&g_socket_lock, irq);
 }
 
 int ksocket_create(int pid, int domain, int type, int protocol){
@@ -234,14 +241,17 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     if (type != QOS_SOCK_DGRAM && type != QOS_SOCK_STREAM){
         return -1;
     }
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
 
     int si = allocate_global_socket();
     if (si < 0){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
     int fd = allocate_process_fd(pid);
     if (fd < 0){
         clear_socket(&g_sockets[si]);
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
 
@@ -263,17 +273,21 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     s->stream_rx_off = 0;
 
     g_fd_map[pid][fd] = si;
+    spin_unlock_irqrestore(&g_socket_lock, irq);
     return fd;
 }
 
 int ksocket_connect(int pid, int fd, const qos_sockaddr_in_t* addr, unsigned int addr_len){
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
     if (si < 0 || !addr || addr_len < sizeof(qos_sockaddr_in_t)){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
 
     kernel_socket_t* s = &g_sockets[si];
     if (addr->family != QOS_AF_INET || addr->port == 0){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
     s->remote_port = addr->port;
@@ -282,129 +296,176 @@ int ksocket_connect(int pid, int fd, const qos_sockaddr_in_t* addr, unsigned int
     s->remote_ip[2] = addr->addr[2];
     s->remote_ip[3] = addr->addr[3];
     s->connected = 1;
+    spin_unlock_irqrestore(&g_socket_lock, irq);
     return 0;
 }
 
 int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, unsigned int flags){
     (void)flags;
+    unsigned short local_port = 0;
+    unsigned short remote_port = 0;
+    unsigned char remote_ip[4] = {0, 0, 0, 0};
+    int type = 0;
+
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
     if (si < 0 || !data || len == 0){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
 
     kernel_socket_t* s = &g_sockets[si];
     if (!s->connected){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
 
-    if (s->type == QOS_SOCK_DGRAM){
+    type = s->type;
+    if (type == QOS_SOCK_DGRAM){
         if (s->local_port == 0){
             s->local_port = allocate_ephemeral_port();
         }
-        if (udp_send(s->remote_ip, s->local_port, s->remote_port, data, len) != 0){
+        local_port = s->local_port;
+        remote_port = s->remote_port;
+        remote_ip[0] = s->remote_ip[0];
+        remote_ip[1] = s->remote_ip[1];
+        remote_ip[2] = s->remote_ip[2];
+        remote_ip[3] = s->remote_ip[3];
+        spin_unlock_irqrestore(&g_socket_lock, irq);
+        if (udp_send(remote_ip, local_port, remote_port, data, len) != 0){
             return -1;
         }
         return (int)len;
     }
 
-    if (s->type == QOS_SOCK_STREAM){
+    if (type == QOS_SOCK_STREAM){
         char host[128];
         char path[256];
+        unsigned int out_cap = SOCKET_STREAM_RX_CAP - 1u;
         int rc = parse_http_get_request(data, len, host, sizeof(host), path, sizeof(path));
         if (rc != 0){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
         }
-        int n = tcp_http_get(s->remote_ip, host, path, s->stream_rx, SOCKET_STREAM_RX_CAP - 1u);
+        remote_ip[0] = s->remote_ip[0];
+        remote_ip[1] = s->remote_ip[1];
+        remote_ip[2] = s->remote_ip[2];
+        remote_ip[3] = s->remote_ip[3];
+
+        int n = tcp_http_get(remote_ip, host, path, s->stream_rx, out_cap);
         if (n < 0){
             s->stream_rx_len = 0;
             s->stream_rx_off = 0;
+            spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
         }
         s->stream_rx_len = (unsigned int)n;
         s->stream_rx_off = 0;
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return (int)len;
     }
 
+    spin_unlock_irqrestore(&g_socket_lock, irq);
     return -1;
 }
 
 int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsigned int timeout_ms){
-    int si = lookup_socket_index(pid, fd);
-    if (si < 0 || !out || out_cap == 0){
+    if (!out || out_cap == 0){
         return -1;
     }
-
-    kernel_socket_t* s = &g_sockets[si];
-    if (!s->connected){
-        return -1;
-    }
-
-    if (s->type == QOS_SOCK_DGRAM){
+    unsigned long start = system_ticks;
+    while (1){
+        unsigned short local_port = 0;
+        unsigned short remote_port = 0;
+        unsigned char remote_ip[4] = {0, 0, 0, 0};
+        int nonblocking = 0;
         unsigned int effective_timeout = timeout_ms;
         int wait_forever = 0;
+
+        unsigned long irq = spin_lock_irqsave(&g_socket_lock);
+        int si = lookup_socket_index(pid, fd);
+        if (si < 0){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
+
+        kernel_socket_t* s = &g_sockets[si];
+        if (!s->connected){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
+
+        if (s->type == QOS_SOCK_STREAM){
+            if (s->stream_rx_off >= s->stream_rx_len){
+                spin_unlock_irqrestore(&g_socket_lock, irq);
+                return 0;
+            }
+            unsigned int available = s->stream_rx_len - s->stream_rx_off;
+            unsigned int n = out_cap < available ? out_cap : available;
+            for (unsigned int i = 0; i < n; i++){
+                out[i] = s->stream_rx[s->stream_rx_off + i];
+            }
+            s->stream_rx_off += n;
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return (int)n;
+        }
+
+        if (s->type != QOS_SOCK_DGRAM){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
+
+        local_port = s->local_port;
+        remote_port = s->remote_port;
+        remote_ip[0] = s->remote_ip[0];
+        remote_ip[1] = s->remote_ip[1];
+        remote_ip[2] = s->remote_ip[2];
+        remote_ip[3] = s->remote_ip[3];
+        nonblocking = s->nonblocking;
+
         if (effective_timeout == QOS_SOCK_TIMEOUT_USE_SOCKET){
             effective_timeout = s->recv_timeout_ms;
         }
         if (effective_timeout == QOS_SOCK_TIMEOUT_INFINITE){
             wait_forever = 1;
         }
-        unsigned long start = system_ticks;
-        while (1){
-            udp_meta_t meta;
-            int n;
+        spin_unlock_irqrestore(&g_socket_lock, irq);
 
-            (void)net_poll();
-            n = udp_recv_filtered(s->local_port,
-                                  1,
-                                  s->remote_ip,
-                                  s->remote_port,
-                                  out,
-                                  out_cap,
-                                  &meta);
-            if (n != 0){
-                return n;
-            }
-
-            if (s->nonblocking){
-                return QOS_SOCK_ERR_AGAIN;
-            }
-
-            if (!wait_forever &&
-                (unsigned long)(system_ticks - start) >= (unsigned long)effective_timeout){
-                return 0;
-            }
+        udp_meta_t meta;
+        int n;
+        (void)net_poll();
+        n = udp_recv_filtered(local_port, 1, remote_ip, remote_port, out, out_cap, &meta);
+        if (n != 0){
+            return n;
         }
-    }
-
-    if (s->type == QOS_SOCK_STREAM){
-        if (s->stream_rx_off >= s->stream_rx_len){
+        if (nonblocking){
+            return QOS_SOCK_ERR_AGAIN;
+        }
+        if (!wait_forever &&
+            (unsigned long)(system_ticks - start) >= (unsigned long)effective_timeout){
             return 0;
         }
-        unsigned int available = s->stream_rx_len - s->stream_rx_off;
-        unsigned int n = out_cap < available ? out_cap : available;
-        for (unsigned int i = 0; i < n; i++){
-            out[i] = s->stream_rx[s->stream_rx_off + i];
-        }
-        s->stream_rx_off += n;
-        return (int)n;
     }
-
-    return -1;
 }
 
 int ksocket_close(int pid, int fd){
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
     if (si < 0){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
     clear_socket(&g_sockets[si]);
     g_fd_map[pid][fd] = -1;
+    spin_unlock_irqrestore(&g_socket_lock, irq);
     return 0;
 }
 
 int ksocket_setopt(int pid, int fd, int opt, unsigned int value){
+    unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
     if (si < 0){
+        spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
 
@@ -412,11 +473,14 @@ int ksocket_setopt(int pid, int fd, int opt, unsigned int value){
     switch (opt){
         case QOS_SOCKOPT_NONBLOCK:
             s->nonblocking = value ? 1 : 0;
+            spin_unlock_irqrestore(&g_socket_lock, irq);
             return 0;
         case QOS_SOCKOPT_RCVTIMEO_MS:
             s->recv_timeout_ms = value;
+            spin_unlock_irqrestore(&g_socket_lock, irq);
             return 0;
         default:
+            spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
     }
 }

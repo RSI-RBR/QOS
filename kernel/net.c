@@ -5,6 +5,7 @@
 #include "usb_host.h"
 #include "net_proto.h"
 #include "icmp.h"
+#include "spinlock.h"
 
 #define NET_RX_QUEUE_LEN 32
 
@@ -33,6 +34,8 @@ static net_rx_queue_t g_rxq;
 static net_stats_t g_stats;
 static int g_net_ready = 0;
 static volatile int g_net_poll_active = 0;
+static spinlock_t g_net_state_lock;
+static spinlock_t g_net_rxq_lock;
 
 static void net_rxq_reset(void){
     g_rxq.head = 0;
@@ -41,10 +44,13 @@ static void net_rxq_reset(void){
 }
 
 static int net_rxq_push(const unsigned char* frame, unsigned int len){
+    unsigned long irq = spin_lock_irqsave(&g_net_rxq_lock);
     if (!frame || len == 0 || len > NET_MAX_FRAME_SIZE){
+        spin_unlock_irqrestore(&g_net_rxq_lock, irq);
         return -1;
     }
     if (g_rxq.count >= NET_RX_QUEUE_LEN){
+        spin_unlock_irqrestore(&g_net_rxq_lock, irq);
         return -1;
     }
 
@@ -55,45 +61,69 @@ static int net_rxq_push(const unsigned char* frame, unsigned int len){
     }
 
     g_rxq.tail = (g_rxq.tail + 1) % NET_RX_QUEUE_LEN;
+    asm volatile("dmb ishst" : : : "memory");
     g_rxq.count++;
+    spin_unlock_irqrestore(&g_net_rxq_lock, irq);
     return 0;
 }
 
 static int net_rxq_pop(net_frame_t* out){
+    unsigned long irq = spin_lock_irqsave(&g_net_rxq_lock);
     if (!out || g_rxq.count == 0){
+        spin_unlock_irqrestore(&g_net_rxq_lock, irq);
         return -1;
     }
 
     net_frame_t* src = &g_rxq.frames[g_rxq.head];
+    asm volatile("dmb ish" : : : "memory");
     out->len = src->len;
     for (unsigned int i = 0; i < src->len && i < NET_MAX_FRAME_SIZE; i++){
         out->data[i] = src->data[i];
     }
     g_rxq.head = (g_rxq.head + 1) % NET_RX_QUEUE_LEN;
     g_rxq.count--;
+    spin_unlock_irqrestore(&g_net_rxq_lock, irq);
     return 0;
 }
 
 void net_ingest_rx_from_driver(const unsigned char* frame, unsigned int len){
     if (net_rxq_push(frame, len) == 0){
+        unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
         g_stats.rx_ok++;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
     } else{
+        unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
         g_stats.rx_drop++;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
     }
 }
 
 void net_set_rx_callback(net_rx_callback_t cb){
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
     g_rx_cb = cb;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
 }
 
 int net_init(void){
+    spinlock_init(&g_net_state_lock);
+    spinlock_init(&g_net_rxq_lock);
     g_nic = nic_probe_default();
-    net_rxq_reset();
-    g_stats.rx_ok = 0;
-    g_stats.rx_drop = 0;
-    g_stats.tx_ok = 0;
-    g_stats.tx_fail = 0;
-    g_net_ready = 0;
+    {
+        unsigned long irq = spin_lock_irqsave(&g_net_rxq_lock);
+        net_rxq_reset();
+        spin_unlock_irqrestore(&g_net_rxq_lock, irq);
+    }
+    {
+        unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+        g_stats.rx_ok = 0;
+        g_stats.rx_drop = 0;
+        g_stats.tx_ok = 0;
+        g_stats.tx_fail = 0;
+        g_net_ready = 0;
+        g_net_poll_active = 0;
+        g_rx_cb = 0;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
+    }
 
     if (!g_nic){
         uart_puts("NET: no NIC backend\n");
@@ -123,43 +153,69 @@ int net_init(void){
         }
     }
 
-    g_net_ready = 1;
+    {
+        unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+        g_net_ready = 1;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
+    }
     net_proto_init();
     net_proto_configure_defaults();
     return 0;
 }
 
 int net_ready(void){
-    return g_net_ready;
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+    int ready = g_net_ready;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
+    return ready;
 }
 
 const char* net_driver_name(void){
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+    const char* name = "none";
     if (!g_nic || !g_nic->name){
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return "none";
     }
-    return g_nic->name;
+    name = g_nic->name;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
+    return name;
 }
 
 int net_link_up(void){
+    const nic_driver_t* nic = 0;
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
     if (!g_net_ready || !g_nic || !g_nic->link_up){
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return 0;
     }
-    return g_nic->link_up();
+    nic = g_nic;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
+    return nic->link_up();
 }
 
 int net_send_raw(const unsigned char* frame, unsigned int len){
+    const nic_driver_t* nic = 0;
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
     if (!g_net_ready || !g_nic){
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return -1;
     }
+    nic = g_nic;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
     if (!frame || len == 0 || len > NET_MAX_FRAME_SIZE){
         return -1;
     }
 
-    if (g_nic->send(frame, len) == 0){
+    if (nic->send(frame, len) == 0){
+        irq = spin_lock_irqsave(&g_net_state_lock);
         g_stats.tx_ok++;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return 0;
     }
+    irq = spin_lock_irqsave(&g_net_state_lock);
     g_stats.tx_fail++;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
     return -1;
 }
 
@@ -183,18 +239,26 @@ int net_recv_raw(unsigned char* out, unsigned int out_cap){
 }
 
 int net_poll(void){
+    const nic_driver_t* nic = 0;
+    net_rx_callback_t cb = 0;
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
     if (!g_net_ready || !g_nic){
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return 0;
     }
     // Avoid nested NIC polling when called both from timer IRQ and foreground
     // wait loops (e.g. ping syscall path).
     if (g_net_poll_active){
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
         return 0;
     }
     g_net_poll_active = 1;
+    nic = g_nic;
+    cb = g_rx_cb;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
 
-    if (g_nic->poll){
-        g_nic->poll();
+    if (nic->poll){
+        nic->poll();
     }
 
     int delivered = 0;
@@ -202,12 +266,14 @@ int net_poll(void){
     while (net_rxq_pop(&frame) == 0){
         // Kernel protocol stack entry point for every received raw frame.
         net_proto_handle_frame(frame.data, frame.len);
-        if (g_rx_cb){
-            g_rx_cb(frame.data, frame.len);
+        if (cb){
+            cb(frame.data, frame.len);
         }
         delivered++;
     }
+    irq = spin_lock_irqsave(&g_net_state_lock);
     g_net_poll_active = 0;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
     return delivered;
 }
 
@@ -234,21 +300,40 @@ int net_ping_gateway(unsigned int timeout_ms){
 }
 
 void net_dump_stats(void){
+    unsigned long rx_ok, rx_drop, tx_ok, tx_fail;
+    unsigned int rxq_count;
+    const char* driver;
+    int link;
+
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+    rx_ok = g_stats.rx_ok;
+    rx_drop = g_stats.rx_drop;
+    tx_ok = g_stats.tx_ok;
+    tx_fail = g_stats.tx_fail;
+    driver = (!g_nic || !g_nic->name) ? "none" : g_nic->name;
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
+
+    irq = spin_lock_irqsave(&g_net_rxq_lock);
+    rxq_count = g_rxq.count;
+    spin_unlock_irqrestore(&g_net_rxq_lock, irq);
+
+    link = net_link_up();
+
     uart_puts("NET driver=");
-    uart_puts(net_driver_name());
+    uart_puts(driver);
     uart_puts(" link=");
-    uart_puts(net_link_up() ? "up" : "down");
+    uart_puts(link ? "up" : "down");
     uart_puts("\n");
     uart_puts("NET rx_ok=");
-    uart_putdec(g_stats.rx_ok);
+    uart_putdec(rx_ok);
     uart_puts(" rx_drop=");
-    uart_putdec(g_stats.rx_drop);
+    uart_putdec(rx_drop);
     uart_puts(" tx_ok=");
-    uart_putdec(g_stats.tx_ok);
+    uart_putdec(tx_ok);
     uart_puts(" tx_fail=");
-    uart_putdec(g_stats.tx_fail);
+    uart_putdec(tx_fail);
     uart_puts(" rxq=");
-    uart_putdec(g_rxq.count);
+    uart_putdec(rxq_count);
     uart_puts("\n");
     net_proto_dump_stats();
 }

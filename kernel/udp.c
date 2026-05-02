@@ -2,6 +2,7 @@
 #include "ipv4.h"
 #include "net_proto.h"
 #include "uart.h"
+#include "spinlock.h"
 
 typedef struct __attribute__((packed)) {
     unsigned short src_port_be;
@@ -34,6 +35,7 @@ static udp_slot_t g_rxq[UDP_RX_QUEUE_LEN];
 static unsigned int g_rx_head = 0;
 static unsigned int g_rx_tail = 0;
 static unsigned int g_rx_count = 0;
+static spinlock_t g_udp_lock;
 
 static unsigned short be16_read(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -81,6 +83,8 @@ static unsigned short udp_checksum(const unsigned char src_ip[4],
 }
 
 void udp_init(void){
+    spinlock_init(&g_udp_lock);
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     g_udp_stats.rx_total = 0;
     g_udp_stats.rx_valid = 0;
     g_udp_stats.rx_short = 0;
@@ -93,15 +97,18 @@ void udp_init(void){
     g_rx_head = 0;
     g_rx_tail = 0;
     g_rx_count = 0;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
 }
 
 void udp_handle_ipv4_packet(const unsigned char src_ip[4],
                             const unsigned char dst_ip[4],
                             const unsigned char* payload,
                             unsigned int payload_len){
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     g_udp_stats.rx_total++;
     if (!src_ip || !dst_ip || !payload || payload_len < sizeof(udp_header_t)){
         g_udp_stats.rx_short++;
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return;
     }
 
@@ -109,6 +116,7 @@ void udp_handle_ipv4_packet(const unsigned char src_ip[4],
     unsigned int udp_len = be16_read((const unsigned char*)&h->len_be);
     if (udp_len < sizeof(udp_header_t) || udp_len > payload_len){
         g_udp_stats.rx_bad_len++;
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return;
     }
 
@@ -116,6 +124,7 @@ void udp_handle_ipv4_packet(const unsigned char src_ip[4],
     if (recv_csum != 0){
         if (udp_checksum(src_ip, dst_ip, payload, udp_len) != 0){
             g_udp_stats.rx_bad_checksum++;
+            spin_unlock_irqrestore(&g_udp_lock, irq);
             return;
         }
     }
@@ -123,6 +132,7 @@ void udp_handle_ipv4_packet(const unsigned char src_ip[4],
     unsigned int data_len = udp_len - (unsigned int)sizeof(udp_header_t);
     if (data_len > UDP_MAX_PAYLOAD || g_rx_count >= UDP_RX_QUEUE_LEN){
         g_udp_stats.rx_drop++;
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return;
     }
 
@@ -138,8 +148,10 @@ void udp_handle_ipv4_packet(const unsigned char src_ip[4],
     }
 
     g_rx_tail = (g_rx_tail + 1u) % UDP_RX_QUEUE_LEN;
+    asm volatile("dmb ishst" : : : "memory");
     g_rx_count++;
     g_udp_stats.rx_valid++;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
 }
 
 int udp_send(const unsigned char dst_ip[4],
@@ -150,10 +162,14 @@ int udp_send(const unsigned char dst_ip[4],
     unsigned char local_ip[4];
     unsigned char buf[8 + UDP_MAX_PAYLOAD];
     unsigned int udp_len = 8u + len;
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     g_udp_stats.tx_total++;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
 
     if (!dst_ip || (!data && len > 0) || len > UDP_MAX_PAYLOAD){
+        irq = spin_lock_irqsave(&g_udp_lock);
         g_udp_stats.tx_fail++;
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return -1;
     }
 
@@ -173,10 +189,14 @@ int udp_send(const unsigned char dst_ip[4],
     be16_write(&buf[6], csum);
 
     if (ipv4_send_via_gateway(IPV4_PROTO_UDP, dst_ip, buf, udp_len) != 0){
+        irq = spin_lock_irqsave(&g_udp_lock);
         g_udp_stats.tx_fail++;
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return -1;
     }
+    irq = spin_lock_irqsave(&g_udp_lock);
     g_udp_stats.tx_ok++;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
     return 0;
 }
 
@@ -188,10 +208,13 @@ int udp_send_probe_gateway(void){
 }
 
 int udp_recv_next(unsigned char* out, unsigned int out_cap, udp_meta_t* meta){
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     if (!out || out_cap == 0 || !meta){
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return -1;
     }
     if (g_rx_count == 0){
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return 0;
     }
 
@@ -207,6 +230,7 @@ int udp_recv_next(unsigned char* out, unsigned int out_cap, udp_meta_t* meta){
 
     g_rx_head = (g_rx_head + 1u) % UDP_RX_QUEUE_LEN;
     g_rx_count--;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
     return (int)n;
 }
 
@@ -217,10 +241,13 @@ int udp_recv_filtered(unsigned short dst_port,
                       unsigned char* out,
                       unsigned int out_cap,
                       udp_meta_t* meta){
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     if (!out || out_cap == 0 || !meta){
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return -1;
     }
     if (g_rx_count == 0){
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return 0;
     }
 
@@ -244,6 +271,7 @@ int udp_recv_filtered(unsigned short dst_port,
     }
 
     if (found < 0){
+        spin_unlock_irqrestore(&g_udp_lock, irq);
         return 0;
     }
 
@@ -274,10 +302,12 @@ int udp_recv_filtered(unsigned short dst_port,
     }
     g_rx_tail = (g_rx_tail + UDP_RX_QUEUE_LEN - 1u) % UDP_RX_QUEUE_LEN;
     g_rx_count--;
+    spin_unlock_irqrestore(&g_udp_lock, irq);
     return (int)n;
 }
 
 void udp_dump_stats(void){
+    unsigned long irq = spin_lock_irqsave(&g_udp_lock);
     uart_puts("UDP rx=");
     uart_putdec(g_udp_stats.rx_total);
     uart_puts(" valid=");
@@ -299,4 +329,5 @@ void udp_dump_stats(void){
     uart_puts(" q=");
     uart_putdec(g_rx_count);
     uart_puts("\n");
+    spin_unlock_irqrestore(&g_udp_lock, irq);
 }
