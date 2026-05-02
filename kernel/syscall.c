@@ -365,6 +365,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (unsigned long)console_get_owner();
             return frame_sp;
 
+        case SYS_PROCESS_DUMP:
+            process_dump();
+            frame[TF_X0] = 0;
+            return frame_sp;
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;

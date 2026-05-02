@@ -86,6 +86,7 @@ static void cmd_help(void){
     qos_puts(" help\n");
     qos_puts(" run\n");
     qos_puts(" web\n");
+    qos_puts(" ps\n");
     qos_puts(" clear\n");
     qos_puts(" fbinfo\n");
     qos_puts(" usbstat\n");
@@ -140,6 +141,10 @@ static void cmd_usbstat(void){
 
 static void cmd_netstat(void){
     qos_net_dump_stats();
+}
+
+static void cmd_ps(void){
+    qos_process_dump();
 }
 
 static void cmd_ping(void){
@@ -234,6 +239,8 @@ static void execute_line(void){
         cmd_usbstat();
     } else if (str_eq(g_buf, "netstat")){
         cmd_netstat();
+    } else if (str_eq(g_buf, "ps")){
+        cmd_ps();
     } else if (str_eq(g_buf, "ping")){
         cmd_ping();
     } else if (str_starts_with(g_buf, "dnscheck ")){
