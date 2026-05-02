@@ -42,7 +42,10 @@ static void cmd_help(void){
     qos_puts(" run\n");
     qos_puts(" clear\n");
     qos_puts(" fbinfo\n");
-    qos_puts(" note: usbstat/netstat are kernel-shell commands\n");
+    qos_puts(" usbstat\n");
+    qos_puts(" netstat\n");
+    qos_puts(" netloop\n");
+    qos_puts(" netpoll\n");
 }
 
 static void cmd_run(void){
@@ -66,6 +69,39 @@ static void cmd_fbinfo(void){
     qos_puts("\n");
 }
 
+static void cmd_usbstat(void){
+    qos_usb_dump_info();
+}
+
+static void cmd_netstat(void){
+    qos_net_dump_stats();
+}
+
+static void cmd_netpoll(void){
+    int delivered = qos_net_poll();
+    qos_puts("NET poll delivered=");
+    print_uint((unsigned int)(delivered < 0 ? 0 : delivered));
+    qos_puts("\n");
+}
+
+static void cmd_netloop(void){
+    static unsigned char rx[1536];
+    int rc = qos_net_send_test_frame();
+    if (rc != 0){
+        qos_puts("NET loop send failed.\n");
+        return;
+    }
+    (void)qos_net_poll();
+    int n = qos_net_recv_raw(rx, sizeof(rx));
+    if (n <= 0){
+        qos_puts("NET loop recv empty.\n");
+        return;
+    }
+    qos_puts("NET loop recv bytes=");
+    print_uint((unsigned int)n);
+    qos_puts("\n");
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -80,6 +116,14 @@ static void execute_line(void){
         qos_fb_clear(0x00000000);
     } else if (str_eq(g_buf, "fbinfo")){
         cmd_fbinfo();
+    } else if (str_eq(g_buf, "usbstat")){
+        cmd_usbstat();
+    } else if (str_eq(g_buf, "netstat")){
+        cmd_netstat();
+    } else if (str_eq(g_buf, "netloop")){
+        cmd_netloop();
+    } else if (str_eq(g_buf, "netpoll")){
+        cmd_netpoll();
     } else{
         qos_puts("Unknown command.\n");
     }

@@ -12,7 +12,13 @@ enum {
     SYS_FB_RECT = 7,
     SYS_FB_PRESENT = 8,
     SYS_TRY_GETC = 9,
-    SYS_RUN_PROGRAM = 10
+    SYS_RUN_PROGRAM = 10,
+    SYS_NET_DUMP_STATS = 11,
+    SYS_NET_SEND_TEST_FRAME = 12,
+    SYS_NET_POLL = 13,
+    SYS_NET_RECV_RAW = 14,
+    SYS_NET_SEND_RAW = 15,
+    SYS_USB_DUMP_INFO = 16
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -106,6 +112,30 @@ static inline int qos_try_getc(void){
 
 static inline int qos_run_program(void){
     return (int)qos_syscall0(SYS_RUN_PROGRAM);
+}
+
+static inline void qos_net_dump_stats(void){
+    (void)qos_syscall0(SYS_NET_DUMP_STATS);
+}
+
+static inline int qos_net_send_test_frame(void){
+    return (int)qos_syscall0(SYS_NET_SEND_TEST_FRAME);
+}
+
+static inline int qos_net_poll(void){
+    return (int)qos_syscall0(SYS_NET_POLL);
+}
+
+static inline int qos_net_recv_raw(unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall2(SYS_NET_RECV_RAW, (unsigned long)out, (unsigned long)out_cap);
+}
+
+static inline int qos_net_send_raw(const unsigned char* frame, unsigned int len){
+    return (int)qos_syscall2(SYS_NET_SEND_RAW, (unsigned long)frame, (unsigned long)len);
+}
+
+static inline void qos_usb_dump_info(void){
+    (void)qos_syscall0(SYS_USB_DUMP_INFO);
 }
 
 __attribute__((noreturn))

@@ -5,6 +5,8 @@
 #include "timer.h"
 #include "loader.h"
 #include "memory.h"
+#include "net.h"
+#include "usb_host.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -37,6 +39,49 @@ static void syscall_write_puts(const char* s){
             uart_send('\r');
         }
         uart_send(s[i]);
+    }
+}
+
+static void syscall_dump_usb_info(void){
+    usb_root_device_info_t info;
+    if (usb_host_get_root_device_info(&info) != 0){
+        syscall_write_puts("USB root: not enumerated\n");
+        return;
+    }
+
+    syscall_write_puts("USB root addr=");
+    uart_puthex(info.address);
+    syscall_write_puts(" vid=");
+    uart_puthex(info.vid);
+    syscall_write_puts(" pid=");
+    uart_puthex(info.pid);
+    syscall_write_puts(" class=");
+    uart_puthex(info.dev_class);
+    syscall_write_puts(" cfg=");
+    uart_puthex(info.config_value);
+    syscall_write_puts(info.configured ? " (set)\n" : " (not set)\n");
+
+    if (info.child_present){
+        syscall_write_puts("USB child addr=");
+        uart_puthex(info.child_address);
+        syscall_write_puts(" vid=");
+        uart_puthex(info.child_vid);
+        syscall_write_puts(" pid=");
+        uart_puthex(info.child_pid);
+        syscall_write_puts(" class=");
+        uart_puthex(info.child_class);
+        syscall_write_puts(" cfg=");
+        uart_puthex(info.child_config_value);
+        syscall_write_puts(info.child_configured ? " (set)\n" : " (not set)\n");
+        syscall_write_puts("USB child bulk in=");
+        uart_puthex(info.child_bulk_in_ep);
+        syscall_write_puts(" mps=");
+        uart_puthex(info.child_bulk_in_mps);
+        syscall_write_puts(" out=");
+        uart_puthex(info.child_bulk_out_ep);
+        syscall_write_puts(" mps=");
+        uart_puthex(info.child_bulk_out_mps);
+        syscall_write_puts("\n");
     }
 }
 
@@ -141,6 +186,34 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (unsigned long)pid;
             return frame_sp;
         }
+
+        case SYS_NET_DUMP_STATS:
+            net_dump_stats();
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_NET_SEND_TEST_FRAME:
+            frame[TF_X0] = (unsigned long)net_send_test_frame();
+            return frame_sp;
+
+        case SYS_NET_POLL:
+            frame[TF_X0] = (unsigned long)net_poll();
+            return frame_sp;
+
+        case SYS_NET_RECV_RAW:
+            frame[TF_X0] = (unsigned long)net_recv_raw((unsigned char*)frame[TF_X0],
+                                                       (unsigned int)frame[TF_X1]);
+            return frame_sp;
+
+        case SYS_NET_SEND_RAW:
+            frame[TF_X0] = (unsigned long)net_send_raw((const unsigned char*)frame[TF_X0],
+                                                       (unsigned int)frame[TF_X1]);
+            return frame_sp;
+
+        case SYS_USB_DUMP_INFO:
+            syscall_dump_usb_info();
+            frame[TF_X0] = 0;
+            return frame_sp;
 
         default:
             frame[TF_X0] = (unsigned long)-1;
