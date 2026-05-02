@@ -19,7 +19,6 @@
 #include "net.h"
 #include "usb_host.h"
 #include "arp.h"
-#include "timer.h"
 
 
 //extern kernel_api_t kapi;
@@ -169,6 +168,7 @@ void kernel_main(void){
     static const unsigned char local_ip[4] = {10, 0, 0, 88};
     static const unsigned char router_ip[4] = {10, 0, 0, 1};
     arp_set_local_interface(local_mac, local_ip);
+    arp_set_periodic_target(router_ip, 2000); // 2s retry
     uart_puts("ARP interface configured (local 10.0.0.88)\n");
 
     // -----------------------------
@@ -274,18 +274,7 @@ void kernel_main(void){
     */
 
     // never reach here normally
-    unsigned long next_arp_tick = 0;
     while (1){
-        // ARP retry loop: send only when link is up and on a fixed interval.
-        if (net_link_up() && system_ticks >= next_arp_tick){
-            if (arp_send_request(router_ip) == 0){
-                uart_puts("ARP who-has 10.0.0.1 sent\n");
-            } else{
-                uart_puts("ARP who-has send failed\n");
-            }
-            next_arp_tick = system_ticks + 2000; // 2 seconds
-        }
-
         net_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();

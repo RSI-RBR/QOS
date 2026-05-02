@@ -4,6 +4,7 @@
 #include "process.h"
 #include "syscall.h"
 #include "net.h"
+#include "arp.h"
 
 extern void vectors(void);
 
@@ -75,6 +76,7 @@ void* irq_handler(void* irq_frame_sp){
     if (local_src & CORE0_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();
         timer_handler();
+        arp_periodic_tick(system_ticks);
         net_poll();
         // Do not preempt while executing kernel EL1 code (e.g. inside syscall
         // loader path). Only schedule directly from timer IRQ when interrupted

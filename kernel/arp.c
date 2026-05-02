@@ -15,6 +15,10 @@ static unsigned char g_local_mac[ETH_ADDR_LEN];
 static unsigned char g_local_ip[4];
 static int g_iface_ready = 0;
 static unsigned long g_tx_req = 0;
+static unsigned char g_periodic_target_ip[4];
+static unsigned long g_periodic_interval = 0;
+static unsigned long g_periodic_next_tick = 0;
+static int g_periodic_enabled = 0;
 
 static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -28,6 +32,9 @@ void arp_init(void){
     g_arp_stats.rx_unsupported = 0;
     g_iface_ready = 0;
     g_tx_req = 0;
+    g_periodic_interval = 0;
+    g_periodic_next_tick = 0;
+    g_periodic_enabled = 0;
 }
 
 void arp_handle_frame(const unsigned char* frame, unsigned int len){
@@ -132,6 +139,40 @@ int arp_send_request(const unsigned char target_ip[4]){
     }
     g_tx_req++;
     return 0;
+}
+
+void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int interval_ms){
+    if (!target_ip || interval_ms == 0){
+        g_periodic_enabled = 0;
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        g_periodic_target_ip[i] = target_ip[i];
+    }
+    g_periodic_interval = interval_ms;
+    g_periodic_next_tick = 0;
+    g_periodic_enabled = 1;
+}
+
+void arp_periodic_tick(unsigned long now_ticks){
+    if (!g_periodic_enabled || !g_iface_ready){
+        return;
+    }
+    if ((long)(now_ticks - g_periodic_next_tick) < 0){
+        return;
+    }
+    if (!net_link_up()){
+        uart_puts("ARP periodic skip: link down\n");
+        g_periodic_next_tick = now_ticks + g_periodic_interval;
+        return;
+    }
+
+    if (arp_send_request(g_periodic_target_ip) == 0){
+        uart_puts("ARP who-has sent\n");
+    } else{
+        uart_puts("ARP who-has send failed\n");
+    }
+    g_periodic_next_tick = now_ticks + g_periodic_interval;
 }
 
 void arp_dump_stats(void){
