@@ -672,7 +672,19 @@ void process_exit_current(void){
 
     process_t* next = scheduler_next_for_core(core);
     void* next_sp = next ? next->sp : 0;
+    int next_pid = next ? next->pid : -1;
     spin_unlock_irqrestore(&g_process_lock, irq);
+    uart_puts("DBG EXIT core=");
+    uart_putdec((unsigned long)core);
+    uart_puts(" pid=");
+    uart_putdec((unsigned long)pid);
+    uart_puts(" next=");
+    if (next_pid >= 0){
+        uart_putdec((unsigned long)next_pid);
+    } else{
+        uart_puts("none");
+    }
+    uart_puts("\n");
     if (next_sp){
         restore_context_and_eret(next_sp);
     }
@@ -784,6 +796,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
         process_t* next = scheduler_next_for_core(core);
         if (next){
             void* out_sp = next->sp;
+            uart_puts("DBG IRQ core=");
+            uart_putdec((unsigned long)core);
+            uart_puts(" cur=none next=");
+            uart_putdec((unsigned long)next->pid);
+            uart_puts("\n");
             spin_unlock_irqrestore(&g_process_lock, irq);
             return out_sp;
         }

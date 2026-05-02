@@ -306,6 +306,10 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     unsigned short remote_port = 0;
     unsigned char remote_ip[4] = {0, 0, 0, 0};
     int type = 0;
+    unsigned int stream_out_cap = 0;
+    unsigned char stream_remote_ip[4] = {0, 0, 0, 0};
+    char stream_host[128];
+    char stream_path[256];
 
     unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
@@ -339,25 +343,40 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     }
 
     if (type == QOS_SOCK_STREAM){
-        char host[128];
-        char path[256];
-        unsigned int out_cap = SOCKET_STREAM_RX_CAP - 1u;
-        int rc = parse_http_get_request(data, len, host, sizeof(host), path, sizeof(path));
+        int rc = parse_http_get_request(data, len, stream_host, sizeof(stream_host), stream_path, sizeof(stream_path));
         if (rc != 0){
             spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
         }
-        remote_ip[0] = s->remote_ip[0];
-        remote_ip[1] = s->remote_ip[1];
-        remote_ip[2] = s->remote_ip[2];
-        remote_ip[3] = s->remote_ip[3];
+        stream_out_cap = SOCKET_STREAM_RX_CAP - 1u;
+        stream_remote_ip[0] = s->remote_ip[0];
+        stream_remote_ip[1] = s->remote_ip[1];
+        stream_remote_ip[2] = s->remote_ip[2];
+        stream_remote_ip[3] = s->remote_ip[3];
+        unsigned char* stream_out = s->stream_rx;
+        spin_unlock_irqrestore(&g_socket_lock, irq);
 
-        int n = tcp_http_get(remote_ip, host, path, s->stream_rx, out_cap);
+        int n = tcp_http_get(stream_remote_ip, stream_host, stream_path, stream_out, stream_out_cap);
+
+        irq = spin_lock_irqsave(&g_socket_lock);
+        si = lookup_socket_index(pid, fd);
+        if (si < 0){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
+        s = &g_sockets[si];
+        if (s->type != QOS_SOCK_STREAM){
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
         if (n < 0){
             s->stream_rx_len = 0;
             s->stream_rx_off = 0;
             spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
+        }
+        if ((unsigned int)n > stream_out_cap){
+            n = (int)stream_out_cap;
         }
         s->stream_rx_len = (unsigned int)n;
         s->stream_rx_off = 0;
