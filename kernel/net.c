@@ -32,6 +32,7 @@ static net_rx_callback_t g_rx_cb = 0;
 static net_rx_queue_t g_rxq;
 static net_stats_t g_stats;
 static int g_net_ready = 0;
+static volatile int g_net_poll_active = 0;
 
 static void net_rxq_reset(void){
     g_rxq.head = 0;
@@ -208,6 +209,12 @@ int net_poll(void){
     if (!g_net_ready || !g_nic){
         return 0;
     }
+    // Avoid nested NIC polling when called both from timer IRQ and foreground
+    // wait loops (e.g. ping syscall path).
+    if (g_net_poll_active){
+        return 0;
+    }
+    g_net_poll_active = 1;
 
     if (g_nic->poll){
         g_nic->poll();
@@ -223,6 +230,7 @@ int net_poll(void){
         }
         delivered++;
     }
+    g_net_poll_active = 0;
     return delivered;
 }
 
