@@ -40,6 +40,7 @@ kernel/blockdev.c \
 kernel/syscall.c \
 kernel/net.c \
 kernel/net_proto.c \
+kernel/sha256.c \
 kernel/arp.c \
 kernel/ipv4.c \
 kernel/icmp.c \
