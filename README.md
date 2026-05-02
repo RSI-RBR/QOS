@@ -76,14 +76,6 @@ cp boot/config.txt /path/to/sd/
 
 Copy user programs (`*.BIN`) to SD root as needed (8.3 names for loader lookup).
 
-Example `config.txt`:
-
-```txt
-arm_64bit=1
-enable_uart=1
-kernel=kernel8.img
-```
-
 ## Boot
 
 1. Insert SD card into Pi
