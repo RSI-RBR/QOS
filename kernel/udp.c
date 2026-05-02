@@ -261,7 +261,16 @@ int udp_recv_filtered(unsigned short dst_port,
     for (unsigned int j = (unsigned int)found; (j + 1u) < g_rx_count; j++){
         unsigned int to = (g_rx_head + j) % UDP_RX_QUEUE_LEN;
         unsigned int from = (g_rx_head + j + 1u) % UDP_RX_QUEUE_LEN;
-        g_rxq[to] = g_rxq[from];
+        g_rxq[to].meta.src_ip[0] = g_rxq[from].meta.src_ip[0];
+        g_rxq[to].meta.src_ip[1] = g_rxq[from].meta.src_ip[1];
+        g_rxq[to].meta.src_ip[2] = g_rxq[from].meta.src_ip[2];
+        g_rxq[to].meta.src_ip[3] = g_rxq[from].meta.src_ip[3];
+        g_rxq[to].meta.src_port = g_rxq[from].meta.src_port;
+        g_rxq[to].meta.dst_port = g_rxq[from].meta.dst_port;
+        g_rxq[to].meta.len = g_rxq[from].meta.len;
+        for (unsigned int k = 0; k < UDP_MAX_PAYLOAD; k++){
+            g_rxq[to].data[k] = g_rxq[from].data[k];
+        }
     }
     g_rx_tail = (g_rx_tail + UDP_RX_QUEUE_LEN - 1u) % UDP_RX_QUEUE_LEN;
     g_rx_count--;
