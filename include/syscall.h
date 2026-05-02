@@ -41,8 +41,7 @@ enum {
     SYS_GETPID = 33,
     SYS_GET_TICKS = 34,
     SYS_GET_COUNTER_HZ = 35,
-    SYS_GET_COUNTER_CYCLES = 36,
-    SYS_TTY_CLAIM_SELF = 37
+    SYS_GET_COUNTER_CYCLES = 36
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -180,10 +179,6 @@ static inline int qos_tty_release(void){
 
 static inline int qos_tty_get_owner(void){
     return (int)qos_syscall0(SYS_TTY_GET_OWNER);
-}
-
-static inline int qos_tty_claim_self(void){
-    return (int)qos_syscall0(SYS_TTY_CLAIM_SELF);
 }
 
 static inline void qos_process_dump(void){

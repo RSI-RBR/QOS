@@ -359,12 +359,6 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (unsigned long)console_get_owner();
             return frame_sp;
 
-        case SYS_TTY_CLAIM_SELF: {
-            int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)console_set_owner(pid, pid);
-            return frame_sp;
-        }
-
         case SYS_PROCESS_DUMP:
             process_dump();
             frame[TF_X0] = 0;
