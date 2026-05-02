@@ -30,6 +30,16 @@ static volatile unsigned short g_ping_wait_seq = 0;
 static volatile unsigned long g_ping_send_tick = 0;
 static volatile int g_ping_result_ms = -1;
 
+static unsigned long read_daif(void){
+    unsigned long v;
+    asm volatile("mrs %0, daif" : "=r"(v));
+    return v;
+}
+
+static void write_daif(unsigned long v){
+    asm volatile("msr daif, %0" : : "r"(v) : "memory");
+}
+
 static unsigned short be16_read(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
 }
@@ -122,6 +132,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     unsigned int ip_total_len = 20u + 16u;
     unsigned int frame_len = ETH_HEADER_LEN + ip_total_len;
     unsigned long start_tick;
+    unsigned long spin_budget;
+    unsigned long polls = 0;
+    unsigned long saved_daif;
 
     if (timeout_ms == 0){
         timeout_ms = 1000;
@@ -192,15 +205,35 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     }
     g_icmp_stats.tx_echo_req++;
 
+    // During SVC handling, IRQs may be masked. Allow timer IRQ while we wait,
+    // otherwise system_ticks/net RX won't advance and ping appears frozen.
+    saved_daif = read_daif();
+    asm volatile("msr daifclr, #2" : : : "memory"); // clear I bit (IRQ mask)
+
     start_tick = system_ticks;
+    // Fallback budget so ping can time out even if timer IRQ is stalled/masked.
+    // Tuned conservatively to avoid hanging the shell forever in syscall path.
+    spin_budget = ((unsigned long)timeout_ms * 200000UL) + 200000UL;
     while (g_ping_waiting){
+        if ((polls++ & 0x3FFUL) == 0){
+            (void)net_poll();
+        }
         if ((long)(system_ticks - start_tick) >= (long)timeout_ms){
             g_ping_waiting = 0;
             g_icmp_stats.timeouts++;
+            write_daif(saved_daif);
+            return -1;
+        }
+        if (spin_budget-- == 0){
+            g_ping_waiting = 0;
+            g_icmp_stats.timeouts++;
+            write_daif(saved_daif);
             return -1;
         }
         asm volatile("nop");
     }
+
+    write_daif(saved_daif);
 
     return g_ping_result_ms >= 0 ? g_ping_result_ms : -1;
 }
