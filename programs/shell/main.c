@@ -86,6 +86,7 @@ static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
     qos_puts(" run\n");
+    qos_puts(" game\n");
     qos_puts(" web\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -123,6 +124,24 @@ static void cmd_web(void){
         g_tty_owned = 0;
     }
     qos_puts("WebBrowser queued as PID ");
+    print_uint((unsigned int)pid);
+    qos_puts("\n");
+}
+
+static void cmd_game(void){
+    // FAT 8.3 uppercase, space-padded: "GAME    BIN"
+    static const char game_file_83[] = "GAME    BIN";
+    int pid = qos_run_program_named(game_file_83);
+    if (pid < 0){
+        qos_puts("GAME.BIN load failed.\n");
+        return;
+    }
+    if (qos_tty_set_owner(pid) != 0){
+        qos_puts("Warning: could not transfer TTY ownership.\n");
+    } else{
+        g_tty_owned = 0;
+    }
+    qos_puts("Game queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
 }
@@ -231,6 +250,8 @@ static void execute_line(void){
         cmd_help();
     } else if (str_eq(g_buf, "run")){
         cmd_run();
+    } else if (str_eq(g_buf, "game")){
+        cmd_game();
     } else if (str_eq(g_buf, "web")){
         cmd_web();
     } else if (str_eq(g_buf, "clear")){

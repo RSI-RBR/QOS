@@ -107,3 +107,30 @@ int mailbox_power_on_usb(void){
     uart_puts("MAILBOX: USB power ON failed\n");
     return -1;
 }
+
+int mailbox_get_arm_memory(unsigned int* base_out, unsigned int* size_out){
+    if (!base_out || !size_out){
+        return -1;
+    }
+
+    // Get ARM memory tag response returns base and size in bytes.
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00010005; // Get ARM memory
+    mbox[3] = 8;
+    mbox[4] = 0;
+    mbox[5] = 0;
+    mbox[6] = 0;
+    mbox[7] = 0;
+
+    if (!mailbox_call(MAILBOX_CHANNEL_PROP)){
+        return -1;
+    }
+
+    *base_out = mbox[5];
+    *size_out = mbox[6];
+    if (*size_out == 0){
+        return -1;
+    }
+    return 0;
+}
