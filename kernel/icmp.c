@@ -235,7 +235,59 @@ int icmp_ping_gateway(unsigned int timeout_ms){
 
     write_daif(saved_daif);
 
-    return g_ping_result_ms >= 0 ? g_ping_result_ms : -1;
+    if (g_ping_result_ms >= 0){
+        return g_ping_result_ms;
+    }
+
+    // One recovery attempt: refresh ARP for gateway then retry once.
+    if (arp_send_request(gateway_ip) == 0){
+        unsigned long arp_wait_start = system_ticks;
+        unsigned long arp_spin_budget = 200000UL;
+        while ((long)(system_ticks - arp_wait_start) < 80){
+            (void)net_poll();
+            if (arp_get_gateway_mac(gateway_mac) == 0){
+                break;
+            }
+            if (arp_spin_budget-- == 0){
+                break;
+            }
+            asm volatile("nop");
+        }
+
+        if (arp_get_gateway_mac(gateway_mac) == 0){
+            // Rewrite destination MAC and resend same ICMP request once.
+            for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+                frame[i] = gateway_mac[i];
+            }
+            g_ping_send_tick = system_ticks;
+            g_ping_result_ms = -1;
+            g_ping_waiting = 1;
+            if (net_send_raw(frame, frame_len) == 0){
+                g_icmp_stats.tx_echo_req++;
+                unsigned long retry_start = system_ticks;
+                unsigned long retry_budget = ((unsigned long)timeout_ms * 120000UL) + 120000UL;
+                while (g_ping_waiting){
+                    (void)net_poll();
+                    if ((long)(system_ticks - retry_start) >= (long)timeout_ms){
+                        g_ping_waiting = 0;
+                        g_icmp_stats.timeouts++;
+                        break;
+                    }
+                    if (retry_budget-- == 0){
+                        g_ping_waiting = 0;
+                        g_icmp_stats.timeouts++;
+                        break;
+                    }
+                    asm volatile("nop");
+                }
+                if (g_ping_result_ms >= 0){
+                    return g_ping_result_ms;
+                }
+            }
+        }
+    }
+
+    return -1;
 }
 
 void icmp_dump_stats(void){
