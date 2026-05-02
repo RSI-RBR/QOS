@@ -69,6 +69,18 @@ static unsigned short be16_read(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
 }
 
+static unsigned long read_cntfrq(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long read_cntpct(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
 static void be16_write(unsigned char* p, unsigned short v){
     p[0] = (unsigned char)(v >> 8);
     p[1] = (unsigned char)(v & 0xFFu);
@@ -298,6 +310,13 @@ int tcp_http_get(const unsigned char dst_ip[4],
     int rq = 0;
     unsigned long start_tick;
     unsigned long last_progress;
+    unsigned long freq;
+    unsigned long start_cnt;
+    unsigned long last_progress_cnt;
+    unsigned long handshake_to_cnt;
+    unsigned long overall_to_cnt;
+    unsigned long idle_to_cnt;
+    unsigned long spin_budget;
     const char* req_path = path && *path ? path : "/";
 
     if (!dst_ip || !host || !*host || !out || out_cap == 0){
@@ -341,10 +360,35 @@ int tcp_http_get(const unsigned char dst_ip[4],
     }
     g_tcp_stats.syn_sent++;
 
+    freq = read_cntfrq();
+    if (freq == 0){
+        freq = 1000000UL;
+    }
+    handshake_to_cnt = (freq / 1000UL) * 2500UL; // 2.5s
+    overall_to_cnt = (freq / 1000UL) * 9000UL;   // 9s
+    idle_to_cnt = (freq / 1000UL) * 1500UL;      // 1.5s
+    if (handshake_to_cnt == 0) handshake_to_cnt = freq;
+    if (overall_to_cnt == 0) overall_to_cnt = freq * 2UL;
+    if (idle_to_cnt == 0) idle_to_cnt = freq / 2UL;
+
     start_tick = system_ticks;
+    start_cnt = read_cntpct();
+    spin_budget = 25000000UL;
     while (g_conn.state == TCP_ST_SYN_SENT){
         (void)net_poll();
+        if ((read_cntpct() - start_cnt) > handshake_to_cnt){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            return -1;
+        }
         if ((long)(system_ticks - start_tick) > 2000){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            return -1;
+        }
+        if (spin_budget-- == 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
@@ -378,12 +422,16 @@ int tcp_http_get(const unsigned char dst_ip[4],
 
     start_tick = system_ticks;
     last_progress = system_ticks;
+    start_cnt = read_cntpct();
+    last_progress_cnt = start_cnt;
     unsigned int prev_len = 0u;
+    spin_budget = 80000000UL;
     while (1){
         (void)net_poll();
         if (g_conn.out_len != prev_len){
             prev_len = g_conn.out_len;
             last_progress = system_ticks;
+            last_progress_cnt = read_cntpct();
         }
         if (g_conn.state == TCP_ST_CLOSE_WAIT){
             break;
@@ -391,10 +439,19 @@ int tcp_http_get(const unsigned char dst_ip[4],
         if (g_conn.out_len >= g_conn.out_cap){
             break;
         }
+        if ((read_cntpct() - start_cnt) > overall_to_cnt){
+            break;
+        }
+        if ((read_cntpct() - last_progress_cnt) > idle_to_cnt && g_conn.out_len > 0){
+            break;
+        }
         if ((long)(system_ticks - last_progress) > 1200 && g_conn.out_len > 0){
             break;
         }
         if ((long)(system_ticks - start_tick) > 7000){
+            break;
+        }
+        if (spin_budget-- == 0){
             break;
         }
     }
