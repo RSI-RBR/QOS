@@ -50,6 +50,10 @@ int console_set_owner(int requester_pid, int target_pid){
 
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
+    if (owner >= 0 && !process_is_alive_locked(owner)){
+        g_console_owner_pid = -1;
+        owner = -1;
+    }
     if (owner >= 0 && owner != requester_pid){
         spin_unlock_irqrestore(&g_console_lock, irq);
         return -1;

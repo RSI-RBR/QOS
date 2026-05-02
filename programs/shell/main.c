@@ -299,18 +299,27 @@ void program_main(void){
     while (1){
         int owner = qos_tty_get_owner();
         int shell_has_tty = (owner == g_shell_pid);
+        if (!shell_has_tty && owner < 0){
+            if (qos_tty_set_owner(g_shell_pid) == 0){
+                owner = g_shell_pid;
+                shell_has_tty = 1;
+            }
+        }
         if (shell_has_tty && !g_tty_owned){
             g_tty_owned = 1;
             qos_puts("\nReturned to shell.");
             print_prompt();
         } else if (!shell_has_tty){
             g_tty_owned = 0;
+            qos_sleep(1);
+            continue;
         }
 
         int ch = qos_try_getc();
         if (ch < 0){
             // Keep shell RUNNING; timer IRQ preemption will schedule peers.
             // This avoids sleep edge-cases when no alternate runnable task exists.
+            qos_sleep(1);
             continue;
         }
 
