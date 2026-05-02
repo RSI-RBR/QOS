@@ -19,7 +19,7 @@ void spin_lock(spinlock_t* lock){
     while (1){
         asm volatile("ldaxr %w0, [%1]" : "=&r"(ldv) : "r"(&lock->v) : "memory");
         if (ldv != 0u){
-            asm volatile("wfe" : : : "memory");
+            asm volatile("clrex" : : : "memory");
             continue;
         }
         asm volatile("stxr %w0, %w1, [%2]"
@@ -43,6 +43,7 @@ int spin_trylock(spinlock_t* lock){
 
     asm volatile("ldaxr %w0, [%1]" : "=&r"(ldv) : "r"(&lock->v) : "memory");
     if (ldv != 0u){
+        asm volatile("clrex" : : : "memory");
         return 0;
     }
     asm volatile("stxr %w0, %w1, [%2]"
