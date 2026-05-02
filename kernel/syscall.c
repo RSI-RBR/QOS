@@ -303,6 +303,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
         }
 
+        case SYS_SOCKET_SETOPT: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ksocket_setopt(pid,
+                                                         (int)frame[TF_X0],
+                                                         (int)frame[TF_X1],
+                                                         (unsigned int)frame[TF_X2]);
+            return frame_sp;
+        }
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;

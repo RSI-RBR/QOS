@@ -15,6 +15,8 @@ typedef struct {
     int domain;
     int type;
     int protocol;
+    int nonblocking;
+    unsigned int recv_timeout_ms;
     unsigned short local_port;
     unsigned short remote_port;
     unsigned char remote_ip[4];
@@ -38,6 +40,8 @@ static void clear_socket(kernel_socket_t* s){
     s->domain = 0;
     s->type = 0;
     s->protocol = 0;
+    s->nonblocking = 0;
+    s->recv_timeout_ms = 0;
     s->local_port = 0;
     s->remote_port = 0;
     s->remote_ip[0] = 0;
@@ -151,6 +155,8 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     s->domain = domain;
     s->type = type;
     s->protocol = protocol;
+    s->nonblocking = 0;
+    s->recv_timeout_ms = 3000u;
     s->local_port = 0;
     s->remote_port = 0;
     s->remote_ip[0] = 0;
@@ -220,6 +226,14 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
     }
 
     if (s->type == QOS_SOCK_DGRAM){
+        unsigned int effective_timeout = timeout_ms;
+        int wait_forever = 0;
+        if (effective_timeout == QOS_SOCK_TIMEOUT_USE_SOCKET){
+            effective_timeout = s->recv_timeout_ms;
+        }
+        if (effective_timeout == QOS_SOCK_TIMEOUT_INFINITE){
+            wait_forever = 1;
+        }
         unsigned long start = system_ticks;
         while (1){
             udp_meta_t meta;
@@ -237,10 +251,12 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                 return n;
             }
 
-            if (timeout_ms == 0){
-                return 0;
+            if (s->nonblocking){
+                return QOS_SOCK_ERR_AGAIN;
             }
-            if ((unsigned long)(system_ticks - start) >= (unsigned long)timeout_ms){
+
+            if (!wait_forever &&
+                (unsigned long)(system_ticks - start) >= (unsigned long)effective_timeout){
                 return 0;
             }
         }
@@ -258,4 +274,23 @@ int ksocket_close(int pid, int fd){
     clear_socket(&g_sockets[si]);
     g_fd_map[pid][fd] = -1;
     return 0;
+}
+
+int ksocket_setopt(int pid, int fd, int opt, unsigned int value){
+    int si = lookup_socket_index(pid, fd);
+    if (si < 0){
+        return -1;
+    }
+
+    kernel_socket_t* s = &g_sockets[si];
+    switch (opt){
+        case QOS_SOCKOPT_NONBLOCK:
+            s->nonblocking = value ? 1 : 0;
+            return 0;
+        case QOS_SOCKOPT_RCVTIMEO_MS:
+            s->recv_timeout_ms = value;
+            return 0;
+        default:
+            return -1;
+    }
 }

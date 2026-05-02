@@ -31,7 +31,8 @@ enum {
     SYS_SOCKET_CONNECT = 23,
     SYS_SOCKET_SEND = 24,
     SYS_SOCKET_RECV = 25,
-    SYS_SOCKET_CLOSE = 26
+    SYS_SOCKET_CLOSE = 26,
+    SYS_SOCKET_SETOPT = 27
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -249,6 +250,21 @@ static inline int qos_recv(int fd, void* out, unsigned int out_cap, unsigned int
 
 static inline int qos_close(int fd){
     return (int)qos_syscall1(SYS_SOCKET_CLOSE, (unsigned long)fd);
+}
+
+static inline int qos_socket_setopt(int fd, int opt, unsigned int value){
+    return (int)qos_syscall3(SYS_SOCKET_SETOPT,
+                             (unsigned long)fd,
+                             (unsigned long)opt,
+                             (unsigned long)value);
+}
+
+static inline int qos_socket_set_nonblocking(int fd, int enabled){
+    return qos_socket_setopt(fd, QOS_SOCKOPT_NONBLOCK, (unsigned int)(enabled ? 1u : 0u));
+}
+
+static inline int qos_socket_set_recv_timeout(int fd, unsigned int timeout_ms){
+    return qos_socket_setopt(fd, QOS_SOCKOPT_RCVTIMEO_MS, timeout_ms);
 }
 
 __attribute__((noreturn))
