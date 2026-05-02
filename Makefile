@@ -72,6 +72,10 @@ $(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 # ---------------------------
 all: kernel8.img
 
+# Generate kernel manifest header from current build.
+manifest-header: kernel8.img
+	python3 tools/gen_kernel_manifest.py $(BUILD)/kernel8.elf kernel8.img include/kernel_manifest_autogen.h $(CROSS)nm 0x1
+
 # ---------------------------
 # LINK STEP
 # ---------------------------

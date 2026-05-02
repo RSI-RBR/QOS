@@ -3,6 +3,7 @@
 #include "sha256.h"
 #include "trust.h"
 #include "uart.h"
+#include "kernel_manifest_autogen.h"
 
 extern unsigned char __kernel_text_start[];
 extern unsigned char __kernel_text_end[];
@@ -26,13 +27,13 @@ static const int g_kernel_verify_enforce = 0;
 
 // Replace digest + signer metadata during provisioning.
 static const kernel_manifest_t g_kernel_manifest = {
-    1u,                 // manifest_version
-    0x00000001u,        // signer_key_id (admin-main)
-    QOS_SIG_ALG_DIGEST_ONLY,
-    QOS_PROG_FLAG_SHA256,
-    0u,                 // digest-only placeholder has no signature bytes
-    {0},                // expected SHA-256(text||rodata); all-zero = unprovisioned
-    {0}
+    KERNEL_MANIFEST_VERSION,
+    KERNEL_MANIFEST_SIGNER_KEY_ID,
+    KERNEL_MANIFEST_SIG_ALG,
+    KERNEL_MANIFEST_FLAGS,
+    KERNEL_MANIFEST_SIG_LEN,
+    KERNEL_MANIFEST_DIGEST_INIT,
+    KERNEL_MANIFEST_SIGNATURE_INIT
 };
 
 static char nibble_hex(unsigned int v){
