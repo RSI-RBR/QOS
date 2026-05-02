@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "user_net.h"
 
 #define BUF_SIZE 128
 
@@ -57,222 +58,25 @@ static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[3]);
 }
 
-static unsigned short read_be16(const unsigned char* p){
-    return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
-}
-
-static int dns_skip_name(const unsigned char* msg, int len, int off){
-    if (!msg || len <= 0 || off < 0 || off >= len){
-        return -1;
-    }
-    while (off < len){
-        unsigned char c = msg[off];
-        if (c == 0){
-            return off + 1;
-        }
-        if ((c & 0xC0u) == 0xC0u){
-            if (off + 1 >= len){
-                return -1;
-            }
-            return off + 2;
-        }
-        if (c > 63u){
-            return -1;
-        }
-        off++;
-        if (off + (int)c > len){
-            return -1;
-        }
-        off += (int)c;
-    }
-    return -1;
-}
-
-static int dns_build_qname(const char* host, unsigned char* out, int cap){
-    int w = 0;
-    int label_len = 0;
-    int label_pos = -1;
-    const char* p = host;
-    if (!host || !out || cap <= 0){
-        return -1;
-    }
-
-    label_pos = w++;
-    if (w >= cap){
-        return -1;
-    }
-
-    while (*p){
-        char ch = *p++;
-        if (ch == '.'){
-            if (label_len <= 0 || label_len > 63){
-                return -1;
-            }
-            out[label_pos] = (unsigned char)label_len;
-            label_len = 0;
-            label_pos = w++;
-            if (w >= cap){
-                return -1;
-            }
-            continue;
-        }
-        if (label_len >= 63){
-            return -1;
-        }
-        if (w >= cap){
-            return -1;
-        }
-        out[w++] = (unsigned char)ch;
-        label_len++;
-    }
-    if (label_len <= 0 || label_len > 63){
-        return -1;
-    }
-    out[label_pos] = (unsigned char)label_len;
-    if (w >= cap){
-        return -1;
-    }
-    out[w++] = 0;
-    return w;
-}
+static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
-    static const unsigned char dns_server[4] = {10, 0, 0, 1};
-    static unsigned short dns_id = 0x5153u;
-    unsigned char q[320];
-    unsigned char r[600];
-    unsigned int qi = 0;
-    int qname_len;
-    int rc;
-    udp_meta_t meta;
-    int tries;
-
-    if (!host || !*host || !out_ip){
-        return -1;
-    }
-
-    qname_len = dns_build_qname(host, &q[12], (int)(sizeof(q) - 16));
-    if (qname_len <= 0){
+    int rc = qos_dns_resolve_a_socket(host, g_dns_server, out_ip, 3000u);
+    if (rc == 0){
         if (verbose){
-            qos_puts("Invalid domain format.\n");
+            qos_puts("A ");
+            print_ip4(out_ip);
+            qos_puts("\n");
         }
-        return -1;
+        return 0;
     }
-
-    q[qi++] = (unsigned char)(dns_id >> 8);
-    q[qi++] = (unsigned char)(dns_id & 0xFFu);
-    q[qi++] = 0x01; q[qi++] = 0x00; // RD=1
-    q[qi++] = 0x00; q[qi++] = 0x01; // QDCOUNT=1
-    q[qi++] = 0x00; q[qi++] = 0x00; // ANCOUNT=0
-    q[qi++] = 0x00; q[qi++] = 0x00; // NSCOUNT=0
-    q[qi++] = 0x00; q[qi++] = 0x00; // ARCOUNT=0
-    qi += (unsigned int)qname_len;
-    q[qi++] = 0x00; q[qi++] = 0x01; // QTYPE=A
-    q[qi++] = 0x00; q[qi++] = 0x01; // QCLASS=IN
-
-    rc = qos_net_udp_send(dns_server, 4053u, 53u, q, qi);
-    if (rc != 0){
-        if (verbose){
-            qos_puts("DNS query send failed.\n");
-        }
-        dns_id++;
-        return -1;
-    }
-
     if (verbose){
-        qos_puts("Resolving ");
-        qos_puts(host);
-        qos_puts("...\n");
-    }
-
-    for (tries = 0; tries < 300; tries++){
-        (void)qos_net_poll();
-
-        while (1){
-            int n = qos_net_udp_recv(&meta, r, sizeof(r));
-            if (n <= 0){
-                break;
-            }
-            if (meta.src_port != 53u || n < 12){
-                continue;
-            }
-            if (read_be16(&r[0]) != dns_id){
-                continue;
-            }
-
-            unsigned short flags = read_be16(&r[2]);
-            unsigned short qdcount = read_be16(&r[4]);
-            unsigned short ancount = read_be16(&r[6]);
-            unsigned int rcode = (unsigned int)(flags & 0x000Fu);
-            int off = 12;
-            unsigned int ai;
-            int found = 0;
-
-            if (rcode != 0u){
-                if (verbose){
-                    qos_puts("DNS error rcode=");
-                    print_uint(rcode);
-                    qos_puts("\n");
-                }
-                dns_id++;
-                return -1;
-            }
-
-            for (ai = 0; ai < qdcount; ai++){
-                off = dns_skip_name(r, n, off);
-                if (off < 0 || off + 4 > n){
-                    if (verbose){
-                        qos_puts("DNS malformed response.\n");
-                    }
-                    dns_id++;
-                    return -1;
-                }
-                off += 4;
-            }
-
-            for (ai = 0; ai < ancount; ai++){
-                unsigned short type;
-                unsigned short classv;
-                unsigned short rdlen;
-                off = dns_skip_name(r, n, off);
-                if (off < 0 || off + 10 > n){
-                    break;
-                }
-                type = read_be16(&r[off + 0]);
-                classv = read_be16(&r[off + 2]);
-                rdlen = read_be16(&r[off + 8]);
-                off += 10;
-                if (off + rdlen > n){
-                    break;
-                }
-                if (type == 1u && classv == 1u && rdlen == 4u){
-                    if (!found){
-                        out_ip[0] = r[off + 0];
-                        out_ip[1] = r[off + 1];
-                        out_ip[2] = r[off + 2];
-                        out_ip[3] = r[off + 3];
-                    }
-                    if (verbose){
-                        qos_puts("A ");
-                        print_ip4(&r[off]);
-                        qos_puts("\n");
-                    }
-                    found = 1;
-                }
-                off += rdlen;
-            }
-
-            dns_id++;
-            return found ? 0 : -1;
+        if (rc == QOS_DNS_ERR_TIMEOUT){
+            qos_puts("DNS timeout.\n");
+        } else{
+            qos_puts("DNS resolve failed.\n");
         }
-
-        qos_sleep(10);
     }
-
-    if (verbose){
-        qos_puts("DNS timeout.\n");
-    }
-    dns_id++;
     return -1;
 }
 
