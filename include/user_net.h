@@ -97,6 +97,8 @@ static inline int qos_dns_resolve_a_socket(const char* host,
     int qname_len;
     int fd;
     int n;
+    const unsigned int slice_ms = 200u;
+    unsigned int recv_slice_ms = slice_ms;
 
     if (!host || !*host || !dns_server_ip || !out_ip){
         return QOS_DNS_ERR_PARAM;
@@ -126,6 +128,10 @@ static inline int qos_dns_resolve_a_socket(const char* host,
         (void)qos_close(fd);
         return QOS_DNS_ERR_CONNECT;
     }
+    if (timeout_ms > 0u && timeout_ms < recv_slice_ms){
+        recv_slice_ms = timeout_ms;
+    }
+    (void)qos_socket_set_recv_timeout(fd, recv_slice_ms);
 
     q[qi++] = (unsigned char)(dns_id >> 8);
     q[qi++] = (unsigned char)(dns_id & 0xFFu);
@@ -144,72 +150,83 @@ static inline int qos_dns_resolve_a_socket(const char* host,
         return QOS_DNS_ERR_SEND;
     }
 
-    n = qos_recv(fd, r, (unsigned int)sizeof(r), timeout_ms);
+    {
+    unsigned int rounds = (timeout_ms == 0u) ? 1u : ((timeout_ms + recv_slice_ms - 1u) / recv_slice_ms);
+    if (rounds == 0u){
+        rounds = 1u;
+    }
+    while (rounds-- > 0u){
+        n = qos_recv(fd, r, (unsigned int)sizeof(r), QOS_SOCK_TIMEOUT_USE_SOCKET);
+        if (n > 0){
+            if (n < 12){
+                // Ignore malformed short packet and keep waiting.
+            } else if (qos_be16_read(&r[0]) == dns_id){
+                unsigned short flags = qos_be16_read(&r[2]);
+                unsigned short qdcount = qos_be16_read(&r[4]);
+                unsigned short ancount = qos_be16_read(&r[6]);
+                unsigned int rcode = (unsigned int)(flags & 0x000Fu);
+                unsigned int qr = (unsigned int)((flags >> 15) & 1u);
+                int off = 12;
+                if (qr == 1u && rcode == 0u){
+                    int parse_ok = 1;
+                    for (unsigned int i = 0; i < qdcount; i++){
+                        off = qos_dns_skip_name(r, n, off);
+                        if (off < 0 || off + 4 > n){
+                            parse_ok = 0;
+                            break;
+                        }
+                        off += 4;
+                    }
+                    if (parse_ok){
+                        for (unsigned int i = 0; i < ancount; i++){
+                            unsigned short type;
+                            unsigned short classv;
+                            unsigned short rdlen;
+                            off = qos_dns_skip_name(r, n, off);
+                            if (off < 0 || off + 10 > n){
+                                parse_ok = 0;
+                                break;
+                            }
+                            type = qos_be16_read(&r[off + 0]);
+                            classv = qos_be16_read(&r[off + 2]);
+                            rdlen = qos_be16_read(&r[off + 8]);
+                            off += 10;
+                            if (off + rdlen > n){
+                                parse_ok = 0;
+                                break;
+                            }
+                            if (type == 1u && classv == 1u && rdlen == 4u){
+                                out_ip[0] = r[off + 0];
+                                out_ip[1] = r[off + 1];
+                                out_ip[2] = r[off + 2];
+                                out_ip[3] = r[off + 3];
+                                (void)qos_close(fd);
+                                dns_id++;
+                                return 0;
+                            }
+                            off += rdlen;
+                        }
+                        // Valid matching DNS response without A answer.
+                        (void)qos_close(fd);
+                        dns_id++;
+                        return QOS_DNS_ERR_NO_A;
+                    }
+                }
+                // Matching ID but no A record/rcode error: treat as definitive.
+                if (qr == 1u && rcode != 0u){
+                    (void)qos_close(fd);
+                    dns_id++;
+                    return QOS_DNS_ERR_PARSE;
+                }
+            }
+            // Different ID or irrelevant packet: keep waiting until timeout.
+        }
+    }
+    }
+
     (void)qos_close(fd);
-    if (n <= 0){
-        dns_id++;
-        return QOS_DNS_ERR_TIMEOUT;
-    }
-
-    if (n < 12){
-        dns_id++;
-        return QOS_DNS_ERR_PARSE;
-    }
-    if (qos_be16_read(&r[0]) != dns_id){
-        dns_id++;
-        return QOS_DNS_ERR_PARSE;
-    }
-
-    unsigned short flags = qos_be16_read(&r[2]);
-    unsigned short qdcount = qos_be16_read(&r[4]);
-    unsigned short ancount = qos_be16_read(&r[6]);
-    unsigned int rcode = (unsigned int)(flags & 0x000Fu);
-    int off = 12;
-
-    if (rcode != 0u){
-        dns_id++;
-        return QOS_DNS_ERR_PARSE;
-    }
-
-    for (unsigned int i = 0; i < qdcount; i++){
-        off = qos_dns_skip_name(r, n, off);
-        if (off < 0 || off + 4 > n){
-            dns_id++;
-            return QOS_DNS_ERR_PARSE;
-        }
-        off += 4;
-    }
-
-    for (unsigned int i = 0; i < ancount; i++){
-        unsigned short type;
-        unsigned short classv;
-        unsigned short rdlen;
-        off = qos_dns_skip_name(r, n, off);
-        if (off < 0 || off + 10 > n){
-            dns_id++;
-            return QOS_DNS_ERR_PARSE;
-        }
-        type = qos_be16_read(&r[off + 0]);
-        classv = qos_be16_read(&r[off + 2]);
-        rdlen = qos_be16_read(&r[off + 8]);
-        off += 10;
-        if (off + rdlen > n){
-            dns_id++;
-            return QOS_DNS_ERR_PARSE;
-        }
-        if (type == 1u && classv == 1u && rdlen == 4u){
-            out_ip[0] = r[off + 0];
-            out_ip[1] = r[off + 1];
-            out_ip[2] = r[off + 2];
-            out_ip[3] = r[off + 3];
-            dns_id++;
-            return 0;
-        }
-        off += rdlen;
-    }
-
     dns_id++;
-    return QOS_DNS_ERR_NO_A;
+    return QOS_DNS_ERR_TIMEOUT;
 }
 
 #endif
