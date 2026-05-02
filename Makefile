@@ -47,6 +47,7 @@ kernel/icmp.c \
 kernel/udp.c \
 kernel/tcp.c \
 kernel/socket.c \
+kernel/trust.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c

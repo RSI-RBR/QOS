@@ -20,7 +20,7 @@ webbrowser.raw: webbrowser.elf
 	$(OBJCOPY) webbrowser.elf -O binary webbrowser.raw
 
 webbrowser.bin: webbrowser.raw
-	python3 build_program.py webbrowser.raw webbrowser.bin
+	python3 build_program.py webbrowser.raw webbrowser.bin 0x1
 
 clean:
 	rm -f *.o *.elf *.raw *.bin

@@ -20,7 +20,7 @@ shell.raw: shell.elf
 	$(OBJCOPY) shell.elf -O binary shell.raw
 
 shell.bin: shell.raw
-	python3 build_program.py shell.raw shell.bin
+	python3 build_program.py shell.raw shell.bin 0x1
 
 clean:
 	rm -f *.o *.elf *.raw *.bin

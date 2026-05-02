@@ -1,7 +1,7 @@
 #include "loader.h"
 #include "blockdev.h"
 #include "mmu.h"
-#include "sha256.h"
+#include "trust.h"
 
 
 #define PROGRAM_MAX (8 * 1024)
@@ -16,15 +16,6 @@ static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
 static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
-
-static int bytes_equal(const unsigned char* a, const unsigned char* b, unsigned int n){
-    for (unsigned int i = 0; i < n; i++){
-        if (a[i] != b[i]){
-            return 0;
-        }
-    }
-    return 1;
-}
 
 static unsigned long daif_read(void){
     unsigned long v;
@@ -233,21 +224,27 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         return prog;
     }
 
-    // Optional security extension directly after base header.
-    if ((unsigned int)size >= (unsigned int)(sizeof(program_header_t) + sizeof(program_sec_header_t))){
+    // Security extension is mandatory: signatures are required for all programs.
+    if ((unsigned int)size < (unsigned int)(sizeof(program_header_t) + sizeof(program_sec_header_t))){
+        uart_puts("Program missing security header.\n");
+        return prog;
+    }
+    {
         const program_sec_header_t* cand = (const program_sec_header_t*)(buffer + sizeof(program_header_t));
-        if (cand->magic == QOS_SEC_MAGIC){
-            if (cand->header_size < sizeof(program_sec_header_t)){
-                uart_puts("Bad security header.\n");
-                return prog;
-            }
-            code_off += cand->header_size;
-            if ((unsigned int)size < code_off + code_size){
-                uart_puts("Program/security header size mismatch.\n");
-                return prog;
-            }
-            sec = cand;
+        if (cand->magic != QOS_SEC_MAGIC){
+            uart_puts("Program missing SEC1 header.\n");
+            return prog;
         }
+        if (cand->header_size < sizeof(program_sec_header_t)){
+            uart_puts("Bad security header.\n");
+            return prog;
+        }
+        code_off += cand->header_size;
+        if ((unsigned int)size < code_off + code_size){
+            uart_puts("Program/security header size mismatch.\n");
+            return prog;
+        }
+        sec = cand;
     }
 
     if (entry_offset >= code_size){
@@ -256,16 +253,11 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
 
     unsigned char *src = buffer + code_off;
-
-    if (sec && (sec->flags & QOS_PROG_FLAG_SHA256)){
-        unsigned char digest[32];
-        sha256_digest(src, code_size, digest);
-        if (!bytes_equal(digest, sec->sha256, sizeof(digest))){
-            uart_puts("Program integrity check failed (SHA-256).\n");
-            return prog;
-        }
-        uart_puts("Program integrity OK (SHA-256).\n");
+    if (trust_verify_program_image(file_83, sec, src, code_size) != 0){
+        uart_puts("Program trust verification failed.\n");
+        return prog;
     }
+    uart_puts("Program trust verification OK.\n");
 
 //    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
 //    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
