@@ -1,6 +1,7 @@
 #include "ipv4.h"
 #include "icmp.h"
 #include "udp.h"
+#include "tcp.h"
 #include "arp.h"
 #include "net.h"
 #include "ethernet.h"
@@ -207,6 +208,10 @@ void ipv4_handle_frame(const unsigned char* frame, unsigned int len){
     }
     if (ip->protocol == IPV4_PROTO_UDP){
         udp_handle_ipv4_packet(ip->src, ip->dst, frame + ihl_bytes, total_len - ihl_bytes);
+        return;
+    }
+    if (ip->protocol == IPV4_PROTO_TCP){
+        tcp_handle_ipv4_packet(ip->src, ip->dst, frame + ihl_bytes, total_len - ihl_bytes);
         return;
     }
     g_ipv4_stats.rx_other_proto++;

@@ -41,6 +41,7 @@ kernel/arp.c \
 kernel/ipv4.c \
 kernel/icmp.c \
 kernel/udp.c \
+kernel/tcp.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c

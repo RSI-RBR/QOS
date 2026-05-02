@@ -24,7 +24,8 @@ enum {
     SYS_NET_PING_GATEWAY = 17,
     SYS_NET_UDP_SEND_PROBE = 18,
     SYS_NET_UDP_RECV = 19,
-    SYS_NET_UDP_SEND = 20
+    SYS_NET_UDP_SEND = 20,
+    SYS_NET_TCP_HTTP_GET = 21
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -180,6 +181,19 @@ static inline int qos_net_udp_send(const unsigned char dst_ip[4],
                              (unsigned long)dst_port,
                              (unsigned long)data,
                              (unsigned long)len);
+}
+
+static inline int qos_net_tcp_http_get(const unsigned char dst_ip[4],
+                                       const char* host,
+                                       const char* path,
+                                       unsigned char* out,
+                                       unsigned int out_cap){
+    return (int)qos_syscall5(SYS_NET_TCP_HTTP_GET,
+                             (unsigned long)dst_ip,
+                             (unsigned long)host,
+                             (unsigned long)path,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
 }
 
 __attribute__((noreturn))

@@ -2,6 +2,7 @@
 #define IPV4_H
 
 #define IPV4_PROTO_ICMP 1u
+#define IPV4_PROTO_TCP  6u
 #define IPV4_PROTO_UDP  17u
 
 typedef struct __attribute__((packed)) {

@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "net.h"
 #include "udp.h"
+#include "tcp.h"
 #include "usb_host.h"
 
 #define ESR_EC_SHIFT 26
@@ -236,6 +237,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                    (unsigned short)frame[TF_X2],
                                                    (const unsigned char*)frame[TF_X3],
                                                    (unsigned int)frame[TF_X4]);
+            return frame_sp;
+
+        case SYS_NET_TCP_HTTP_GET:
+            frame[TF_X0] = (unsigned long)tcp_http_get((const unsigned char*)frame[TF_X0],
+                                                       (const char*)frame[TF_X1],
+                                                       (const char*)frame[TF_X2],
+                                                       (unsigned char*)frame[TF_X3],
+                                                       (unsigned int)frame[TF_X4]);
             return frame_sp;
 
         default:

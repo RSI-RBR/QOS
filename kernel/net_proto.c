@@ -4,6 +4,7 @@
 #include "ipv4.h"
 #include "icmp.h"
 #include "udp.h"
+#include "tcp.h"
 #include "uart.h"
 
 typedef struct {
@@ -33,6 +34,7 @@ void net_proto_init(void){
     ipv4_init();
     icmp_init();
     udp_init();
+    tcp_init();
 }
 
 void net_proto_configure_defaults(void){
@@ -84,6 +86,7 @@ void net_proto_dump_stats(void){
     ipv4_dump_stats();
     icmp_dump_stats();
     udp_dump_stats();
+    tcp_dump_stats();
 }
 
 void net_proto_get_local_mac(unsigned char out_mac[6]){
