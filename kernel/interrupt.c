@@ -190,6 +190,18 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
     }
 
     uart_puts("\nSYNC EXCEPTION\n");
+    uart_puts("CORE=");
+    uart_puthex(cpu_get_id());
+    uart_puts(" PID=");
+    {
+        int pid = process_current_pid();
+        if (pid < 0){
+            uart_puts("FFFFFFFF");
+        } else{
+            uart_puthex((unsigned int)pid);
+        }
+    }
+    uart_puts("\n");
     uart_puts("EC=");
     uart_puthex((unsigned int)ec);
     uart_puts("\n");
@@ -216,8 +228,12 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         if (next_sp != frame_sp){
             return next_sp;
         }
-        uart_puts("No alternate runnable frame after fault.\n");
-        process_dump();
+        uart_puts("No alternate runnable frame after fault; idling this core.\n");
+        // Keep the system alive on other cores instead of global halt.
+        asm volatile("msr daifclr, #2" : : : "memory");
+        while (1){
+            asm volatile("wfi");
+        }
     }
 
     uart_puts("HALTING\n");
