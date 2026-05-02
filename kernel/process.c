@@ -690,8 +690,9 @@ void* scheduler_on_irq(void* irq_frame_sp){
 
 void process_sleep(unsigned int ms){
     unsigned int core = scheduler_core_id();
+    int pid = -1;
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
-    int pid = current_pid[core];
+    pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
         spin_unlock_irqrestore(&g_process_lock, irq);
         return;
@@ -707,7 +708,21 @@ void process_sleep(unsigned int ms){
     asm volatile("msr daifclr, #2" : : : "memory");
 
     // Block cooperatively until the timer IRQ path wakes us.
-    while (processes[pid].state == PROC_SLEEPING){
+    while (1){
+        irq = spin_lock_irqsave(&g_process_lock);
+        process_state_t st = processes[pid].state;
+        if (st != PROC_SLEEPING){
+            // If a remote core woke us, we may still be running on this core's
+            // stack; normalize state back to RUNNING before returning to EL0.
+            if (st == PROC_READY &&
+                core < MAX_CPU_CORES &&
+                current_pid[core] == pid){
+                processes[pid].state = PROC_RUNNING;
+            }
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            break;
+        }
+        spin_unlock_irqrestore(&g_process_lock, irq);
         asm volatile("wfi");
     }
 
