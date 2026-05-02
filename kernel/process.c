@@ -631,8 +631,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
         if (processes[i].state == PROC_SLEEPING && tick_reached(system_ticks, processes[i].wake_tick)){
             processes[i].state = PROC_READY;
             processes[i].wake_tick = 0;
-            unsigned int owner_core = choose_least_loaded_core_locked(core);
-            processes[i].owner_core = owner_core;
+            unsigned int owner_core = processes[i].owner_core;
+            if (owner_core >= MAX_CPU_CORES){
+                owner_core = core;
+                processes[i].owner_core = owner_core;
+            }
             runq_enqueue(owner_core, i);
             if (owner_core != core){
                 mark_need_resched_locked(owner_core);
@@ -661,10 +664,8 @@ void* scheduler_on_irq(void* irq_frame_sp){
     if (!next){
         if (cur >= 0 && cur < MAX_PROCESSES){
             if (processes[cur].state == PROC_SLEEPING){
-                // No alternate runnable task exists. Avoid desynchronizing
-                // current_pid/state; treat sleep as a no-op in this edge case.
-                processes[cur].state = PROC_RUNNING;
-                processes[cur].wake_tick = 0;
+                // Keep the process sleeping. Returning to the same frame lands
+                // back in process_sleep()'s WFI loop until wake_tick is reached.
                 spin_unlock_irqrestore(&g_process_lock, irq);
                 return irq_frame_sp;
             }
