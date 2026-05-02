@@ -21,6 +21,9 @@ static int current_pid[MAX_CPU_CORES];
 static int zombie_pid[MAX_CPU_CORES];
 static unsigned int need_resched[MAX_CPU_CORES];
 static run_queue_t runq[MAX_CPU_CORES];
+static int sleep_head = -1;
+static int sleep_next[MAX_PROCESSES];
+static unsigned char sleep_in_queue[MAX_PROCESSES];
 static spinlock_t g_process_lock;
 
 extern void restore_context_and_eret(void* frame_sp);
@@ -44,6 +47,98 @@ static unsigned int scheduler_core_id(void){
 
 static int tick_reached(unsigned long now, unsigned long target){
     return (long)(now - target) >= 0;
+}
+
+static void sleepq_remove_locked(int pid){
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        return;
+    }
+    if (!sleep_in_queue[pid]){
+        return;
+    }
+
+    int prev = -1;
+    int cur = sleep_head;
+    while (cur >= 0){
+        if (cur == pid){
+            break;
+        }
+        prev = cur;
+        cur = sleep_next[cur];
+    }
+    if (cur < 0){
+        sleep_in_queue[pid] = 0;
+        sleep_next[pid] = -1;
+        return;
+    }
+
+    if (prev < 0){
+        sleep_head = sleep_next[cur];
+    } else{
+        sleep_next[prev] = sleep_next[cur];
+    }
+    sleep_in_queue[cur] = 0;
+    sleep_next[cur] = -1;
+}
+
+static void sleepq_insert_locked(int pid, unsigned long wake_tick){
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        return;
+    }
+
+    sleepq_remove_locked(pid);
+    processes[pid].wake_tick = wake_tick;
+    sleep_next[pid] = -1;
+    sleep_in_queue[pid] = 1;
+
+    if (sleep_head < 0){
+        sleep_head = pid;
+        return;
+    }
+
+    int prev = -1;
+    int cur = sleep_head;
+    while (cur >= 0){
+        if ((long)(processes[cur].wake_tick - wake_tick) > 0){
+            break;
+        }
+        prev = cur;
+        cur = sleep_next[cur];
+    }
+
+    if (prev < 0){
+        sleep_next[pid] = sleep_head;
+        sleep_head = pid;
+    } else{
+        sleep_next[pid] = sleep_next[prev];
+        sleep_next[prev] = pid;
+    }
+}
+
+static int sleepq_pop_due_locked(unsigned long now_ticks){
+    while (sleep_head >= 0){
+        int pid = sleep_head;
+        if (pid < 0 || pid >= MAX_PROCESSES){
+            sleep_head = -1;
+            return -1;
+        }
+
+        if (!sleep_in_queue[pid]){
+            sleep_head = sleep_next[pid];
+            sleep_next[pid] = -1;
+            continue;
+        }
+
+        if (!tick_reached(now_ticks, processes[pid].wake_tick)){
+            return -1;
+        }
+
+        sleep_head = sleep_next[pid];
+        sleep_next[pid] = -1;
+        sleep_in_queue[pid] = 0;
+        return pid;
+    }
+    return -1;
 }
 
 static void runq_reset(unsigned int core){
@@ -222,6 +317,8 @@ static void clear_process_descriptor(int pid){
     processes[pid].wake_tick = 0;
     processes[pid].state = PROC_DEAD;
     processes[pid].pid = pid;
+    sleep_in_queue[pid] = 0;
+    sleep_next[pid] = -1;
 }
 
 static void process_bootstrap(void){
@@ -261,6 +358,7 @@ static void reap_process_resources(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES){
         return;
     }
+    sleepq_remove_locked(pid);
 
     if (processes[pid].stack){
         free_stack(processes[pid].stack);
@@ -296,6 +394,7 @@ static void mark_current_for_reap(unsigned int core){
     zombie_pid[core] = pid;
     processes[pid].state = PROC_DEAD;
     processes[pid].wake_tick = 0;
+    sleepq_remove_locked(pid);
 }
 
 static void reap_pending_zombie(unsigned int core){
@@ -368,6 +467,7 @@ int scheduler_consume_need_resched(void){
 
 void process_init(void){
     spinlock_init(&g_process_lock);
+    sleep_head = -1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         clear_process_descriptor(i);
     }
@@ -633,20 +733,28 @@ void* scheduler_on_irq(void* irq_frame_sp){
 
     reap_pending_zombie(core);
 
-    for (int i = 0; i < MAX_PROCESSES; i++){
-        if (processes[i].state == PROC_SLEEPING && tick_reached(system_ticks, processes[i].wake_tick)){
-            processes[i].state = PROC_READY;
-            processes[i].wake_tick = 0;
-            unsigned int owner_core = processes[i].owner_core;
-            if (owner_core >= MAX_CPU_CORES){
-                owner_core = core;
-                processes[i].owner_core = owner_core;
-            }
-            runq_enqueue(owner_core, i);
-            if (owner_core != core){
-                mark_need_resched_locked(owner_core);
-                smp_send_ipi(owner_core);
-            }
+    while (1){
+        int wake_pid = sleepq_pop_due_locked(system_ticks);
+        if (wake_pid < 0){
+            break;
+        }
+        if (wake_pid < 0 || wake_pid >= MAX_PROCESSES){
+            continue;
+        }
+        if (processes[wake_pid].state != PROC_SLEEPING){
+            continue;
+        }
+        processes[wake_pid].state = PROC_READY;
+        processes[wake_pid].wake_tick = 0;
+        unsigned int owner_core = processes[wake_pid].owner_core;
+        if (owner_core >= MAX_CPU_CORES){
+            owner_core = core;
+            processes[wake_pid].owner_core = owner_core;
+        }
+        runq_enqueue(owner_core, wake_pid);
+        if (owner_core != core){
+            mark_need_resched_locked(owner_core);
+            smp_send_ipi(owner_core);
         }
     }
 
@@ -705,7 +813,7 @@ void process_sleep(unsigned int ms){
         return;
     }
 
-    processes[pid].wake_tick = system_ticks + ms;
+    sleepq_insert_locked(pid, system_ticks + ms);
     processes[pid].state = PROC_SLEEPING;
     spin_unlock_irqrestore(&g_process_lock, irq);
 
