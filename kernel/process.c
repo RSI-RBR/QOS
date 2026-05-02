@@ -21,6 +21,7 @@ static int current_pid[MAX_CPU_CORES];
 static int zombie_pid[MAX_CPU_CORES];
 static unsigned int need_resched[MAX_CPU_CORES];
 static run_queue_t runq[MAX_CPU_CORES];
+static volatile int g_process_ready = 0;
 static int sleep_head = -1;
 static int sleep_next[MAX_PROCESSES];
 static unsigned char sleep_in_queue[MAX_PROCESSES];
@@ -559,6 +560,7 @@ int scheduler_consume_need_resched(void){
 
 void process_init(void){
     spinlock_init(&g_process_lock);
+    g_process_ready = 0;
     sleep_head = -1;
     for (int i = 0; i < MAX_PROCESSES; i++){
         clear_process_descriptor(i);
@@ -569,6 +571,7 @@ void process_init(void){
         need_resched[core] = 0;
         runq_reset(core);
     }
+    g_process_ready = 1;
 }
 
 void *alloc_stack(void){
@@ -700,10 +703,16 @@ process_t* get_process(int pid){
 }
 
 int process_current_pid(void){
+    if (!g_process_ready){
+        return -1;
+    }
     return current_pid[scheduler_core_id()];
 }
 
 process_t* get_current_process(void){
+    if (!g_process_ready){
+        return 0;
+    }
     int pid = current_pid[scheduler_core_id()];
     if (pid < 0){
         return 0;
