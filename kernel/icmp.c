@@ -28,6 +28,7 @@ static const unsigned short g_ping_ident = 0x5153u;
 static volatile int g_ping_waiting = 0;
 static volatile unsigned short g_ping_wait_seq = 0;
 static volatile unsigned long g_ping_send_tick = 0;
+static volatile unsigned long g_ping_send_cnt_lo = 0;
 static volatile int g_ping_result_ms = -1;
 
 static unsigned long read_daif(void){
@@ -38,6 +39,18 @@ static unsigned long read_daif(void){
 
 static void write_daif(unsigned long v){
     asm volatile("msr daif, %0" : : "r"(v) : "memory");
+}
+
+static unsigned long read_cntfrq(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long read_cntpct_lo(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
 }
 
 static unsigned short be16_read(const unsigned char* p){
@@ -75,6 +88,7 @@ void icmp_init(void){
     g_ping_waiting = 0;
     g_ping_wait_seq = 0;
     g_ping_send_tick = 0;
+    g_ping_send_cnt_lo = 0;
     g_ping_result_ms = -1;
 }
 
@@ -116,7 +130,17 @@ void icmp_handle_ipv4_packet(const unsigned char* src_ip,
         return;
     }
 
-    g_ping_result_ms = (int)(system_ticks - g_ping_send_tick);
+    {
+        unsigned long cnt_now = read_cntpct_lo();
+        unsigned long cnt_send = g_ping_send_cnt_lo;
+        unsigned long freq = read_cntfrq();
+        if (freq == 0){
+            g_ping_result_ms = (int)(system_ticks - g_ping_send_tick);
+        } else{
+            unsigned long delta = cnt_now - cnt_send;
+            g_ping_result_ms = (int)((delta * 1000UL) / freq);
+        }
+    }
     g_ping_waiting = 0;
 }
 
@@ -133,6 +157,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     unsigned int frame_len = ETH_HEADER_LEN + ip_total_len;
     unsigned long start_tick;
     unsigned long spin_budget;
+    unsigned long freq;
+    unsigned long start_cnt;
+    unsigned long timeout_cycles;
     unsigned long saved_daif;
 
     if (timeout_ms == 0){
@@ -195,6 +222,7 @@ int icmp_ping_gateway(unsigned int timeout_ms){
 
     g_ping_wait_seq = seq;
     g_ping_send_tick = system_ticks;
+    g_ping_send_cnt_lo = read_cntpct_lo();
     g_ping_result_ms = -1;
     g_ping_waiting = 1;
 
@@ -210,10 +238,23 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     asm volatile("msr daifclr, #2" : : : "memory"); // clear I bit (IRQ mask)
 
     start_tick = system_ticks;
+    freq = read_cntfrq();
+    start_cnt = read_cntpct_lo();
+    timeout_cycles = (freq / 1000UL) * (unsigned long)timeout_ms;
+    if (timeout_cycles == 0){
+        timeout_cycles = freq / 10UL; // fallback ~100ms minimum window
+    }
     // Fallback budget so ping can time out even if timer IRQ is stalled/masked.
     // Tuned conservatively to avoid hanging the shell forever in syscall path.
-    spin_budget = ((unsigned long)timeout_ms * 200000UL) + 200000UL;
+    spin_budget = ((unsigned long)timeout_ms * 1000000UL) + 1000000UL;
     while (g_ping_waiting){
+        unsigned long now_cnt = read_cntpct_lo();
+        if ((now_cnt - start_cnt) >= timeout_cycles){
+            g_ping_waiting = 0;
+            g_icmp_stats.timeouts++;
+            write_daif(saved_daif);
+            return -1;
+        }
         if ((long)(system_ticks - start_tick) >= (long)timeout_ms){
             g_ping_waiting = 0;
             g_icmp_stats.timeouts++;

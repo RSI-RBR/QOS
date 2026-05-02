@@ -104,7 +104,7 @@ static void cmd_netloop(void){
 }
 
 static void cmd_ping(void){
-    int rtt = qos_net_ping_gateway(1000);
+    int rtt = qos_net_ping_gateway(2000);
     if (rtt >= 0){
         qos_puts("PING reply time=");
         print_uint((unsigned int)rtt);
