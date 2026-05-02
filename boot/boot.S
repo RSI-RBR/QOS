@@ -74,6 +74,9 @@ primary_hang:
     b primary_hang
 
 secondary_start:
+    // Secondary cores can be mailbox-jumped directly here; recompute core id.
+    mrs x19, mpidr_el1
+    and x19, x19, #0xFF
     bl set_core_stack
 
     // Ensure kernel runs in EL1h.
@@ -140,7 +143,7 @@ set_core_stack:
 
 program_secondary_mailboxes:
     // Raspberry Pi local core mailbox-3 wakeup addresses.
-    ldr x0, =secondary_start
+    ldr x0, =_start
     ldr x1, =0x4000009C   // CORE1_MBOX3_SET
     str w0, [x1]
     ldr x1, =0x400000AC   // CORE2_MBOX3_SET

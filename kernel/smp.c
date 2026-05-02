@@ -7,10 +7,10 @@
 
 volatile unsigned int smp_boot_release_mask = 0;
 
-extern void secondary_start(void);
+extern void _start(void);
 
 void smp_release_secondary_cores(void){
-    unsigned int entry = (unsigned int)(unsigned long)&secondary_start;
+    unsigned int entry = (unsigned int)(unsigned long)&_start;
 
     // Program mailbox-3 wake entry for secondary cores.
     CORE1_MBOX3_SET = entry;
