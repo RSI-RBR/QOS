@@ -17,6 +17,7 @@ extern void vectors(void);
 #define IRQ_SDHOST_PENDING_BIT (1u << 30) // IRQ 62 -> bank2 bit 30
 
 static void (*g_sdhost_irq_handler)(void) = 0;
+static volatile unsigned int g_kernel_preempt_depth = 0;
 
 #define MAX_BANK2_IRQ_HANDLERS 8
 static unsigned int g_bank2_irq_bits[MAX_BANK2_IRQ_HANDLERS];
@@ -71,6 +72,28 @@ void disable_interrupts(void){
     asm volatile("msr daifset, #2");
 }
 
+void kernel_preempt_enter(void){
+    unsigned long daif_prev;
+    asm volatile("mrs %0, daif" : "=r"(daif_prev));
+    asm volatile("msr daifset, #2");
+    g_kernel_preempt_depth++;
+    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
+}
+
+void kernel_preempt_exit(void){
+    unsigned long daif_prev;
+    asm volatile("mrs %0, daif" : "=r"(daif_prev));
+    asm volatile("msr daifset, #2");
+    if (g_kernel_preempt_depth > 0){
+        g_kernel_preempt_depth--;
+    }
+    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
+}
+
+int kernel_preempt_enabled(void){
+    return g_kernel_preempt_depth > 0 ? 1 : 0;
+}
+
 void* irq_handler(void* irq_frame_sp){
     unsigned int local_src = CORE0_IRQ_SOURCE;
     if (local_src & CORE0_CNTPNSIRQ_PENDING){
@@ -78,12 +101,11 @@ void* irq_handler(void* irq_frame_sp){
         timer_handler();
         arp_periodic_tick(system_ticks);
         net_poll();
-        // Do not preempt while executing kernel EL1 code (e.g. inside syscall
-        // loader path). Only schedule directly from timer IRQ when interrupted
-        // context was EL0 user-mode.
+        // By default, preempt only EL0 user-mode. For selected long-running
+        // kernel paths, syscall code can opt in to cooperative EL1 preemption.
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
-        if ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T){
+        if ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T || kernel_preempt_enabled()){
             return scheduler_on_irq(irq_frame_sp);
         }
         return irq_frame_sp;

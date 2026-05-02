@@ -9,6 +9,7 @@
 #include "udp.h"
 #include "tcp.h"
 #include "usb_host.h"
+#include "interrupt.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -164,8 +165,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         }
 
         case SYS_RUN_PROGRAM: {
+            kernel_preempt_enter();
             loaded_program_t prog = load_program_from_sd();
             if (!prog.entry){
+                kernel_preempt_exit();
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -181,10 +184,12 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                     }
                     loader_free_program_memory(prog.memory, prog.size);
                 }
+                kernel_preempt_exit();
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
 
+            kernel_preempt_exit();
             frame[TF_X0] = (unsigned long)pid;
             return frame_sp;
         }
@@ -218,7 +223,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_NET_PING_GATEWAY:
+            kernel_preempt_enter();
             frame[TF_X0] = (unsigned long)net_ping_gateway((unsigned int)frame[TF_X0]);
+            kernel_preempt_exit();
             return frame_sp;
 
         case SYS_NET_UDP_SEND_PROBE:
@@ -240,11 +247,13 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_NET_TCP_HTTP_GET:
+            kernel_preempt_enter();
             frame[TF_X0] = (unsigned long)tcp_http_get((const unsigned char*)frame[TF_X0],
                                                        (const char*)frame[TF_X1],
                                                        (const char*)frame[TF_X2],
                                                        (unsigned char*)frame[TF_X3],
                                                        (unsigned int)frame[TF_X4]);
+            kernel_preempt_exit();
             return frame_sp;
 
         default:
