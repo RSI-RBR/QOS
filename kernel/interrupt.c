@@ -128,8 +128,10 @@ void* irq_handler(void* irq_frame_sp){
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
         int need_resched = scheduler_consume_need_resched();
         int in_el0 = ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T);
-        int idle_kernel = (get_current_process() == 0);
-        if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel)){
+        process_t* cur = get_current_process();
+        int sleeping_syscall = (cur && cur->state == PROC_SLEEPING);
+        int idle_kernel = (cur == 0);
+        if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel || sleeping_syscall)){
             return scheduler_on_irq(irq_frame_sp);
         }
         return irq_frame_sp;
