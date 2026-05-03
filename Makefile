@@ -54,11 +54,13 @@ kernel/icmp.c \
 kernel/udp.c \
 kernel/tcp.c \
 kernel/tls_record.c \
+kernel/tls_key_schedule.c \
 kernel/socket.c \
 kernel/trust.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c \
+kernel/x25519.c \
 third_party/ed25519/src/verify.c \
 third_party/ed25519/src/ge.c \
 third_party/ed25519/src/sc.c \

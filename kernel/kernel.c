@@ -25,6 +25,8 @@
 #include "crypto.h"
 #include "aes_gcm.h"
 #include "tls_record.h"
+#include "x25519.h"
+#include "tls_key_schedule.h"
 
 
 //extern kernel_api_t kapi;
@@ -131,6 +133,16 @@ void kernel_main(void){
         uart_puts("TLS record self-test OK\n");
     } else{
         uart_puts("TLS record self-test FAILED\n");
+    }
+    if (x25519_self_test() == 0){
+        uart_puts("X25519 self-test OK\n");
+    } else{
+        uart_puts("X25519 self-test FAILED\n");
+    }
+    if (tls13_key_schedule_self_test() == 0){
+        uart_puts("TLS key schedule self-test OK\n");
+    } else{
+        uart_puts("TLS key schedule self-test FAILED\n");
     }
 
     process_init();
