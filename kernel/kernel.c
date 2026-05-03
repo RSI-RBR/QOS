@@ -23,6 +23,7 @@
 #include "smp.h"
 #include "kernel_verify.h"
 #include "crypto.h"
+#include "aes_gcm.h"
 
 
 //extern kernel_api_t kapi;
@@ -120,6 +121,11 @@ void kernel_main(void){
     check_stack();
     crypto_init();
     uart_puts("Crypto initialized!\n");
+    if (aes_gcm_self_test() == 0){
+        uart_puts("AES-GCM self-test OK\n");
+    } else{
+        uart_puts("AES-GCM self-test FAILED\n");
+    }
 
     process_init();
     interrupt_init();

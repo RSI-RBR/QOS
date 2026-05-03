@@ -36,6 +36,7 @@ kernel/sdhost.c \
 kernel/debug.c \
 kernel/cache.c \
 kernel/crypto.c \
+kernel/aes_gcm.c \
 kernel/spinlock.c \
 kernel/interrupt.c \
 kernel/timer.c \
