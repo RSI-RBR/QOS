@@ -60,8 +60,9 @@ static int x25519_scalar_mult(unsigned char out[32],
 
         fe_mul(x2, aa, bb);       // x2 = AA*BB
         fe_mul121666(t0, e1);     // t0 = 121666*E
-        fe_add(t0, t0, aa);       // AA + 121666*E
-        fe_mul(z2, e1, t0);       // z2 = E*(AA + 121666*E)
+        fe_sub(t0, t0, e1);       // t0 = 121665*E (a24 for this formula)
+        fe_add(t0, t0, aa);       // AA + 121665*E
+        fe_mul(z2, e1, t0);       // z2 = E*(AA + 121665*E)
     }
 
     fe_cswap(x2, x3, swap);
