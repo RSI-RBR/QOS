@@ -174,6 +174,17 @@ void kernel_main(void){
     }
     socket_layer_init();
     tls_session_layer_init();
+    {
+        int tsrc = tls_session_self_test();
+        if (tsrc == 0){
+            uart_puts("TLS session self-test OK\n");
+        } else{
+            unsigned long abs = (tsrc < 0) ? (unsigned long)(-tsrc) : (unsigned long)tsrc;
+            uart_puts("TLS session self-test FAILED rc=");
+            uart_putdec(abs);
+            uart_puts("\n");
+        }
+    }
     console_init();
 
     fb_init();

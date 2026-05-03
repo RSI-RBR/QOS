@@ -18,6 +18,7 @@ typedef struct {
 
 void tls_session_layer_init(void);
 void tls_session_close_all_for_pid(int pid);
+int tls_session_self_test(void);
 
 int ktls_open(int pid, int role);
 int ktls_close(int pid, int tls_id);

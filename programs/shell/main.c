@@ -80,6 +80,16 @@ static void print_uint(unsigned int v){
     }
 }
 
+static void print_int(int v){
+    if (v < 0){
+        qos_putc('-');
+        unsigned int mag = (unsigned int)(-(long long)v);
+        print_uint(mag);
+        return;
+    }
+    print_uint((unsigned int)v);
+}
+
 static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[0]);
     qos_putc('.');
@@ -300,12 +310,18 @@ static void cmd_tlstest(void){
     int ch_len = qos_tls_build_client_hello(c, ch, sizeof(ch));
     if (ch_len <= 0){
         qos_puts("TLS test failed: build client hello\n");
+        qos_puts(" ch_len=");
+        print_int(ch_len);
+        qos_puts("\n");
         goto out;
     }
     int sh_len = qos_tls_process_client_hello_build_server_hello(
         s, ch, (unsigned int)ch_len, sh, sizeof(sh));
     if (sh_len <= 0){
         qos_puts("TLS test failed: server process/build\n");
+        qos_puts(" sh_len=");
+        print_int(sh_len);
+        qos_puts("\n");
         goto out;
     }
     if (qos_tls_process_server_hello(c, sh, (unsigned int)sh_len) != 0){
@@ -345,6 +361,13 @@ static void cmd_tlstest(void){
         io2.inner_type != QOS_TLS_RECORD_INNER_APPDATA ||
         !mem_eq(s_plain, msg1, (unsigned int)dec1)){
         qos_puts("TLS test failed: c->s decrypt/verify\n");
+        qos_puts(" dec1=");
+        print_int(dec1);
+        qos_puts(" exp=");
+        print_uint(msg1_len);
+        qos_puts(" inner=");
+        print_uint((unsigned int)io2.inner_type);
+        qos_puts("\n");
         goto out;
     }
 
@@ -373,6 +396,13 @@ static void cmd_tlstest(void){
         io4.inner_type != QOS_TLS_RECORD_INNER_APPDATA ||
         !mem_eq(c_plain, msg2, (unsigned int)dec2)){
         qos_puts("TLS test failed: s->c decrypt/verify\n");
+        qos_puts(" dec2=");
+        print_int(dec2);
+        qos_puts(" exp=");
+        print_uint(msg2_len);
+        qos_puts(" inner=");
+        print_uint((unsigned int)io4.inner_type);
+        qos_puts("\n");
         goto out;
     }
 

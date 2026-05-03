@@ -391,3 +391,85 @@ int ktls_is_ready(int pid, int tls_id){
     spin_unlock_irqrestore(&g_tls_lock, irq);
     return ready;
 }
+
+int tls_session_self_test(void){
+    enum { TEST_PID = 0 };
+    int c = -1;
+    int s = -1;
+    static unsigned char ch[256];
+    static unsigned char sh[256];
+    unsigned int ch_len = 0;
+    unsigned int sh_len = 0;
+    static const unsigned char msg[] = "tls-session-self-test";
+    static unsigned char c_ct[256];
+    static unsigned char s_pt[256];
+    unsigned int c_ct_len = 0;
+    unsigned int s_pt_len = 0;
+    unsigned char s_inner = 0;
+
+    c = ktls_open(TEST_PID, QOS_TLS_ROLE_CLIENT);
+    if (c < 0){
+        return -1;
+    }
+    s = ktls_open(TEST_PID, QOS_TLS_ROLE_SERVER);
+    if (s < 0){
+        (void)ktls_close(TEST_PID, c);
+        return -2;
+    }
+    if (ktls_build_client_hello(TEST_PID, c, ch, sizeof(ch), &ch_len) != 0 || ch_len == 0u){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -3;
+    }
+    if (ktls_process_client_hello_build_server_hello(TEST_PID, s, ch, ch_len, sh, sizeof(sh), &sh_len) != 0 || sh_len == 0u){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -4;
+    }
+    if (ktls_process_server_hello(TEST_PID, c, sh, sh_len) != 0){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -5;
+    }
+    if (!ktls_is_ready(TEST_PID, c) || !ktls_is_ready(TEST_PID, s)){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -6;
+    }
+
+    qos_tls_record_io_t ioe;
+    ioe.inner_type = QOS_TLS_RECORD_INNER_APPDATA;
+    ioe.in = msg;
+    ioe.in_len = (unsigned int)(sizeof(msg) - 1u);
+    ioe.out = c_ct;
+    ioe.out_cap = sizeof(c_ct);
+    ioe.out_len = 0;
+    int enc = ktls_record_encrypt(TEST_PID, c, &ioe);
+    c_ct_len = ioe.out_len;
+    if (enc <= 0 || c_ct_len == 0u){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -7;
+    }
+
+    qos_tls_record_io_t iod;
+    iod.inner_type = 0;
+    iod.in = c_ct;
+    iod.in_len = c_ct_len;
+    iod.out = s_pt;
+    iod.out_cap = sizeof(s_pt);
+    iod.out_len = 0;
+    int dec = ktls_record_decrypt(TEST_PID, s, &iod);
+    s_pt_len = iod.out_len;
+    s_inner = iod.inner_type;
+    if (dec <= 0 || s_inner != QOS_TLS_RECORD_INNER_APPDATA || s_pt_len != (unsigned int)(sizeof(msg) - 1u) ||
+        !crypto_consttime_equal(s_pt, msg, s_pt_len)){
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -8;
+    }
+
+    (void)ktls_close(TEST_PID, s);
+    (void)ktls_close(TEST_PID, c);
+    return 0;
+}
