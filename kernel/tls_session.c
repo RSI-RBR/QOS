@@ -6,7 +6,6 @@
 #include "tls_handshake.h"
 #include "tls_key_schedule.h"
 #include "tls_record.h"
-#include "cache.h"
 
 #define TLS_MAX_GLOBAL 16
 #define TLS_MAX_PER_PROCESS 4
@@ -390,7 +389,7 @@ int ktls_record_encrypt(int pid, int tls_id, qos_tls_record_io_t* io){
     }
     sync_user_read(io, (unsigned int)sizeof(*io));
     if (!io->out){
-        return -1;
+        return -2;
     }
     if (io->in && io->in_len){
         sync_user_read(io->in, io->in_len);
@@ -399,7 +398,7 @@ int ktls_record_encrypt(int pid, int tls_id, qos_tls_record_io_t* io){
     int si = lookup_locked(pid, tls_id);
     if (si < 0 || !g_tls_sessions[si].ready){
         spin_unlock_irqrestore(&g_tls_lock, irq);
-        return -1;
+        return -3;
     }
     tls_session_t* s = &g_tls_sessions[si];
     unsigned int n = 0;
@@ -413,7 +412,7 @@ int ktls_record_encrypt(int pid, int tls_id, qos_tls_record_io_t* io){
         sync_user_write(io->out, n);
     }
     sync_user_write(io, (unsigned int)sizeof(*io));
-    return rc == 0 ? (int)n : -1;
+    return rc == 0 ? (int)n : -4;
 }
 
 int ktls_record_decrypt(int pid, int tls_id, qos_tls_record_io_t* io){
@@ -422,14 +421,14 @@ int ktls_record_decrypt(int pid, int tls_id, qos_tls_record_io_t* io){
     }
     sync_user_read(io, (unsigned int)sizeof(*io));
     if (!io->in || !io->out){
-        return -1;
+        return -2;
     }
     sync_user_read(io->in, io->in_len);
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
     if (si < 0 || !g_tls_sessions[si].ready){
         spin_unlock_irqrestore(&g_tls_lock, irq);
-        return -1;
+        return -3;
     }
     tls_session_t* s = &g_tls_sessions[si];
     unsigned int n = 0;
@@ -444,7 +443,7 @@ int ktls_record_decrypt(int pid, int tls_id, qos_tls_record_io_t* io){
         sync_user_write(io->out, n);
     }
     sync_user_write(io, (unsigned int)sizeof(*io));
-    return rc == 0 ? (int)n : -1;
+    return rc == 0 ? (int)n : -4;
 }
 
 int ktls_is_ready(int pid, int tls_id){

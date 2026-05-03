@@ -280,6 +280,12 @@ static int runq_dequeue_ready(unsigned int core){
 }
 
 static int runq_steal_ready(unsigned int thief_core){
+    (void)thief_core;
+    // Keep processes pinned to their owner core until cache coherency is proven.
+    // Process creation still spreads work across cores, but migration can make
+    // user stack/static buffers stale on hardware without confirmed SMPEN.
+    return -1;
+#if 0
     if (thief_core >= MAX_CPU_CORES){
         return -1;
     }
@@ -306,6 +312,7 @@ static int runq_steal_ready(unsigned int thief_core){
     }
     processes[pid].owner_core = thief_core;
     return pid;
+#endif
 }
 
 static int runq_has_ready(unsigned int core){

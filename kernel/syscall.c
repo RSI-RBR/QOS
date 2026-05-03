@@ -478,10 +478,6 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
         }
 
-        case SYS_TLS_SELF_TEST:
-            frame[TF_X0] = (unsigned long)tls_session_self_test();
-            return frame_sp;
-
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;
