@@ -28,6 +28,8 @@ typedef struct {
 // 1 = halt boot on failure.
 static const int g_kernel_verify_enforce = 0;
 static int g_warned_kernel_digest_only = 0;
+static int g_logged_kernel_verify_mode = 0;
+static int g_logged_kernel_ed25519_ok = 0;
 
 // Replace digest + signer metadata during provisioning.
 static volatile const kernel_manifest_t g_kernel_manifest
@@ -121,10 +123,18 @@ static int verify_manifest_policy(void){
             uart_puts("Kernel verify: digest-only expects sig_len=0.\n");
             return -1;
         }
+        if (!g_logged_kernel_verify_mode){
+            uart_puts("Kernel verify: mode=DIGEST_ONLY\n");
+            g_logged_kernel_verify_mode = 1;
+        }
     } else if (sig_alg == QOS_SIG_ALG_ED25519){
         if (sig_len != 64u){
             uart_puts("Kernel verify: Ed25519 expects sig_len=64.\n");
             return -1;
+        }
+        if (!g_logged_kernel_verify_mode){
+            uart_puts("Kernel verify: mode=ED25519\n");
+            g_logged_kernel_verify_mode = 1;
         }
     }
     return 0;
@@ -167,6 +177,10 @@ static int verify_manifest_signature(const trust_key_t* key){
             uart_puts("Kernel verify: Ed25519 manifest signature failed.\n");
             return -1;
         }
+        if (!g_logged_kernel_ed25519_ok){
+            uart_puts("Kernel verify: Ed25519 manifest signature OK.\n");
+            g_logged_kernel_ed25519_ok = 1;
+        }
         return 0;
     }
 
@@ -205,19 +219,24 @@ int kernel_verify_self(void){
     }
     sha256_digest((const unsigned char*)start, (unsigned int)image_len_ul, digest);
 
-    if (digest_is_all_zero(g_kernel_manifest.digest)){
+    unsigned char expected_digest[32];
+    for (unsigned int i = 0; i < 32u; i++){
+        expected_digest[i] = g_kernel_manifest.digest[i];
+    }
+
+    if (digest_is_all_zero(expected_digest)){
         uart_puts("Kernel verify: manifest digest not provisioned.\n");
         uart_puts("Kernel verify: measured digest=");
         uart_put_digest(digest);
         return 1;
     }
 
-    if (!digest_equal(digest, g_kernel_manifest.digest)){
+    if (!digest_equal(digest, expected_digest)){
         uart_puts("Kernel verify: FAILED (digest mismatch).\n");
         uart_puts("Kernel verify: measured=");
         uart_put_digest(digest);
         uart_puts("Kernel verify: expected=");
-        uart_put_digest(g_kernel_manifest.digest);
+        uart_put_digest(expected_digest);
         return -1;
     }
 
@@ -276,19 +295,24 @@ int kernel_verify_storage_image(void){
                           g_kernel_file_buf + off1, right_len,
                           digest);
 
-    if (digest_is_all_zero(g_kernel_manifest.file_digest)){
+    unsigned char expected_file_digest[32];
+    for (unsigned int i = 0; i < 32u; i++){
+        expected_file_digest[i] = g_kernel_manifest.file_digest[i];
+    }
+
+    if (digest_is_all_zero(expected_file_digest)){
         uart_puts("Kernel file verify: manifest file digest not provisioned.\n");
         uart_puts("Kernel file verify: measured=");
         uart_put_digest(digest);
         return 1;
     }
 
-    if (!digest_equal(digest, g_kernel_manifest.file_digest)){
+    if (!digest_equal(digest, expected_file_digest)){
         uart_puts("Kernel file verify: FAILED (digest mismatch).\n");
         uart_puts("Kernel file verify: measured=");
         uart_put_digest(digest);
         uart_puts("Kernel file verify: expected=");
-        uart_put_digest(g_kernel_manifest.file_digest);
+        uart_put_digest(expected_file_digest);
         return -1;
     }
 
