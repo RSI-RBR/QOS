@@ -103,18 +103,6 @@ void kernel_main(void){
     uart_init();
     uart_puts("Uart initialized!\n");
 
-    int kv = kernel_verify_self();
-    if (kv < 0){
-        uart_puts("Kernel verify failed.\n");
-        if (kernel_verify_enforce()){
-            uart_puts("Kernel verify enforced: HALTING.\n");
-            while (1){ asm volatile("wfi"); }
-        }
-        uart_puts("Kernel verify warn-only mode: continuing boot.\n");
-    } else if (kv > 0){
-        uart_puts("Kernel verify not provisioned yet.\n");
-    }
-
     (void)mailbox_power_on_usb();
 
     mmu_init();
@@ -200,6 +188,18 @@ void kernel_main(void){
         return;
     }
     uart_puts("Storage init OK...\n");
+
+    int kv = kernel_verify_self();
+    if (kv < 0){
+        uart_puts("Kernel verify failed.\n");
+        if (kernel_verify_enforce()){
+            uart_puts("Kernel verify enforced: HALTING.\n");
+            while (1){ asm volatile("wfi"); }
+        }
+        uart_puts("Kernel verify warn-only mode: continuing boot.\n");
+    } else if (kv > 0){
+        uart_puts("Kernel verify not provisioned yet.\n");
+    }
 
     int kv_file = kernel_verify_storage_image();
     if (kv_file < 0){
