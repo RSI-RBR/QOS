@@ -81,6 +81,10 @@ $(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 # ---------------------------
 all: provisioned-kernel
 
+check-signing-inputs:
+	@if [ -z "$(ADMIN_SIGN_KEY)" ]; then echo "ADMIN_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
+	@if [ -z "$(DEV_SIGN_KEY)" ]; then echo "DEV_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
+
 trust-keys-header:
 	python3 tools/gen_trust_keys_header.py include/trust_keys_autogen.h "$(ADMIN_SIGN_KEY)" "$(DEV_SIGN_KEY)" "$(OPENSSL_BIN)"
 
@@ -92,7 +96,7 @@ manifest-header: kernel8.img
 # 1) build kernel image
 # 2) generate manifest header from image
 # 3) rebuild so embedded manifest matches generated values
-provisioned-kernel: trust-keys-header kernel8.img
+provisioned-kernel: check-signing-inputs trust-keys-header kernel8.img
 	$(MAKE) manifest-header
 	rm -f $(BUILD)/kernel/kernel_verify.o $(BUILD)/kernel8.elf kernel8.img
 	$(MAKE) kernel8.img

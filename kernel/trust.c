@@ -32,6 +32,7 @@ static const trust_key_t g_keys[] = {
     }
 };
 static int g_warned_digest_only = 0;
+static const int g_require_ed25519 = 1;
 
 static void put_u32_le(unsigned char* out, unsigned int v){
     out[0] = (unsigned char)(v & 0xFFu);
@@ -117,6 +118,10 @@ int trust_verify_program_image(const char* fat_name_83,
     }
     if (sec->sig_alg != QOS_SIG_ALG_DIGEST_ONLY && sec->sig_alg != QOS_SIG_ALG_ED25519){
         uart_puts("Trust: unsupported signature algorithm.\n");
+        return -1;
+    }
+    if (g_require_ed25519 && sec->sig_alg != QOS_SIG_ALG_ED25519){
+        uart_puts("Trust: signature policy requires Ed25519.\n");
         return -1;
     }
     if ((sec->flags & QOS_PROG_FLAG_SHA256) == 0u){

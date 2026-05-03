@@ -22,11 +22,8 @@ shell.raw: shell.elf
 	$(OBJCOPY) shell.elf -O binary shell.raw
 
 shell.bin: shell.raw
-ifneq ($(strip $(SIGN_KEY)),)
+	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
 	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)"
-else
-	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1
-endif
 
 clean:
 	rm -f *.o *.elf *.raw *.bin

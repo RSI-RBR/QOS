@@ -22,11 +22,8 @@ webbrowser.raw: webbrowser.elf
 	$(OBJCOPY) webbrowser.elf -O binary webbrowser.raw
 
 webbrowser.bin: webbrowser.raw
-ifneq ($(strip $(SIGN_KEY)),)
+	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
 	python3 build_program.py webbrowser.raw webbrowser.bin "WEBBROWSBIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)"
-else
-	python3 build_program.py webbrowser.raw webbrowser.bin "WEBBROWSBIN" 0x1
-endif
 
 clean:
 	rm -f *.o *.elf *.raw *.bin

@@ -30,6 +30,7 @@ static const int g_kernel_verify_enforce = 0;
 static int g_warned_kernel_digest_only = 0;
 static int g_logged_kernel_verify_mode = 0;
 static int g_logged_kernel_ed25519_ok = 0;
+static const int g_require_kernel_ed25519 = 1;
 
 // Replace digest + signer metadata during provisioning.
 static volatile const kernel_manifest_t g_kernel_manifest
@@ -112,6 +113,10 @@ static int verify_manifest_policy(void){
     if (sig_alg != QOS_SIG_ALG_DIGEST_ONLY &&
         sig_alg != QOS_SIG_ALG_ED25519){
         uart_puts("Kernel verify: unsupported signature algorithm.\n");
+        return -1;
+    }
+    if (g_require_kernel_ed25519 && sig_alg != QOS_SIG_ALG_ED25519){
+        uart_puts("Kernel verify: signature policy requires Ed25519.\n");
         return -1;
     }
     if ((flags & QOS_PROG_FLAG_SHA256) == 0u){
