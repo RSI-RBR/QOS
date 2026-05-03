@@ -116,13 +116,32 @@ static int verify_manifest_policy(void){
 }
 
 int kernel_verify_self(void){
+    uart_puts("Kernel verify: start\n");
     if (verify_manifest_policy() != 0){
         return -1;
     }
 
     unsigned char digest[32];
-    unsigned int image_len = (unsigned int)(__kernel_rodata_verify_end - __kernel_text_start);
-    sha256_digest(__kernel_text_start, image_len, digest);
+    unsigned long start = (unsigned long)__kernel_text_start;
+    unsigned long end = (unsigned long)__kernel_rodata_verify_end;
+    if (end <= start){
+        uart_puts("Kernel verify: invalid memory bounds.\n");
+        uart_puts(" start=");
+        uart_puthex((unsigned int)start);
+        uart_puts(" end=");
+        uart_puthex((unsigned int)end);
+        uart_puts("\n");
+        return -1;
+    }
+    unsigned long image_len_ul = end - start;
+    if (image_len_ul > (16ul * 1024ul * 1024ul)){
+        uart_puts("Kernel verify: memory span too large.\n");
+        uart_puts(" len=");
+        uart_puthex((unsigned int)image_len_ul);
+        uart_puts("\n");
+        return -1;
+    }
+    sha256_digest((const unsigned char*)start, (unsigned int)image_len_ul, digest);
 
     if (digest_is_all_zero(g_kernel_manifest.digest)){
         uart_puts("Kernel verify: manifest digest not provisioned.\n");
