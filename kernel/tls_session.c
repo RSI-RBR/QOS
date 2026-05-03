@@ -9,6 +9,7 @@
 
 #define TLS_MAX_GLOBAL 16
 #define TLS_MAX_PER_PROCESS 4
+#define TLS_CLIENT_HELLO_MAX 256
 
 typedef struct {
     int used;
@@ -20,6 +21,8 @@ typedef struct {
     unsigned char local_public[32];
     unsigned char peer_public[32];
     unsigned char shared_secret[32];
+    unsigned char last_client_hello[TLS_CLIENT_HELLO_MAX];
+    unsigned int last_client_hello_len;
     tls13_hs_secrets_t hs;
     tls13_record_ctx_t tx;
     tls13_record_ctx_t rx;
@@ -50,6 +53,8 @@ static void clear_session(tls_session_t* s){
     crypto_memzero(s->local_public, sizeof(s->local_public));
     crypto_memzero(s->peer_public, sizeof(s->peer_public));
     crypto_memzero(s->shared_secret, sizeof(s->shared_secret));
+    crypto_memzero(s->last_client_hello, sizeof(s->last_client_hello));
+    s->last_client_hello_len = 0;
     crypto_memzero(&s->hs, sizeof(s->hs));
     crypto_memzero(&s->tx, sizeof(s->tx));
     crypto_memzero(&s->rx, sizeof(s->rx));
@@ -236,6 +241,9 @@ int ktls_set_peer_public(int pid, int tls_id, const unsigned char peer_public[32
 
 int ktls_build_client_hello(int pid, int tls_id,
                             unsigned char* out, unsigned int out_cap, unsigned int* out_len){
+    if (!out || !out_len){
+        return -1;
+    }
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
     if (si < 0 || g_tls_sessions[si].role != QOS_TLS_ROLE_CLIENT){
@@ -248,7 +256,27 @@ int ktls_build_client_hello(int pid, int tls_id,
     }
     spin_unlock_irqrestore(&g_tls_lock, irq);
 
-    return tls13_build_client_hello_x25519(pub, out, out_cap, out_len);
+    int rc = tls13_build_client_hello_x25519(pub, out, out_cap, out_len);
+    if (rc != 0){
+        return -1;
+    }
+    if (*out_len > TLS_CLIENT_HELLO_MAX){
+        return -1;
+    }
+
+    irq = spin_lock_irqsave(&g_tls_lock);
+    si = lookup_locked(pid, tls_id);
+    if (si < 0 || g_tls_sessions[si].role != QOS_TLS_ROLE_CLIENT){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        return -1;
+    }
+    tls_session_t* s = &g_tls_sessions[si];
+    for (unsigned int i = 0; i < *out_len; i++){
+        s->last_client_hello[i] = out[i];
+    }
+    s->last_client_hello_len = *out_len;
+    spin_unlock_irqrestore(&g_tls_lock, irq);
+    return 0;
 }
 
 int ktls_process_server_hello(int pid, int tls_id,
@@ -273,14 +301,14 @@ int ktls_process_server_hello(int pid, int tls_id,
     }
     s->has_peer = 1;
 
-    unsigned char th[32];
-    unsigned char ch[256];
-    unsigned int ch_len = 0;
-    if (tls13_build_client_hello_x25519(s->local_public, ch, sizeof(ch), &ch_len) != 0){
+    if (s->last_client_hello_len == 0u || s->last_client_hello_len > TLS_CLIENT_HELLO_MAX){
         spin_unlock_irqrestore(&g_tls_lock, irq);
         return -1;
     }
-    if (tls13_transcript_hash2(ch, ch_len, server_hello, server_hello_len, th) != 0){
+
+    unsigned char th[32];
+    if (tls13_transcript_hash2(s->last_client_hello, s->last_client_hello_len,
+                               server_hello, server_hello_len, th) != 0){
         spin_unlock_irqrestore(&g_tls_lock, irq);
         return -1;
     }
