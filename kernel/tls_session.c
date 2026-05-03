@@ -96,13 +96,13 @@ static int lookup_locked(int pid, int tls_id){
 
 static void sync_user_read(const void* p, unsigned int len){
     if (p && len){
-        clean_invalidate_data_cache_range((unsigned long)p, (unsigned long)len);
+        asm volatile("dmb ish" : : : "memory");
     }
 }
 
 static void sync_user_write(const void* p, unsigned int len){
     if (p && len){
-        clean_invalidate_data_cache_range((unsigned long)p, (unsigned long)len);
+        asm volatile("dmb ishst" : : : "memory");
     }
 }
 

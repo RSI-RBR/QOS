@@ -54,6 +54,7 @@ master:
 
 enter_kernel:
     bl set_core_stack
+    bl enable_smp_coherency
     bl kernel_main
 
 primary_hang:
@@ -95,6 +96,7 @@ secondary_start:
     eret
 
 secondary_enter_kernel:
+    bl enable_smp_coherency
     bl kernel_secondary_main
 
 secondary_hang:
@@ -125,5 +127,13 @@ set_core_stack:
 5:
     ldr x0, =core3_stack_top
     mov sp, x0
+    ret
+
+enable_smp_coherency:
+    // Cortex-A53 CPUECTLR_EL1.SMPEN (bit 6): coherent L1 data cache across cores.
+    mrs x0, S3_1_C15_C2_1
+    orr x0, x0, #(1 << 6)
+    msr S3_1_C15_C2_1, x0
+    isb
     ret
 
