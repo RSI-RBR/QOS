@@ -6,6 +6,7 @@
 #include "tls_handshake.h"
 #include "tls_key_schedule.h"
 #include "tls_record.h"
+#include "cache.h"
 
 #define TLS_MAX_GLOBAL 16
 #define TLS_MAX_PER_PROCESS 4
@@ -91,6 +92,18 @@ static int lookup_locked(int pid, int tls_id){
         return -1;
     }
     return si;
+}
+
+static void sync_user_read(const void* p, unsigned int len){
+    if (p && len){
+        clean_invalidate_data_cache_range((unsigned long)p, (unsigned long)len);
+    }
+}
+
+static void sync_user_write(const void* p, unsigned int len){
+    if (p && len){
+        clean_invalidate_data_cache_range((unsigned long)p, (unsigned long)len);
+    }
 }
 
 static int derive_locked(tls_session_t* s,
@@ -217,6 +230,7 @@ int ktls_get_local_public(int pid, int tls_id, unsigned char out_public[32]){
         out_public[i] = g_tls_sessions[si].local_public[i];
     }
     spin_unlock_irqrestore(&g_tls_lock, irq);
+    sync_user_write(out_public, 32u);
     return 0;
 }
 
@@ -224,6 +238,7 @@ int ktls_set_peer_public(int pid, int tls_id, const unsigned char peer_public[32
     if (!peer_public){
         return -1;
     }
+    sync_user_read(peer_public, 32u);
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
     if (si < 0){
@@ -276,6 +291,7 @@ int ktls_build_client_hello(int pid, int tls_id,
     }
     s->last_client_hello_len = *out_len;
     spin_unlock_irqrestore(&g_tls_lock, irq);
+    sync_user_write(out, *out_len);
     return 0;
 }
 
@@ -284,6 +300,7 @@ int ktls_process_server_hello(int pid, int tls_id,
     if (!server_hello){
         return -1;
     }
+    sync_user_read(server_hello, server_hello_len);
     unsigned char peer_pub[32];
     if (tls13_process_server_hello_x25519(server_hello, server_hello_len, peer_pub) != 0){
         return -1;
@@ -323,6 +340,7 @@ int ktls_process_client_hello_build_server_hello(int pid, int tls_id,
     if (!client_hello || !out_server_hello || !out_len){
         return -1;
     }
+    sync_user_read(client_hello, client_hello_len);
 
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
@@ -349,6 +367,7 @@ int ktls_process_client_hello_build_server_hello(int pid, int tls_id,
         out_server_hello[i] = sh[i];
     }
     *out_len = sh_len;
+    sync_user_write(out_server_hello, sh_len);
 
     for (unsigned int i = 0; i < 32u; i++){
         s->peer_public[i] = peer_pub[i];
@@ -366,8 +385,15 @@ int ktls_process_client_hello_build_server_hello(int pid, int tls_id,
 }
 
 int ktls_record_encrypt(int pid, int tls_id, qos_tls_record_io_t* io){
-    if (!io || !io->out){
+    if (!io){
         return -1;
+    }
+    sync_user_read(io, (unsigned int)sizeof(*io));
+    if (!io->out){
+        return -1;
+    }
+    if (io->in && io->in_len){
+        sync_user_read(io->in, io->in_len);
     }
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
@@ -383,13 +409,22 @@ int ktls_record_encrypt(int pid, int tls_id, qos_tls_record_io_t* io){
                                   io->out, io->out_cap, &n);
     io->out_len = n;
     spin_unlock_irqrestore(&g_tls_lock, irq);
+    if (rc == 0){
+        sync_user_write(io->out, n);
+    }
+    sync_user_write(io, (unsigned int)sizeof(*io));
     return rc == 0 ? (int)n : -1;
 }
 
 int ktls_record_decrypt(int pid, int tls_id, qos_tls_record_io_t* io){
-    if (!io || !io->in || !io->out){
+    if (!io){
         return -1;
     }
+    sync_user_read(io, (unsigned int)sizeof(*io));
+    if (!io->in || !io->out){
+        return -1;
+    }
+    sync_user_read(io->in, io->in_len);
     unsigned long irq = spin_lock_irqsave(&g_tls_lock);
     int si = lookup_locked(pid, tls_id);
     if (si < 0 || !g_tls_sessions[si].ready){
@@ -405,6 +440,10 @@ int ktls_record_decrypt(int pid, int tls_id, qos_tls_record_io_t* io){
     io->out_len = n;
     io->inner_type = inner;
     spin_unlock_irqrestore(&g_tls_lock, irq);
+    if (rc == 0){
+        sync_user_write(io->out, n);
+    }
+    sync_user_write(io, (unsigned int)sizeof(*io));
     return rc == 0 ? (int)n : -1;
 }
 
