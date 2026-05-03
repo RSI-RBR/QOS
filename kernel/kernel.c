@@ -22,6 +22,7 @@
 #include "cpu.h"
 #include "smp.h"
 #include "kernel_verify.h"
+#include "crypto.h"
 
 
 //extern kernel_api_t kapi;
@@ -117,6 +118,8 @@ void kernel_main(void){
     memory_init();
     uart_puts("Memory initialized!\n");
     check_stack();
+    crypto_init();
+    uart_puts("Crypto initialized!\n");
 
     process_init();
     interrupt_init();

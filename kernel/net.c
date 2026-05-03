@@ -6,6 +6,7 @@
 #include "net_proto.h"
 #include "icmp.h"
 #include "spinlock.h"
+#include "crypto.h"
 
 #define NET_RX_QUEUE_LEN 32
 
@@ -88,6 +89,10 @@ static int net_rxq_pop(net_frame_t* out){
 }
 
 void net_ingest_rx_from_driver(const unsigned char* frame, unsigned int len){
+    if (frame && len){
+        unsigned int take = (len < 32u) ? len : 32u;
+        crypto_add_entropy(frame, take);
+    }
     if (net_rxq_push(frame, len) == 0){
         unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
         g_stats.rx_ok++;

@@ -1,12 +1,5 @@
 #include "sha256.h"
 
-typedef struct {
-    unsigned int h[8];
-    unsigned long long bitlen;
-    unsigned int datalen;
-    unsigned char data[64];
-} sha256_ctx_t;
-
 static const unsigned int k[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
     0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
@@ -91,7 +84,7 @@ static void sha256_transform(sha256_ctx_t* ctx, const unsigned char data[64]){
     ctx->h[7] += h;
 }
 
-static void sha256_init(sha256_ctx_t* ctx){
+void sha256_init(sha256_ctx_t* ctx){
     ctx->datalen = 0;
     ctx->bitlen = 0;
     ctx->h[0] = 0x6a09e667u;
@@ -104,7 +97,7 @@ static void sha256_init(sha256_ctx_t* ctx){
     ctx->h[7] = 0x5be0cd19u;
 }
 
-static void sha256_update(sha256_ctx_t* ctx, const unsigned char* data, unsigned int len){
+void sha256_update(sha256_ctx_t* ctx, const unsigned char* data, unsigned int len){
     for (unsigned int i = 0; i < len; i++){
         ctx->data[ctx->datalen++] = data[i];
         if (ctx->datalen == 64u){
@@ -115,7 +108,7 @@ static void sha256_update(sha256_ctx_t* ctx, const unsigned char* data, unsigned
     }
 }
 
-static void sha256_final(sha256_ctx_t* ctx, unsigned char out[32]){
+void sha256_final(sha256_ctx_t* ctx, unsigned char out[32]){
     unsigned int i = ctx->datalen;
 
     if (ctx->datalen < 56u){

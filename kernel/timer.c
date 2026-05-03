@@ -1,6 +1,7 @@
 #include "timer.h"
 #include "process.h"
 #include "cpu.h"
+#include "crypto.h"
 
 #define TIMER_INTERVAL 200000
 #define LOCAL_BASE 0x40000000UL
@@ -35,5 +36,14 @@ volatile unsigned long system_ticks = 0;
 
 void timer_handler(void){
     system_ticks ++;
+    if ((system_ticks & 0x3Fu) == 0u){
+        unsigned long mix[3];
+        unsigned long c = 0;
+        asm volatile("mrs %0, cntpct_el0" : "=r"(c));
+        mix[0] = system_ticks;
+        mix[1] = c;
+        mix[2] = (unsigned long)cpu_get_id();
+        crypto_add_entropy(mix, (unsigned int)sizeof(mix));
+    }
     scheduler_tick();
 }
