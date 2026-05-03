@@ -4,6 +4,8 @@ LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
 CFLAGS = -ffreestanding -nostdlib -O2 -pie -mgeneral-regs-only -DQOS_USERSPACE -I../../include
+SIGN_KEY ?=
+OPENSSL_BIN ?= openssl
 
 all: shell.bin
 
@@ -20,7 +22,11 @@ shell.raw: shell.elf
 	$(OBJCOPY) shell.elf -O binary shell.raw
 
 shell.bin: shell.raw
-	python3 build_program.py shell.raw shell.bin 0x1
+ifneq ($(strip $(SIGN_KEY)),)
+	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)"
+else
+	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1
+endif
 
 clean:
 	rm -f *.o *.elf *.raw *.bin

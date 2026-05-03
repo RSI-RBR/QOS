@@ -17,6 +17,7 @@ typedef struct {
     unsigned int role_mask;
     unsigned int scope_mask;
     unsigned int sig_alg_mask;
+    unsigned char ed25519_pubkey[32];
     int revoked;
 } trust_key_t;
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import hashlib
+import os
 import subprocess
 import sys
+import tempfile
 
 
 def parse_nm_symbol(nm_bin: str, elf_path: str, sym: str) -> int:
@@ -17,9 +19,27 @@ def digest_c_initializer(digest: bytes) -> str:
     return "{ " + ", ".join(f"0x{b:02X}" for b in digest) + " }"
 
 
+def sign_ed25519(openssl_bin: str, key_pem: str, message: bytes) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="qos_kernsig_") as td:
+        msg_path = os.path.join(td, "msg.bin")
+        sig_path = os.path.join(td, "sig.bin")
+        with open(msg_path, "wb") as f:
+            f.write(message)
+        subprocess.check_call([
+            openssl_bin, "pkeyutl",
+            "-sign",
+            "-inkey", key_pem,
+            "-rawin",
+            "-in", msg_path,
+            "-out", sig_path,
+        ])
+        with open(sig_path, "rb") as f:
+            return f.read()
+
+
 def main() -> int:
-    if len(sys.argv) < 4 or len(sys.argv) > 6:
-        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id]")
+    if len(sys.argv) < 4 or len(sys.argv) > 8:
+        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id] [signing-key-pem] [openssl-bin]")
         return 1
 
     elf_path = sys.argv[1]
@@ -27,6 +47,8 @@ def main() -> int:
     out_header = sys.argv[3]
     nm_bin = sys.argv[4] if len(sys.argv) >= 5 else "aarch64-linux-gnu-nm"
     signer_key_id = int(sys.argv[5], 0) if len(sys.argv) >= 6 else 0x00000001
+    signing_key_pem = sys.argv[6] if len(sys.argv) >= 7 else ""
+    openssl_bin = sys.argv[7] if len(sys.argv) >= 8 else "openssl"
 
     text_start = parse_nm_symbol(nm_bin, elf_path, "__kernel_text_start")
     ro_verify_end = parse_nm_symbol(nm_bin, elf_path, "__kernel_rodata_verify_end")
@@ -64,6 +86,29 @@ def main() -> int:
     mem_digest_init = digest_c_initializer(mem_digest)
     file_digest_init = digest_c_initializer(file_digest)
 
+    sig_alg = "QOS_SIG_ALG_DIGEST_ONLY"
+    sig_len = 0
+    sig_bytes = bytes(64)
+    if signing_key_pem:
+        QOS_SIG_ALG_ED25519 = 2
+        QOS_PROG_FLAG_SHA256 = 1
+        msg = bytearray()
+        msg.extend(b"QOS-KERN-SIG-V1\x00")
+        msg.extend((1).to_bytes(4, "little"))
+        msg.extend(int(signer_key_id).to_bytes(4, "little"))
+        msg.extend(QOS_SIG_ALG_ED25519.to_bytes(4, "little"))
+        msg.extend(QOS_PROG_FLAG_SHA256.to_bytes(4, "little"))
+        msg.extend(mem_digest)
+        msg.extend(file_digest)
+        sig = sign_ed25519(openssl_bin, signing_key_pem, bytes(msg))
+        if len(sig) != 64:
+            raise RuntimeError(f"unexpected Ed25519 signature length: {len(sig)}")
+        sig_alg = "QOS_SIG_ALG_ED25519"
+        sig_len = 64
+        sig_bytes = sig
+
+    sig_init = digest_c_initializer(sig_bytes)
+
     header = f"""#ifndef KERNEL_MANIFEST_AUTOGEN_H
 #define KERNEL_MANIFEST_AUTOGEN_H
 
@@ -75,12 +120,12 @@ def main() -> int:
 
 #define KERNEL_MANIFEST_VERSION       1u
 #define KERNEL_MANIFEST_SIGNER_KEY_ID 0x{signer_key_id:08X}u
-#define KERNEL_MANIFEST_SIG_ALG       QOS_SIG_ALG_DIGEST_ONLY
+#define KERNEL_MANIFEST_SIG_ALG       {sig_alg}
 #define KERNEL_MANIFEST_FLAGS         QOS_PROG_FLAG_SHA256
-#define KERNEL_MANIFEST_SIG_LEN       0u
+#define KERNEL_MANIFEST_SIG_LEN       {sig_len}u
 #define KERNEL_MANIFEST_DIGEST_INIT   {mem_digest_init}
 #define KERNEL_MANIFEST_FILE_DIGEST_INIT {file_digest_init}
-#define KERNEL_MANIFEST_SIGNATURE_INIT {{0}}
+#define KERNEL_MANIFEST_SIGNATURE_INIT {sig_init}
 
 #endif
 """
@@ -92,6 +137,10 @@ def main() -> int:
     print(mem_digest_hex)
     print("Measured kernel file digest (kernel8.img excluding .kmanifest):")
     print(file_digest_hex)
+    if signing_key_pem:
+        print(f"Kernel manifest Ed25519 signed with: {signing_key_pem}")
+    else:
+        print("Kernel manifest in digest-only mode (unsigned).")
     print(f"Wrote header: {out_header}")
     return 0
 

@@ -5,6 +5,7 @@
 #define QOS_SEC_MAGIC 0x53454331 // "SEC1"
 #define QOS_PROG_FLAG_SHA256 0x00000001u
 #define QOS_SIG_ALG_DIGEST_ONLY 1u
+#define QOS_SIG_ALG_ED25519 2u
 #define QOS_MAX_SIGNATURE_BYTES 64u
 
 typedef struct{
