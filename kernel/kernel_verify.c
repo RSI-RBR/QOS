@@ -28,7 +28,8 @@ typedef struct {
 static const int g_kernel_verify_enforce = 0;
 
 // Replace digest + signer metadata during provisioning.
-static const kernel_manifest_t g_kernel_manifest = {
+static const kernel_manifest_t g_kernel_manifest
+__attribute__((section(".kmanifest"), used)) = {
     KERNEL_MANIFEST_VERSION,
     KERNEL_MANIFEST_SIGNER_KEY_ID,
     KERNEL_MANIFEST_SIG_ALG,
