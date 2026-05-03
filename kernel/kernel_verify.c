@@ -30,7 +30,7 @@ static const int g_kernel_verify_enforce = 0;
 static int g_warned_kernel_digest_only = 0;
 
 // Replace digest + signer metadata during provisioning.
-static const kernel_manifest_t g_kernel_manifest
+static volatile const kernel_manifest_t g_kernel_manifest
 __attribute__((section(".kmanifest"), used)) = {
     KERNEL_MANIFEST_VERSION,
     KERNEL_MANIFEST_SIGNER_KEY_ID,
@@ -81,7 +81,12 @@ static int digest_equal(const unsigned char a[32], const unsigned char b[32]){
 }
 
 static int verify_manifest_policy(void){
-    const trust_key_t* key = trust_find_key(g_kernel_manifest.signer_key_id);
+    unsigned int signer_key_id = g_kernel_manifest.signer_key_id;
+    unsigned int sig_alg = g_kernel_manifest.sig_alg;
+    unsigned int flags = g_kernel_manifest.flags;
+    unsigned int sig_len = g_kernel_manifest.sig_len;
+
+    const trust_key_t* key = trust_find_key(signer_key_id);
     if (!key){
         uart_puts("Kernel verify: signer key not trusted.\n");
         return -1;
@@ -98,26 +103,26 @@ static int verify_manifest_policy(void){
         uart_puts("Kernel verify: signer key missing kernel scope.\n");
         return -1;
     }
-    if ((key->sig_alg_mask & (1u << g_kernel_manifest.sig_alg)) == 0u){
+    if ((key->sig_alg_mask & (1u << sig_alg)) == 0u){
         uart_puts("Kernel verify: signer key disallows signature algorithm.\n");
         return -1;
     }
-    if (g_kernel_manifest.sig_alg != QOS_SIG_ALG_DIGEST_ONLY &&
-        g_kernel_manifest.sig_alg != QOS_SIG_ALG_ED25519){
+    if (sig_alg != QOS_SIG_ALG_DIGEST_ONLY &&
+        sig_alg != QOS_SIG_ALG_ED25519){
         uart_puts("Kernel verify: unsupported signature algorithm.\n");
         return -1;
     }
-    if ((g_kernel_manifest.flags & QOS_PROG_FLAG_SHA256) == 0u){
+    if ((flags & QOS_PROG_FLAG_SHA256) == 0u){
         uart_puts("Kernel verify: SHA-256 flag missing.\n");
         return -1;
     }
-    if (g_kernel_manifest.sig_alg == QOS_SIG_ALG_DIGEST_ONLY){
-        if (g_kernel_manifest.sig_len != 0u){
+    if (sig_alg == QOS_SIG_ALG_DIGEST_ONLY){
+        if (sig_len != 0u){
             uart_puts("Kernel verify: digest-only expects sig_len=0.\n");
             return -1;
         }
-    } else if (g_kernel_manifest.sig_alg == QOS_SIG_ALG_ED25519){
-        if (g_kernel_manifest.sig_len != 64u){
+    } else if (sig_alg == QOS_SIG_ALG_ED25519){
+        if (sig_len != 64u){
             uart_puts("Kernel verify: Ed25519 expects sig_len=64.\n");
             return -1;
         }
@@ -136,7 +141,8 @@ static int verify_manifest_signature(const trust_key_t* key){
     if (!key){
         return -1;
     }
-    if (g_kernel_manifest.sig_alg == QOS_SIG_ALG_DIGEST_ONLY){
+    unsigned int sig_alg = g_kernel_manifest.sig_alg;
+    if (sig_alg == QOS_SIG_ALG_DIGEST_ONLY){
         if (!g_warned_kernel_digest_only){
             uart_puts("Kernel verify: digest-only mode enabled (development mode).\n");
             g_warned_kernel_digest_only = 1;
@@ -144,7 +150,7 @@ static int verify_manifest_signature(const trust_key_t* key){
         return 0;
     }
 
-    if (g_kernel_manifest.sig_alg == QOS_SIG_ALG_ED25519){
+    if (sig_alg == QOS_SIG_ALG_ED25519){
         unsigned char msg[16u + 4u + 4u + 4u + 4u + 32u + 32u];
         static const unsigned char tag[16] = {
             'Q','O','S','-','K','E','R','N','-','S','I','G','-','V','1','\0'
@@ -153,7 +159,7 @@ static int verify_manifest_signature(const trust_key_t* key){
         for (unsigned int i = 0; i < 16u; i++) msg[o++] = tag[i];
         put_u32_le(msg + o, g_kernel_manifest.manifest_version); o += 4u;
         put_u32_le(msg + o, g_kernel_manifest.signer_key_id); o += 4u;
-        put_u32_le(msg + o, g_kernel_manifest.sig_alg); o += 4u;
+        put_u32_le(msg + o, sig_alg); o += 4u;
         put_u32_le(msg + o, g_kernel_manifest.flags); o += 4u;
         for (unsigned int i = 0; i < 32u; i++) msg[o++] = g_kernel_manifest.digest[i];
         for (unsigned int i = 0; i < 32u; i++) msg[o++] = g_kernel_manifest.file_digest[i];
