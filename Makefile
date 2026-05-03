@@ -82,6 +82,7 @@ manifest-header: kernel8.img
 # 3) rebuild so embedded manifest matches generated values
 provisioned-kernel: kernel8.img
 	$(MAKE) manifest-header
+	rm -f $(BUILD)/kernel/kernel_verify.o $(BUILD)/kernel8.elf kernel8.img
 	$(MAKE) kernel8.img
 
 # ---------------------------

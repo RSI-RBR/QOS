@@ -159,6 +159,8 @@ int kernel_verify_self(void){
         return -1;
     }
 
+    uart_puts("Kernel verify: measured=");
+    uart_put_digest(digest);
     uart_puts("Kernel verify: OK.\n");
     return 0;
 }
@@ -224,6 +226,8 @@ int kernel_verify_storage_image(void){
         return -1;
     }
 
+    uart_puts("Kernel file verify: measured=");
+    uart_put_digest(digest);
     uart_puts("Kernel file verify: OK.\n");
     return 0;
 }
