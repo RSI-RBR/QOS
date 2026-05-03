@@ -138,6 +138,7 @@ static void cmd_help(void){
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
     qos_puts(" tlstest\n");
+    qos_puts(" tlsktest\n");
 }
 
 static void cmd_run(void){
@@ -413,6 +414,17 @@ out:
     (void)qos_tls_close(s);
 }
 
+static void cmd_tlsktest(void){
+    int rc = qos_tls_self_test();
+    if (rc == 0){
+        qos_puts("Kernel TLS session self-test OK\n");
+        return;
+    }
+    qos_puts("Kernel TLS session self-test failed rc=");
+    print_int(rc);
+    qos_puts("\n");
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -478,6 +490,8 @@ static void execute_line(void){
         qos_puts("Usage: httpget <host> [path]\n");
     } else if (str_eq(g_buf, "tlstest")){
         cmd_tlstest();
+    } else if (str_eq(g_buf, "tlsktest")){
+        cmd_tlsktest();
     } else{
         qos_puts("Unknown command.\n");
     }

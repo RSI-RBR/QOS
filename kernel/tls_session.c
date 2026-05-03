@@ -504,6 +504,47 @@ int tls_session_self_test(void){
         return -6;
     }
 
+    unsigned long irq = spin_lock_irqsave(&g_tls_lock);
+    int ci = lookup_locked(TEST_PID, c);
+    int si = lookup_locked(TEST_PID, s);
+    if (ci < 0 || si < 0){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -9;
+    }
+    if (!crypto_consttime_equal(g_tls_sessions[ci].shared_secret, g_tls_sessions[si].shared_secret, 32u)){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -10;
+    }
+    if (!crypto_consttime_equal(g_tls_sessions[ci].hs.client_key, g_tls_sessions[si].hs.client_key, TLS13_KEY_BYTES)){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -11;
+    }
+    if (!crypto_consttime_equal(g_tls_sessions[ci].hs.client_iv, g_tls_sessions[si].hs.client_iv, TLS13_IV_BYTES)){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -12;
+    }
+    if (!crypto_consttime_equal(g_tls_sessions[ci].hs.server_key, g_tls_sessions[si].hs.server_key, TLS13_KEY_BYTES)){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -13;
+    }
+    if (!crypto_consttime_equal(g_tls_sessions[ci].hs.server_iv, g_tls_sessions[si].hs.server_iv, TLS13_IV_BYTES)){
+        spin_unlock_irqrestore(&g_tls_lock, irq);
+        (void)ktls_close(TEST_PID, s);
+        (void)ktls_close(TEST_PID, c);
+        return -14;
+    }
+    spin_unlock_irqrestore(&g_tls_lock, irq);
+
     qos_tls_record_io_t ioe;
     ioe.inner_type = QOS_TLS_RECORD_INNER_APPDATA;
     ioe.in = msg;
