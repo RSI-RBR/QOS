@@ -24,6 +24,7 @@
 #include "kernel_verify.h"
 #include "crypto.h"
 #include "aes_gcm.h"
+#include "tls_record.h"
 
 
 //extern kernel_api_t kapi;
@@ -125,6 +126,11 @@ void kernel_main(void){
         uart_puts("AES-GCM self-test OK\n");
     } else{
         uart_puts("AES-GCM self-test FAILED\n");
+    }
+    if (tls13_record_self_test() == 0){
+        uart_puts("TLS record self-test OK\n");
+    } else{
+        uart_puts("TLS record self-test FAILED\n");
     }
 
     process_init();

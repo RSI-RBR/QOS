@@ -53,6 +53,7 @@ kernel/ipv4.c \
 kernel/icmp.c \
 kernel/udp.c \
 kernel/tcp.c \
+kernel/tls_record.c \
 kernel/socket.c \
 kernel/trust.c \
 kernel/nic_stub.c \
