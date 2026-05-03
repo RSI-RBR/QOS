@@ -134,10 +134,14 @@ void kernel_main(void){
     } else{
         uart_puts("TLS record self-test FAILED\n");
     }
-    if (x25519_self_test() == 0){
+    int x25519_rc = x25519_self_test();
+    if (x25519_rc == 0){
         uart_puts("X25519 self-test OK\n");
     } else{
-        uart_puts("X25519 self-test FAILED\n");
+        unsigned long x25519_abs = (x25519_rc < 0) ? (unsigned long)(-x25519_rc) : (unsigned long)x25519_rc;
+        uart_puts("X25519 self-test FAILED rc=");
+        uart_putdec(x25519_abs);
+        uart_puts("\n");
     }
     if (tls13_key_schedule_self_test() == 0){
         uart_puts("TLS key schedule self-test OK\n");

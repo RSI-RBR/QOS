@@ -22,9 +22,7 @@ static int x25519_scalar_mult(unsigned char out[32],
     clamp_scalar(e);
 
     fe x1, x2, z2, x3, z3;
-    fe a, b, aa, bb, e1;
-    fe c, d, da, cb;
-    fe t0, t1;
+    fe tmp0, tmp1;
 
     fe_frombytes(x1, u);
     fe_1(x2);
@@ -40,29 +38,25 @@ static int x25519_scalar_mult(unsigned char out[32],
         fe_cswap(z2, z3, swap);
         swap = k_t;
 
-        // Montgomery ladder step (RFC 7748).
-        fe_add(a, x2, z2);        // A = x2 + z2
-        fe_sub(b, x2, z2);        // B = x2 - z2
-        fe_sq(aa, a);             // AA = A^2
-        fe_sq(bb, b);             // BB = B^2
-        fe_sub(e1, aa, bb);       // E = AA - BB
-        fe_add(c, x3, z3);        // C = x3 + z3
-        fe_sub(d, x3, z3);        // D = x3 - z3
-        fe_mul(da, d, a);         // DA = D*A
-        fe_mul(cb, c, b);         // CB = C*B
-
-        fe_add(t0, da, cb);       // DA + CB
-        fe_sq(x3, t0);            // x3 = (DA + CB)^2
-
-        fe_sub(t0, da, cb);       // DA - CB
-        fe_sq(t0, t0);            // (DA - CB)^2
-        fe_mul(z3, x1, t0);       // z3 = x1*(DA - CB)^2
-
-        fe_mul(x2, aa, bb);       // x2 = AA*BB
-        fe_mul121666(t0, e1);     // t0 = 121666*E
-        fe_sub(t0, t0, e1);       // t0 = 121665*E (a24 for this formula)
-        fe_add(t0, t0, aa);       // AA + 121665*E
-        fe_mul(z2, e1, t0);       // z2 = E*(AA + 121665*E)
+        // Ref10/OpenSSL ladder step ordering for stable bounds.
+        fe_sub(tmp0, x3, z3);
+        fe_sub(tmp1, x2, z2);
+        fe_add(x2, x2, z2);
+        fe_add(z2, x3, z3);
+        fe_mul(z3, tmp0, x2);
+        fe_mul(z2, z2, tmp1);
+        fe_sq(tmp0, tmp1);        // BB
+        fe_sq(tmp1, x2);          // AA
+        fe_add(x3, z3, z2);
+        fe_sub(z2, z3, z2);
+        fe_mul(x2, tmp1, tmp0);   // AA*BB
+        fe_sub(tmp1, tmp1, tmp0); // E = AA-BB
+        fe_sq(z2, z2);
+        fe_mul121666(z3, tmp1);
+        fe_sq(x3, x3);
+        fe_add(tmp0, tmp0, z3);   // BB + 121666*E == AA + 121665*E
+        fe_mul(z3, x1, z2);
+        fe_mul(z2, tmp1, tmp0);   // E*(AA + 121665*E)
     }
 
     fe_cswap(x2, x3, swap);
@@ -167,28 +161,28 @@ int x25519_self_test(void){
     unsigned char shared2[32];
 
     if (x25519_public_from_private(alice_priv, alice_pub) != 0){
-        return -1;
+        return -101;
     }
     if (x25519_public_from_private(bob_priv, bob_pub) != 0){
-        return -1;
+        return -102;
     }
     if (!crypto_consttime_equal(alice_pub, alice_pub_expected, 32u)){
-        return -1;
+        return -103;
     }
     if (!crypto_consttime_equal(bob_pub, bob_pub_expected, 32u)){
-        return -1;
+        return -104;
     }
     if (x25519_shared_secret(alice_priv, bob_pub, shared1) != 0){
-        return -1;
+        return -105;
     }
     if (x25519_shared_secret(bob_priv, alice_pub, shared2) != 0){
-        return -1;
+        return -106;
     }
     if (!crypto_consttime_equal(shared1, shared_expected, 32u)){
-        return -1;
+        return -107;
     }
     if (!crypto_consttime_equal(shared1, shared2, 32u)){
-        return -1;
+        return -108;
     }
     return 0;
 }
