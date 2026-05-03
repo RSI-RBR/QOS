@@ -27,6 +27,8 @@
 #include "tls_record.h"
 #include "x25519.h"
 #include "tls_key_schedule.h"
+#include "tls_handshake.h"
+#include "tls_session.h"
 
 
 //extern kernel_api_t kapi;
@@ -148,6 +150,11 @@ void kernel_main(void){
     } else{
         uart_puts("TLS key schedule self-test FAILED\n");
     }
+    if (tls13_handshake_self_test() == 0){
+        uart_puts("TLS handshake scaffold self-test OK\n");
+    } else{
+        uart_puts("TLS handshake scaffold self-test FAILED\n");
+    }
 
     process_init();
     interrupt_init();
@@ -166,6 +173,7 @@ void kernel_main(void){
         uart_puts("NET init failed (continuing without NIC).\n");
     }
     socket_layer_init();
+    tls_session_layer_init();
     console_init();
 
     fb_init();

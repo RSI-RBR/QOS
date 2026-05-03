@@ -3,6 +3,7 @@
 
 #include "udp.h"
 #include "socket.h"
+#include "tls_session.h"
 
 enum {
     SYS_PUTC = 0,
@@ -42,7 +43,17 @@ enum {
     SYS_GET_TICKS = 34,
     SYS_GET_COUNTER_HZ = 35,
     SYS_GET_COUNTER_CYCLES = 36,
-    SYS_TTY_CLAIM_SELF = 37
+    SYS_TTY_CLAIM_SELF = 37,
+    SYS_TLS_OPEN = 38,
+    SYS_TLS_CLOSE = 39,
+    SYS_TLS_GET_LOCAL_PUBLIC = 40,
+    SYS_TLS_SET_PEER_PUBLIC = 41,
+    SYS_TLS_BUILD_CLIENT_HELLO = 42,
+    SYS_TLS_PROCESS_SERVER_HELLO = 43,
+    SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO = 44,
+    SYS_TLS_RECORD_ENCRYPT = 45,
+    SYS_TLS_RECORD_DECRYPT = 46,
+    SYS_TLS_IS_READY = 47
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -315,6 +326,67 @@ static inline int qos_socket_set_nonblocking(int fd, int enabled){
 
 static inline int qos_socket_set_recv_timeout(int fd, unsigned int timeout_ms){
     return qos_socket_setopt(fd, QOS_SOCKOPT_RCVTIMEO_MS, timeout_ms);
+}
+
+static inline int qos_tls_open(int role){
+    return (int)qos_syscall1(SYS_TLS_OPEN, (unsigned long)role);
+}
+
+static inline int qos_tls_close(int tls_id){
+    return (int)qos_syscall1(SYS_TLS_CLOSE, (unsigned long)tls_id);
+}
+
+static inline int qos_tls_get_local_public(int tls_id, unsigned char out_public[32]){
+    return (int)qos_syscall2(SYS_TLS_GET_LOCAL_PUBLIC,
+                             (unsigned long)tls_id,
+                             (unsigned long)out_public);
+}
+
+static inline int qos_tls_set_peer_public(int tls_id, const unsigned char peer_public[32]){
+    return (int)qos_syscall2(SYS_TLS_SET_PEER_PUBLIC,
+                             (unsigned long)tls_id,
+                             (unsigned long)peer_public);
+}
+
+static inline int qos_tls_build_client_hello(int tls_id, unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall3(SYS_TLS_BUILD_CLIENT_HELLO,
+                             (unsigned long)tls_id,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_tls_process_server_hello(int tls_id, const unsigned char* in, unsigned int in_len){
+    return (int)qos_syscall3(SYS_TLS_PROCESS_SERVER_HELLO,
+                             (unsigned long)tls_id,
+                             (unsigned long)in,
+                             (unsigned long)in_len);
+}
+
+static inline int qos_tls_process_client_hello_build_server_hello(int tls_id,
+                                                                   const unsigned char* in, unsigned int in_len,
+                                                                   unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall5(SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO,
+                             (unsigned long)tls_id,
+                             (unsigned long)in,
+                             (unsigned long)in_len,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_tls_record_encrypt(int tls_id, qos_tls_record_io_t* io){
+    return (int)qos_syscall2(SYS_TLS_RECORD_ENCRYPT,
+                             (unsigned long)tls_id,
+                             (unsigned long)io);
+}
+
+static inline int qos_tls_record_decrypt(int tls_id, qos_tls_record_io_t* io){
+    return (int)qos_syscall2(SYS_TLS_RECORD_DECRYPT,
+                             (unsigned long)tls_id,
+                             (unsigned long)io);
+}
+
+static inline int qos_tls_is_ready(int tls_id){
+    return (int)qos_syscall1(SYS_TLS_IS_READY, (unsigned long)tls_id);
 }
 
 __attribute__((noreturn))

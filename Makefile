@@ -55,6 +55,8 @@ kernel/udp.c \
 kernel/tcp.c \
 kernel/tls_record.c \
 kernel/tls_key_schedule.c \
+kernel/tls_handshake.c \
+kernel/tls_session.c \
 kernel/socket.c \
 kernel/trust.c \
 kernel/nic_stub.c \

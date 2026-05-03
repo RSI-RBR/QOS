@@ -30,6 +30,25 @@ static int str_starts_with(const char* s, const char* prefix){
     return 1;
 }
 
+static unsigned int str_len(const char* s){
+    unsigned int n = 0;
+    if (!s){
+        return 0;
+    }
+    while (s[n]){
+        n++;
+    }
+    return n;
+}
+
+static int mem_eq(const unsigned char* a, const unsigned char* b, unsigned int n){
+    unsigned char diff = 0;
+    for (unsigned int i = 0; i < n; i++){
+        diff |= (unsigned char)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
 static void print_prompt(void){
     qos_puts("\nUQOS> ");
 }
@@ -108,6 +127,7 @@ static void cmd_help(void){
     qos_puts(" ping\n");
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
+    qos_puts(" tlstest\n");
 }
 
 static void cmd_run(void){
@@ -251,6 +271,118 @@ static void cmd_httpget(const char* host, const char* path){
     qos_puts("\n");
 }
 
+static void cmd_tlstest(void){
+    int c = -1;
+    int s = -1;
+    static unsigned char ch[256];
+    static unsigned char sh[256];
+    static unsigned char c_cipher[256];
+    static unsigned char s_plain[256];
+    static unsigned char s_cipher[256];
+    static unsigned char c_plain[256];
+    static const unsigned char msg1[] = "hello-from-client";
+    static const unsigned char msg2[] = "hello-from-server";
+
+    qos_puts("TLS test: opening sessions...\n");
+    c = qos_tls_open(QOS_TLS_ROLE_CLIENT);
+    s = qos_tls_open(QOS_TLS_ROLE_SERVER);
+    if (c < 0 || s < 0){
+        qos_puts("TLS test failed: open\n");
+        if (c >= 0){
+            (void)qos_tls_close(c);
+        }
+        if (s >= 0){
+            (void)qos_tls_close(s);
+        }
+        return;
+    }
+
+    int ch_len = qos_tls_build_client_hello(c, ch, sizeof(ch));
+    if (ch_len <= 0){
+        qos_puts("TLS test failed: build client hello\n");
+        goto out;
+    }
+    int sh_len = qos_tls_process_client_hello_build_server_hello(
+        s, ch, (unsigned int)ch_len, sh, sizeof(sh));
+    if (sh_len <= 0){
+        qos_puts("TLS test failed: server process/build\n");
+        goto out;
+    }
+    if (qos_tls_process_server_hello(c, sh, (unsigned int)sh_len) != 0){
+        qos_puts("TLS test failed: client process server hello\n");
+        goto out;
+    }
+    if (!qos_tls_is_ready(c) || !qos_tls_is_ready(s)){
+        qos_puts("TLS test failed: session not ready\n");
+        goto out;
+    }
+
+    unsigned int msg1_len = str_len((const char*)msg1);
+    unsigned int msg2_len = str_len((const char*)msg2);
+
+    qos_tls_record_io_t io1;
+    io1.inner_type = QOS_TLS_RECORD_INNER_APPDATA;
+    io1.in = msg1;
+    io1.in_len = msg1_len;
+    io1.out = c_cipher;
+    io1.out_cap = sizeof(c_cipher);
+    io1.out_len = 0;
+    int enc1 = qos_tls_record_encrypt(c, &io1);
+    if (enc1 <= 0){
+        qos_puts("TLS test failed: c->s encrypt\n");
+        goto out;
+    }
+
+    qos_tls_record_io_t io2;
+    io2.inner_type = 0;
+    io2.in = c_cipher;
+    io2.in_len = (unsigned int)enc1;
+    io2.out = s_plain;
+    io2.out_cap = sizeof(s_plain);
+    io2.out_len = 0;
+    int dec1 = qos_tls_record_decrypt(s, &io2);
+    if (dec1 <= 0 || (unsigned int)dec1 != msg1_len ||
+        io2.inner_type != QOS_TLS_RECORD_INNER_APPDATA ||
+        !mem_eq(s_plain, msg1, (unsigned int)dec1)){
+        qos_puts("TLS test failed: c->s decrypt/verify\n");
+        goto out;
+    }
+
+    qos_tls_record_io_t io3;
+    io3.inner_type = QOS_TLS_RECORD_INNER_APPDATA;
+    io3.in = msg2;
+    io3.in_len = msg2_len;
+    io3.out = s_cipher;
+    io3.out_cap = sizeof(s_cipher);
+    io3.out_len = 0;
+    int enc2 = qos_tls_record_encrypt(s, &io3);
+    if (enc2 <= 0){
+        qos_puts("TLS test failed: s->c encrypt\n");
+        goto out;
+    }
+
+    qos_tls_record_io_t io4;
+    io4.inner_type = 0;
+    io4.in = s_cipher;
+    io4.in_len = (unsigned int)enc2;
+    io4.out = c_plain;
+    io4.out_cap = sizeof(c_plain);
+    io4.out_len = 0;
+    int dec2 = qos_tls_record_decrypt(c, &io4);
+    if (dec2 <= 0 || (unsigned int)dec2 != msg2_len ||
+        io4.inner_type != QOS_TLS_RECORD_INNER_APPDATA ||
+        !mem_eq(c_plain, msg2, (unsigned int)dec2)){
+        qos_puts("TLS test failed: s->c decrypt/verify\n");
+        goto out;
+    }
+
+    qos_puts("TLS test OK: handshake + encrypted records\n");
+
+out:
+    (void)qos_tls_close(c);
+    (void)qos_tls_close(s);
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -314,6 +446,8 @@ static void execute_line(void){
         }
     } else if (str_eq(g_buf, "httpget")){
         qos_puts("Usage: httpget <host> [path]\n");
+    } else if (str_eq(g_buf, "tlstest")){
+        cmd_tlstest();
     } else{
         qos_puts("Unknown command.\n");
     }

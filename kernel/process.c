@@ -1,6 +1,7 @@
 #include "process.h"
 #include "memory.h"
 #include "socket.h"
+#include "tls_session.h"
 #include "console.h"
 #include "cpu.h"
 #include "spinlock.h"
@@ -483,6 +484,7 @@ static void reap_process_resources(int pid){
     }
     console_owner_on_process_exit(pid);
     socket_close_all_for_pid(pid);
+    tls_session_close_all_for_pid(pid);
     clear_process_descriptor(pid);
 }
 

@@ -12,6 +12,7 @@
 #include "interrupt.h"
 #include "socket.h"
 #include "console.h"
+#include "tls_session.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -389,6 +390,91 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             unsigned long cyc = 0;
             asm volatile("mrs %0, cntpct_el0" : "=r"(cyc));
             frame[TF_X0] = cyc;
+            return frame_sp;
+        }
+
+        case SYS_TLS_OPEN: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_open(pid, (int)frame[TF_X0]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_CLOSE: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_close(pid, (int)frame[TF_X0]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_GET_LOCAL_PUBLIC: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_get_local_public(pid,
+                                                                 (int)frame[TF_X0],
+                                                                 (unsigned char*)frame[TF_X1]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_SET_PEER_PUBLIC: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_set_peer_public(pid,
+                                                                (int)frame[TF_X0],
+                                                                (const unsigned char*)frame[TF_X1]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_BUILD_CLIENT_HELLO: {
+            int pid = process_current_pid();
+            unsigned int out_len = 0;
+            int rc = ktls_build_client_hello(pid,
+                                             (int)frame[TF_X0],
+                                             (unsigned char*)frame[TF_X1],
+                                             (unsigned int)frame[TF_X2],
+                                             &out_len);
+            frame[TF_X0] = (rc == 0) ? (unsigned long)out_len : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_TLS_PROCESS_SERVER_HELLO: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_process_server_hello(pid,
+                                                                     (int)frame[TF_X0],
+                                                                     (const unsigned char*)frame[TF_X1],
+                                                                     (unsigned int)frame[TF_X2]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO: {
+            int pid = process_current_pid();
+            unsigned int out_len = 0;
+            int rc = ktls_process_client_hello_build_server_hello(pid,
+                                                                   (int)frame[TF_X0],
+                                                                   (const unsigned char*)frame[TF_X1],
+                                                                   (unsigned int)frame[TF_X2],
+                                                                   (unsigned char*)frame[TF_X3],
+                                                                   (unsigned int)frame[TF_X4],
+                                                                   &out_len);
+            frame[TF_X0] = (rc == 0) ? (unsigned long)out_len : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_TLS_RECORD_ENCRYPT: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_record_encrypt(pid,
+                                                               (int)frame[TF_X0],
+                                                               (qos_tls_record_io_t*)frame[TF_X1]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_RECORD_DECRYPT: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_record_decrypt(pid,
+                                                               (int)frame[TF_X0],
+                                                               (qos_tls_record_io_t*)frame[TF_X1]);
+            return frame_sp;
+        }
+
+        case SYS_TLS_IS_READY: {
+            int pid = process_current_pid();
+            frame[TF_X0] = (unsigned long)ktls_is_ready(pid, (int)frame[TF_X0]);
             return frame_sp;
         }
 
