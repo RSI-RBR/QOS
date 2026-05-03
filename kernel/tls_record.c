@@ -1,9 +1,15 @@
 #include "tls_record.h"
 #include "crypto.h"
+#include "spinlock.h"
 
 #define TLS13_OUTER_CONTENT_TYPE_APPLICATION_DATA 23u
 #define TLS_LEGACY_RECORD_VERSION_MAJOR 0x03u
 #define TLS_LEGACY_RECORD_VERSION_MINOR 0x03u
+
+// Keep max-record scratch storage off process kernel stacks. A full TLS record
+// is about the same size as one scheduled process stack in this kernel.
+static spinlock_t g_tls_record_scratch_lock = {0};
+static unsigned char g_tls_record_inner[TLS13_RECORD_MAX_PLAINTEXT + 1u];
 
 static void store_be16(unsigned char out[2], unsigned int v){
     out[0] = (unsigned char)((v >> 8) & 0xFFu);
@@ -76,8 +82,9 @@ int tls13_record_encrypt(tls13_record_ctx_t* ctx,
 
     unsigned char aad[TLS13_RECORD_HEADER_BYTES];
     unsigned char nonce[12];
-    unsigned char inner[TLS13_RECORD_MAX_PLAINTEXT + 1u];
     unsigned char tag[TLS13_TAG_BYTES];
+    unsigned long scratch_irq = spin_lock_irqsave(&g_tls_record_scratch_lock);
+    unsigned char* inner = g_tls_record_inner;
 
     aad[0] = TLS13_OUTER_CONTENT_TYPE_APPLICATION_DATA;
     aad[1] = TLS_LEGACY_RECORD_VERSION_MAJOR;
@@ -104,8 +111,9 @@ int tls13_record_encrypt(tls13_record_ctx_t* ctx,
                         &out_record[TLS13_RECORD_HEADER_BYTES],
                         tag, sizeof(tag)) != 0){
         crypto_memzero(nonce, sizeof(nonce));
-        crypto_memzero(inner, sizeof(inner));
+        crypto_memzero(inner, inner_len);
         crypto_memzero(tag, sizeof(tag));
+        spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
         return -1;
     }
     for (unsigned int i = 0; i < TLS13_TAG_BYTES; i++){
@@ -115,8 +123,9 @@ int tls13_record_encrypt(tls13_record_ctx_t* ctx,
     ctx->seq++;
     *out_len = wire_len;
     crypto_memzero(nonce, sizeof(nonce));
-    crypto_memzero(inner, sizeof(inner));
+    crypto_memzero(inner, inner_len);
     crypto_memzero(tag, sizeof(tag));
+    spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
     return 0;
 }
 
@@ -153,7 +162,8 @@ int tls13_record_decrypt(tls13_record_ctx_t* ctx,
 
     unsigned char aad[TLS13_RECORD_HEADER_BYTES];
     unsigned char nonce[12];
-    unsigned char inner[TLS13_RECORD_MAX_PLAINTEXT + 1u];
+    unsigned long scratch_irq = spin_lock_irqsave(&g_tls_record_scratch_lock);
+    unsigned char* inner = g_tls_record_inner;
 
     for (unsigned int i = 0; i < TLS13_RECORD_HEADER_BYTES; i++){
         aad[i] = record[i];
@@ -170,21 +180,24 @@ int tls13_record_decrypt(tls13_record_ctx_t* ctx,
                         inner,
                         tag, TLS13_TAG_BYTES) != 0){
         crypto_memzero(nonce, sizeof(nonce));
-        crypto_memzero(inner, sizeof(inner));
+        crypto_memzero(inner, ct_len);
+        spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
         return -1;
     }
 
     unsigned int inner_len = ct_len;
     if (inner_len < 1u){
         crypto_memzero(nonce, sizeof(nonce));
-        crypto_memzero(inner, sizeof(inner));
+        crypto_memzero(inner, ct_len);
+        spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
         return -1;
     }
     unsigned char inner_type = inner[inner_len - 1u];
     unsigned int plain_len = inner_len - 1u;
     if (plain_len > out_cap){
         crypto_memzero(nonce, sizeof(nonce));
-        crypto_memzero(inner, sizeof(inner));
+        crypto_memzero(inner, ct_len);
+        spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
         return -1;
     }
     for (unsigned int i = 0; i < plain_len; i++){
@@ -195,7 +208,8 @@ int tls13_record_decrypt(tls13_record_ctx_t* ctx,
     *out_len = plain_len;
     ctx->seq++;
     crypto_memzero(nonce, sizeof(nonce));
-    crypto_memzero(inner, sizeof(inner));
+    crypto_memzero(inner, ct_len);
+    spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
     return 0;
 }
 
