@@ -24,6 +24,10 @@ SECTIONS
     .rodata : {
         __kernel_rodata_start = .;
         *(.rodata*)
+        __kernel_rodata_verify_end = .;
+        __kernel_manifest_start = .;
+        *(.kmanifest)
+        __kernel_manifest_end = .;
         __kernel_rodata_end = .;
     } :text
 

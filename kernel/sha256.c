@@ -164,3 +164,16 @@ void sha256_digest(const unsigned char* data, unsigned int len, unsigned char ou
     sha256_final(&ctx, out);
 }
 
+void sha256_digest_concat2(const unsigned char* a, unsigned int a_len,
+                           const unsigned char* b, unsigned int b_len,
+                           unsigned char out[32]){
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    if (a && a_len){
+        sha256_update(&ctx, a, a_len);
+    }
+    if (b && b_len){
+        sha256_update(&ctx, b, b_len);
+    }
+    sha256_final(&ctx, out);
+}

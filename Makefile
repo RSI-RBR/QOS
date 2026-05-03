@@ -70,11 +70,19 @@ $(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 # ---------------------------
 # DEFAULT TARGET
 # ---------------------------
-all: kernel8.img
+all: provisioned-kernel
 
 # Generate kernel manifest header from current build.
 manifest-header: kernel8.img
 	python3 tools/gen_kernel_manifest.py $(BUILD)/kernel8.elf kernel8.img include/kernel_manifest_autogen.h $(CROSS)nm 0x1
+
+# Two-pass build:
+# 1) build kernel image
+# 2) generate manifest header from image
+# 3) rebuild so embedded manifest matches generated values
+provisioned-kernel: kernel8.img
+	$(MAKE) manifest-header
+	$(MAKE) kernel8.img
 
 # ---------------------------
 # LINK STEP

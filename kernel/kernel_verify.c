@@ -4,11 +4,12 @@
 #include "trust.h"
 #include "uart.h"
 #include "kernel_manifest_autogen.h"
+#include "fat32.h"
 
 extern unsigned char __kernel_text_start[];
-extern unsigned char __kernel_text_end[];
-extern unsigned char __kernel_rodata_start[];
-extern unsigned char __kernel_rodata_end[];
+extern unsigned char __kernel_rodata_verify_end[];
+extern unsigned char __kernel_manifest_start[];
+extern unsigned char __kernel_manifest_end[];
 
 typedef struct {
     unsigned int manifest_version;
@@ -16,7 +17,8 @@ typedef struct {
     unsigned int sig_alg;
     unsigned int flags;
     unsigned int sig_len;
-    unsigned char digest[32];
+    unsigned char digest[32];      // digest over in-memory verify span
+    unsigned char file_digest[32]; // digest over kernel8.img excluding .kmanifest bytes
     unsigned char signature[QOS_MAX_SIGNATURE_BYTES];
 } kernel_manifest_t;
 
@@ -33,8 +35,13 @@ static const kernel_manifest_t g_kernel_manifest = {
     KERNEL_MANIFEST_FLAGS,
     KERNEL_MANIFEST_SIG_LEN,
     KERNEL_MANIFEST_DIGEST_INIT,
+    KERNEL_MANIFEST_FILE_DIGEST_INIT,
     KERNEL_MANIFEST_SIGNATURE_INIT
 };
+
+#define KERNEL_IMAGE_FAT_NAME "KERNEL8 IMG"
+#define KERNEL_IMAGE_MAX_SIZE (4u * 1024u * 1024u)
+static unsigned char g_kernel_file_buf[KERNEL_IMAGE_MAX_SIZE];
 
 static char nibble_hex(unsigned int v){
     return (v < 10u) ? (char)('0' + v) : (char)('A' + (v - 10u));
@@ -113,7 +120,7 @@ int kernel_verify_self(void){
     }
 
     unsigned char digest[32];
-    unsigned int image_len = (unsigned int)(__kernel_rodata_end - __kernel_text_start);
+    unsigned int image_len = (unsigned int)(__kernel_rodata_verify_end - __kernel_text_start);
     sha256_digest(__kernel_text_start, image_len, digest);
 
     if (digest_is_all_zero(g_kernel_manifest.digest)){
@@ -138,4 +145,65 @@ int kernel_verify_self(void){
 
 int kernel_verify_enforce(void){
     return g_kernel_verify_enforce;
+}
+
+int kernel_verify_storage_image(void){
+    if (verify_manifest_policy() != 0){
+        return -1;
+    }
+
+    if (fat32_init() != 0){
+        uart_puts("Kernel file verify: FAT init failed.\n");
+        return -1;
+    }
+
+    int n = fat32_read_file(KERNEL_IMAGE_FAT_NAME, g_kernel_file_buf, (int)KERNEL_IMAGE_MAX_SIZE);
+    if (n <= 0){
+        uart_puts("Kernel file verify: read kernel8.img failed.\n");
+        return -1;
+    }
+
+    const unsigned long load_base = 0x80000UL;
+    unsigned long man_start = (unsigned long)__kernel_manifest_start;
+    unsigned long man_end = (unsigned long)__kernel_manifest_end;
+    if (man_end <= man_start || man_start < load_base){
+        uart_puts("Kernel file verify: bad manifest section bounds.\n");
+        return -1;
+    }
+
+    unsigned long off0 = man_start - load_base;
+    unsigned long off1 = man_end - load_base;
+    if (off1 > (unsigned long)n || off0 >= off1){
+        uart_puts("Kernel file verify: manifest section not inside file span.\n");
+        return -1;
+    }
+
+    unsigned char digest[32];
+    unsigned int left_len = (unsigned int)off0;
+    unsigned int right_len = (unsigned int)((unsigned long)n - off1);
+
+    // Canonicalized full-image digest: bytes before manifest section + bytes after.
+    // (Excludes embedded manifest to avoid self-reference recursion.)
+    sha256_digest_concat2(g_kernel_file_buf, left_len,
+                          g_kernel_file_buf + off1, right_len,
+                          digest);
+
+    if (digest_is_all_zero(g_kernel_manifest.file_digest)){
+        uart_puts("Kernel file verify: manifest file digest not provisioned.\n");
+        uart_puts("Kernel file verify: measured=");
+        uart_put_digest(digest);
+        return 1;
+    }
+
+    if (!digest_equal(digest, g_kernel_manifest.file_digest)){
+        uart_puts("Kernel file verify: FAILED (digest mismatch).\n");
+        uart_puts("Kernel file verify: measured=");
+        uart_put_digest(digest);
+        uart_puts("Kernel file verify: expected=");
+        uart_put_digest(g_kernel_manifest.file_digest);
+        return -1;
+    }
+
+    uart_puts("Kernel file verify: OK.\n");
+    return 0;
 }

@@ -200,6 +200,18 @@ void kernel_main(void){
         return;
     }
     uart_puts("Storage init OK...\n");
+
+    int kv_file = kernel_verify_storage_image();
+    if (kv_file < 0){
+        uart_puts("Kernel file verify failed.\n");
+        if (kernel_verify_enforce()){
+            uart_puts("Kernel verify enforced: HALTING.\n");
+            while (1){ asm volatile("wfi"); }
+        }
+        uart_puts("Kernel file verify warn-only mode: continuing.\n");
+    } else if (kv_file > 0){
+        uart_puts("Kernel file verify not provisioned yet.\n");
+    }
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
