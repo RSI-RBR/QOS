@@ -11,6 +11,11 @@ int tcp_http_get(const unsigned char dst_ip[4],
                  const char* path,
                  unsigned char* out,
                  unsigned int out_cap);
+int tcp_https_get(const unsigned char dst_ip[4],
+                  const char* host,
+                  const char* path,
+                  unsigned char* out,
+                  unsigned int out_cap);
 void tcp_dump_stats(void);
 
 #endif

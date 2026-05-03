@@ -4,6 +4,13 @@
 #include "timer.h"
 #include "net.h"
 #include "uart.h"
+#include "memory.h"
+#include "crypto.h"
+#include "sha256.h"
+#include "x25519.h"
+#include "tls_handshake.h"
+#include "tls_key_schedule.h"
+#include "tls_record.h"
 
 typedef struct __attribute__((packed)) {
     unsigned short src_port_be;
@@ -299,6 +306,905 @@ static int append_str(char* dst, int cap, int* idx, const char* s){
         s++;
     }
     return 0;
+}
+
+#define TCP_TLS_REC_MAX (16384u + 256u)
+#define TCP_TLS_RX_CAP 32768u
+#define TCP_TLS_HS_BUF_CAP 32768u
+#define TCP_TLS_APP_IO_CAP (TCP_TLS_REC_MAX + 5u)
+
+static unsigned char g_tls_rx_raw[TCP_TLS_RX_CAP];
+static unsigned char g_tls_hs_buf[TCP_TLS_HS_BUF_CAP];
+static unsigned char g_tls_record_wire[TCP_TLS_APP_IO_CAP];
+static unsigned char g_tls_record_plain[TCP_TLS_REC_MAX];
+static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
+
+static void be24_write(unsigned char* p, unsigned int v){
+    p[0] = (unsigned char)((v >> 16) & 0xFFu);
+    p[1] = (unsigned char)((v >> 8) & 0xFFu);
+    p[2] = (unsigned char)(v & 0xFFu);
+}
+
+static unsigned int be24_read(const unsigned char* p){
+    return ((unsigned int)p[0] << 16) |
+           ((unsigned int)p[1] << 8) |
+           (unsigned int)p[2];
+}
+
+static int tls13_build_client_hello_sni_x25519(const char* host,
+                                                const unsigned char client_pub[32],
+                                                unsigned char* out,
+                                                unsigned int out_cap,
+                                                unsigned int* out_len){
+    if (!host || !*host || !client_pub || !out || !out_len){
+        return -1;
+    }
+
+    unsigned int host_len = 0;
+    while (host[host_len]){
+        host_len++;
+        if (host_len > 250u){
+            return -1;
+        }
+    }
+
+    unsigned int i = 0;
+    out[i++] = (unsigned char)TLS13_HS_TYPE_CLIENT_HELLO;
+    out[i++] = 0;
+    out[i++] = 0;
+    out[i++] = 0;
+
+    if (i + 2u + 32u + 1u + 32u + 2u + 2u + 1u + 1u + 2u > out_cap){
+        return -1;
+    }
+
+    be16_write(&out[i], TLS13_VERSION_LEGACY); i += 2u;
+    if (crypto_random_bytes(&out[i], 32u) != 0){
+        for (unsigned int r = 0; r < 32u; r++){
+            out[i + r] = (unsigned char)(0xA5u + r);
+        }
+    }
+    i += 32u;
+
+    out[i++] = 32u; // legacy_session_id length (compat mode)
+    if (crypto_random_bytes(&out[i], 32u) != 0){
+        for (unsigned int r = 0; r < 32u; r++){
+            out[i + r] = (unsigned char)(0x5Au + r);
+        }
+    }
+    i += 32u;
+
+    be16_write(&out[i], 2u); i += 2u;
+    be16_write(&out[i], TLS13_CIPHER_AES_128_GCM_SHA256); i += 2u;
+    out[i++] = 1u; // legacy_compression_methods len
+    out[i++] = 0u; // null compression
+
+    unsigned int ext_len_pos = i;
+    i += 2u;
+    unsigned int ext_start = i;
+
+    // server_name
+    {
+        unsigned int ext_len = 2u + 1u + 2u + host_len;
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+        be16_write(&out[i], 0x0000u); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        be16_write(&out[i], (unsigned short)(1u + 2u + host_len)); i += 2u; // server_name_list len
+        out[i++] = 0u; // host_name
+        be16_write(&out[i], (unsigned short)host_len); i += 2u;
+        for (unsigned int h = 0; h < host_len; h++){
+            out[i++] = (unsigned char)host[h];
+        }
+    }
+
+    // supported_versions
+    if (i + 7u > out_cap){
+        return -1;
+    }
+    be16_write(&out[i], 0x002Bu); i += 2u;
+    be16_write(&out[i], 3u); i += 2u;
+    out[i++] = 2u;
+    be16_write(&out[i], TLS13_VERSION_1_3); i += 2u;
+
+    // supported_groups (x25519)
+    if (i + 8u > out_cap){
+        return -1;
+    }
+    be16_write(&out[i], 0x000Au); i += 2u;
+    be16_write(&out[i], 4u); i += 2u;
+    be16_write(&out[i], 2u); i += 2u;
+    be16_write(&out[i], TLS13_GROUP_X25519); i += 2u;
+
+    // signature_algorithms
+    if (i + 12u > out_cap){
+        return -1;
+    }
+    be16_write(&out[i], 0x000Du); i += 2u;
+    be16_write(&out[i], 8u); i += 2u;
+    be16_write(&out[i], 6u); i += 2u;
+    be16_write(&out[i], 0x0804u); i += 2u; // rsa_pss_rsae_sha256
+    be16_write(&out[i], 0x0403u); i += 2u; // ecdsa_secp256r1_sha256
+    be16_write(&out[i], 0x0807u); i += 2u; // ed25519
+
+    // key_share (x25519)
+    if (i + 42u > out_cap){
+        return -1;
+    }
+    be16_write(&out[i], 0x0033u); i += 2u;
+    be16_write(&out[i], 38u); i += 2u;
+    be16_write(&out[i], 36u); i += 2u;
+    be16_write(&out[i], TLS13_GROUP_X25519); i += 2u;
+    be16_write(&out[i], 32u); i += 2u;
+    for (unsigned int k = 0; k < 32u; k++){
+        out[i++] = client_pub[k];
+    }
+
+    unsigned int ext_len = i - ext_start;
+    if (ext_len > 0xFFFFu){
+        return -1;
+    }
+    be16_write(&out[ext_len_pos], (unsigned short)ext_len);
+
+    unsigned int body_len = i - 4u;
+    if (body_len > 0xFFFFFFu){
+        return -1;
+    }
+    be24_write(&out[1], body_len);
+
+    *out_len = i;
+    return 0;
+}
+
+static int tls13_build_plain_record(unsigned char type,
+                                    const unsigned char* fragment,
+                                    unsigned int frag_len,
+                                    unsigned char* out,
+                                    unsigned int out_cap,
+                                    unsigned int* out_len){
+    if (!out || !out_len || (!fragment && frag_len > 0u)){
+        return -1;
+    }
+    if (frag_len > 0xFFFFu || out_cap < (5u + frag_len)){
+        return -1;
+    }
+    out[0] = type;
+    out[1] = 0x03u;
+    out[2] = 0x03u;
+    out[3] = (unsigned char)((frag_len >> 8) & 0xFFu);
+    out[4] = (unsigned char)(frag_len & 0xFFu);
+    for (unsigned int i = 0; i < frag_len; i++){
+        out[5u + i] = fragment[i];
+    }
+    *out_len = 5u + frag_len;
+    return 0;
+}
+
+static int tls13_wait_for_established(void){
+    unsigned long start_tick = system_ticks;
+    unsigned long start_cnt = read_cntpct();
+    unsigned long freq = read_cntfrq();
+    unsigned long handshake_to_cnt;
+    unsigned long spin_budget = 25000000UL;
+
+    if (freq == 0){
+        freq = 1000000UL;
+    }
+    handshake_to_cnt = (freq / 1000UL) * 2500UL;
+    if (handshake_to_cnt == 0){
+        handshake_to_cnt = freq;
+    }
+
+    while (g_conn.state == TCP_ST_SYN_SENT){
+        (void)net_poll();
+        if ((read_cntpct() - start_cnt) > handshake_to_cnt){
+            return -1;
+        }
+        if ((long)(system_ticks - start_tick) > 2000){
+            return -1;
+        }
+        if (spin_budget-- == 0){
+            return -1;
+        }
+    }
+    return (g_conn.state == TCP_ST_ESTABLISHED) ? 0 : -1;
+}
+
+static int tls13_compact_rx(unsigned int* consumed){
+    if (!consumed){
+        return -1;
+    }
+    if (*consumed == 0u){
+        return 0;
+    }
+    if (*consumed > g_conn.out_len){
+        return -1;
+    }
+    unsigned int rem = g_conn.out_len - *consumed;
+    for (unsigned int i = 0; i < rem; i++){
+        g_conn.out[i] = g_conn.out[*consumed + i];
+    }
+    g_conn.out_len = rem;
+    *consumed = 0u;
+    return 0;
+}
+
+static int tls13_pull_record(unsigned int* consumed,
+                             unsigned char* rec_type,
+                             const unsigned char** rec_payload,
+                             unsigned int* rec_len,
+                             unsigned int timeout_ms){
+    if (!consumed || !rec_type || !rec_payload || !rec_len){
+        return -1;
+    }
+
+    unsigned long start_tick = system_ticks;
+    while (1){
+        if (*consumed > g_conn.out_len){
+            return -1;
+        }
+
+        if ((*consumed > 8192u) || (*consumed == g_conn.out_len && *consumed > 0u)){
+            if (tls13_compact_rx(consumed) != 0){
+                return -1;
+            }
+        }
+
+        unsigned int avail = g_conn.out_len - *consumed;
+        if (avail >= 5u){
+            const unsigned char* p = &g_conn.out[*consumed];
+            unsigned int body_len = be16_read(&p[3]);
+            if (body_len > TCP_TLS_REC_MAX){
+                return -1;
+            }
+            if (avail >= 5u + body_len){
+                *rec_type = p[0];
+                *rec_payload = p + 5u;
+                *rec_len = body_len;
+                *consumed += 5u + body_len;
+                return 0;
+            }
+        }
+
+        if (timeout_ms > 0u && (unsigned long)(system_ticks - start_tick) > timeout_ms){
+            return -1;
+        }
+        if (g_conn.state == TCP_ST_CLOSE_WAIT && avail == 0u){
+            return -1;
+        }
+        (void)net_poll();
+    }
+}
+
+static void sha256_snapshot(const sha256_ctx_t* in, unsigned char out[32]){
+    if (!in || !out){
+        return;
+    }
+    sha256_ctx_t tmp = *in;
+    sha256_final(&tmp, out);
+}
+
+static int tls13_derive_master_and_app_secrets(const unsigned char shared_secret[32],
+                                                const unsigned char transcript_hash_server_finished[32],
+                                                unsigned char client_app_secret[32],
+                                                unsigned char server_app_secret[32]){
+    unsigned char zero[32];
+    unsigned char early[32];
+    unsigned char d1[32];
+    unsigned char hs_secret[32];
+    unsigned char d2[32];
+    unsigned char master[32];
+
+    for (unsigned int i = 0; i < 32u; i++){
+        zero[i] = 0;
+    }
+    crypto_hkdf_sha256_extract(zero, sizeof(zero), zero, sizeof(zero), early);
+    if (tls13_hkdf_expand_label_sha256(early, "derived", 0, 0, d1, sizeof(d1)) != 0){
+        return -1;
+    }
+    crypto_hkdf_sha256_extract(d1, sizeof(d1), shared_secret, 32u, hs_secret);
+    if (tls13_hkdf_expand_label_sha256(hs_secret, "derived", 0, 0, d2, sizeof(d2)) != 0){
+        return -1;
+    }
+    crypto_hkdf_sha256_extract(d2, sizeof(d2), zero, sizeof(zero), master);
+
+    if (tls13_hkdf_expand_label_sha256(master, "c ap traffic",
+                                       transcript_hash_server_finished, 32u,
+                                       client_app_secret, 32u) != 0){
+        return -1;
+    }
+    if (tls13_hkdf_expand_label_sha256(master, "s ap traffic",
+                                       transcript_hash_server_finished, 32u,
+                                       server_app_secret, 32u) != 0){
+        return -1;
+    }
+
+    crypto_memzero(zero, sizeof(zero));
+    crypto_memzero(early, sizeof(early));
+    crypto_memzero(d1, sizeof(d1));
+    crypto_memzero(hs_secret, sizeof(hs_secret));
+    crypto_memzero(d2, sizeof(d2));
+    crypto_memzero(master, sizeof(master));
+    return 0;
+}
+
+static int tls13_build_empty_client_certificate(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
+    if (!out || !out_len || out_cap < 8u){
+        return -1;
+    }
+    out[0] = 11u; // certificate
+    out[1] = 0u;
+    out[2] = 0u;
+    out[3] = 4u; // body len
+    out[4] = 0u; // certificate_request_context len
+    out[5] = 0u; // certificate_list len (u24)
+    out[6] = 0u;
+    out[7] = 0u;
+    *out_len = 8u;
+    return 0;
+}
+
+static int tls13_build_finished_message(const unsigned char base_secret[32],
+                                        const unsigned char transcript_hash[32],
+                                        unsigned char* out_msg,
+                                        unsigned int out_cap,
+                                        unsigned int* out_len){
+    if (!base_secret || !transcript_hash || !out_msg || !out_len || out_cap < 36u){
+        return -1;
+    }
+    unsigned char finished_key[32];
+    unsigned char verify_data[32];
+    if (tls13_hkdf_expand_label_sha256(base_secret, "finished", 0, 0, finished_key, sizeof(finished_key)) != 0){
+        return -1;
+    }
+    crypto_hmac_sha256(finished_key, sizeof(finished_key),
+                       transcript_hash, 32u, verify_data);
+
+    out_msg[0] = 20u; // finished
+    out_msg[1] = 0u;
+    out_msg[2] = 0u;
+    out_msg[3] = 32u;
+    for (unsigned int i = 0; i < 32u; i++){
+        out_msg[4u + i] = verify_data[i];
+    }
+    *out_len = 36u;
+    crypto_memzero(finished_key, sizeof(finished_key));
+    crypto_memzero(verify_data, sizeof(verify_data));
+    return 0;
+}
+
+int tcp_https_get(const unsigned char dst_ip[4],
+                  const char* host,
+                  const char* path,
+                  unsigned char* out,
+                  unsigned int out_cap){
+    const char* req_path = (path && *path) ? path : "/";
+    char req[512];
+    int rq = 0;
+    unsigned int consumed = 0;
+    unsigned int hs_used = 0;
+    int saw_server_hello = 0;
+    int saw_server_finished = 0;
+    int need_client_empty_cert = 0;
+    int app_bytes = 0;
+    int result = -1;
+    unsigned int rec_len = 0;
+    unsigned char rec_type = 0;
+    const unsigned char* rec_payload = 0;
+    unsigned int ch_len = 0;
+    unsigned int sh_len = 0;
+    unsigned char client_priv[32];
+    unsigned char client_pub[32];
+    unsigned char server_pub[32];
+    unsigned char shared[32];
+    unsigned char thash[32];
+    unsigned char server_finished_expected[32];
+    unsigned char server_finished_key[32];
+    unsigned char client_hs_finished_msg[64];
+    unsigned int client_hs_finished_len = 0;
+    unsigned char client_cert_msg[16];
+    unsigned int client_cert_len = 0;
+    unsigned char ch_msg[1024];
+    unsigned char sh_msg[512];
+    unsigned char hs_record[1024];
+    unsigned int hs_record_len = 0;
+    unsigned int app_req_record_len = 0;
+    unsigned char transcript_server_finished[32];
+    tls13_hs_secrets_t hs_sec;
+    tls13_record_ctx_t hs_tx;
+    tls13_record_ctx_t hs_rx;
+    tls13_record_ctx_t app_tx;
+    tls13_record_ctx_t app_rx;
+    sha256_ctx_t transcript;
+
+    if (!dst_ip || !host || !*host || !out || out_cap < 2u){
+        g_tcp_stats.http_fail++;
+        return -1;
+    }
+    if (!net_ready() || !net_link_up()){
+        g_tcp_stats.http_fail++;
+        return -1;
+    }
+
+    if (g_conn.active){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+    }
+
+    for (unsigned int i = 0; i < 4; i++){
+        g_conn.peer_ip[i] = dst_ip[i];
+    }
+    g_conn.peer_port = 443u;
+    g_conn.local_port = g_next_local_port++;
+    if (g_next_local_port < 42000u || g_next_local_port > 52000u){
+        g_next_local_port = 42000u;
+    }
+    g_conn.iss = (unsigned int)(system_ticks * 1664525u + 1013904223u);
+    g_conn.snd_una = g_conn.iss;
+    g_conn.snd_nxt = g_conn.iss;
+    g_conn.rcv_nxt = 0u;
+    g_conn.out = g_tls_rx_raw;
+    g_conn.out_cap = TCP_TLS_RX_CAP;
+    g_conn.out_len = 0u;
+    g_conn.last_rx_tick = system_ticks;
+    g_conn.state = TCP_ST_SYN_SENT;
+    g_conn.active = 1;
+
+    if (tcp_send_segment(TCP_FLAG_SYN, 0, 0) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        return -1;
+    }
+    g_tcp_stats.syn_sent++;
+
+    if (tls13_wait_for_established() != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        return -1;
+    }
+
+    if (x25519_generate_keypair(client_priv, client_pub) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        return -1;
+    }
+
+    if (tls13_build_client_hello_sni_x25519(host, client_pub, ch_msg, sizeof(ch_msg), &ch_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+
+    if (tls13_build_plain_record(22u, ch_msg, ch_len, hs_record, sizeof(hs_record), &hs_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), hs_record, hs_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+
+    sha256_init(&transcript);
+    sha256_update(&transcript, ch_msg, ch_len);
+    hs_used = 0u;
+    consumed = 0u;
+
+    while (!saw_server_hello){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 4500u) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (rec_type == 20u){
+            continue; // compatibility CCS
+        }
+        if (rec_type == 21u || rec_type == 23u){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (rec_type != 22u){
+            continue;
+        }
+        if ((hs_used + rec_len) > sizeof(g_tls_hs_buf)){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        for (unsigned int i = 0; i < rec_len; i++){
+            g_tls_hs_buf[hs_used + i] = rec_payload[i];
+        }
+        hs_used += rec_len;
+
+        if (hs_used < 4u){
+            continue;
+        }
+        unsigned int mlen = be24_read(&g_tls_hs_buf[1]);
+        unsigned int mtotal = 4u + mlen;
+        if (mtotal > hs_used || mtotal > sizeof(sh_msg)){
+            continue;
+        }
+        if (g_tls_hs_buf[0] == 2u){
+            for (unsigned int i = 0; i < mtotal; i++){
+                sh_msg[i] = g_tls_hs_buf[i];
+            }
+            sh_len = mtotal;
+            saw_server_hello = 1;
+            sha256_update(&transcript, sh_msg, sh_len);
+            unsigned int rem = hs_used - mtotal;
+            for (unsigned int i = 0; i < rem; i++){
+                g_tls_hs_buf[i] = g_tls_hs_buf[mtotal + i];
+            }
+            hs_used = rem;
+        } else{
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+    }
+
+    if (tls13_process_server_hello_x25519(sh_msg, sh_len, server_pub) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (x25519_shared_secret(client_priv, server_pub, shared) != 0 || x25519_is_all_zero(shared)){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    sha256_snapshot(&transcript, thash);
+    if (tls13_derive_handshake_secrets_sha256(shared, thash, &hs_sec) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tls13_record_init(&hs_tx, hs_sec.client_key, TLS13_KEY_BYTES, hs_sec.client_iv) != 0 ||
+        tls13_record_init(&hs_rx, hs_sec.server_key, TLS13_KEY_BYTES, hs_sec.server_iv) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+
+    while (!saw_server_finished){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 5500u) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+
+        if (rec_type == 20u){
+            continue;
+        }
+        if (rec_type == 21u){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (rec_type != 23u){
+            continue;
+        }
+        if (rec_len > TCP_TLS_REC_MAX){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+
+        g_tls_record_wire[0] = rec_type;
+        g_tls_record_wire[1] = 0x03u;
+        g_tls_record_wire[2] = 0x03u;
+        be16_write(&g_tls_record_wire[3], (unsigned short)rec_len);
+        for (unsigned int i = 0; i < rec_len; i++){
+            g_tls_record_wire[5u + i] = rec_payload[i];
+        }
+        unsigned int plain_len = 0;
+        unsigned char inner_type = 0;
+        if (tls13_record_decrypt(&hs_rx,
+                                 g_tls_record_wire, 5u + rec_len,
+                                 g_tls_record_plain, sizeof(g_tls_record_plain),
+                                 &plain_len, &inner_type) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (inner_type != 22u || plain_len == 0u){
+            continue;
+        }
+        if ((hs_used + plain_len) > sizeof(g_tls_hs_buf)){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        for (unsigned int i = 0; i < plain_len; i++){
+            g_tls_hs_buf[hs_used + i] = g_tls_record_plain[i];
+        }
+        hs_used += plain_len;
+
+        unsigned int parsed = 0;
+        while ((hs_used - parsed) >= 4u){
+            unsigned int msg_len = be24_read(&g_tls_hs_buf[parsed + 1u]);
+            unsigned int msg_tot = 4u + msg_len;
+            if ((hs_used - parsed) < msg_tot){
+                break;
+            }
+            unsigned char hs_type = g_tls_hs_buf[parsed];
+            const unsigned char* hs_ptr = &g_tls_hs_buf[parsed];
+
+            if (hs_type == 13u){
+                need_client_empty_cert = 1;
+            }
+
+            if (hs_type == 20u){
+                if (msg_tot != 36u){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    goto https_fail_secure;
+                }
+                if (tls13_hkdf_expand_label_sha256(hs_sec.server_hs_traffic_secret, "finished",
+                                                   0, 0, server_finished_key, sizeof(server_finished_key)) != 0){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    goto https_fail_secure;
+                }
+                sha256_snapshot(&transcript, thash);
+                crypto_hmac_sha256(server_finished_key, sizeof(server_finished_key), thash, sizeof(thash), server_finished_expected);
+                if (!crypto_consttime_equal(server_finished_expected, &hs_ptr[4], 32u)){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    goto https_fail_secure;
+                }
+                sha256_update(&transcript, hs_ptr, msg_tot);
+                saw_server_finished = 1;
+                sha256_snapshot(&transcript, transcript_server_finished);
+                parsed += msg_tot;
+                break;
+            }
+
+            sha256_update(&transcript, hs_ptr, msg_tot);
+            parsed += msg_tot;
+        }
+
+        if (parsed > 0u){
+            unsigned int rem = hs_used - parsed;
+            for (unsigned int i = 0; i < rem; i++){
+                g_tls_hs_buf[i] = g_tls_hs_buf[parsed + i];
+            }
+            hs_used = rem;
+        }
+    }
+
+    if (need_client_empty_cert){
+        if (tls13_build_empty_client_certificate(client_cert_msg, sizeof(client_cert_msg), &client_cert_len) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (tls13_record_encrypt(&hs_tx, 22u, client_cert_msg, client_cert_len,
+                                 g_tls_record_tx, sizeof(g_tls_record_tx), &hs_record_len) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            goto https_fail_secure;
+        }
+        sha256_update(&transcript, client_cert_msg, client_cert_len);
+    }
+
+    sha256_snapshot(&transcript, thash);
+    if (tls13_build_finished_message(hs_sec.client_hs_traffic_secret, thash,
+                                     client_hs_finished_msg, sizeof(client_hs_finished_msg),
+                                     &client_hs_finished_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tls13_record_encrypt(&hs_tx, 22u,
+                             client_hs_finished_msg, client_hs_finished_len,
+                             g_tls_record_tx, sizeof(g_tls_record_tx), &hs_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    sha256_update(&transcript, client_hs_finished_msg, client_hs_finished_len);
+
+    unsigned char c_app_secret[32];
+    unsigned char s_app_secret[32];
+    unsigned char c_app_key[16];
+    unsigned char s_app_key[16];
+    unsigned char c_app_iv[12];
+    unsigned char s_app_iv[12];
+
+    if (tls13_derive_master_and_app_secrets(shared,
+                                            transcript_server_finished,
+                                            c_app_secret, s_app_secret) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tls13_hkdf_expand_label_sha256(c_app_secret, "key", 0, 0, c_app_key, sizeof(c_app_key)) != 0 ||
+        tls13_hkdf_expand_label_sha256(s_app_secret, "key", 0, 0, s_app_key, sizeof(s_app_key)) != 0 ||
+        tls13_hkdf_expand_label_sha256(c_app_secret, "iv", 0, 0, c_app_iv, sizeof(c_app_iv)) != 0 ||
+        tls13_hkdf_expand_label_sha256(s_app_secret, "iv", 0, 0, s_app_iv, sizeof(s_app_iv)) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tls13_record_init(&app_tx, c_app_key, sizeof(c_app_key), c_app_iv) != 0 ||
+        tls13_record_init(&app_rx, s_app_key, sizeof(s_app_key), s_app_iv) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+
+    if (append_str(req, (int)sizeof(req), &rq, "GET ") != 0 ||
+        append_str(req, (int)sizeof(req), &rq, req_path) != 0 ||
+        append_str(req, (int)sizeof(req), &rq, " HTTP/1.1\r\nHost: ") != 0 ||
+        append_str(req, (int)sizeof(req), &rq, host) != 0 ||
+        append_str(req, (int)sizeof(req), &rq, "\r\nUser-Agent: QOS/0.1\r\nConnection: close\r\n\r\n") != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tls13_record_encrypt(&app_tx, 23u, (const unsigned char*)req, (unsigned int)rq,
+                             g_tls_record_tx, sizeof(g_tls_record_tx), &app_req_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+    if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH),
+                         g_tls_record_tx, app_req_record_len) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        goto https_fail_secure;
+    }
+
+    out[0] = 0;
+    app_bytes = 0;
+    hs_used = 0u;
+    unsigned long start_tick = system_ticks;
+    unsigned long last_progress_tick = system_ticks;
+
+    while (1){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 2500u) != 0){
+            break;
+        }
+        if (rec_type == 21u){
+            break;
+        }
+        if (rec_type != 23u){
+            continue;
+        }
+        if (rec_len > TCP_TLS_REC_MAX){
+            break;
+        }
+        g_tls_record_wire[0] = rec_type;
+        g_tls_record_wire[1] = 0x03u;
+        g_tls_record_wire[2] = 0x03u;
+        be16_write(&g_tls_record_wire[3], (unsigned short)rec_len);
+        for (unsigned int i = 0; i < rec_len; i++){
+            g_tls_record_wire[5u + i] = rec_payload[i];
+        }
+
+        unsigned int p_len = 0;
+        unsigned char inner = 0;
+        if (tls13_record_decrypt(&app_rx,
+                                 g_tls_record_wire, 5u + rec_len,
+                                 g_tls_record_plain, sizeof(g_tls_record_plain),
+                                 &p_len, &inner) != 0){
+            break;
+        }
+
+        if (inner == 23u && p_len > 0u){
+            unsigned int room = (app_bytes < (int)(out_cap - 1u)) ? ((out_cap - 1u) - (unsigned int)app_bytes) : 0u;
+            unsigned int take = (p_len < room) ? p_len : room;
+            for (unsigned int i = 0; i < take; i++){
+                out[app_bytes + (int)i] = g_tls_record_plain[i];
+            }
+            app_bytes += (int)take;
+            out[app_bytes] = 0;
+            last_progress_tick = system_ticks;
+            if (room == 0u){
+                break;
+            }
+        } else if (inner == 22u && p_len > 0u){
+            // Post-handshake messages (e.g., NewSessionTicket). Ignore for now.
+        }
+
+        if (g_conn.state == TCP_ST_CLOSE_WAIT){
+            if ((unsigned long)(system_ticks - last_progress_tick) > 250u){
+                break;
+            }
+        } else{
+            if ((unsigned long)(system_ticks - start_tick) > 9000u){
+                break;
+            }
+            if ((unsigned long)(system_ticks - last_progress_tick) > 2000u && app_bytes > 0){
+                break;
+            }
+        }
+    }
+
+    g_conn.active = 0;
+    g_conn.state = TCP_ST_CLOSED;
+    out[(app_bytes >= 0 && (unsigned int)app_bytes < out_cap) ? (unsigned int)app_bytes : (out_cap - 1u)] = 0;
+    if (app_bytes > 0){
+        g_tcp_stats.http_ok++;
+        result = app_bytes;
+    } else{
+        g_tcp_stats.http_fail++;
+        result = -1;
+    }
+
+https_fail_secure:
+    crypto_memzero(client_priv, sizeof(client_priv));
+    crypto_memzero(client_pub, sizeof(client_pub));
+    crypto_memzero(server_pub, sizeof(server_pub));
+    crypto_memzero(shared, sizeof(shared));
+    crypto_memzero(thash, sizeof(thash));
+    crypto_memzero(server_finished_expected, sizeof(server_finished_expected));
+    crypto_memzero(server_finished_key, sizeof(server_finished_key));
+    crypto_memzero(client_hs_finished_msg, sizeof(client_hs_finished_msg));
+    crypto_memzero(client_cert_msg, sizeof(client_cert_msg));
+    crypto_memzero(ch_msg, sizeof(ch_msg));
+    crypto_memzero(sh_msg, sizeof(sh_msg));
+    crypto_memzero(hs_record, sizeof(hs_record));
+    crypto_memzero(transcript_server_finished, sizeof(transcript_server_finished));
+    crypto_memzero(&hs_sec, sizeof(hs_sec));
+    crypto_memzero(&hs_tx, sizeof(hs_tx));
+    crypto_memzero(&hs_rx, sizeof(hs_rx));
+    crypto_memzero(&app_tx, sizeof(app_tx));
+    crypto_memzero(&app_rx, sizeof(app_rx));
+    crypto_memzero(g_tls_hs_buf, sizeof(g_tls_hs_buf));
+    crypto_memzero(g_tls_record_wire, sizeof(g_tls_record_wire));
+    crypto_memzero(g_tls_record_plain, sizeof(g_tls_record_plain));
+    crypto_memzero(g_tls_record_tx, sizeof(g_tls_record_tx));
+
+    return result;
 }
 
 int tcp_http_get(const unsigned char dst_ip[4],

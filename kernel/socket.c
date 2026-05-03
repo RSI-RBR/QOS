@@ -311,6 +311,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     int type = 0;
     unsigned int stream_out_cap = 0;
     unsigned char stream_remote_ip[4] = {0, 0, 0, 0};
+    unsigned short stream_remote_port = 0;
     char stream_host[128];
     char stream_path[256];
 
@@ -356,10 +357,16 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         stream_remote_ip[1] = s->remote_ip[1];
         stream_remote_ip[2] = s->remote_ip[2];
         stream_remote_ip[3] = s->remote_ip[3];
+        stream_remote_port = s->remote_port;
         spin_unlock_irqrestore(&g_socket_lock, irq);
 
         unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
-        int n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+        int n;
+        if (stream_remote_port == 443u){
+            n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+        } else{
+            n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+        }
         spin_unlock_irqrestore(&g_socket_stream_lock, sio_irq);
 
         irq = spin_lock_irqsave(&g_socket_lock);

@@ -229,7 +229,7 @@ static void print_html_text(const unsigned char* html, int len){
     qos_puts("\n");
 }
 
-static int http_fetch_raw(const char* host, const char* path, unsigned char* resp, int resp_cap){
+static int http_fetch_raw(const char* host, const char* path, unsigned short port, unsigned char* resp, int resp_cap){
     unsigned char ip[4];
     qos_sockaddr_in_t sa;
     char req[REQ_CAP];
@@ -257,7 +257,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned char* res
     (void)qos_socket_set_recv_timeout(fd, RECV_TIMEOUT_MS);
 
     sa.family = QOS_AF_INET;
-    sa.port = 80u;
+    sa.port = port;
     sa.addr[0] = ip[0];
     sa.addr[1] = ip[1];
     sa.addr[2] = ip[2];
@@ -307,27 +307,58 @@ static int http_fetch_raw(const char* host, const char* path, unsigned char* res
 static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
-    qos_puts(" open <host> [path]\n");
+    qos_puts(" open <url|host> [path]\n");
     qos_puts(" exit\n");
 }
 
-static void cmd_open(const char* host, const char* path){
+static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
+    const char* req_host = host;
+    const char* req_path = (path && *path) ? path : 0;
+    unsigned short port = 80u;
     int n;
 
     if (!host || !*host){
-        qos_puts("Usage: open <host> [path]\n");
+        qos_puts("Usage: open <url|host> [path]\n");
         return;
     }
 
-    qos_puts("Fetching http://");
-    qos_puts(host);
-    qos_puts((path && *path) ? path : "/");
+    if (str_starts_with(req_host, "https://")){
+        req_host += 8;
+        port = 443u;
+    } else if (str_starts_with(req_host, "http://")){
+        req_host += 7;
+    }
+
+    char* embedded_path = 0;
+    for (char* p = (char*)req_host; *p; p++){
+        if (*p == '/'){
+            *p = 0;
+            embedded_path = p;
+            break;
+        }
+    }
+    if ((!req_path || !*req_path) && embedded_path && *embedded_path){
+        req_path = embedded_path;
+    }
+    if (!req_path || !*req_path){
+        req_path = "/";
+    }
+
+    if (!*req_host){
+        qos_puts("Usage: open <url|host> [path]\n");
+        return;
+    }
+
+    qos_puts("Fetching ");
+    qos_puts(port == 443u ? "https://" : "http://");
+    qos_puts(req_host);
+    qos_puts(req_path);
     qos_puts("\n");
 
-    n = http_fetch_raw(host, path, resp, (int)sizeof(resp));
+    n = http_fetch_raw(req_host, req_path, port, resp, (int)sizeof(resp));
     if (n <= 0){
-        qos_puts("HTTP fetch failed or empty.\n");
+        qos_puts("Fetch failed or empty.\n");
         return;
     }
 
@@ -382,7 +413,7 @@ static void execute_line(void){
         }
 
         if (!*host){
-            qos_puts("Usage: open <host> [path]\n");
+            qos_puts("Usage: open <url|host> [path]\n");
             return;
         }
         cmd_open(host, path);
