@@ -719,12 +719,8 @@ void process_exit_current(void){
         restore_context_and_eret(next_sp);
     }
 
-    // No runnable task right now. Enable IRQs so timer can wake sleepers,
-    // then idle until a future interrupt schedules work.
-    asm volatile("msr daifclr, #2" : : : "memory");
-    while (1){
-        asm volatile("wfi");
-    }
+    // No runnable task right now; park this core in recoverable idle.
+    process_enter_idle_loop();
 }
 
 void process_fault_current(void){
@@ -958,4 +954,31 @@ void process_dump(void){
     uart_puthex((unsigned int)double_run_blocked);
     uart_puts("\n");
     spin_unlock_irqrestore(&g_process_lock, irq);
+}
+
+__attribute__((noreturn)) void process_enter_idle_loop(void){
+    unsigned int core = scheduler_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+
+    if (core < MAX_CPU_CORES){
+        int pid = current_pid[core];
+        if (pid >= 0 && pid < MAX_PROCESSES){
+            if (processes[pid].state != PROC_DEAD){
+                mark_current_for_reap(core);
+            }
+        }
+        current_pid[core] = -1;
+        reap_pending_zombie(core);
+    }
+
+    spin_unlock_irqrestore(&g_process_lock, irq);
+
+    asm volatile("msr daifclr, #2" : : : "memory");
+    while (1){
+        if (scheduler_has_runnable()){
+            scheduler_run_once();
+        } else{
+            asm volatile("wfi");
+        }
+    }
 }

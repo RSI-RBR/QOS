@@ -235,14 +235,10 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         if (next_sp != frame_sp){
             return next_sp;
         }
-        uart_puts("No alternate runnable frame after fault; idling this core.\n");
-        // Keep the system alive on other cores instead of global halt.
-        asm volatile("msr daifclr, #2" : : : "memory");
-        while (1){
-            asm volatile("wfi");
-        }
+        uart_puts("No alternate runnable frame after fault; entering recoverable core-idle.\n");
+        process_enter_idle_loop();
     }
 
-    uart_puts("HALTING\n");
-    while (1){}
+    uart_puts("Kernel-context exception; isolating this core into recoverable idle.\n");
+    process_enter_idle_loop();
 }
