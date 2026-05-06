@@ -198,6 +198,8 @@ static void make_iv(unsigned int seq, unsigned char out_iv[12]){
 }
 
 static int derive_session_keys(void){
+    static const unsigned char key_label[] = "qos-rlogin-key-v1";
+    static const unsigned char iv_label[] = "qos-rlogin-iv-v1";
     unsigned char shared[32];
     unsigned char salt_buf[64];
     unsigned char prk[32];
@@ -217,14 +219,14 @@ static int derive_session_keys(void){
 
     crypto_hkdf_sha256_extract(salt_buf, sizeof(salt_buf), shared, sizeof(shared), prk);
     if (crypto_hkdf_sha256_expand(prk,
-                                  (const unsigned char*)"qos-rlogin-key-v1",
-                                  16u,
+                                  key_label,
+                                  (unsigned int)(sizeof(key_label) - 1u),
                                   g_sess.key, 32u) != 0){
         goto out;
     }
     if (crypto_hkdf_sha256_expand(prk,
-                                  (const unsigned char*)"qos-rlogin-iv-v1",
-                                  15u,
+                                  iv_label,
+                                  (unsigned int)(sizeof(iv_label) - 1u),
                                   g_sess.nonce_base, 12u) != 0){
         goto out;
     }
