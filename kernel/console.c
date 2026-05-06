@@ -4,6 +4,7 @@
 #include "spinlock.h"
 
 static volatile int g_console_owner_pid = -1;
+static volatile int g_console_prev_owner_pid = -1;
 static spinlock_t g_console_lock;
 
 static int process_is_alive_locked(int pid){
@@ -21,6 +22,7 @@ void console_init(void){
     spinlock_init(&g_console_lock);
     // Strict foreground ownership: no implicit owner until claimed.
     g_console_owner_pid = -1;
+    g_console_prev_owner_pid = -1;
 }
 
 int console_try_getc_for_pid(int pid, char* out){
@@ -30,6 +32,16 @@ int console_try_getc_for_pid(int pid, char* out){
 
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
+    if (owner >= 0 && !process_is_alive_locked(owner)){
+        g_console_owner_pid = -1;
+        owner = -1;
+    }
+    // Recovery mode: when no owner is present, allow the active requester
+    // (typically userspace shell) to auto-claim input ownership.
+    if (owner < 0 && process_is_alive_locked(pid)){
+        g_console_owner_pid = pid;
+        owner = pid;
+    }
     spin_unlock_irqrestore(&g_console_lock, irq);
     if (owner < 0 || owner != pid){
         return 0;
@@ -52,6 +64,7 @@ int console_set_owner(int requester_pid, int target_pid){
     int owner = g_console_owner_pid;
     if (owner >= 0 && !process_is_alive_locked(owner)){
         g_console_owner_pid = -1;
+        g_console_prev_owner_pid = -1;
         owner = -1;
     }
     if (owner >= 0 && owner != requester_pid){
@@ -64,6 +77,13 @@ int console_set_owner(int requester_pid, int target_pid){
         return -1;
     }
 
+    if (target_pid != requester_pid){
+        // Explicit handoff (shell -> child). Track who gave up foreground.
+        g_console_prev_owner_pid = requester_pid;
+    } else if (owner != requester_pid){
+        // Fresh self-claim from unowned/auto-recovery state.
+        g_console_prev_owner_pid = -1;
+    }
     g_console_owner_pid = target_pid;
     spin_unlock_irqrestore(&g_console_lock, irq);
     return 0;
@@ -76,6 +96,7 @@ int console_release_owner(int requester_pid){
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     if (g_console_owner_pid == requester_pid){
         g_console_owner_pid = -1;
+        g_console_prev_owner_pid = -1;
         spin_unlock_irqrestore(&g_console_lock, irq);
         return 0;
     }
@@ -86,6 +107,11 @@ int console_release_owner(int requester_pid){
 int console_get_owner(void){
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
+    if (owner >= 0 && !process_is_alive_locked(owner)){
+        g_console_owner_pid = -1;
+        g_console_prev_owner_pid = -1;
+        owner = -1;
+    }
     spin_unlock_irqrestore(&g_console_lock, irq);
     return owner;
 }
@@ -97,7 +123,12 @@ void console_owner_on_process_exit(int pid){
         return;
     }
 
-    // Do not hardcode a shell PID here; userspace shell reclaims ownership.
-    g_console_owner_pid = -1;
+    int restore = g_console_prev_owner_pid;
+    if (restore >= 0 && restore < MAX_PROCESSES && process_is_alive_locked(restore)){
+        g_console_owner_pid = restore;
+    } else{
+        g_console_owner_pid = -1;
+    }
+    g_console_prev_owner_pid = -1;
     spin_unlock_irqrestore(&g_console_lock, irq);
 }
