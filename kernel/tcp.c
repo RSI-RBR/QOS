@@ -65,6 +65,8 @@ typedef struct {
 static tcp_stats_t g_tcp_stats;
 static tcp_conn_t g_conn;
 static unsigned short g_next_local_port = 42000u;
+static int g_tcp_https_last_error = 0;
+static unsigned long g_tcp_https_fail_count = 0;
 
 #define TCP_FLAG_FIN 0x01u
 #define TCP_FLAG_SYN 0x02u
@@ -428,6 +430,17 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     be16_write(&out[i], 0x0403u); i += 2u; // ecdsa_secp256r1_sha256
     be16_write(&out[i], 0x0807u); i += 2u; // ed25519
 
+    // signature_algorithms_cert
+    if (i + 12u > out_cap){
+        return -1;
+    }
+    be16_write(&out[i], 0x0032u); i += 2u;
+    be16_write(&out[i], 8u); i += 2u;
+    be16_write(&out[i], 6u); i += 2u;
+    be16_write(&out[i], 0x0804u); i += 2u; // rsa_pss_rsae_sha256
+    be16_write(&out[i], 0x0403u); i += 2u; // ecdsa_secp256r1_sha256
+    be16_write(&out[i], 0x0807u); i += 2u; // ed25519
+
     // key_share (x25519)
     if (i + 42u > out_cap){
         return -1;
@@ -689,6 +702,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     int need_client_empty_cert = 0;
     int app_bytes = 0;
     int result = -1;
+    int fail_code = -1;
     unsigned int rec_len = 0;
     unsigned char rec_type = 0;
     const unsigned char* rec_payload = 0;
@@ -718,12 +732,18 @@ int tcp_https_get(const unsigned char dst_ip[4],
     tls13_record_ctx_t app_rx;
     sha256_ctx_t transcript;
 
+#define HTTPS_FAIL(_code) do { fail_code = (_code); goto https_fail_secure; } while (0)
+
     if (!dst_ip || !host || !*host || !out || out_cap < 2u){
         g_tcp_stats.http_fail++;
+        g_tcp_https_last_error = -100;
+        g_tcp_https_fail_count++;
         return -1;
     }
     if (!net_ready() || !net_link_up()){
         g_tcp_stats.http_fail++;
+        g_tcp_https_last_error = -101;
+        g_tcp_https_fail_count++;
         return -1;
     }
 
@@ -755,6 +775,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
+        g_tcp_https_last_error = -102;
+        g_tcp_https_fail_count++;
         return -1;
     }
     g_tcp_stats.syn_sent++;
@@ -763,6 +785,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
+        g_tcp_https_last_error = -103;
+        g_tcp_https_fail_count++;
         return -1;
     }
 
@@ -770,6 +794,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
+        g_tcp_https_last_error = -104;
+        g_tcp_https_fail_count++;
         return -1;
     }
 
@@ -777,20 +803,20 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-105);
     }
 
     if (tls13_build_plain_record(22u, ch_msg, ch_len, hs_record, sizeof(hs_record), &hs_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-106);
     }
     if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), hs_record, hs_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-107);
     }
 
     sha256_init(&transcript);
@@ -803,7 +829,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-108);
         }
         if (rec_type == 20u){
             continue; // compatibility CCS
@@ -812,7 +838,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-109);
         }
         if (rec_type != 22u){
             continue;
@@ -821,7 +847,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-110);
         }
         for (unsigned int i = 0; i < rec_len; i++){
             g_tls_hs_buf[hs_used + i] = rec_payload[i];
@@ -852,7 +878,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-111);
         }
     }
 
@@ -860,27 +886,27 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-112);
     }
     if (x25519_shared_secret(client_priv, server_pub, shared) != 0 || x25519_is_all_zero(shared)){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-113);
     }
     sha256_snapshot(&transcript, thash);
     if (tls13_derive_handshake_secrets_sha256(shared, thash, &hs_sec) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-114);
     }
     if (tls13_record_init(&hs_tx, hs_sec.client_key, TLS13_KEY_BYTES, hs_sec.client_iv) != 0 ||
         tls13_record_init(&hs_rx, hs_sec.server_key, TLS13_KEY_BYTES, hs_sec.server_iv) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-115);
     }
 
     while (!saw_server_finished){
@@ -888,7 +914,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-116);
         }
 
         if (rec_type == 20u){
@@ -898,7 +924,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-117);
         }
         if (rec_type != 23u){
             continue;
@@ -907,7 +933,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-118);
         }
 
         g_tls_record_wire[0] = rec_type;
@@ -926,7 +952,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-119);
         }
         if (inner_type != 22u || plain_len == 0u){
             continue;
@@ -935,7 +961,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-120);
         }
         for (unsigned int i = 0; i < plain_len; i++){
             g_tls_hs_buf[hs_used + i] = g_tls_record_plain[i];
@@ -961,14 +987,14 @@ int tcp_https_get(const unsigned char dst_ip[4],
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
-                    goto https_fail_secure;
+                    HTTPS_FAIL(-121);
                 }
                 if (tls13_hkdf_expand_label_sha256(hs_sec.server_hs_traffic_secret, "finished",
                                                    0, 0, server_finished_key, sizeof(server_finished_key)) != 0){
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
-                    goto https_fail_secure;
+                    HTTPS_FAIL(-122);
                 }
                 sha256_snapshot(&transcript, thash);
                 crypto_hmac_sha256(server_finished_key, sizeof(server_finished_key), thash, sizeof(thash), server_finished_expected);
@@ -976,7 +1002,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
-                    goto https_fail_secure;
+                    HTTPS_FAIL(-123);
                 }
                 sha256_update(&transcript, hs_ptr, msg_tot);
                 saw_server_finished = 1;
@@ -1003,20 +1029,20 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-124);
         }
         if (tls13_record_encrypt(&hs_tx, 22u, client_cert_msg, client_cert_len,
                                  g_tls_record_tx, sizeof(g_tls_record_tx), &hs_record_len) != 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-125);
         }
         if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
-            goto https_fail_secure;
+            HTTPS_FAIL(-126);
         }
         sha256_update(&transcript, client_cert_msg, client_cert_len);
     }
@@ -1028,7 +1054,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-127);
     }
     if (tls13_record_encrypt(&hs_tx, 22u,
                              client_hs_finished_msg, client_hs_finished_len,
@@ -1036,13 +1062,13 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-128);
     }
     if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-129);
     }
     sha256_update(&transcript, client_hs_finished_msg, client_hs_finished_len);
 
@@ -1059,7 +1085,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-130);
     }
     if (tls13_hkdf_expand_label_sha256(c_app_secret, "key", 0, 0, c_app_key, sizeof(c_app_key)) != 0 ||
         tls13_hkdf_expand_label_sha256(s_app_secret, "key", 0, 0, s_app_key, sizeof(s_app_key)) != 0 ||
@@ -1068,14 +1094,14 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-131);
     }
     if (tls13_record_init(&app_tx, c_app_key, sizeof(c_app_key), c_app_iv) != 0 ||
         tls13_record_init(&app_rx, s_app_key, sizeof(s_app_key), s_app_iv) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-132);
     }
 
     if (append_str(req, (int)sizeof(req), &rq, "GET ") != 0 ||
@@ -1086,21 +1112,21 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-133);
     }
     if (tls13_record_encrypt(&app_tx, 23u, (const unsigned char*)req, (unsigned int)rq,
                              g_tls_record_tx, sizeof(g_tls_record_tx), &app_req_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-134);
     }
     if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH),
                          g_tls_record_tx, app_req_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        goto https_fail_secure;
+        HTTPS_FAIL(-135);
     }
 
     out[0] = 0;
@@ -1175,9 +1201,11 @@ int tcp_https_get(const unsigned char dst_ip[4],
     if (app_bytes > 0){
         g_tcp_stats.http_ok++;
         result = app_bytes;
+        g_tcp_https_last_error = 0;
     } else{
         g_tcp_stats.http_fail++;
         result = -1;
+        fail_code = -136;
     }
 
 https_fail_secure:
@@ -1203,6 +1231,13 @@ https_fail_secure:
     crypto_memzero(g_tls_record_wire, sizeof(g_tls_record_wire));
     crypto_memzero(g_tls_record_plain, sizeof(g_tls_record_plain));
     crypto_memzero(g_tls_record_tx, sizeof(g_tls_record_tx));
+
+    if (result < 0){
+        g_tcp_https_last_error = fail_code;
+        g_tcp_https_fail_count++;
+    }
+
+#undef HTTPS_FAIL
 
     return result;
 }
@@ -1398,5 +1433,14 @@ void tcp_dump_stats(void){
     uart_putdec(g_tcp_stats.http_ok);
     uart_puts(" http_fail=");
     uart_putdec(g_tcp_stats.http_fail);
+    uart_puts(" https_last_err=");
+    if (g_tcp_https_last_error < 0){
+        uart_puts("-");
+        uart_putdec((unsigned long)(-g_tcp_https_last_error));
+    } else{
+        uart_putdec((unsigned long)g_tcp_https_last_error);
+    }
+    uart_puts(" https_fail_ct=");
+    uart_putdec(g_tcp_https_fail_count);
     uart_puts("\n");
 }

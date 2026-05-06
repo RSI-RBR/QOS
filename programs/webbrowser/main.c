@@ -28,6 +28,15 @@ static void print_uint(unsigned int v){
     }
 }
 
+static void print_int(int v){
+    if (v < 0){
+        qos_putc('-');
+        print_uint((unsigned int)(-(long long)v));
+        return;
+    }
+    print_uint((unsigned int)v);
+}
+
 static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[0]);
     qos_putc('.');
@@ -282,8 +291,11 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         return -1;
     }
 
-    if (qos_send(fd, req, (unsigned int)rq, 0) < 0){
-        qos_puts("send() failed.\n");
+    int send_rc = qos_send(fd, req, (unsigned int)rq, 0);
+    if (send_rc < 0){
+        qos_puts("send() failed rc=");
+        print_int(send_rc);
+        qos_puts("\n");
         (void)qos_close(fd);
         return -1;
     }

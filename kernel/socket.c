@@ -384,7 +384,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
             s->stream_rx_len = 0;
             s->stream_rx_off = 0;
             spin_unlock_irqrestore(&g_socket_lock, irq);
-            return -1;
+            return n;
         }
         if ((unsigned int)n > stream_out_cap){
             n = (int)stream_out_cap;
