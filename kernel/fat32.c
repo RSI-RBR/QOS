@@ -173,6 +173,10 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     unsigned int cluster = root_cluster;
     int retried_root_once = 0;
 
+    if (!name || !buffer || max_size <= 0){
+        return -1;
+    }
+
     if (cluster_size > MAX_CLUSTER_SIZE){
         uart_puts("Cluster too big.\n");
         return -1;
@@ -218,6 +222,15 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
                 }
 
                 unsigned int size = read32(&entry[28]);
+                if (size > (unsigned int)max_size){
+                    uart_puts("FAT file exceeds loader buffer\n");
+                    uart_puts("size=");
+                    uart_puthex(size);
+                    uart_puts(" max=");
+                    uart_puthex((unsigned int)max_size);
+                    uart_puts("\n");
+                    return -1;
+                }
 
                 unsigned int copied = 0;
 
@@ -233,6 +246,9 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
                     unsigned int to_copy = cluster_size;
                     if (to_copy > (size - copied)){
                         to_copy = size - copied;
+                    }
+                    if (to_copy > ((unsigned int)max_size - copied)){
+                        to_copy = (unsigned int)max_size - copied;
                     }
                     for (int j = 0; j < to_copy; j++){
                         buffer[copied++] = cluster_buf[j];

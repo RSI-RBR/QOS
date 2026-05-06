@@ -4,7 +4,7 @@
 #include "trust.h"
 
 
-#define PROGRAM_MAX (8 * 1024)
+#define PROGRAM_MAX (512 * 1024)
 #define PROGRAM_POOL_START 0x08000000UL
 #define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_SIZE  (2UL * 1024UL * 1024UL)
