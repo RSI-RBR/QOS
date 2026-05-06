@@ -2,7 +2,6 @@
 #include "auth.h"
 #include "udp.h"
 #include "x25519.h"
-#include "sha256.h"
 #include "crypto.h"
 #include "aes_gcm.h"
 #include "uart.h"
@@ -17,9 +16,14 @@
 #define RLOGIN_TYPE_AUTH_RESULT 4u
 #define RLOGIN_TYPE_COMMAND 5u
 #define RLOGIN_TYPE_COMMAND_RESULT 6u
+#define RLOGIN_TYPE_TTY_INPUT 7u
+#define RLOGIN_TYPE_TTY_OUTPUT 8u
 
 #define RLOGIN_PAYLOAD_MAX 512u
 #define RLOGIN_TAG_LEN 16u
+#define RLOGIN_TTY_IN_CAP 512u
+#define RLOGIN_TTY_OUT_CAP 2048u
+#define RLOGIN_TTY_OUT_CHUNK 220u
 
 typedef struct {
     unsigned long rx_total;
@@ -30,15 +34,19 @@ typedef struct {
     unsigned long auth_fail;
     unsigned long cmd_ok;
     unsigned long cmd_fail;
+    unsigned long tty_in_bytes;
+    unsigned long tty_out_bytes;
 } remote_login_stats_t;
 
 typedef struct {
     int active;
     int authed;
+    int tty_attached;
     unsigned char src_ip[4];
     unsigned short src_port;
     unsigned int session_id;
-    unsigned int last_seq;
+    unsigned int client_last_seq;
+    unsigned int server_next_seq;
     char username[AUTH_USERNAME_MAX + 1u];
     unsigned char client_pub[32];
     unsigned char server_priv[32];
@@ -52,6 +60,14 @@ typedef struct {
 static remote_login_stats_t g_stats;
 static remote_login_session_t g_sess;
 static int g_enabled = 0;
+static unsigned char g_tty_in_q[RLOGIN_TTY_IN_CAP];
+static unsigned int g_tty_in_head = 0;
+static unsigned int g_tty_in_tail = 0;
+static unsigned int g_tty_in_count = 0;
+static unsigned char g_tty_out_q[RLOGIN_TTY_OUT_CAP];
+static unsigned int g_tty_out_head = 0;
+static unsigned int g_tty_out_tail = 0;
+static unsigned int g_tty_out_count = 0;
 
 static unsigned short read_be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -80,16 +96,27 @@ static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
 
+static void tty_queues_clear(void){
+    g_tty_in_head = 0;
+    g_tty_in_tail = 0;
+    g_tty_in_count = 0;
+    g_tty_out_head = 0;
+    g_tty_out_tail = 0;
+    g_tty_out_count = 0;
+}
+
 static void session_clear(void){
     g_sess.active = 0;
     g_sess.authed = 0;
+    g_sess.tty_attached = 0;
     g_sess.src_ip[0] = 0;
     g_sess.src_ip[1] = 0;
     g_sess.src_ip[2] = 0;
     g_sess.src_ip[3] = 0;
     g_sess.src_port = 0;
     g_sess.session_id = 0;
-    g_sess.last_seq = 0;
+    g_sess.client_last_seq = 0;
+    g_sess.server_next_seq = 0;
     for (unsigned int i = 0; i < sizeof(g_sess.username); i++){
         g_sess.username[i] = 0;
     }
@@ -100,6 +127,7 @@ static void session_clear(void){
     crypto_memzero(g_sess.server_nonce, sizeof(g_sess.server_nonce));
     crypto_memzero(g_sess.key, sizeof(g_sess.key));
     crypto_memzero(g_sess.nonce_base, sizeof(g_sess.nonce_base));
+    tty_queues_clear();
 }
 
 static void session_copy_peer(const udp_meta_t* meta){
@@ -148,6 +176,14 @@ static int parse_header(const unsigned char* in,
         return -1;
     }
     return 0;
+}
+
+static unsigned int next_server_seq(void){
+    g_sess.server_next_seq++;
+    if (g_sess.server_next_seq == 0u){
+        g_sess.server_next_seq = 1u;
+    }
+    return g_sess.server_next_seq;
 }
 
 static void make_iv(unsigned int seq, unsigned char out_iv[12]){
@@ -294,6 +330,30 @@ static int decrypt_payload(const unsigned char* frame,
     return 0;
 }
 
+static int tty_in_enqueue(const unsigned char* data, unsigned int len){
+    unsigned int pushed = 0;
+    for (unsigned int i = 0; i < len; i++){
+        if (g_tty_in_count >= RLOGIN_TTY_IN_CAP){
+            break;
+        }
+        g_tty_in_q[g_tty_in_tail] = data[i];
+        g_tty_in_tail = (g_tty_in_tail + 1u) % RLOGIN_TTY_IN_CAP;
+        g_tty_in_count++;
+        pushed++;
+    }
+    return (int)pushed;
+}
+
+static int tty_out_enqueue_char(unsigned char c){
+    if (g_tty_out_count >= RLOGIN_TTY_OUT_CAP){
+        return -1;
+    }
+    g_tty_out_q[g_tty_out_tail] = c;
+    g_tty_out_tail = (g_tty_out_tail + 1u) % RLOGIN_TTY_OUT_CAP;
+    g_tty_out_count++;
+    return 0;
+}
+
 static void handle_client_hello(const unsigned char* payload, unsigned short payload_len, const udp_meta_t* meta){
     unsigned char resp[32 + AUTH_NONCE_BYTES + AUTH_SALT_BYTES + 1u];
     unsigned char rnd[8];
@@ -372,8 +432,10 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
 
     g_sess.active = 1;
     g_sess.authed = 0;
-    g_sess.last_seq = 0;
-    (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, 0u, resp, sizeof(resp));
+    g_sess.tty_attached = 0;
+    g_sess.client_last_seq = 0;
+    g_sess.server_next_seq = 0;
+    (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, sizeof(resp));
 }
 
 static void handle_auth_proof(const unsigned char* frame,
@@ -388,7 +450,7 @@ static void handle_auth_proof(const unsigned char* frame,
     if (!g_sess.active || g_sess.authed){
         return;
     }
-    if (session_id != g_sess.session_id || seq <= g_sess.last_seq){
+    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
         g_stats.bad_header++;
         return;
     }
@@ -405,16 +467,17 @@ static void handle_auth_proof(const unsigned char* frame,
         return;
     }
 
+    g_sess.client_last_seq = seq;
     if (auth_verify_response(g_sess.username, g_sess.client_nonce, g_sess.server_nonce, plain) == 0){
         g_sess.authed = 1;
-        g_sess.last_seq = seq;
+        g_sess.tty_attached = 1;
         result = 1u;
         g_stats.auth_ok++;
     } else{
         g_stats.auth_fail++;
     }
 
-    (void)send_encrypted(RLOGIN_TYPE_AUTH_RESULT, g_sess.session_id, seq + 1u, &result, 1u);
+    (void)send_encrypted(RLOGIN_TYPE_AUTH_RESULT, g_sess.session_id, next_server_seq(), &result, 1u);
     if (!g_sess.authed){
         session_clear();
     }
@@ -433,7 +496,7 @@ static void handle_command(const unsigned char* frame,
     if (!g_sess.active || !g_sess.authed){
         return;
     }
-    if (session_id != g_sess.session_id || seq <= g_sess.last_seq){
+    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
         g_stats.bad_header++;
         return;
     }
@@ -446,7 +509,7 @@ static void handle_command(const unsigned char* frame,
         return;
     }
 
-    g_sess.last_seq = seq;
+    g_sess.client_last_seq = seq;
     if (plain_len == 4u &&
         plain[0] == 'p' && plain[1] == 'i' && plain[2] == 'n' && plain[3] == 'g'){
         resp[0] = 'p'; resp[1] = 'o'; resp[2] = 'n'; resp[3] = 'g'; resp[4] = '\n';
@@ -455,7 +518,27 @@ static void handle_command(const unsigned char* frame,
     } else if (plain_len == 6u &&
                plain[0] == 's' && plain[1] == 't' && plain[2] == 'a' &&
                plain[3] == 't' && plain[4] == 'u' && plain[5] == 's'){
-        static const char k_msg[] = "remote auth ok; shell tunnel next\n";
+        static const char k_msg[] = "remote auth ok; shell tunnel active\n";
+        for (unsigned int i = 0; i < (unsigned int)(sizeof(k_msg) - 1u); i++){
+            resp[i] = (unsigned char)k_msg[i];
+        }
+        n = (unsigned int)(sizeof(k_msg) - 1u);
+        g_stats.cmd_ok++;
+    } else if (plain_len == 6u &&
+               plain[0] == 'a' && plain[1] == 't' && plain[2] == 't' &&
+               plain[3] == 'a' && plain[4] == 'c' && plain[5] == 'h'){
+        g_sess.tty_attached = 1;
+        static const char k_msg[] = "tty attached\n";
+        for (unsigned int i = 0; i < (unsigned int)(sizeof(k_msg) - 1u); i++){
+            resp[i] = (unsigned char)k_msg[i];
+        }
+        n = (unsigned int)(sizeof(k_msg) - 1u);
+        g_stats.cmd_ok++;
+    } else if (plain_len == 6u &&
+               plain[0] == 'd' && plain[1] == 'e' && plain[2] == 't' &&
+               plain[3] == 'a' && plain[4] == 'c' && plain[5] == 'h'){
+        g_sess.tty_attached = 0;
+        static const char k_msg[] = "tty detached\n";
         for (unsigned int i = 0; i < (unsigned int)(sizeof(k_msg) - 1u); i++){
             resp[i] = (unsigned char)k_msg[i];
         }
@@ -469,7 +552,57 @@ static void handle_command(const unsigned char* frame,
         n = (unsigned int)(sizeof(k_msg) - 1u);
         g_stats.cmd_fail++;
     }
-    (void)send_encrypted(RLOGIN_TYPE_COMMAND_RESULT, g_sess.session_id, seq + 1u, resp, (unsigned short)n);
+    (void)send_encrypted(RLOGIN_TYPE_COMMAND_RESULT, g_sess.session_id, next_server_seq(), resp, (unsigned short)n);
+}
+
+static void handle_tty_input(const unsigned char* frame,
+                             unsigned int frame_len,
+                             unsigned int session_id,
+                             unsigned int seq,
+                             const udp_meta_t* meta){
+    unsigned char plain[RLOGIN_PAYLOAD_MAX];
+    unsigned short plain_len = 0;
+    if (!g_sess.active || !g_sess.authed || !g_sess.tty_attached){
+        return;
+    }
+    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
+        g_stats.bad_header++;
+        return;
+    }
+    if (!ip4_eq(meta->src_ip, g_sess.src_ip) || meta->src_port != g_sess.src_port){
+        g_stats.bad_header++;
+        return;
+    }
+    if (decrypt_payload(frame, frame_len, seq, plain, &plain_len) != 0){
+        g_stats.bad_crypto++;
+        return;
+    }
+    g_sess.client_last_seq = seq;
+    int pushed = tty_in_enqueue(plain, plain_len);
+    if (pushed > 0){
+        g_stats.tty_in_bytes += (unsigned long)pushed;
+    }
+}
+
+static void flush_tty_output_once(void){
+    unsigned char payload[RLOGIN_TTY_OUT_CHUNK];
+    unsigned int n = 0;
+    if (!g_sess.active || !g_sess.authed || !g_sess.tty_attached || g_tty_out_count == 0){
+        return;
+    }
+    while (n < RLOGIN_TTY_OUT_CHUNK && g_tty_out_count > 0){
+        payload[n++] = g_tty_out_q[g_tty_out_head];
+        g_tty_out_head = (g_tty_out_head + 1u) % RLOGIN_TTY_OUT_CAP;
+        g_tty_out_count--;
+    }
+    if (n == 0u){
+        return;
+    }
+    if (send_encrypted(RLOGIN_TYPE_TTY_OUTPUT, g_sess.session_id, next_server_seq(), payload, (unsigned short)n) != 0){
+        /* On send failure, drop chunk to keep kernel non-blocking. */
+    } else{
+        g_stats.tty_out_bytes += (unsigned long)n;
+    }
 }
 
 int remote_login_init(void){
@@ -482,6 +615,8 @@ int remote_login_init(void){
     g_stats.auth_fail = 0;
     g_stats.cmd_ok = 0;
     g_stats.cmd_fail = 0;
+    g_stats.tty_in_bytes = 0;
+    g_stats.tty_out_bytes = 0;
 
     g_enabled = auth_is_ready() ? 1 : 0;
     if (g_enabled){
@@ -496,6 +631,23 @@ int remote_login_enabled(void){
     return g_enabled;
 }
 
+int remote_login_try_read_tty_char(char* out){
+    if (!out || !g_enabled || !g_sess.active || !g_sess.authed || !g_sess.tty_attached || g_tty_in_count == 0){
+        return 0;
+    }
+    *out = (char)g_tty_in_q[g_tty_in_head];
+    g_tty_in_head = (g_tty_in_head + 1u) % RLOGIN_TTY_IN_CAP;
+    g_tty_in_count--;
+    return 1;
+}
+
+void remote_login_on_tty_output_char(char c){
+    if (!g_enabled || !g_sess.active || !g_sess.authed || !g_sess.tty_attached){
+        return;
+    }
+    (void)tty_out_enqueue_char((unsigned char)c);
+}
+
 void remote_login_poll(void){
     static unsigned char frame[20 + RLOGIN_PAYLOAD_MAX];
     udp_meta_t meta;
@@ -506,10 +658,10 @@ void remote_login_poll(void){
         return;
     }
 
-    while (loops++ < 4){
+    while (loops++ < 6){
         n = udp_recv_filtered(RLOGIN_PORT, 0, 0, 0, frame, sizeof(frame), &meta);
         if (n <= 0){
-            return;
+            break;
         }
         g_stats.rx_total++;
 
@@ -529,10 +681,14 @@ void remote_login_poll(void){
             handle_auth_proof(frame, (unsigned int)n, session_id, seq, &meta);
         } else if (type == RLOGIN_TYPE_COMMAND){
             handle_command(frame, (unsigned int)n, session_id, seq, &meta);
+        } else if (type == RLOGIN_TYPE_TTY_INPUT){
+            handle_tty_input(frame, (unsigned int)n, session_id, seq, &meta);
         } else{
             g_stats.bad_header++;
         }
     }
+
+    flush_tty_output_once();
 }
 
 void remote_login_dump_stats(void){
@@ -552,5 +708,9 @@ void remote_login_dump_stats(void){
     uart_putdec(g_stats.cmd_ok);
     uart_puts(" cmd_fail=");
     uart_putdec(g_stats.cmd_fail);
+    uart_puts(" tty_in=");
+    uart_putdec(g_stats.tty_in_bytes);
+    uart_puts(" tty_out=");
+    uart_putdec(g_stats.tty_out_bytes);
     uart_puts("\n");
 }

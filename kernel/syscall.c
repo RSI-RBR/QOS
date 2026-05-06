@@ -36,12 +36,15 @@ static unsigned long clamp_puts_len(const char* s){
     return n;
 }
 
-static void syscall_write_puts(const char* s){
+static void syscall_write_puts(int pid, const char* s){
     if (!s){
         return;
     }
     unsigned long n = clamp_puts_len(s);
     for (unsigned long i = 0; i < n; i++){
+        if (console_get_owner() == pid){
+            remote_login_on_tty_output_char(s[i]);
+        }
         if (s[i] == '\n'){
             uart_send('\r');
         }
@@ -104,12 +107,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
     switch (nr){
         case SYS_PUTC:
+            if (console_get_owner() == process_current_pid()){
+                remote_login_on_tty_output_char((char)frame[TF_X0]);
+            }
             uart_send((char)frame[TF_X0]);
             frame[TF_X0] = 0;
             return frame_sp;
 
         case SYS_PUTS:
-            syscall_write_puts((const char*)frame[TF_X0]);
+            syscall_write_puts(process_current_pid(), (const char*)frame[TF_X0]);
             frame[TF_X0] = 0;
             return frame_sp;
 

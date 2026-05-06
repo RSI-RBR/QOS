@@ -2,6 +2,7 @@
 #include "uart.h"
 #include "process.h"
 #include "spinlock.h"
+#include "remote_login.h"
 
 static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
@@ -68,7 +69,10 @@ int console_try_getc_for_pid(int pid, char* out){
     if (owner < 0 || owner != pid){
         return 0;
     }
-    return uart_try_getc(out);
+    if (uart_try_getc(out)){
+        return 1;
+    }
+    return remote_login_try_read_tty_char(out);
 }
 
 int console_set_owner(int requester_pid, int target_pid){
