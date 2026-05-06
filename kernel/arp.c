@@ -17,6 +17,11 @@ static unsigned char g_local_ip[4];
 static int g_iface_ready = 0;
 static unsigned long g_tx_req = 0;
 static unsigned long g_tx_rep = 0;
+static unsigned long g_rx_req_for_us = 0;
+static unsigned long g_rx_req_other = 0;
+static unsigned long g_tx_rep_fail = 0;
+static unsigned char g_last_req_spa[4];
+static unsigned char g_last_req_tpa[4];
 static unsigned char g_periodic_target_ip[4];
 static unsigned long g_periodic_interval = 0;
 static unsigned long g_periodic_next_tick = 0;
@@ -84,6 +89,13 @@ void arp_init(void){
     g_iface_ready = 0;
     g_tx_req = 0;
     g_tx_rep = 0;
+    g_rx_req_for_us = 0;
+    g_rx_req_other = 0;
+    g_tx_rep_fail = 0;
+    for (unsigned int i = 0; i < 4; i++){
+        g_last_req_spa[i] = 0;
+        g_last_req_tpa[i] = 0;
+    }
     g_periodic_interval = 0;
     g_periodic_next_tick = 0;
     g_periodic_attempts = 0;
@@ -113,8 +125,17 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
     g_arp_stats.rx_valid++;
     if (oper == ARP_OP_REQUEST){
         g_arp_stats.rx_request++;
+        for (unsigned int i = 0; i < 4; i++){
+            g_last_req_spa[i] = arp->spa[i];
+            g_last_req_tpa[i] = arp->tpa[i];
+        }
         if (g_iface_ready && ip4_eq(arp->tpa, g_local_ip)){
-            (void)arp_send_reply(arp->sha, arp->spa);
+            g_rx_req_for_us++;
+            if (arp_send_reply(arp->sha, arp->spa) != 0){
+                g_tx_rep_fail++;
+            }
+        } else{
+            g_rx_req_other++;
         }
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
@@ -254,10 +275,33 @@ void arp_dump_stats(void){
     uart_putdec(g_tx_req);
     uart_puts(" tx_rep=");
     uart_putdec(g_tx_rep);
+    uart_puts(" rep_fail=");
+    uart_putdec(g_tx_rep_fail);
+    uart_puts(" req_us=");
+    uart_putdec(g_rx_req_for_us);
+    uart_puts(" req_other=");
+    uart_putdec(g_rx_req_other);
     uart_puts(" gw=");
     uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts(" arp_retry=");
     uart_putdec(g_periodic_attempts);
+    uart_puts("\n");
+    uart_puts("ARP last_req ");
+    uart_putdec(g_last_req_spa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_req_spa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_req_spa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_req_spa[3]);
+    uart_puts(" -> ");
+    uart_putdec(g_last_req_tpa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_req_tpa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_req_tpa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_req_tpa[3]);
     uart_puts("\n");
 }
 

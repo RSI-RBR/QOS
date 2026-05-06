@@ -17,7 +17,7 @@ typedef struct {
 
 static net_proto_stats_t g_np_stats;
 static const unsigned char g_default_local_mac[6] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
-static const unsigned char g_default_local_ip[4] = {10, 0, 0, 88};
+static unsigned char g_local_ip[4] = {10, 0, 0, 88};
 static const unsigned char g_default_gateway_ip[4] = {10, 0, 0, 1};
 
 static unsigned short be16(const unsigned char* p){
@@ -38,10 +38,18 @@ void net_proto_init(void){
 }
 
 void net_proto_configure_defaults(void){
-    arp_set_local_interface(g_default_local_mac, g_default_local_ip);
-    ipv4_set_local_endpoint(g_default_local_mac, g_default_local_ip, g_default_gateway_ip);
+    arp_set_local_interface(g_default_local_mac, g_local_ip);
+    ipv4_set_local_endpoint(g_default_local_mac, g_local_ip, g_default_gateway_ip);
     arp_set_periodic_target(g_default_gateway_ip, 2000); // 2s retries until first reply.
-    uart_puts("NET defaults: local ip 10.0.0.88, gateway 10.0.0.1\n");
+    uart_puts("NET defaults: local ip ");
+    uart_putdec(g_local_ip[0]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[1]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[2]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[3]);
+    uart_puts(", gateway 10.0.0.1\n");
 }
 
 void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
@@ -71,6 +79,15 @@ void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
 }
 
 void net_proto_dump_stats(void){
+    uart_puts("NET local_ip=");
+    uart_putdec(g_local_ip[0]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[1]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[2]);
+    uart_puts(".");
+    uart_putdec(g_local_ip[3]);
+    uart_puts(" mac=02:51:4F:53:00:01\n");
     uart_puts("L2 rx=");
     uart_putdec(g_np_stats.eth_total);
     uart_puts(" arp=");
@@ -103,8 +120,19 @@ void net_proto_get_local_ip(unsigned char out_ip[4]){
         return;
     }
     for (unsigned int i = 0; i < 4; i++){
-        out_ip[i] = g_default_local_ip[i];
+        out_ip[i] = g_local_ip[i];
     }
+}
+
+void net_proto_set_local_ip(const unsigned char ip[4]){
+    if (!ip){
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        g_local_ip[i] = ip[i];
+    }
+    arp_set_local_interface(g_default_local_mac, g_local_ip);
+    ipv4_set_local_endpoint(g_default_local_mac, g_local_ip, g_default_gateway_ip);
 }
 
 void net_proto_get_gateway_ip(unsigned char out_ip[4]){

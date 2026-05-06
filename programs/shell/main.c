@@ -100,6 +100,37 @@ static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[3]);
 }
 
+static int parse_ip4(const char* s, unsigned char out[4]){
+    if (!s || !out){
+        return -1;
+    }
+    for (unsigned int part = 0; part < 4u; part++){
+        unsigned int v = 0;
+        unsigned int digits = 0;
+        while (*s >= '0' && *s <= '9'){
+            v = (v * 10u) + (unsigned int)(*s - '0');
+            if (v > 255u){
+                return -1;
+            }
+            s++;
+            digits++;
+        }
+        if (digits == 0){
+            return -1;
+        }
+        out[part] = (unsigned char)v;
+        if (part < 3u){
+            if (*s != '.'){
+                return -1;
+            }
+            s++;
+        } else if (*s != 0){
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
@@ -135,6 +166,8 @@ static void cmd_help(void){
     qos_puts(" usbstat\n");
     qos_puts(" netstat\n");
     qos_puts(" rloginstat\n");
+    qos_puts(" ip\n");
+    qos_puts(" setip <a.b.c.d>\n");
     qos_puts(" ping\n");
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
@@ -208,6 +241,32 @@ static void cmd_netstat(void){
 
 static void cmd_rloginstat(void){
     qos_remote_login_dump_stats();
+}
+
+static void cmd_ip(void){
+    unsigned char ip[4];
+    if (qos_net_get_local_ip(ip) != 0){
+        qos_puts("IP unavailable.\n");
+        return;
+    }
+    qos_puts("Local IP ");
+    print_ip4(ip);
+    qos_puts("\n");
+}
+
+static void cmd_setip(const char* s){
+    unsigned char ip[4];
+    if (!s || parse_ip4(s, ip) != 0){
+        qos_puts("Usage: setip <a.b.c.d>\n");
+        return;
+    }
+    if (qos_net_set_local_ip(ip) != 0){
+        qos_puts("setip failed.\n");
+        return;
+    }
+    qos_puts("Local IP set to ");
+    print_ip4(ip);
+    qos_puts("\n");
 }
 
 static void cmd_ps(void){
@@ -446,6 +505,16 @@ static void execute_line(void){
         cmd_netstat();
     } else if (str_eq(g_buf, "rloginstat")){
         cmd_rloginstat();
+    } else if (str_eq(g_buf, "ip")){
+        cmd_ip();
+    } else if (str_starts_with(g_buf, "setip ")){
+        const char* p = g_buf + 6;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_setip(p);
+    } else if (str_eq(g_buf, "setip")){
+        qos_puts("Usage: setip <a.b.c.d>\n");
     } else if (str_eq(g_buf, "ps")){
         cmd_ps();
     } else if (str_eq(g_buf, "validate")){

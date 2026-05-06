@@ -6,6 +6,7 @@
 #include "loader.h"
 #include "memory.h"
 #include "net.h"
+#include "net_proto.h"
 #include "udp.h"
 #include "tcp.h"
 #include "usb_host.h"
@@ -487,6 +488,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_REMOTE_LOGIN_STATS:
             remote_login_dump_stats();
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_NET_GET_LOCAL_IP:
+            net_proto_get_local_ip((unsigned char*)frame[TF_X0]);
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_NET_SET_LOCAL_IP:
+            net_proto_set_local_ip((const unsigned char*)frame[TF_X0]);
             frame[TF_X0] = 0;
             return frame_sp;
 

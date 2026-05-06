@@ -54,7 +54,9 @@ enum {
     SYS_TLS_RECORD_ENCRYPT = 45,
     SYS_TLS_RECORD_DECRYPT = 46,
     SYS_TLS_IS_READY = 47,
-    SYS_REMOTE_LOGIN_STATS = 48
+    SYS_REMOTE_LOGIN_STATS = 48,
+    SYS_NET_GET_LOCAL_IP = 49,
+    SYS_NET_SET_LOCAL_IP = 50
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -392,6 +394,14 @@ static inline int qos_tls_is_ready(int tls_id){
 
 static inline void qos_remote_login_dump_stats(void){
     (void)qos_syscall0(SYS_REMOTE_LOGIN_STATS);
+}
+
+static inline int qos_net_get_local_ip(unsigned char out_ip[4]){
+    return (int)qos_syscall1(SYS_NET_GET_LOCAL_IP, (unsigned long)out_ip);
+}
+
+static inline int qos_net_set_local_ip(const unsigned char ip[4]){
+    return (int)qos_syscall1(SYS_NET_SET_LOCAL_IP, (unsigned long)ip);
 }
 
 __attribute__((noreturn))

@@ -134,17 +134,28 @@ def recv_one(sock: socket.socket, timeout_s: float = 3.0):
     return pkt
 
 
+def recv_one_with_addr(sock: socket.socket, timeout_s: float = 3.0):
+    sock.settimeout(timeout_s)
+    return sock.recvfrom(2048)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Quantum OS remote shell tunnel client (UDP)")
     ap.add_argument("--host", required=True, help="Pi IP address")
     ap.add_argument("--port", type=int, default=2222, help="remote login UDP port")
     ap.add_argument("--username", required=True)
     ap.add_argument("--password", required=True)
+    ap.add_argument("--broadcast", action="store_true", help="send first hello to 255.255.255.255")
     args = ap.parse_args()
 
     server = (args.host, args.port)
+    hello_server = ("255.255.255.255", args.port) if args.broadcast else server
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.connect(server)
+    if args.broadcast:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("", 0))
+    else:
+        sock.connect(server)
 
     sk = x25519.X25519PrivateKey.generate()
     pk = sk.public_key().public_bytes(
@@ -158,9 +169,18 @@ def main():
 
     hello_payload = pk + client_nonce + bytes([len(user)]) + user
     hello = build_header(TYPE_CLIENT_HELLO, 0, 0, len(hello_payload)) + hello_payload
-    sock.send(hello)
+    if args.broadcast:
+        sock.sendto(hello, hello_server)
+    else:
+        sock.send(hello)
 
-    pkt = recv_one(sock, 5.0)
+    if args.broadcast:
+        pkt, addr = recv_one_with_addr(sock, 5.0)
+        server = (addr[0], args.port)
+        sock.connect(server)
+        print(f"Discovered Quantum OS at {server[0]}:{server[1]}")
+    else:
+        pkt = recv_one(sock, 5.0)
     msg_type, session_id, _seq, payload = parse_header(pkt)
     if msg_type != TYPE_SERVER_HELLO:
         raise SystemExit("unexpected server reply")
