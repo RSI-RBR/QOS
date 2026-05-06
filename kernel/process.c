@@ -14,6 +14,15 @@ typedef struct {
     unsigned int count;
 } run_queue_t;
 
+typedef struct {
+    int valid;
+    int pid;
+    void* stack;
+    void* program_memory;
+    unsigned long program_size;
+    int program_heap_alloc;
+} process_cleanup_t;
+
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
 static int used[MAX_PROCESSES] = {0};
 
@@ -469,30 +478,79 @@ static int process_create_common_locked(program_entry_t entry,
     return -1;
 }
 
-static void reap_process_resources(int pid){
+static void cleanup_init(process_cleanup_t* c){
+    if (!c){
+        return;
+    }
+    c->valid = 0;
+    c->pid = -1;
+    c->stack = 0;
+    c->program_memory = 0;
+    c->program_size = 0;
+    c->program_heap_alloc = 0;
+}
+
+static void detach_process_resources_locked(int pid, process_cleanup_t* out){
+    if (!out){
+        return;
+    }
+    cleanup_init(out);
     if (pid < 0 || pid >= MAX_PROCESSES){
         return;
     }
+    if (processes[pid].state == PROC_DEAD){
+        return;
+    }
+
     sleepq_remove_locked(pid);
 
-    if (processes[pid].stack){
-        free_stack(processes[pid].stack);
+    out->valid = 1;
+    out->pid = pid;
+    out->stack = processes[pid].stack;
+    out->program_memory = processes[pid].program_memory;
+    out->program_size = processes[pid].program_size;
+    out->program_heap_alloc = processes[pid].program_heap_alloc;
+
+    processes[pid].stack = 0;
+    processes[pid].program_memory = 0;
+    processes[pid].program_size = 0;
+    processes[pid].program_heap_alloc = 0;
+    processes[pid].sp = 0;
+    processes[pid].state = PROC_REAPING;
+}
+
+static void release_process_resources(process_cleanup_t* c){
+    if (!c || !c->valid){
+        return;
     }
-    if (processes[pid].program_memory){
-        if (processes[pid].program_heap_alloc){
-            kfree_secure(processes[pid].program_memory, processes[pid].program_size);
-        } else{
-            volatile unsigned char* p = (volatile unsigned char*)processes[pid].program_memory;
-            for (unsigned long i = 0; i < processes[pid].program_size; i++){
-                p[i] = 0;
-            }
-            loader_free_program_memory(processes[pid].program_memory, processes[pid].program_size);
-        }
+    int pid = c->pid;
+    if (pid < 0 || pid >= MAX_PROCESSES){
+        cleanup_init(c);
+        return;
     }
     console_owner_on_process_exit(pid);
     socket_close_all_for_pid(pid);
     tls_session_close_all_for_pid(pid);
+
+    if (c->stack){
+        free_stack(c->stack);
+    }
+    if (c->program_memory){
+        if (c->program_heap_alloc){
+            kfree_secure(c->program_memory, c->program_size);
+        } else{
+            volatile unsigned char* p = (volatile unsigned char*)c->program_memory;
+            for (unsigned long i = 0; i < c->program_size; i++){
+                p[i] = 0;
+            }
+            loader_free_program_memory(c->program_memory, c->program_size);
+        }
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
     clear_process_descriptor(pid);
+    spin_unlock_irqrestore(&g_process_lock, irq);
+    cleanup_init(c);
 }
 
 static void mark_current_for_reap(unsigned int core){
@@ -503,17 +561,17 @@ static void mark_current_for_reap(unsigned int core){
     if (pid < 0 || pid >= MAX_PROCESSES){
         return;
     }
-    if (processes[pid].state == PROC_DEAD){
+    if (processes[pid].state == PROC_DEAD || processes[pid].state == PROC_REAPING){
         return;
     }
 
     zombie_pid[core] = pid;
-    processes[pid].state = PROC_DEAD;
+    processes[pid].state = PROC_REAPING;
     processes[pid].wake_tick = 0;
     sleepq_remove_locked(pid);
 }
 
-static void reap_pending_zombie(unsigned int core){
+static void reap_pending_zombie_locked(unsigned int core, process_cleanup_t* cleanup){
     if (core >= MAX_CPU_CORES){
         return;
     }
@@ -524,7 +582,7 @@ static void reap_pending_zombie(unsigned int core){
     if (pid == current_pid[core]){
         return;
     }
-    reap_process_resources(pid);
+    detach_process_resources_locked(pid, cleanup);
     zombie_pid[core] = -1;
 }
 
@@ -675,12 +733,15 @@ int process_create_loaded(loaded_program_t prog){
 }
 
 void process_exit(int pid){
+    process_cleanup_t cleanup;
+    cleanup_init(&cleanup);
+
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     if (pid < 0 || pid >= MAX_PROCESSES){
         spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
-    if (processes[pid].state == PROC_DEAD){
+    if (processes[pid].state == PROC_DEAD || processes[pid].state == PROC_REAPING){
         spin_unlock_irqrestore(&g_process_lock, irq);
         return;
     }
@@ -693,9 +754,10 @@ void process_exit(int pid){
     if (pid == current_pid[owner_core]){
         mark_current_for_reap(owner_core);
     } else{
-        reap_process_resources(pid);
+        detach_process_resources_locked(pid, &cleanup);
     }
     spin_unlock_irqrestore(&g_process_lock, irq);
+    release_process_resources(&cleanup);
 }
 
 void process_exit_current(void){
@@ -764,21 +826,30 @@ void schedule(void){
 
 void scheduler_run_once(void){
     unsigned int core = scheduler_core_id();
-    unsigned long irq = spin_lock_irqsave(&g_process_lock);
-    reap_pending_zombie(core);
+    process_cleanup_t cleanup;
+    cleanup_init(&cleanup);
 
-    if (current_pid[core] >= 0){
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    reap_pending_zombie_locked(core, &cleanup);
+
+    if (current_pid[core] >= 0 &&
+        current_pid[core] < MAX_PROCESSES &&
+        processes[current_pid[core]].state != PROC_DEAD &&
+        processes[current_pid[core]].state != PROC_REAPING){
         spin_unlock_irqrestore(&g_process_lock, irq);
+        release_process_resources(&cleanup);
         return;
     }
 
     process_t* next = scheduler_next_for_core(core);
     if (!next){
         spin_unlock_irqrestore(&g_process_lock, irq);
+        release_process_resources(&cleanup);
         return;
     }
     void* next_sp = next->sp;
     spin_unlock_irqrestore(&g_process_lock, irq);
+    release_process_resources(&cleanup);
     restore_context_and_eret(next_sp);
 }
 
@@ -812,10 +883,13 @@ int scheduler_has_runnable(void){
 
 void* scheduler_on_irq(void* irq_frame_sp){
     unsigned int core = scheduler_core_id();
+    process_cleanup_t cleanup;
+    cleanup_init(&cleanup);
+
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int cur = current_pid[core];
 
-    reap_pending_zombie(core);
+    reap_pending_zombie_locked(core, &cleanup);
     wake_due_sleepers_locked(core);
 
     if (cur >= 0 && cur < MAX_PROCESSES){
@@ -829,9 +903,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
         if (next){
             void* out_sp = next->sp;
             spin_unlock_irqrestore(&g_process_lock, irq);
+            release_process_resources(&cleanup);
             return out_sp;
         }
         spin_unlock_irqrestore(&g_process_lock, irq);
+        release_process_resources(&cleanup);
         return irq_frame_sp;
     }
 
@@ -842,9 +918,10 @@ void* scheduler_on_irq(void* irq_frame_sp){
                 // Keep the process sleeping. Returning to the same frame lands
                 // back in process_sleep()'s WFI loop until wake_tick is reached.
                 spin_unlock_irqrestore(&g_process_lock, irq);
+                release_process_resources(&cleanup);
                 return irq_frame_sp;
             }
-            if (processes[cur].state == PROC_DEAD){
+            if (processes[cur].state == PROC_DEAD || processes[cur].state == PROC_REAPING){
                 // Still returning to the dead task's kernel frame, usually the
                 // idle WFI loop in process_exit_current(). Keep ownership so
                 // reap_pending_zombie() skips this stack until a real switch.
@@ -857,11 +934,13 @@ void* scheduler_on_irq(void* irq_frame_sp){
             current_pid[core] = -1;
         }
         spin_unlock_irqrestore(&g_process_lock, irq);
+        release_process_resources(&cleanup);
         return irq_frame_sp;
     }
 
     void* out_sp = next->sp;
     spin_unlock_irqrestore(&g_process_lock, irq);
+    release_process_resources(&cleanup);
     return out_sp;
 }
 
@@ -917,6 +996,7 @@ void process_dump(void){
             case PROC_READY: uart_puts("READY "); break;
             case PROC_RUNNING: uart_puts("RUN "); break;
             case PROC_SLEEPING: uart_puts("SLEEP "); break;
+            case PROC_REAPING: uart_puts("REAP "); break;
             default: uart_puts("UNK "); break;
         }
         uart_send((char)('0' + (processes[i].owner_core & 0xF)));
@@ -963,12 +1043,10 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
     if (core < MAX_CPU_CORES){
         int pid = current_pid[core];
         if (pid >= 0 && pid < MAX_PROCESSES){
-            if (processes[pid].state != PROC_DEAD){
+            if (processes[pid].state != PROC_DEAD && processes[pid].state != PROC_REAPING){
                 mark_current_for_reap(core);
             }
         }
-        current_pid[core] = -1;
-        reap_pending_zombie(core);
     }
 
     spin_unlock_irqrestore(&g_process_lock, irq);

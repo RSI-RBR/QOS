@@ -12,7 +12,8 @@ typedef enum {
     PROC_DEAD = 0,
     PROC_READY,
     PROC_RUNNING,
-    PROC_SLEEPING
+    PROC_SLEEPING,
+    PROC_REAPING
 } process_state_t;
 
 typedef struct{

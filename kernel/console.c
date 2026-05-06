@@ -31,7 +31,7 @@ static int process_is_alive_locked(int pid){
     if (!p){
         return 0;
     }
-    return p->state != PROC_DEAD;
+    return p->state != PROC_DEAD && p->state != PROC_REAPING;
 }
 
 void console_init(void){
