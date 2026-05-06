@@ -60,6 +60,7 @@ typedef struct {
 static remote_login_stats_t g_stats;
 static remote_login_session_t g_sess;
 static int g_enabled = 0;
+static int g_auth_ready = 0;
 static unsigned char g_tty_in_q[RLOGIN_TTY_IN_CAP];
 static unsigned int g_tty_in_head = 0;
 static unsigned int g_tty_in_tail = 0;
@@ -370,6 +371,16 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     session_clear();
     session_copy_peer(meta);
 
+    if (!g_auth_ready){
+        for (unsigned int i = 0; i < sizeof(resp); i++){
+            resp[i] = 0;
+        }
+        resp[32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES] = 1u; /* auth unavailable */
+        g_sess.session_id = 1u;
+        (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, sizeof(resp));
+        return;
+    }
+
     for (unsigned int i = 0; i < 32u; i++){
         g_sess.client_pub[i] = payload[off + i];
     }
@@ -618,13 +629,14 @@ int remote_login_init(void){
     g_stats.tty_in_bytes = 0;
     g_stats.tty_out_bytes = 0;
 
-    g_enabled = auth_is_ready() ? 1 : 0;
-    if (g_enabled){
-        uart_puts("Remote login: enabled on UDP port 2222\n");
-    } else{
-        uart_puts("Remote login: disabled (no AUTH.BIN)\n");
+    g_enabled = 1;
+    g_auth_ready = auth_is_ready() ? 1 : 0;
+    uart_puts("Remote login: enabled on UDP port 2222\n");
+    if (!g_auth_ready){
+        uart_puts("Remote login: AUTH.BIN not ready; auth attempts will be rejected\n");
+        return -1;
     }
-    return g_enabled ? 0 : -1;
+    return 0;
 }
 
 int remote_login_enabled(void){
@@ -692,6 +704,22 @@ void remote_login_poll(void){
 }
 
 void remote_login_dump_stats(void){
+    uart_puts("RLOGIN state en=");
+    uart_putdec((unsigned long)g_enabled);
+    uart_puts(" auth=");
+    uart_putdec((unsigned long)g_auth_ready);
+    uart_puts(" active=");
+    uart_putdec((unsigned long)g_sess.active);
+    uart_puts(" authed=");
+    uart_putdec((unsigned long)g_sess.authed);
+    uart_puts(" tty=");
+    uart_putdec((unsigned long)g_sess.tty_attached);
+    uart_puts(" inq=");
+    uart_putdec((unsigned long)g_tty_in_count);
+    uart_puts(" outq=");
+    uart_putdec((unsigned long)g_tty_out_count);
+    uart_puts("\n");
+
     uart_puts("RLOGIN rx=");
     uart_putdec(g_stats.rx_total);
     uart_puts(" tx=");
