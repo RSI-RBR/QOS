@@ -50,6 +50,14 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
+static void net_housekeeping_task(void){
+    while (1){
+        net_poll();
+        remote_login_poll();
+        process_sleep(1);
+    }
+}
+
 static int create_boot_shell_process(void){
     // SHELL.BIN in FAT 8.3 format.
     loaded_program_t shell_prog = load_program_from_sd_named("SHELL   BIN");
@@ -337,6 +345,17 @@ void kernel_main(void){
         }
     }
 
+    {
+        int net_pid = process_create(net_housekeeping_task);
+        if (net_pid < 0){
+            uart_puts("NET housekeeping task create failed.\n");
+        } else{
+            uart_puts("NET housekeeping PID ");
+            uart_putdec((unsigned long)net_pid);
+            uart_puts("\n");
+        }
+    }
+
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
     // -----------------------------
@@ -348,8 +367,6 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
-        net_poll();
-        remote_login_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
