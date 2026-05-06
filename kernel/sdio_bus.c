@@ -56,6 +56,7 @@
 #define SDIO_CCCR_IOEX      0x02u
 #define SDIO_CCCR_IORX      0x03u
 #define SDIO_CCCR_BUS_CTRL  0x07u
+#define SDIO_OCR_33V_MASK   0x00FF8000u
 
 static int g_ready = 0;
 static unsigned short g_rca = 0;
@@ -252,6 +253,7 @@ unsigned short sdio_bus_get_rca(void){
 int sdio_bus_init(void){
     unsigned int resp = 0;
     unsigned int c1 = 0;
+    unsigned int irpt = 0;
 
     g_ready = 0;
     g_rca = 0;
@@ -307,18 +309,20 @@ int sdio_bus_init(void){
         uart_puts("SDIO: CMD0 failed\n");
         return -1;
     }
-    (void)sdio_cmd(8, 0x1AA, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN, 120);
+    // SDIO cards are initialized with CMD5 (not ACMD41/CMD8 flow).
+    // Some chips may not respond sanely to CMD8 during SDIO bring-up.
 
     // SDIO OCR negotiation via CMD5.
-    for (int i = 0; i < 2000; i++){
+    for (int i = 0; i < 3000; i++){
         if (sdio_cmd(5, 0, CMD_RSPNS_48, 120) != 0){
-            return -1;
+            // Keep retrying: chip may still be coming out of reset.
+            continue;
         }
         resp = EMMC_RESP0;
 
-        // Request 3.2-3.4V and ask card to power up I/O.
-        if (sdio_cmd(5, (resp & 0x00FFFFFFu) | 0x00300000u, CMD_RSPNS_48, 120) != 0){
-            return -1;
+        // Request standard 3.3V OCR window per SDIO init guidance.
+        if (sdio_cmd(5, SDIO_OCR_33V_MASK, CMD_RSPNS_48, 120) != 0){
+            continue;
         }
         resp = EMMC_RESP0;
         if (resp & 0x80000000u){
@@ -329,6 +333,14 @@ int sdio_bus_init(void){
     }
     if ((resp & 0x80000000u) == 0){
         uart_puts("SDIO: CMD5 power-up timeout\n");
+        uart_puts("SDIO: RESP0=");
+        uart_puthex(EMMC_RESP0);
+        uart_puts(" STATUS=");
+        uart_puthex(EMMC_STATUS);
+        uart_puts(" IRPT=");
+        irpt = EMMC_INTERRUPT;
+        uart_puthex(irpt);
+        uart_puts("\n");
         return -1;
     }
 
