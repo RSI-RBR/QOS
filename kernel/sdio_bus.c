@@ -74,7 +74,7 @@ static void sdio_clear_interrupts(void){
 
 static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
     unsigned long start = system_ticks;
-    unsigned int spin = 50000000u;
+    unsigned int spin = 2000000u;
     while (EMMC_STATUS & mask){
         if ((system_ticks - start) > timeout_ms || --spin == 0u){
             return -1;
@@ -85,7 +85,7 @@ static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
 
 static int sdio_wait_irq(unsigned int mask, unsigned long timeout_ms, unsigned int* irpt_out){
     unsigned long start = system_ticks;
-    unsigned int spin = 50000000u;
+    unsigned int spin = 2000000u;
     while (1){
         unsigned int irpt = EMMC_INTERRUPT;
         if (irpt & (mask | INT_ERROR_MASK | INT_ERR)){
@@ -107,7 +107,7 @@ static int sdio_reset_lines(void){
     EMMC_CONTROL1 |= C1_SRST_CMD | C1_SRST_DAT;
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 50000000u;
+        unsigned int spin = 2000000u;
         while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
             if ((system_ticks - start) > 120 || --spin == 0u){
                 return -1;
@@ -261,11 +261,12 @@ int sdio_bus_init(void){
 
     gpio_init_wifi_sdio();
     mailbox_set_emmc_clock(25000000);
+    uart_puts("SDIO: stage host reset\n");
 
     EMMC_CONTROL1 |= C1_SRST_HC;
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 50000000u;
+        unsigned int spin = 2000000u;
         while (EMMC_CONTROL1 & C1_SRST_HC){
             if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: host reset timeout\n");
@@ -274,6 +275,7 @@ int sdio_bus_init(void){
         }
     }
 
+    uart_puts("SDIO: stage power/clock\n");
     EMMC_CONTROL0 = C0_SD_BUS_VOLT_33 | C0_SD_BUS_POWER;
     sdio_short_delay(50000);
 
@@ -286,7 +288,7 @@ int sdio_bus_init(void){
 
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 50000000u;
+        unsigned int spin = 2000000u;
         while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
             if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: clk stable timeout\n");
@@ -296,6 +298,7 @@ int sdio_bus_init(void){
     }
     EMMC_CONTROL1 |= C1_CLK_EN;
 
+    uart_puts("SDIO: stage reset lines\n");
     if (sdio_reset_lines() != 0){
         uart_puts("SDIO: line reset failed\n");
         return -1;
@@ -305,6 +308,7 @@ int sdio_bus_init(void){
     EMMC_IRPT_MASK = 0xFFFFFFFFu;
     EMMC_IRPT_EN = 0xFFFFFFFFu;
 
+    uart_puts("SDIO: stage CMD0\n");
     if (sdio_cmd(0, 0, CMD_RSPNS_NONE, 120) != 0){
         uart_puts("SDIO: CMD0 failed\n");
         return -1;
@@ -313,7 +317,8 @@ int sdio_bus_init(void){
     // Some chips may not respond sanely to CMD8 during SDIO bring-up.
 
     // SDIO OCR negotiation via CMD5.
-    for (int i = 0; i < 3000; i++){
+    uart_puts("SDIO: stage CMD5\n");
+    for (int i = 0; i < 200; i++){
         if (sdio_cmd(5, 0, CMD_RSPNS_48, 120) != 0){
             // Keep retrying: chip may still be coming out of reset.
             continue;
