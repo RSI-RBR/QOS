@@ -140,23 +140,23 @@ void program_main(void){
             }
             unsigned long fps_x10 = (report_every * 10000UL) / window_ms;
 
-            qos_puts("HELLO PERF pid=");
-            print_u32((unsigned long)pid);
-            qos_puts(" fps=");
-            print_u32(fps_x10 / 10UL);
-            qos_putc('.');
-            print_u32(fps_x10 % 10UL);
-            qos_puts(" upd=");
-            print_ms_3(accum_update_us / report_every);
-            qos_puts(" draw=");
-            print_ms_3(accum_draw_us / report_every);
-            qos_puts(" present=");
-            print_ms_3(accum_present_us / report_every);
-            qos_puts(" frame=");
-            print_ms_3(accum_total_us / report_every);
-            qos_puts(" max=");
-            print_ms_3(max_frame_us);
-            qos_puts(" ms\n");
+//            qos_puts("HELLO PERF pid=");
+//            print_u32((unsigned long)pid);
+//            qos_puts(" fps=");
+//            print_u32(fps_x10 / 10UL);
+//            qos_putc('.');
+//            print_u32(fps_x10 % 10UL);
+//            qos_puts(" upd=");
+//            print_ms_3(accum_update_us / report_every);
+//            qos_puts(" draw=");
+//            print_ms_3(accum_draw_us / report_every);
+//            qos_puts(" present=");
+//            print_ms_3(accum_present_us / report_every);
+//            qos_puts(" frame=");
+//            print_ms_3(accum_total_us / report_every);
+//            qos_puts(" max=");
+//            print_ms_3(max_frame_us);
+//            qos_puts(" ms\n");
 
             report_start_ticks = now;
             accum_update_us = 0;
