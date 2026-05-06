@@ -161,6 +161,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TRY_GETC: {
             char c = 0;
+            (void)net_poll();
+            remote_login_poll();
             if (console_try_getc_for_pid(process_current_pid(), &c)){
                 frame[TF_X0] = (unsigned long)(unsigned char)c;
             } else{
@@ -236,6 +238,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         }
 
         case SYS_NET_DUMP_STATS:
+            (void)net_poll();
+            remote_login_poll();
             net_dump_stats();
             frame[TF_X0] = 0;
             return frame_sp;
@@ -487,6 +491,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         }
 
         case SYS_REMOTE_LOGIN_STATS:
+            (void)net_poll();
+            remote_login_poll();
             remote_login_dump_stats();
             frame[TF_X0] = 0;
             return frame_sp;
