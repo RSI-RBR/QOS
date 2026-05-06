@@ -132,6 +132,8 @@ static int parse_ip4(const char* s, unsigned char out[4]){
 }
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
+static const char g_wifi_fw_83[] = "4343WIFIBIN";
+static const char g_wifi_nv_83[] = "4343NVRMTXT";
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
     int rc = qos_dns_resolve_a_socket(host, g_dns_server, out_ip, 3000u);
@@ -172,6 +174,13 @@ static void cmd_help(void){
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
     qos_puts(" tlstest\n");
+    qos_puts(" wifiinit\n");
+    qos_puts(" wifiload [fw83 nv83]\n");
+    qos_puts(" wifiup\n");
+    qos_puts(" wifidown\n");
+    qos_puts(" wifistat\n");
+    qos_puts(" wifiscan\n");
+    qos_puts(" wifijoin <ssid> <password>\n");
 }
 
 static void cmd_run(void){
@@ -481,6 +490,83 @@ out:
     (void)qos_tls_close(s);
 }
 
+static void cmd_wifiinit(void){
+    int rc = qos_wifi_init();
+    if (rc == 0){
+        qos_puts("WiFi SDIO init OK\n");
+    } else{
+        qos_puts("WiFi SDIO init failed\n");
+    }
+}
+
+static void cmd_wifiload(const char* fw83, const char* nv83){
+    const char* fw = (fw83 && *fw83) ? fw83 : g_wifi_fw_83;
+    const char* nv = (nv83 && *nv83) ? nv83 : g_wifi_nv_83;
+    int rc = qos_wifi_load_fw(fw, nv);
+    if (rc == 0){
+        qos_puts("WiFi firmware staged\n");
+    } else{
+        qos_puts("WiFi firmware stage failed\n");
+    }
+}
+
+static void cmd_wifiup(void){
+    int rc = qos_wifi_up();
+    if (rc == 0){
+        qos_puts("WiFi UP OK\n");
+    } else{
+        qos_puts("WiFi UP failed\n");
+    }
+}
+
+static void cmd_wifidown(void){
+    int rc = qos_wifi_down();
+    if (rc == 0){
+        qos_puts("WiFi DOWN OK\n");
+    } else{
+        qos_puts("WiFi DOWN failed\n");
+    }
+}
+
+static void cmd_wifiscan(void){
+    cyw43_scan_result_t results[8];
+    int n = qos_wifi_scan(results, 8u);
+    if (n < 0){
+        qos_puts("WiFi scan failed\n");
+        return;
+    }
+    qos_puts("WiFi scan entries=");
+    print_uint((unsigned int)n);
+    qos_puts("\n");
+    for (int i = 0; i < n; i++){
+        qos_puts(" ");
+        print_uint((unsigned int)i);
+        qos_puts(": ");
+        qos_puts(results[i].ssid);
+        qos_puts(" ch=");
+        print_uint((unsigned int)results[i].channel);
+        qos_puts(" rssi=");
+        print_int(results[i].rssi_dbm);
+        qos_puts(" auth=");
+        print_uint((unsigned int)results[i].auth);
+        qos_puts("\n");
+    }
+}
+
+static void cmd_wifijoin(const char* ssid, const char* password){
+    int rc;
+    if (!ssid || !*ssid || !password || !*password){
+        qos_puts("Usage: wifijoin <ssid> <password>\n");
+        return;
+    }
+    rc = qos_wifi_join(ssid, password);
+    if (rc == 0){
+        qos_puts("WiFi join submitted\n");
+    } else{
+        qos_puts("WiFi join failed\n");
+    }
+}
+
 static void execute_line(void){
     if (g_len <= 0){
         return;
@@ -558,6 +644,62 @@ static void execute_line(void){
         qos_puts("Usage: httpget <host> [path]\n");
     } else if (str_eq(g_buf, "tlstest")){
         cmd_tlstest();
+    } else if (str_eq(g_buf, "wifiinit")){
+        cmd_wifiinit();
+    } else if (str_starts_with(g_buf, "wifiload ")){
+        char* p = g_buf + 9;
+        char* fw = 0;
+        char* nv = 0;
+        while (*p == ' '){
+            p++;
+        }
+        if (*p){
+            fw = p;
+            while (*p && *p != ' '){
+                p++;
+            }
+            if (*p){
+                *p++ = 0;
+                while (*p == ' '){
+                    p++;
+                }
+                if (*p){
+                    nv = p;
+                }
+            }
+        }
+        cmd_wifiload(fw, nv);
+    } else if (str_eq(g_buf, "wifiload")){
+        cmd_wifiload(0, 0);
+    } else if (str_eq(g_buf, "wifiup")){
+        cmd_wifiup();
+    } else if (str_eq(g_buf, "wifidown")){
+        cmd_wifidown();
+    } else if (str_eq(g_buf, "wifistat")){
+        qos_wifi_dump_status();
+    } else if (str_eq(g_buf, "wifiscan")){
+        cmd_wifiscan();
+    } else if (str_starts_with(g_buf, "wifijoin ")){
+        char* p = g_buf + 9;
+        char* ssid = 0;
+        char* password = 0;
+        while (*p == ' '){
+            p++;
+        }
+        ssid = p;
+        while (*p && *p != ' '){
+            p++;
+        }
+        if (*p){
+            *p++ = 0;
+            while (*p == ' '){
+                p++;
+            }
+            password = p;
+        }
+        cmd_wifijoin(ssid, password);
+    } else if (str_eq(g_buf, "wifijoin")){
+        qos_puts("Usage: wifijoin <ssid> <password>\n");
     } else{
         qos_puts("Unknown command.\n");
     }

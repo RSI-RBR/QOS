@@ -3,5 +3,6 @@
 
 void gpio_init_sd(void);
 void gpio_init_emmc(void);
+void gpio_init_wifi_sdio(void);
 
 #endif

@@ -106,3 +106,35 @@ void gpio_init_emmc(void) {
 
     uart_puts("GPIO: EMMC pins configured\n");
 }
+
+void gpio_init_wifi_sdio(void){
+    uart_puts("GPIO: configuring WiFi SDIO pins\n");
+
+    // BCM4343x on Pi 3/Zero 2W uses SD1 on GPIO 34..39 (ALT3).
+    gpio_set_alt(34, 7); // SD1_CLK
+    gpio_set_alt(35, 7); // SD1_CMD
+    gpio_set_alt(36, 7); // SD1_DAT0
+    gpio_set_alt(37, 7); // SD1_DAT1
+    gpio_set_alt(38, 7); // SD1_DAT2
+    gpio_set_alt(39, 7); // SD1_DAT3
+
+    // Pull scheme used by Raspberry Pi Linux DT overlays:
+    // CLK no pull, CMD/DAT pull-up.
+    *GPPUD = 0;
+    delay(150);
+    *GPPUDCLK1 = (1u << (34 - 32));
+    delay(150);
+    *GPPUDCLK1 = 0;
+
+    *GPPUD = 2;
+    delay(150);
+    *GPPUDCLK1 = (1u << (35 - 32)) |
+                 (1u << (36 - 32)) |
+                 (1u << (37 - 32)) |
+                 (1u << (38 - 32)) |
+                 (1u << (39 - 32));
+    delay(150);
+    *GPPUDCLK1 = 0;
+
+    uart_puts("GPIO: WiFi SDIO pins configured\n");
+}

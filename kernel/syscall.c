@@ -15,6 +15,7 @@
 #include "console.h"
 #include "tls_session.h"
 #include "remote_login.h"
+#include "cyw43.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -504,6 +505,44 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_NET_SET_LOCAL_IP:
             net_proto_set_local_ip((const unsigned char*)frame[TF_X0]);
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_WIFI_INIT:
+            frame[TF_X0] = (unsigned long)cyw43_init();
+            return frame_sp;
+
+        case SYS_WIFI_LOAD_FW:
+            kernel_preempt_enter();
+            frame[TF_X0] = (unsigned long)cyw43_upload_firmware_from_fat((const char*)frame[TF_X0],
+                                                                          (const char*)frame[TF_X1]);
+            kernel_preempt_exit();
+            return frame_sp;
+
+        case SYS_WIFI_UP:
+            frame[TF_X0] = (unsigned long)cyw43_ioctl_up();
+            return frame_sp;
+
+        case SYS_WIFI_DOWN:
+            frame[TF_X0] = (unsigned long)cyw43_ioctl_down();
+            return frame_sp;
+
+        case SYS_WIFI_SCAN: {
+            unsigned int count = 0;
+            int rc = cyw43_ioctl_scan((cyw43_scan_result_t*)frame[TF_X0],
+                                      (unsigned int)frame[TF_X1],
+                                      &count);
+            frame[TF_X0] = (rc == 0) ? (unsigned long)count : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_WIFI_JOIN:
+            frame[TF_X0] = (unsigned long)cyw43_ioctl_join((const char*)frame[TF_X0],
+                                                           (const char*)frame[TF_X1]);
+            return frame_sp;
+
+        case SYS_WIFI_DUMP_STATUS:
+            cyw43_dump_status();
             frame[TF_X0] = 0;
             return frame_sp;
 

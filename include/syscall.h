@@ -4,6 +4,7 @@
 #include "udp.h"
 #include "socket.h"
 #include "tls_session.h"
+#include "cyw43.h"
 
 enum {
     SYS_PUTC = 0,
@@ -56,7 +57,14 @@ enum {
     SYS_TLS_IS_READY = 47,
     SYS_REMOTE_LOGIN_STATS = 48,
     SYS_NET_GET_LOCAL_IP = 49,
-    SYS_NET_SET_LOCAL_IP = 50
+    SYS_NET_SET_LOCAL_IP = 50,
+    SYS_WIFI_INIT = 51,
+    SYS_WIFI_LOAD_FW = 52,
+    SYS_WIFI_UP = 53,
+    SYS_WIFI_DOWN = 54,
+    SYS_WIFI_SCAN = 55,
+    SYS_WIFI_JOIN = 56,
+    SYS_WIFI_DUMP_STATUS = 57
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -402,6 +410,34 @@ static inline int qos_net_get_local_ip(unsigned char out_ip[4]){
 
 static inline int qos_net_set_local_ip(const unsigned char ip[4]){
     return (int)qos_syscall1(SYS_NET_SET_LOCAL_IP, (unsigned long)ip);
+}
+
+static inline int qos_wifi_init(void){
+    return (int)qos_syscall0(SYS_WIFI_INIT);
+}
+
+static inline int qos_wifi_load_fw(const char* fw_bin_83, const char* nvram_txt_83){
+    return (int)qos_syscall2(SYS_WIFI_LOAD_FW, (unsigned long)fw_bin_83, (unsigned long)nvram_txt_83);
+}
+
+static inline int qos_wifi_up(void){
+    return (int)qos_syscall0(SYS_WIFI_UP);
+}
+
+static inline int qos_wifi_down(void){
+    return (int)qos_syscall0(SYS_WIFI_DOWN);
+}
+
+static inline int qos_wifi_scan(cyw43_scan_result_t* out, unsigned int cap){
+    return (int)qos_syscall2(SYS_WIFI_SCAN, (unsigned long)out, (unsigned long)cap);
+}
+
+static inline int qos_wifi_join(const char* ssid, const char* password){
+    return (int)qos_syscall2(SYS_WIFI_JOIN, (unsigned long)ssid, (unsigned long)password);
+}
+
+static inline void qos_wifi_dump_status(void){
+    (void)qos_syscall0(SYS_WIFI_DUMP_STATUS);
 }
 
 __attribute__((noreturn))
