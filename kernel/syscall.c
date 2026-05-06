@@ -42,7 +42,7 @@ static void syscall_write_puts(int pid, const char* s){
     }
     unsigned long n = clamp_puts_len(s);
     for (unsigned long i = 0; i < n; i++){
-        if (console_get_owner() == pid){
+        if (pid >= 0 && console_get_owner() == pid){
             remote_login_on_tty_output_char(s[i]);
         }
         if (s[i] == '\n'){
@@ -55,43 +55,43 @@ static void syscall_write_puts(int pid, const char* s){
 static void syscall_dump_usb_info(void){
     usb_root_device_info_t info;
     if (usb_host_get_root_device_info(&info) != 0){
-        syscall_write_puts("USB root: not enumerated\n");
+        syscall_write_puts(-1, "USB root: not enumerated\n");
         return;
     }
 
-    syscall_write_puts("USB root addr=");
+    syscall_write_puts(-1, "USB root addr=");
     uart_puthex(info.address);
-    syscall_write_puts(" vid=");
+    syscall_write_puts(-1, " vid=");
     uart_puthex(info.vid);
-    syscall_write_puts(" pid=");
+    syscall_write_puts(-1, " pid=");
     uart_puthex(info.pid);
-    syscall_write_puts(" class=");
+    syscall_write_puts(-1, " class=");
     uart_puthex(info.dev_class);
-    syscall_write_puts(" cfg=");
+    syscall_write_puts(-1, " cfg=");
     uart_puthex(info.config_value);
-    syscall_write_puts(info.configured ? " (set)\n" : " (not set)\n");
+    syscall_write_puts(-1, info.configured ? " (set)\n" : " (not set)\n");
 
     if (info.child_present){
-        syscall_write_puts("USB child addr=");
+        syscall_write_puts(-1, "USB child addr=");
         uart_puthex(info.child_address);
-        syscall_write_puts(" vid=");
+        syscall_write_puts(-1, " vid=");
         uart_puthex(info.child_vid);
-        syscall_write_puts(" pid=");
+        syscall_write_puts(-1, " pid=");
         uart_puthex(info.child_pid);
-        syscall_write_puts(" class=");
+        syscall_write_puts(-1, " class=");
         uart_puthex(info.child_class);
-        syscall_write_puts(" cfg=");
+        syscall_write_puts(-1, " cfg=");
         uart_puthex(info.child_config_value);
-        syscall_write_puts(info.child_configured ? " (set)\n" : " (not set)\n");
-        syscall_write_puts("USB child bulk in=");
+        syscall_write_puts(-1, info.child_configured ? " (set)\n" : " (not set)\n");
+        syscall_write_puts(-1, "USB child bulk in=");
         uart_puthex(info.child_bulk_in_ep);
-        syscall_write_puts(" mps=");
+        syscall_write_puts(-1, " mps=");
         uart_puthex(info.child_bulk_in_mps);
-        syscall_write_puts(" out=");
+        syscall_write_puts(-1, " out=");
         uart_puthex(info.child_bulk_out_ep);
-        syscall_write_puts(" mps=");
+        syscall_write_puts(-1, " mps=");
         uart_puthex(info.child_bulk_out_mps);
-        syscall_write_puts("\n");
+        syscall_write_puts(-1, "\n");
     }
 }
 
