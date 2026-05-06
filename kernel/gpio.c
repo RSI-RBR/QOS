@@ -8,6 +8,8 @@
 
 #define GPPUD     ((volatile unsigned int*)(GPIO_BASE + 0x94))
 #define GPPUDCLK1 ((volatile unsigned int*)(GPIO_BASE + 0x9C))
+#define GPSET1    ((volatile unsigned int*)(GPIO_BASE + 0x20))
+#define GPCLR1    ((volatile unsigned int*)(GPIO_BASE + 0x2C))
 
 static void delay(int count) {
     while (count--) asm volatile("nop");
@@ -37,6 +39,42 @@ static void gpio_set_alt(unsigned int pin, unsigned int alt) {
     val &= ~(7 << shift);
     val |= (alt << shift);
     *fsel = val;
+}
+
+static void gpio_set_output(unsigned int pin){
+    volatile unsigned int *fsel;
+    unsigned int shift;
+
+    if (pin < 10) {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x00);
+    } else if (pin < 20) {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x04);
+    } else if (pin < 30) {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x08);
+    } else if (pin < 40) {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x0C);
+    } else if (pin < 50) {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x10);
+    } else {
+        fsel = (volatile unsigned int*)(GPIO_BASE + 0x14);
+    }
+
+    shift = (pin % 10) * 3;
+    unsigned int val = *fsel;
+    val &= ~(7u << shift);
+    val |= (1u << shift); // output
+    *fsel = val;
+}
+
+static void gpio_write(unsigned int pin, int high){
+    if (pin < 32){
+        return;
+    }
+    if (high){
+        *GPSET1 = (1u << (pin - 32));
+    } else{
+        *GPCLR1 = (1u << (pin - 32));
+    }
 }
 
 void gpio_init_sd(void) {
@@ -117,6 +155,7 @@ void gpio_init_wifi_sdio(void){
     gpio_set_alt(37, 7); // SD1_DAT1
     gpio_set_alt(38, 7); // SD1_DAT2
     gpio_set_alt(39, 7); // SD1_DAT3
+    gpio_set_alt(43, 4); // GPCLK2 for WiFi low-power clock (Linux DT uses this)
 
     // Pull scheme used by Raspberry Pi Linux DT overlays:
     // CLK no pull, CMD/DAT pull-up.
@@ -137,4 +176,15 @@ void gpio_init_wifi_sdio(void){
     *GPPUDCLK1 = 0;
 
     uart_puts("GPIO: WiFi SDIO pins configured\n");
+}
+
+void gpio_wifi_wl_on_pulse(void){
+    // Linux DT uses wifi-pwrseq reset-gpios = <&gpio 41 GPIO_ACTIVE_LOW>.
+    // Pulse low then drive high to bring CYW4343x out of reset.
+    uart_puts("GPIO: WiFi WL_ON pulse\n");
+    gpio_set_output(41);
+    gpio_write(41, 0);
+    delay(50000);
+    gpio_write(41, 1);
+    delay(200000);
 }

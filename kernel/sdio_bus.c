@@ -260,6 +260,7 @@ int sdio_bus_init(void){
     g_ocr = 0;
 
     gpio_init_wifi_sdio();
+    gpio_wifi_wl_on_pulse();
     mailbox_set_emmc_clock(25000000);
     uart_puts("SDIO: stage host reset\n");
 
