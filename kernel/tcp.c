@@ -607,43 +607,49 @@ static int tls13_derive_master_and_app_secrets(const unsigned char shared_secret
                                                 unsigned char client_app_secret[32],
                                                 unsigned char server_app_secret[32]){
     unsigned char zero[32];
+    unsigned char empty_hash[32];
     unsigned char early[32];
     unsigned char d1[32];
     unsigned char hs_secret[32];
     unsigned char d2[32];
     unsigned char master[32];
+    int rc = -1;
 
     for (unsigned int i = 0; i < 32u; i++){
         zero[i] = 0;
     }
+    sha256_digest(0, 0u, empty_hash);
     crypto_hkdf_sha256_extract(zero, sizeof(zero), zero, sizeof(zero), early);
-    if (tls13_hkdf_expand_label_sha256(early, "derived", 0, 0, d1, sizeof(d1)) != 0){
-        return -1;
+    if (tls13_hkdf_expand_label_sha256(early, "derived", empty_hash, sizeof(empty_hash), d1, sizeof(d1)) != 0){
+        goto done;
     }
     crypto_hkdf_sha256_extract(d1, sizeof(d1), shared_secret, 32u, hs_secret);
-    if (tls13_hkdf_expand_label_sha256(hs_secret, "derived", 0, 0, d2, sizeof(d2)) != 0){
-        return -1;
+    if (tls13_hkdf_expand_label_sha256(hs_secret, "derived", empty_hash, sizeof(empty_hash), d2, sizeof(d2)) != 0){
+        goto done;
     }
     crypto_hkdf_sha256_extract(d2, sizeof(d2), zero, sizeof(zero), master);
 
     if (tls13_hkdf_expand_label_sha256(master, "c ap traffic",
                                        transcript_hash_server_finished, 32u,
                                        client_app_secret, 32u) != 0){
-        return -1;
+        goto done;
     }
     if (tls13_hkdf_expand_label_sha256(master, "s ap traffic",
                                        transcript_hash_server_finished, 32u,
                                        server_app_secret, 32u) != 0){
-        return -1;
+        goto done;
     }
+    rc = 0;
 
+done:
     crypto_memzero(zero, sizeof(zero));
+    crypto_memzero(empty_hash, sizeof(empty_hash));
     crypto_memzero(early, sizeof(early));
     crypto_memzero(d1, sizeof(d1));
     crypto_memzero(hs_secret, sizeof(hs_secret));
     crypto_memzero(d2, sizeof(d2));
     crypto_memzero(master, sizeof(master));
-    return 0;
+    return rc;
 }
 
 static int tls13_build_empty_client_certificate(unsigned char* out, unsigned int out_cap, unsigned int* out_len){

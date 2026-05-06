@@ -61,6 +61,7 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
     }
 
     unsigned char zero[TLS13_HASH_SHA256_BYTES];
+    unsigned char empty_hash[TLS13_HASH_SHA256_BYTES];
     unsigned char early[TLS13_HASH_SHA256_BYTES];
     unsigned char derived[TLS13_HASH_SHA256_BYTES];
     unsigned char hs_secret[TLS13_HASH_SHA256_BYTES];
@@ -68,6 +69,7 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
     for (unsigned int i = 0; i < sizeof(zero); i++){
         zero[i] = 0;
     }
+    sha256_digest(0, 0u, empty_hash);
 
     // TLS 1.3 key schedule (no PSK path):
     // early = Extract(0, 0)
@@ -76,8 +78,9 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
     // c/s hs traffic = Expand-Label(hs_secret, "c/s hs traffic", transcript_hash, Hash.length)
     // key/iv = Expand-Label(traffic_secret, "key"/"iv", "", len)
     crypto_hkdf_sha256_extract(zero, sizeof(zero), zero, sizeof(zero), early);
-    if (tls13_hkdf_expand_label_sha256(early, "derived", 0, 0, derived, sizeof(derived)) != 0){
+    if (tls13_hkdf_expand_label_sha256(early, "derived", empty_hash, sizeof(empty_hash), derived, sizeof(derived)) != 0){
         crypto_memzero(zero, sizeof(zero));
+        crypto_memzero(empty_hash, sizeof(empty_hash));
         crypto_memzero(early, sizeof(early));
         crypto_memzero(derived, sizeof(derived));
         return -1;
@@ -113,6 +116,7 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
     }
 
     crypto_memzero(zero, sizeof(zero));
+    crypto_memzero(empty_hash, sizeof(empty_hash));
     crypto_memzero(early, sizeof(early));
     crypto_memzero(derived, sizeof(derived));
     crypto_memzero(hs_secret, sizeof(hs_secret));
@@ -120,6 +124,7 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
 
 fail:
     crypto_memzero(zero, sizeof(zero));
+    crypto_memzero(empty_hash, sizeof(empty_hash));
     crypto_memzero(early, sizeof(early));
     crypto_memzero(derived, sizeof(derived));
     crypto_memzero(hs_secret, sizeof(hs_secret));
