@@ -74,7 +74,7 @@ static void sdio_clear_interrupts(void){
 
 static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
     unsigned long start = system_ticks;
-    unsigned int spin = 2000000u;
+    unsigned int spin = 200000u;
     while (EMMC_STATUS & mask){
         if ((system_ticks - start) > timeout_ms || --spin == 0u){
             return -1;
@@ -85,7 +85,7 @@ static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
 
 static int sdio_wait_irq(unsigned int mask, unsigned long timeout_ms, unsigned int* irpt_out){
     unsigned long start = system_ticks;
-    unsigned int spin = 2000000u;
+    unsigned int spin = 200000u;
     while (1){
         unsigned int irpt = EMMC_INTERRUPT;
         if (irpt & (mask | INT_ERROR_MASK | INT_ERR)){
@@ -107,7 +107,7 @@ static int sdio_reset_lines(void){
     EMMC_CONTROL1 |= C1_SRST_CMD | C1_SRST_DAT;
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 2000000u;
+        unsigned int spin = 200000u;
         while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
             if ((system_ticks - start) > 120 || --spin == 0u){
                 return -1;
@@ -266,7 +266,7 @@ int sdio_bus_init(void){
     EMMC_CONTROL1 |= C1_SRST_HC;
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 2000000u;
+        unsigned int spin = 200000u;
         while (EMMC_CONTROL1 & C1_SRST_HC){
             if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: host reset timeout\n");
@@ -288,7 +288,7 @@ int sdio_bus_init(void){
 
     {
         unsigned long start = system_ticks;
-        unsigned int spin = 2000000u;
+        unsigned int spin = 200000u;
         while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
             if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: clk stable timeout\n");
@@ -318,7 +318,7 @@ int sdio_bus_init(void){
 
     // SDIO OCR negotiation via CMD5.
     uart_puts("SDIO: stage CMD5\n");
-    for (int i = 0; i < 200; i++){
+    for (int i = 0; i < 16; i++){
         if (sdio_cmd(5, 0, CMD_RSPNS_48, 120) != 0){
             // Keep retrying: chip may still be coming out of reset.
             continue;
@@ -334,7 +334,7 @@ int sdio_bus_init(void){
             g_ocr = resp;
             break;
         }
-        sdio_short_delay(3000);
+        sdio_short_delay(1000);
     }
     if ((resp & 0x80000000u) == 0){
         uart_puts("SDIO: CMD5 power-up timeout\n");
@@ -345,6 +345,10 @@ int sdio_bus_init(void){
         uart_puts(" IRPT=");
         irpt = EMMC_INTERRUPT;
         uart_puthex(irpt);
+        uart_puts(" C1=");
+        uart_puthex(EMMC_CONTROL1);
+        uart_puts(" C0=");
+        uart_puthex(EMMC_CONTROL0);
         uart_puts("\n");
         return -1;
     }
