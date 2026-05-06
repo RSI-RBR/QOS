@@ -73,8 +73,9 @@ static void sdio_clear_interrupts(void){
 
 static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
     unsigned long start = system_ticks;
+    unsigned int spin = 50000000u;
     while (EMMC_STATUS & mask){
-        if ((system_ticks - start) > timeout_ms){
+        if ((system_ticks - start) > timeout_ms || --spin == 0u){
             return -1;
         }
     }
@@ -83,6 +84,7 @@ static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
 
 static int sdio_wait_irq(unsigned int mask, unsigned long timeout_ms, unsigned int* irpt_out){
     unsigned long start = system_ticks;
+    unsigned int spin = 50000000u;
     while (1){
         unsigned int irpt = EMMC_INTERRUPT;
         if (irpt & (mask | INT_ERROR_MASK | INT_ERR)){
@@ -91,7 +93,7 @@ static int sdio_wait_irq(unsigned int mask, unsigned long timeout_ms, unsigned i
             }
             return 0;
         }
-        if ((system_ticks - start) > timeout_ms){
+        if ((system_ticks - start) > timeout_ms || --spin == 0u){
             if (irpt_out){
                 *irpt_out = EMMC_INTERRUPT;
             }
@@ -104,8 +106,9 @@ static int sdio_reset_lines(void){
     EMMC_CONTROL1 |= C1_SRST_CMD | C1_SRST_DAT;
     {
         unsigned long start = system_ticks;
+        unsigned int spin = 50000000u;
         while (EMMC_CONTROL1 & (C1_SRST_CMD | C1_SRST_DAT)){
-            if ((system_ticks - start) > 120){
+            if ((system_ticks - start) > 120 || --spin == 0u){
                 return -1;
             }
         }
@@ -260,8 +263,9 @@ int sdio_bus_init(void){
     EMMC_CONTROL1 |= C1_SRST_HC;
     {
         unsigned long start = system_ticks;
+        unsigned int spin = 50000000u;
         while (EMMC_CONTROL1 & C1_SRST_HC){
-            if ((system_ticks - start) > 200){
+            if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: host reset timeout\n");
                 return -1;
             }
@@ -280,8 +284,9 @@ int sdio_bus_init(void){
 
     {
         unsigned long start = system_ticks;
+        unsigned int spin = 50000000u;
         while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
-            if ((system_ticks - start) > 200){
+            if ((system_ticks - start) > 200 || --spin == 0u){
                 uart_puts("SDIO: clk stable timeout\n");
                 return -1;
             }
@@ -395,11 +400,12 @@ int sdio_bus_enable_func(unsigned int fn){
 
 int sdio_bus_wait_func_ready(unsigned int fn, unsigned int timeout_ms){
     unsigned long start = system_ticks;
+    unsigned int spin = 50000000u;
     unsigned char iorx = 0;
     if (fn == 0 || fn > 7){
         return -1;
     }
-    while ((system_ticks - start) <= timeout_ms){
+    while ((system_ticks - start) <= timeout_ms && spin-- > 0u){
         if (sdio_bus_cmd52_read(0, SDIO_CCCR_IORX, &iorx) == 0){
             if (iorx & (1u << fn)){
                 return 0;
