@@ -134,6 +134,7 @@ static void cmd_help(void){
     qos_puts(" fbinfo\n");
     qos_puts(" usbstat\n");
     qos_puts(" netstat\n");
+    qos_puts(" rloginstat\n");
     qos_puts(" ping\n");
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
@@ -203,6 +204,10 @@ static void cmd_usbstat(void){
 
 static void cmd_netstat(void){
     qos_net_dump_stats();
+}
+
+static void cmd_rloginstat(void){
+    qos_remote_login_dump_stats();
 }
 
 static void cmd_ps(void){
@@ -439,6 +444,8 @@ static void execute_line(void){
         cmd_usbstat();
     } else if (str_eq(g_buf, "netstat")){
         cmd_netstat();
+    } else if (str_eq(g_buf, "rloginstat")){
+        cmd_rloginstat();
     } else if (str_eq(g_buf, "ps")){
         cmd_ps();
     } else if (str_eq(g_buf, "validate")){

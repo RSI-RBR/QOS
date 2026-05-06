@@ -53,7 +53,8 @@ enum {
     SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO = 44,
     SYS_TLS_RECORD_ENCRYPT = 45,
     SYS_TLS_RECORD_DECRYPT = 46,
-    SYS_TLS_IS_READY = 47
+    SYS_TLS_IS_READY = 47,
+    SYS_REMOTE_LOGIN_STATS = 48
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -387,6 +388,10 @@ static inline int qos_tls_record_decrypt(int tls_id, qos_tls_record_io_t* io){
 
 static inline int qos_tls_is_ready(int tls_id){
     return (int)qos_syscall1(SYS_TLS_IS_READY, (unsigned long)tls_id);
+}
+
+static inline void qos_remote_login_dump_stats(void){
+    (void)qos_syscall0(SYS_REMOTE_LOGIN_STATS);
 }
 
 __attribute__((noreturn))

@@ -29,6 +29,8 @@
 #include "tls_key_schedule.h"
 #include "tls_handshake.h"
 #include "tls_session.h"
+#include "auth.h"
+#include "remote_login.h"
 
 
 //extern kernel_api_t kapi;
@@ -262,6 +264,11 @@ void kernel_main(void){
     } else if (kv_file > 0){
         uart_puts("Kernel file verify not provisioned yet.\n");
     }
+
+    if (auth_init() != 0){
+        uart_puts("AUTH init failed; remote login disabled.\n");
+    }
+    (void)remote_login_init();
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
@@ -342,6 +349,7 @@ void kernel_main(void){
     // never reach here normally
     while (1){
         net_poll();
+        remote_login_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{

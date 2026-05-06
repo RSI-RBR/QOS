@@ -36,6 +36,7 @@ kernel/sdhost.c \
 kernel/debug.c \
 kernel/cache.c \
 kernel/crypto.c \
+kernel/auth.c \
 kernel/aes_gcm.c \
 kernel/spinlock.c \
 kernel/interrupt.c \
@@ -59,6 +60,7 @@ kernel/tls_handshake.c \
 kernel/tls_session.c \
 kernel/socket.c \
 kernel/trust.c \
+kernel/remote_login.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c \

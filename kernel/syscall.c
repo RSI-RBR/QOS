@@ -13,6 +13,7 @@
 #include "socket.h"
 #include "console.h"
 #include "tls_session.h"
+#include "remote_login.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -477,6 +478,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (unsigned long)ktls_is_ready(pid, (int)frame[TF_X0]);
             return frame_sp;
         }
+
+        case SYS_REMOTE_LOGIN_STATS:
+            remote_login_dump_stats();
+            frame[TF_X0] = 0;
+            return frame_sp;
 
         default:
             frame[TF_X0] = (unsigned long)-1;
