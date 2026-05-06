@@ -547,8 +547,9 @@ static int tls13_pull_record(unsigned int* consumed,
                              unsigned char* rec_type,
                              const unsigned char** rec_payload,
                              unsigned int* rec_len,
+                             unsigned char rec_hdr[5],
                              unsigned int timeout_ms){
-    if (!consumed || !rec_type || !rec_payload || !rec_len){
+    if (!consumed || !rec_type || !rec_payload || !rec_len || !rec_hdr){
         return -1;
     }
 
@@ -573,6 +574,9 @@ static int tls13_pull_record(unsigned int* consumed,
             }
             if (avail >= 5u + body_len){
                 *rec_type = p[0];
+                for (unsigned int h = 0; h < 5u; h++){
+                    rec_hdr[h] = p[h];
+                }
                 *rec_payload = p + 5u;
                 *rec_len = body_len;
                 *consumed += 5u + body_len;
@@ -705,6 +709,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     int fail_code = -1;
     unsigned int rec_len = 0;
     unsigned char rec_type = 0;
+    unsigned char rec_hdr[5];
     const unsigned char* rec_payload = 0;
     unsigned int ch_len = 0;
     unsigned int sh_len = 0;
@@ -825,7 +830,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     consumed = 0u;
 
     while (!saw_server_hello){
-        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 4500u) != 0){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 4500u) != 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
@@ -910,7 +915,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     }
 
     while (!saw_server_finished){
-        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 5500u) != 0){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 5500u) != 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
@@ -936,10 +941,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
             HTTPS_FAIL(-118);
         }
 
-        g_tls_record_wire[0] = rec_type;
-        g_tls_record_wire[1] = 0x03u;
-        g_tls_record_wire[2] = 0x03u;
-        be16_write(&g_tls_record_wire[3], (unsigned short)rec_len);
+        for (unsigned int h = 0; h < 5u; h++){
+            g_tls_record_wire[h] = rec_hdr[h];
+        }
         for (unsigned int i = 0; i < rec_len; i++){
             g_tls_record_wire[5u + i] = rec_payload[i];
         }
@@ -1136,7 +1140,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned long last_progress_tick = system_ticks;
 
     while (1){
-        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, 2500u) != 0){
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 2500u) != 0){
             break;
         }
         if (rec_type == 21u){
@@ -1148,10 +1152,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
         if (rec_len > TCP_TLS_REC_MAX){
             break;
         }
-        g_tls_record_wire[0] = rec_type;
-        g_tls_record_wire[1] = 0x03u;
-        g_tls_record_wire[2] = 0x03u;
-        be16_write(&g_tls_record_wire[3], (unsigned short)rec_len);
+        for (unsigned int h = 0; h < 5u; h++){
+            g_tls_record_wire[h] = rec_hdr[h];
+        }
         for (unsigned int i = 0; i < rec_len; i++){
             g_tls_record_wire[5u + i] = rec_payload[i];
         }
