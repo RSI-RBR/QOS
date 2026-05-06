@@ -517,6 +517,8 @@ void program_main(void){
             print_prompt();
         } else if (!shell_has_tty){
             g_tty_owned = 0;
+            // Avoid tight spin during ownership handoff races.
+            qos_sleep(1);
             continue;
         }
 

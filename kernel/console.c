@@ -7,6 +7,22 @@ static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
 static spinlock_t g_console_lock;
 
+static int process_is_alive_locked(int pid);
+
+static int console_pick_recovery_owner_locked(void){
+    // Prefer PID 0 (boot user shell in this system) when alive.
+    if (process_is_alive_locked(0)){
+        return 0;
+    }
+    // Fallback: first alive process.
+    for (int pid = 1; pid < MAX_PROCESSES; pid++){
+        if (process_is_alive_locked(pid)){
+            return pid;
+        }
+    }
+    return -1;
+}
+
 static int process_is_alive_locked(int pid){
     if (pid < 0 || pid >= MAX_PROCESSES){
         return 0;
@@ -41,6 +57,12 @@ int console_try_getc_for_pid(int pid, char* out){
     if (owner < 0 && process_is_alive_locked(pid)){
         g_console_owner_pid = pid;
         owner = pid;
+    } else if (owner < 0){
+        int recover = console_pick_recovery_owner_locked();
+        if (recover >= 0){
+            g_console_owner_pid = recover;
+            owner = recover;
+        }
     }
     spin_unlock_irqrestore(&g_console_lock, irq);
     if (owner < 0 || owner != pid){
@@ -127,7 +149,8 @@ void console_owner_on_process_exit(int pid){
     if (restore >= 0 && restore < MAX_PROCESSES && process_is_alive_locked(restore)){
         g_console_owner_pid = restore;
     } else{
-        g_console_owner_pid = -1;
+        int recover = console_pick_recovery_owner_locked();
+        g_console_owner_pid = recover;
     }
     g_console_prev_owner_pid = -1;
     spin_unlock_irqrestore(&g_console_lock, irq);
