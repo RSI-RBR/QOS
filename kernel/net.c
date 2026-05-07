@@ -39,6 +39,8 @@ static spinlock_t g_net_state_lock;
 static spinlock_t g_net_rxq_lock;
 static spinlock_t g_net_io_lock;
 
+static void net_rxq_reset(void);
+
 static int net_switch_backend(const nic_driver_t* nic){
     if (!nic || !nic->init || !nic->poll || !nic->send || !nic->set_rx_handler){
         return -1;
