@@ -74,6 +74,9 @@
 #define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
+#define CYW43_WLC_SET_SCAN_CHANNEL_TIME 185u
+#define CYW43_WLC_SET_SCAN_UNASSOC_TIME 187u
+#define CYW43_WLC_SET_SCAN_PASSIVE_TIME 258u
 #define CYW43_WLC_GET_VAR       262u
 #define CYW43_WLC_SET_VAR       263u
 #define CYW43_WLC_SET_WSEC_PMK  268u
@@ -1631,6 +1634,7 @@ static int cyw43_wl_set_event_msgs(void){
     cyw43_event_mask_set(mask, 11u);  // DISASSOC
     cyw43_event_mask_set(mask, 16u);  // LINK
     cyw43_event_mask_set(mask, 26u);  // SCAN_COMPLETE
+    cyw43_event_mask_set(mask, 69u);  // ESCAN_RESULT
 
     mem_zero_local(bsscfg_mask, sizeof(bsscfg_mask));
     put_le32(bsscfg_mask + 0u, 0u);
@@ -1673,6 +1677,19 @@ static int cyw43_wifi_configure_on(void){
     }
 
     if (cyw43_wl_set_event_msgs() != 0){
+        rc = -1;
+    }
+    // Circle-style scan dwell defaults that improve escan behavior on 4343x.
+    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_CHANNEL_TIME, 0x28u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_UNASSOC_TIME, 0x28u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_PASSIVE_TIME, 0x82u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("roam_off", 1u) != 0){
         rc = -1;
     }
     if (rc != 0){
@@ -1947,7 +1964,7 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
         return -1;
     }
 
-    for (unsigned int wait = 0; wait < 12u && !done; wait++){
+    for (unsigned int wait = 0; wait < 32u && !done; wait++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 900u) != 0){
