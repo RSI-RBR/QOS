@@ -152,12 +152,13 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     unsigned char gateway_ip[4];
     unsigned char local_ip[4];
     unsigned char local_mac[6];
-    unsigned char frame[ETH_HEADER_LEN + 20 + 16];
+    unsigned char frame[ETH_MIN_FRAME_LEN];
     unsigned char* ip;
     unsigned char* icmp;
     unsigned short seq;
     unsigned int ip_total_len = 20u + 16u;
     unsigned int frame_len = ETH_HEADER_LEN + ip_total_len;
+    unsigned int tx_frame_len;
     unsigned long start_tick;
     unsigned long spin_budget;
     unsigned long freq;
@@ -197,7 +198,12 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     net_proto_get_local_ip(local_ip);
     net_proto_get_local_mac(local_mac);
 
-    for (unsigned int i = 0; i < frame_len; i++){
+    tx_frame_len = frame_len;
+    if (tx_frame_len < ETH_MIN_FRAME_LEN){
+        tx_frame_len = ETH_MIN_FRAME_LEN;
+    }
+
+    for (unsigned int i = 0; i < tx_frame_len; i++){
         frame[i] = 0;
     }
 
@@ -247,7 +253,7 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     g_ping_result_ms = -1;
     g_ping_waiting = 1;
 
-    if (net_send_raw(frame, frame_len) != 0){
+    if (net_send_raw(frame, tx_frame_len) != 0){
         g_ping_waiting = 0;
         return -3;
     }
@@ -282,7 +288,7 @@ int icmp_ping_gateway(unsigned int timeout_ms){
         unsigned long now_cnt = read_cntpct_lo();
         unsigned long elapsed_cnt = now_cnt - start_cnt;
         if (!did_retry && elapsed_cnt >= resend_cnt){
-            if (net_send_raw(frame, frame_len) == 0){
+            if (net_send_raw(frame, tx_frame_len) == 0){
                 g_icmp_stats.tx_echo_req++;
                 g_icmp_stats.tx_retx++;
             }

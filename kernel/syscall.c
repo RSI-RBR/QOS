@@ -45,7 +45,7 @@ static void syscall_poll_background_io(void){
     if ((long)(now - next_poll_tick) < 0){
         return;
     }
-    next_poll_tick = now + 10u;
+    next_poll_tick = now + 1000u;
     (void)net_poll();
     remote_login_poll();
 }
