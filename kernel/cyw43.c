@@ -173,6 +173,10 @@ static unsigned int round4_u32(unsigned int n){
     return (n + 3u) & ~3u;
 }
 
+static unsigned int round64_u32(unsigned int n){
+    return (n + 63u) & ~63u;
+}
+
 static void mem_zero_local(unsigned char* p, unsigned int n){
     if (!p){
         return;
@@ -877,7 +881,7 @@ static void cyw43_drop_sdio_state(void){
     g_cyw43.joined = 0;
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
-    g_cyw43.tx_window = 0;
+    g_cyw43.tx_window = 1;
     sdio_bus_reset_state();
     blockdev_reserve_emmc_for_wifi(0);
 }
@@ -915,7 +919,7 @@ int cyw43_init(void){
     g_cyw43.sdpcm_tx_seq = 0;
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
-    g_cyw43.tx_window = 0;
+    g_cyw43.tx_window = 1;
     g_cyw43.last_scan_count = 0;
     g_cyw43.joined_ssid[0] = 0;
 
@@ -1176,15 +1180,46 @@ static int cyw43_prepare_packet_window(void){
     return cyw43_backplane_window(CYW43_ENUM_BASE);
 }
 
+static int cyw43_control_tx_has_credit(void){
+    unsigned char seq = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
+    unsigned char delta = (unsigned char)(g_cyw43.tx_window - seq);
+
+    if (g_cyw43.flow_mask & (1u << CYW43_SDPCM_CH_CONTROL)){
+        return 0;
+    }
+    return (delta != 0u && delta < 128u);
+}
+
+static int cyw43_wait_control_tx_credit(void){
+    for (unsigned int i = 0; i < 200000u; i++){
+        if (cyw43_control_tx_has_credit()){
+            return 0;
+        }
+        cyw43_delay(50u);
+    }
+    uart_puts("CYW43: control tx credit timeout seq=");
+    uart_putdec(g_cyw43.sdpcm_tx_seq & 0xFFu);
+    uart_puts(" win=");
+    uart_putdec(g_cyw43.tx_window);
+    uart_puts(" flow=");
+    uart_puthex(g_cyw43.flow_mask);
+    uart_puts("\n");
+    return -1;
+}
+
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
-    unsigned int xfer_len = round4_u32(len);
+    unsigned int xfer_len = round64_u32(len);
     if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
+        return -1;
+    }
+    if ((data[5] & 0x0Fu) == CYW43_SDPCM_CH_CONTROL &&
+        cyw43_wait_control_tx_credit() != 0){
         return -1;
     }
     if (cyw43_prepare_packet_window() != 0){
         return -1;
     }
-    return sdio_bus_cmd53_write(2, CYW43_PACKET_ADDR, data, xfer_len);
+    return sdio_bus_cmd53_write_fixed(2, CYW43_PACKET_ADDR, data, xfer_len);
 }
 
 static unsigned int cyw43_packet_read_xfer_len(unsigned int len){
@@ -1254,6 +1289,10 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
         uart_puts("\n");
         cyw43_rx_halt_and_drain();
         return -1;
+    }
+    g_cyw43.flow_mask = out[8];
+    if (out[9] != 0u){
+        g_cyw43.tx_window = out[9];
     }
 
     total_xfer = cyw43_packet_read_xfer_len(len);
@@ -1355,7 +1394,9 @@ static int cyw43_wl_cmd(int write, unsigned int op,
         }
 
         g_cyw43.flow_mask = rx[8];
-        g_cyw43.tx_window = rx[9];
+        if (rx[9] != 0u){
+            g_cyw43.tx_window = rx[9];
+        }
         channel = rx[5] & 0x0Fu;
         doffset = rx[7];
         if (channel != CYW43_SDPCM_CH_CONTROL){
