@@ -4,6 +4,7 @@
 #include "blockdev.h"
 #include "memory.h"
 #include "uart.h"
+#include "timer.h"
 
 #define CYW43_FW_MAX_BYTES      (768u * 1024u)
 #define CYW43_NVRAM_MAX_BYTES   (16u * 1024u)
@@ -994,19 +995,50 @@ int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
     return (int)frame_len;
 }
 
-static int cyw43_wait_rx_frame(void){
+static int cyw43_wait_rx_frame(unsigned int timeout_ms){
     unsigned char count0 = 0;
     unsigned char count1 = 0;
+    unsigned char intpend = 0;
+    unsigned int ints = 0;
+    unsigned int mbox = 0;
+    unsigned long start = system_ticks;
 
-    for (unsigned int i = 0; i < 2000u; i++){
+    while ((system_ticks - start) <= timeout_ms){
         if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0) == 0 &&
             sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1) == 0){
             if (count0 || count1){
                 return 0;
             }
         }
+
+        if (g_cyw43.sd_regs != 0u){
+            (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
+            if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
+                if (ints & CYW43_SD_INT_MAILBOX){
+                    (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
+                }
+                if (ints & CYW43_SD_INT_FRAME){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                    return 0;
+                }
+                if (ints){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                }
+            }
+        }
         cyw43_delay(20000u);
     }
+
+    uart_puts("CYW43: rx wait timeout rfcnt=");
+    uart_puthex(((unsigned int)count1 << 8) | count0);
+    uart_puts(" pend=");
+    uart_puthex(intpend);
+    uart_puts(" ints=");
+    uart_puthex(ints);
+    uart_puts(" mbox=");
+    uart_puthex(mbox);
+    uart_puts("\n");
     return -1;
 }
 
@@ -1045,7 +1077,7 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     }
     *out_len = 0;
 
-    if (cyw43_wait_rx_frame() != 0){
+    if (cyw43_wait_rx_frame(1500u) != 0){
         return -1;
     }
 
@@ -1148,7 +1180,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
     g_cyw43.sdpcm_tx_seq++;
 
-    for (unsigned int tries = 0; tries < 12u; tries++){
+    for (unsigned int tries = 0; tries < 3u; tries++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         unsigned int doffset = 0;
