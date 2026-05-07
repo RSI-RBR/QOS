@@ -69,8 +69,9 @@ static void delay(int count) {
 
 static int wait_cmd_done_ms(unsigned long timeout_ms) {
     unsigned long start = system_ticks;
+    unsigned int spin = 5000000u;
     while (SDCMD & SDCMD_NEW_FLAG) {
-        if ((system_ticks - start) > timeout_ms) {
+        if ((system_ticks - start) > timeout_ms || --spin == 0u) {
             return -1;
         }
         barrier();

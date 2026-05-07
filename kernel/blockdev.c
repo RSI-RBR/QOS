@@ -44,7 +44,15 @@ int blockdev_init(void){
 
 int blockdev_reinit(void){
     if (g_emmc_reserved_for_wifi){
-        uart_puts("Blockdev: SDHOST reinit...\n");
+        // Prefer reclaiming EMMC for storage when possible.
+        // On Pi 3 this temporarily takes the shared host path away from WiFi.
+        uart_puts("Blockdev: EMMC takeover from WiFi...\n");
+        if (blockdev_reinit_emmc() == 0){
+            uart_puts("Blockdev: EMMC takeover OK (WiFi path paused)\n");
+            return 0;
+        }
+
+        uart_puts("Blockdev: EMMC takeover failed, trying SDHOST...\n");
         gpio_init_sd();
         sdhost_reset();
         if (sdhost_init_card() == 0){
