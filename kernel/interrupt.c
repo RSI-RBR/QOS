@@ -121,10 +121,10 @@ void* irq_handler(void* irq_frame_sp){
         timer_clear_interrupt();
         if (core == 0){
             timer_handler();
-            arp_periodic_tick(system_ticks);
             // Keep timer IRQ short and non-blocking; NIC polling can stall
             // and starve scheduling when done in interrupt context.
-            // Networking paths invoke net_poll() from syscall/foreground flow.
+            // Networking paths invoke net_poll() from syscall/foreground flow,
+            // including periodic ARP maintenance.
         } else{
             scheduler_tick();
         }

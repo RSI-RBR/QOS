@@ -5,6 +5,7 @@
 #include "usb_host.h"
 #include "net_proto.h"
 #include "icmp.h"
+#include "arp.h"
 #include "spinlock.h"
 #include "crypto.h"
 
@@ -293,6 +294,10 @@ int net_poll(void){
     nic = g_nic;
     cb = g_rx_cb;
     spin_unlock_irqrestore(&g_net_state_lock, irq);
+
+    // Run lightweight periodic ARP maintenance from foreground polling
+    // instead of timer IRQ context to avoid lock inversion/deadlock.
+    arp_periodic_tick(system_ticks);
 
     spin_lock(&g_net_io_lock);
     if (nic->poll){
