@@ -953,7 +953,9 @@ int cyw43_release_emmc_for_storage(void){
     /*
      * Pi 3/Zero-class boards share the Arasan EMMC/SDHCI controller between
      * SD-card storage and CYW43 SDIO. Make the WiFi NIC immediately appear
-     * down so concurrent polling/sends stop touching EMMC registers.
+     * down so concurrent polling/sends stop touching EMMC registers. Keep the
+     * staged firmware image in chip RAM, but force a clean firmware restart on
+     * the next wifiup instead of reattaching to a half-detached data path.
      */
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
@@ -965,7 +967,12 @@ int cyw43_release_emmc_for_storage(void){
 
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
+    g_cyw43.fw_running = 0;
     g_cyw43.wifi_configured = 0;
+    g_cyw43.sdpcm_tx_seq = 0;
+    g_cyw43.reqid = 0;
+    g_cyw43.flow_mask = 0;
+    g_cyw43.tx_window = 1;
     sdio_bus_suspend_state();
     blockdev_reserve_emmc_for_wifi(0);
     return 0;
