@@ -44,9 +44,8 @@ static const trust_key_t g_keys[] = {
 static unsigned char g_pq_sidecar_buf[TRUST_PQ_SIDECAR_MAX];
 static int g_warned_digest_only = 0;
 static int g_warned_missing_program_pq = 0;
-static int g_logged_program_pq_ok = 0;
 static const int g_require_ed25519 = 1;
-static const int g_require_program_pq_for_admin_artifacts = 0;
+static const int g_require_program_pq = 1;
 
 static void put_u32_le(unsigned char* out, unsigned int v){
     out[0] = (unsigned char)(v & 0xFFu);
@@ -168,9 +167,14 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
     if (!key_has_pq_pubkey(key) ||
         !alg_mask_has(key->pq_sig_alg_mask, QOS_SIG_ALG_MLDSA65)){
         if (required){
-            uart_puts("Trust: PQ signature required but signer has no PQ key.\n");
+            uart_puts("Trust: PQ signature required but signer has no PQ key: ");
+            uart_puts(key->name);
+            uart_puts("\n");
             return -1;
         }
+        uart_puts("Trust: signer has no PQ key; PQ skipped for ");
+        uart_puts(key->name);
+        uart_puts("\n");
         return 0;
     }
 
@@ -178,7 +182,9 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
     int n = fat32_read_file(pq_name, g_pq_sidecar_buf, (int)sizeof(g_pq_sidecar_buf));
     if (n <= 0){
         if (required){
-            uart_puts("Trust: required PQ sidecar missing.\n");
+            uart_puts("Trust: required PQ sidecar missing for ");
+            uart_puts(key->name);
+            uart_puts(".\n");
             return -1;
         }
         if (!g_warned_missing_program_pq){
@@ -230,12 +236,11 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
         uart_puts("Trust: PQ signature verify failed.\n");
         return -1;
     }
-    if (!g_logged_program_pq_ok){
-        uart_puts("Trust: PQ signature OK (");
-        uart_puts(pq_sig_alg_name(sig_alg));
-        uart_puts(").\n");
-        g_logged_program_pq_ok = 1;
-    }
+    uart_puts("Trust: PQ signature OK for ");
+    uart_puts(key->name);
+    uart_puts(" (");
+    uart_puts(pq_sig_alg_name(sig_alg));
+    uart_puts(").\n");
     return 0;
 }
 
@@ -339,12 +344,10 @@ int trust_verify_program_image(const char* fat_name_83,
             return -1;
         }
 
-        int require_pq = 0;
-        if (g_require_program_pq_for_admin_artifacts &&
-            (artifact == TRUST_ART_SHELL || artifact == TRUST_ART_WEB)){
-            require_pq = 1;
-        }
-        if (verify_program_pq_sidecar(fat_name_83, sec, code_size, key, require_pq) != 0){
+        uart_puts("Trust: Ed25519 signature OK for ");
+        uart_puts(key->name);
+        uart_puts(".\n");
+        if (verify_program_pq_sidecar(fat_name_83, sec, code_size, key, g_require_program_pq) != 0){
             return -1;
         }
         return 0;
