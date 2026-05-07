@@ -1221,24 +1221,16 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
 }
 
 static unsigned int cyw43_packet_read_xfer_len(unsigned int len){
-    unsigned int rest = 0;
-
-    if (len <= 4u){
-        return 4u;
-    }
-
-    rest = len - 4u;
-    if (rest <= 8u){
-        rest = (rest + 7u) & ~7u;
-    } else if (rest <= 16u){
-        rest = (rest + 15u) & ~15u;
-    } else{
-        rest = (rest + 63u) & ~63u;
-    }
-    return 4u + rest;
+    /*
+     * Circle's SDPCM path consumes packet bytes rounded only to 4 bytes.
+     * Rounding larger than that can eat bytes from the next frame and
+     * desynchronize command/response matching.
+     */
+    return round4_u32(len);
 }
 
-static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
+static int cyw43_packet_read(unsigned char* out, unsigned int out_cap,
+                             unsigned int* out_len, unsigned int timeout_ms){
     unsigned int len = 0;
     unsigned int lenck = 0;
     unsigned int first_read = CYW43_SDPCM_FIRSTREAD;
@@ -1253,7 +1245,7 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
         first_read = 4u;
     }
 
-    if (cyw43_wait_rx_frame(1500u) != 0){
+    if (cyw43_wait_rx_frame(timeout_ms) != 0){
         return -1;
     }
 
@@ -1324,6 +1316,11 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
     unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
     unsigned short reqid = 0;
+    unsigned int seen_ctrl = 0;
+    unsigned int seen_event = 0;
+    unsigned int seen_data = 0;
+    unsigned int seen_other = 0;
+    unsigned int seen_ctrl_other_reqid = 0;
 
     if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
         return -1;
@@ -1376,7 +1373,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
     g_cyw43.sdpcm_tx_seq++;
 
-    for (unsigned int tries = 0; tries < 3u; tries++){
+    for (unsigned int tries = 0; tries < 48u; tries++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         unsigned int doffset = 0;
@@ -1384,7 +1381,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
         unsigned int cdc_len = 0;
         unsigned int copy_len = 0;
 
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len) != 0){
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 250u) != 0){
             continue;
         }
         if (rx_len == 0u){
@@ -1397,6 +1394,15 @@ static int cyw43_wl_cmd(int write, unsigned int op,
         }
         channel = rx[5] & 0x0Fu;
         doffset = rx[7];
+        if (channel == CYW43_SDPCM_CH_CONTROL){
+            seen_ctrl++;
+        } else if (channel == CYW43_SDPCM_CH_EVENT){
+            seen_event++;
+        } else if (channel == CYW43_SDPCM_CH_DATA){
+            seen_data++;
+        } else{
+            seen_other++;
+        }
         if (channel != CYW43_SDPCM_CH_CONTROL){
             continue;
         }
@@ -1405,6 +1411,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
             continue;
         }
         if ((unsigned short)get_le16(rx + doffset + 10u) != reqid){
+            seen_ctrl_other_reqid++;
             continue;
         }
 
@@ -1440,6 +1447,16 @@ static int cyw43_wl_cmd(int write, unsigned int op,
 
     uart_puts("CYW43: wl cmd timeout op=");
     uart_putdec(op);
+    uart_puts(" c=");
+    uart_putdec(seen_ctrl);
+    uart_puts(" e=");
+    uart_putdec(seen_event);
+    uart_puts(" d=");
+    uart_putdec(seen_data);
+    uart_puts(" o=");
+    uart_putdec(seen_other);
+    uart_puts(" req_miss=");
+    uart_putdec(seen_ctrl_other_reqid);
     uart_puts("\n");
     return -1;
 }
@@ -1933,7 +1950,7 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
     for (unsigned int wait = 0; wait < 12u && !done; wait++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len) != 0){
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 900u) != 0){
             continue;
         }
         if (rx_len >= CYW43_SDPCM_HDR_LEN){
