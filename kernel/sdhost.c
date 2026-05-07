@@ -362,8 +362,11 @@ static int sdhost_read_block_once(unsigned int lba, unsigned char *buffer) {
                     return -1;
                 }
             }
-            // IRQ-driven wait hint: let CPU sleep until next interrupt source.
-            asm volatile("wfi");
+            // Do not sleep in WFI here: depending on core affinity and IRQ
+            // routing, SDHOST interrupts may not wake the current core while
+            // a load syscall is in progress. Bounded polling is safer.
+            barrier();
+            asm volatile("nop");
             continue;
         }
 

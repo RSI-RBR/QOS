@@ -44,13 +44,16 @@ int blockdev_init(void){
 
 int blockdev_reinit(void){
     if (g_emmc_reserved_for_wifi){
+        uart_puts("Blockdev: SDHOST reinit...\n");
         gpio_init_sd();
         sdhost_reset();
         if (sdhost_init_card() == 0){
             g_backend = BACKEND_SDHOST;
+            uart_puts("Blockdev: SDHOST reinit OK\n");
             return 0;
         }
         g_backend = BACKEND_NONE;
+        uart_puts("Blockdev: SDHOST reinit failed\n");
         return -1;
     }
 
