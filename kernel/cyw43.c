@@ -1566,6 +1566,23 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_refresh_cur_etheraddr(void){
+    unsigned char mac[8];
+    unsigned int actual = 0;
+
+    mem_zero_local(mac, sizeof(mac));
+    if (cyw43_wl_get_var("cur_etheraddr", mac, sizeof(mac), &actual) != 0 ||
+        actual < 6u ||
+        !(mac[0] || mac[1] || mac[2] || mac[3] || mac[4] || mac[5])){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < 6u; i++){
+        g_cyw43.mac[i] = mac[i];
+    }
+    return 0;
+}
+
 static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     unsigned char buf[36];
     unsigned int len = 0;
@@ -2062,6 +2079,9 @@ int cyw43_ioctl_up(void){
         }
         g_cyw43.wifi_configured = 1;
     }
+    if (cyw43_refresh_cur_etheraddr() != 0){
+        uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
+    }
     if (!g_cyw43.iface_up &&
         cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
         /*
@@ -2223,6 +2243,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         uart_puts("CYW43: association pending\n");
     }
 
+    (void)cyw43_refresh_cur_etheraddr();
     g_cyw43.joined = 1;
     net_proto_set_local_mac(g_cyw43.mac);
     if (net_try_select_wifi_backend() != 0){

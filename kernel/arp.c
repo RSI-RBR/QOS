@@ -19,9 +19,16 @@ static unsigned long g_tx_req = 0;
 static unsigned long g_tx_rep = 0;
 static unsigned long g_rx_req_for_us = 0;
 static unsigned long g_rx_req_other = 0;
+static unsigned long g_rx_rep_for_us = 0;
+static unsigned long g_rx_rep_other = 0;
+static unsigned long g_rx_from_gateway = 0;
 static unsigned long g_tx_rep_fail = 0;
 static unsigned char g_last_req_spa[4];
 static unsigned char g_last_req_tpa[4];
+static unsigned char g_last_rep_spa[4];
+static unsigned char g_last_rep_tpa[4];
+static unsigned char g_last_tx_spa[4];
+static unsigned char g_last_tx_tpa[4];
 static unsigned char g_periodic_target_ip[4];
 static unsigned long g_periodic_interval = 0;
 static unsigned long g_periodic_next_tick = 0;
@@ -37,6 +44,27 @@ static unsigned short be16(const unsigned char* p){
 
 static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+static int arp_learn_gateway_from_sender(const unsigned char spa[4],
+                                         const unsigned char sha[ETH_ADDR_LEN]){
+    if (!spa || !sha){
+        return 0;
+    }
+    if (!ip4_eq(spa, g_gateway_ip) && !ip4_eq(spa, g_periodic_target_ip)){
+        return 0;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        g_gateway_ip[i] = spa[i];
+    }
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        g_gateway_mac[i] = sha[i];
+    }
+    g_gateway_resolved = 1;
+    g_periodic_attempts = 0;
+    g_periodic_enabled = 0;
+    g_rx_from_gateway++;
+    return 1;
 }
 
 static int arp_send_reply(const unsigned char target_mac[ETH_ADDR_LEN],
@@ -91,10 +119,17 @@ void arp_init(void){
     g_tx_rep = 0;
     g_rx_req_for_us = 0;
     g_rx_req_other = 0;
+    g_rx_rep_for_us = 0;
+    g_rx_rep_other = 0;
+    g_rx_from_gateway = 0;
     g_tx_rep_fail = 0;
     for (unsigned int i = 0; i < 4; i++){
         g_last_req_spa[i] = 0;
         g_last_req_tpa[i] = 0;
+        g_last_rep_spa[i] = 0;
+        g_last_rep_tpa[i] = 0;
+        g_last_tx_spa[i] = 0;
+        g_last_tx_tpa[i] = 0;
     }
     g_periodic_interval = 0;
     g_periodic_next_tick = 0;
@@ -129,6 +164,7 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
             g_last_req_spa[i] = arp->spa[i];
             g_last_req_tpa[i] = arp->tpa[i];
         }
+        (void)arp_learn_gateway_from_sender(arp->spa, arp->sha);
         if (g_iface_ready && ip4_eq(arp->tpa, g_local_ip)){
             g_rx_req_for_us++;
             if (arp_send_reply(arp->sha, arp->spa) != 0){
@@ -139,22 +175,25 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
         }
     } else if (oper == ARP_OP_REPLY){
         g_arp_stats.rx_reply++;
+        for (unsigned int i = 0; i < 4; i++){
+            g_last_rep_spa[i] = arp->spa[i];
+            g_last_rep_tpa[i] = arp->tpa[i];
+        }
+        int learned_gateway = arp_learn_gateway_from_sender(arp->spa, arp->sha);
         // Learn gateway MAC from replies addressed to our local IP.
         // Accept either the configured gateway IP hint or the current periodic target.
         int reply_for_us = g_iface_ready && ip4_eq(arp->tpa, g_local_ip);
         int sender_is_gateway_hint = ip4_eq(arp->spa, g_gateway_ip);
         int sender_is_periodic_target = ip4_eq(arp->spa, g_periodic_target_ip);
+        if (reply_for_us){
+            g_rx_rep_for_us++;
+        } else{
+            g_rx_rep_other++;
+        }
         if (reply_for_us && (sender_is_gateway_hint || sender_is_periodic_target)){
-            for (unsigned int i = 0; i < 4; i++){
-                g_gateway_ip[i] = arp->spa[i];
+            if (learned_gateway){
+                uart_puts("ARP gateway learned; periodic requests stopped\n");
             }
-            for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
-                g_gateway_mac[i] = arp->sha[i];
-            }
-            g_gateway_resolved = 1;
-            g_periodic_attempts = 0;
-            g_periodic_enabled = 0;
-            uart_puts("ARP gateway learned; periodic requests stopped\n");
         }
     } else{
         g_arp_stats.rx_unsupported++;
@@ -206,6 +245,8 @@ int arp_send_request(const unsigned char target_ip[4]){
     for (unsigned int i = 0; i < 4; i++){
         arp->spa[i] = g_local_ip[i];
         arp->tpa[i] = target_ip[i];
+        g_last_tx_spa[i] = g_local_ip[i];
+        g_last_tx_tpa[i] = target_ip[i];
     }
 
     if (net_send_raw(frame, sizeof(frame)) != 0){
@@ -281,6 +322,12 @@ void arp_dump_stats(void){
     uart_putdec(g_rx_req_for_us);
     uart_puts(" req_other=");
     uart_putdec(g_rx_req_other);
+    uart_puts(" rep_us=");
+    uart_putdec(g_rx_rep_for_us);
+    uart_puts(" rep_other=");
+    uart_putdec(g_rx_rep_other);
+    uart_puts(" gw_seen=");
+    uart_putdec(g_rx_from_gateway);
     uart_puts(" gw=");
     uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts(" arp_retry=");
@@ -302,6 +349,40 @@ void arp_dump_stats(void){
     uart_putdec(g_last_req_tpa[2]);
     uart_puts(".");
     uart_putdec(g_last_req_tpa[3]);
+    uart_puts("\n");
+    uart_puts("ARP last_rep ");
+    uart_putdec(g_last_rep_spa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_spa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_spa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_spa[3]);
+    uart_puts(" -> ");
+    uart_putdec(g_last_rep_tpa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_tpa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_tpa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_rep_tpa[3]);
+    uart_puts("\n");
+    uart_puts("ARP last_tx ");
+    uart_putdec(g_last_tx_spa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_spa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_spa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_spa[3]);
+    uart_puts(" -> ");
+    uart_putdec(g_last_tx_tpa[0]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_tpa[1]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_tpa[2]);
+    uart_puts(".");
+    uart_putdec(g_last_tx_tpa[3]);
     uart_puts("\n");
 }
 
