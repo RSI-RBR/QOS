@@ -1703,18 +1703,58 @@ static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
                                        cyw43_scan_result_t* out,
                                        unsigned int cap,
                                        unsigned int* count){
+    const unsigned char* bss = 0;
+    unsigned int bss_len = 0;
     unsigned int ssid_len = 0;
+    unsigned int capability = 0;
+    unsigned int chanspec = 0;
+    int rssi_a = 0;
+    int rssi_b = 0;
 
-    if (!ev_scan || !out || !count || *count >= cap || ev_scan_len < 90u){
+    if (!ev_scan || !out || !count || *count >= cap || ev_scan_len < 84u){
         return -1;
     }
 
-    ssid_len = (unsigned int)ev_scan[30u];
+    /*
+     * WLC_E_ESCAN_RESULT payload is wl_escan_result_t:
+     *   buflen/version/sync_id/bss_count + wl_bss_info
+     * Circle's parser reads SSID/chanspec/RSSI from wl_bss_info offsets.
+     */
+    if (ev_scan_len >= 12u && get_le16(ev_scan + 10u) >= 1u){
+        bss = ev_scan + 12u;
+        bss_len = ev_scan_len - 12u;
+    } else{
+        // Fallback for firmwares that may already point at wl_bss_info.
+        bss = ev_scan;
+        bss_len = ev_scan_len;
+    }
+
+    if (bss_len < 82u){
+        return -1;
+    }
+
+    // wl_bss_info.length starts at offset 4 and includes the full BSS record.
+    {
+        unsigned int adv_len = get_le32(bss + 4u);
+        if (adv_len >= 82u && adv_len < bss_len){
+            bss_len = adv_len;
+        }
+    }
+
+    ssid_len = (unsigned int)bss[18u];
     if (ssid_len > CYW43_WL_MAX_SSID_LEN){
         ssid_len = CYW43_WL_MAX_SSID_LEN;
     }
+    if (19u + ssid_len > bss_len){
+        if (bss_len > 19u){
+            ssid_len = bss_len - 19u;
+        } else{
+            ssid_len = 0u;
+        }
+    }
     for (unsigned int i = 0; i < ssid_len; i++){
-        out[*count].ssid[i] = (char)ev_scan[31u + i];
+        char c = (char)bss[19u + i];
+        out[*count].ssid[i] = (c >= 32 && c <= 126) ? c : '?';
     }
     out[*count].ssid[ssid_len] = 0;
     if (ssid_len == 0u){
@@ -1729,15 +1769,23 @@ static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
         out[*count].ssid[8] = 0;
     }
 
-    if (ev_scan_len >= 92u){
-        out[*count].channel = (unsigned char)(get_le16(ev_scan + 84u) & 0xFFu);
-        out[*count].auth = ev_scan[88u];
-        out[*count].rssi_dbm = get_le16s(ev_scan + 90u);
+    chanspec = get_le16(bss + 72u);
+    out[*count].channel = (unsigned char)(chanspec & 0xFFu);
+    capability = get_le16(bss + 16u);
+    out[*count].auth = (capability & 0x0010u) ? 1u : 0u;
+
+    /*
+     * Most CYW4343x firmwares place RSSI at offset 78 (Circle path). Some
+     * variants insert one extra byte before rateset and shift by +1.
+     */
+    rssi_a = get_le16s(bss + 78u);
+    rssi_b = (bss_len >= 83u) ? get_le16s(bss + 79u) : rssi_a;
+    if (rssi_a <= 0 && rssi_a >= -127){
+        out[*count].rssi_dbm = rssi_a;
     } else{
-        out[*count].channel = (unsigned char)(get_le16(ev_scan + 83u) & 0xFFu);
-        out[*count].auth = ev_scan[87u];
-        out[*count].rssi_dbm = get_le16s(ev_scan + 88u);
+        out[*count].rssi_dbm = rssi_b;
     }
+
     (*count)++;
     return 0;
 }
