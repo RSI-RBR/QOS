@@ -86,6 +86,8 @@ void gpio_init_sd(void) {
 void gpio_init_emmc(void) {
     uart_puts("GPIO: configuring EMMC pins\n");
 
+    gpio_disconnect_wifi_sdio();
+
     // EMMC/SDHCI uses ALT3 on GPIO48..53 (shared pins with SDHOST ALT0).
     gpio_set_alt(48, 7); // CLK
     gpio_set_alt(49, 7); // CMD
@@ -106,6 +108,25 @@ void gpio_init_emmc(void) {
     *GPPUDCLK1 = 0;
 
     uart_puts("GPIO: EMMC pins configured\n");
+}
+
+void gpio_disconnect_wifi_sdio(void){
+    uart_puts("GPIO: disconnecting WiFi SDIO pins\n");
+
+    for (unsigned int pin = 34; pin <= 39; pin++){
+        gpio_set_alt(pin, 0); // input
+    }
+
+    *GPPUD = 0;
+    delay(150);
+    *GPPUDCLK1 = (1u << (34 - 32)) |
+                 (1u << (35 - 32)) |
+                 (1u << (36 - 32)) |
+                 (1u << (37 - 32)) |
+                 (1u << (38 - 32)) |
+                 (1u << (39 - 32));
+    delay(150);
+    *GPPUDCLK1 = 0;
 }
 
 void gpio_init_wifi_sdio(void){
