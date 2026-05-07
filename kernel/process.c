@@ -6,6 +6,7 @@
 #include "cpu.h"
 #include "spinlock.h"
 #include "smp.h"
+#include "mmu.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -458,6 +459,11 @@ static int process_create_common_locked(program_entry_t entry,
             processes[i].user_mode = 1;
             processes[i].user_sp = user_sp;
             processes[i].sp = build_initial_context_el0(stack, (unsigned long)entry, user_sp);
+            if (!program_memory || mmu_process_space_create(i, (unsigned long)program_memory, program_size) != 0){
+                free_stack(stack);
+                clear_process_descriptor(i);
+                return -1;
+            }
         } else{
             processes[i].sp = build_initial_context_el1(stack);
         }
@@ -531,6 +537,7 @@ static void release_process_resources(process_cleanup_t* c){
     console_owner_on_process_exit(pid);
     socket_close_all_for_pid(pid);
     tls_session_close_all_for_pid(pid);
+    mmu_process_space_destroy(pid);
 
     if (c->stack){
         free_stack(c->stack);
@@ -654,6 +661,7 @@ int scheduler_consume_need_resched(void){
 
 void process_init(void){
     spinlock_init(&g_process_lock);
+    mmu_process_spaces_reset();
     g_process_ready = 0;
     sleep_head = -1;
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -762,6 +770,8 @@ void process_exit(int pid){
 
 void process_exit_current(void){
     unsigned int core = scheduler_core_id();
+    int next_pid = -1;
+    int next_user_mode = 0;
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
@@ -776,8 +786,13 @@ void process_exit_current(void){
 
     process_t* next = scheduler_next_for_core(core);
     void* next_sp = next ? next->sp : 0;
+    if (next){
+        next_pid = current_pid[core];
+        next_user_mode = next->user_mode;
+    }
     spin_unlock_irqrestore(&g_process_lock, irq);
     if (next_sp){
+        mmu_switch_to_pid(next_user_mode ? next_pid : -1);
         restore_context_and_eret(next_sp);
     }
 
@@ -827,6 +842,8 @@ void schedule(void){
 void scheduler_run_once(void){
     unsigned int core = scheduler_core_id();
     process_cleanup_t cleanup;
+    int next_pid = -1;
+    int next_user_mode = 0;
     cleanup_init(&cleanup);
 
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
@@ -848,8 +865,11 @@ void scheduler_run_once(void){
         return;
     }
     void* next_sp = next->sp;
+    next_pid = current_pid[core];
+    next_user_mode = next->user_mode;
     spin_unlock_irqrestore(&g_process_lock, irq);
     release_process_resources(&cleanup);
+    mmu_switch_to_pid(next_user_mode ? next_pid : -1);
     restore_context_and_eret(next_sp);
 }
 
@@ -884,6 +904,8 @@ int scheduler_has_runnable(void){
 void* scheduler_on_irq(void* irq_frame_sp){
     unsigned int core = scheduler_core_id();
     process_cleanup_t cleanup;
+    int next_pid = -1;
+    int next_user_mode = 0;
     cleanup_init(&cleanup);
 
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
@@ -902,17 +924,22 @@ void* scheduler_on_irq(void* irq_frame_sp){
         process_t* next = scheduler_next_for_core(core);
         if (next){
             void* out_sp = next->sp;
+            next_pid = current_pid[core];
+            next_user_mode = next->user_mode;
             spin_unlock_irqrestore(&g_process_lock, irq);
             release_process_resources(&cleanup);
+            mmu_switch_to_pid(next_user_mode ? next_pid : -1);
             return out_sp;
         }
         spin_unlock_irqrestore(&g_process_lock, irq);
         release_process_resources(&cleanup);
+        mmu_switch_to_pid(-1);
         return irq_frame_sp;
     }
 
     process_t* next = scheduler_next_for_core(core);
     if (!next){
+        int switched_to_idle = 0;
         if (cur >= 0 && cur < MAX_PROCESSES){
             if (processes[cur].state == PROC_SLEEPING){
                 // Keep the process sleeping. Returning to the same frame lands
@@ -932,15 +959,22 @@ void* scheduler_on_irq(void* irq_frame_sp){
             }
         } else{
             current_pid[core] = -1;
+            switched_to_idle = 1;
         }
         spin_unlock_irqrestore(&g_process_lock, irq);
         release_process_resources(&cleanup);
+        if (switched_to_idle){
+            mmu_switch_to_pid(-1);
+        }
         return irq_frame_sp;
     }
 
     void* out_sp = next->sp;
+    next_pid = current_pid[core];
+    next_user_mode = next->user_mode;
     spin_unlock_irqrestore(&g_process_lock, irq);
     release_process_resources(&cleanup);
+    mmu_switch_to_pid(next_user_mode ? next_pid : -1);
     return out_sp;
 }
 
@@ -1050,6 +1084,7 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
     }
 
     spin_unlock_irqrestore(&g_process_lock, irq);
+    mmu_switch_to_pid(-1);
 
     asm volatile("msr daifclr, #2" : : : "memory");
     while (1){

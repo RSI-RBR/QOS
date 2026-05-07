@@ -29,6 +29,7 @@
 #define AP_EL1_RW_EL0_NONE  (0UL << AP_SHIFT)
 #define AP_EL1_RW_EL0_RW    (1UL << AP_SHIFT)
 #define MMU_MAX_CORES       4U
+#define MMU_MAX_PROCESS_SPACES 8U
 
 typedef struct {
     unsigned long attridx;
@@ -40,6 +41,11 @@ typedef struct {
 static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table[L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l1_table[MMU_MAX_PROCESS_SPACES][L1_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l2_table[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l2_table_1[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
+static unsigned char proc_space_active[MMU_MAX_PROCESS_SPACES];
+static int core_active_pid[MMU_MAX_CORES];
 static spinlock_t g_mmu_lock;
 static volatile unsigned int g_tlb_epoch = 1;
 static volatile unsigned int g_tlb_ack_epoch[MMU_MAX_CORES];
@@ -59,6 +65,18 @@ static void mmu_local_tlbi_all(void){
     asm volatile("dsb ishst");
     asm volatile("tlbi vmalle1is");
     asm volatile("dsb ish");
+    asm volatile("isb");
+}
+
+static void mmu_local_tlbi_self(void){
+    asm volatile("dsb ishst");
+    asm volatile("tlbi vmalle1");
+    asm volatile("dsb ish");
+    asm volatile("isb");
+}
+
+static void mmu_set_ttbr0(unsigned long table_base){
+    asm volatile("msr ttbr0_el1, %0" : : "r"(table_base));
     asm volatile("isb");
 }
 
@@ -117,8 +135,7 @@ static void mmu_program_core_registers(void){
 
     asm volatile("msr mair_el1, %0" : : "r"(mair));
     asm volatile("msr tcr_el1, %0" : : "r"(tcr));
-    asm volatile("msr ttbr0_el1, %0" : : "r"(l1_table));
-    asm volatile("isb");
+    mmu_set_ttbr0((unsigned long)l1_table);
 }
 
 static void mmu_enable_current_core(void){
@@ -132,12 +149,25 @@ static void mmu_enable_current_core(void){
 }
 
 static void zero_tables(void){
+    for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
+        proc_space_active[p] = 0;
+    }
+    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
+        core_active_pid[c] = -1;
+    }
     for (int i = 0; i < L1_ENTRIES; i++){
         l1_table[i] = 0;
+        for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
+            proc_l1_table[p][i] = 0;
+        }
     }
     for (int i = 0; i < L2_ENTRIES; i++){
         l2_table[i] = 0;
         l2_table_1[i] = 0;
+        for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
+            proc_l2_table[p][i] = 0;
+            proc_l2_table_1[p][i] = 0;
+        }
     }
 }
 
@@ -147,15 +177,16 @@ static unsigned long block_desc(unsigned long pa, const mmu_block_attrs_t* attrs
     return desc;
 }
 
-static void set_block_attr(unsigned long pa, const mmu_block_attrs_t* attrs){
+static void set_block_attr_for_tables(unsigned long* table0, unsigned long* table1,
+                                      unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long l1_index = pa >> 30;            // 1GB region
     unsigned long l2_index = (pa >> 21) & 0x1FF; // 2MB block
     unsigned long* table = 0;
 
     if (l1_index == 0){
-        table = l2_table;
+        table = table0;
     } else if (l1_index == 1){
-        table = l2_table_1;
+        table = table1;
     } else{
         return;
     }
@@ -163,15 +194,28 @@ static void set_block_attr(unsigned long pa, const mmu_block_attrs_t* attrs){
     table[l2_index] = block_desc(pa, attrs);
 }
 
-static void apply_region_attrs(unsigned long pa_start, unsigned long size, const mmu_block_attrs_t* attrs){
+static void apply_region_attrs_for_tables(unsigned long* table0, unsigned long* table1,
+                                          unsigned long pa_start, unsigned long size,
+                                          const mmu_block_attrs_t* attrs){
     if (size == 0){
         return;
     }
 
-    unsigned long start = pa_start & ~((1UL << 21) - 1);
-    unsigned long end = (pa_start + size + ((1UL << 21) - 1)) & ~((1UL << 21) - 1);
+    unsigned long start = pa_start & ~((1UL << 21) - 1UL);
+    unsigned long end = (pa_start + size + ((1UL << 21) - 1UL)) & ~((1UL << 21) - 1UL);
     for (unsigned long pa = start; pa < end; pa += (1UL << 21)){
-        set_block_attr(pa, attrs);
+        set_block_attr_for_tables(table0, table1, pa, attrs);
+    }
+}
+
+static void apply_region_attrs_all_spaces(unsigned long pa_start, unsigned long size,
+                                          const mmu_block_attrs_t* attrs){
+    apply_region_attrs_for_tables(l2_table, l2_table_1, pa_start, size, attrs);
+    for (unsigned int pid = 0; pid < MMU_MAX_PROCESS_SPACES; pid++){
+        if (!proc_space_active[pid]){
+            continue;
+        }
+        apply_region_attrs_for_tables(proc_l2_table[pid], proc_l2_table_1[pid], pa_start, size, attrs);
     }
     mmu_tlb_shootdown_all_locked();
 }
@@ -224,6 +268,85 @@ void mmu_enable_secondary(void){
     g_tlb_ack_epoch[mmu_local_core_id()] = g_tlb_epoch;
 }
 
+void mmu_process_spaces_reset(void){
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+    for (unsigned int pid = 0; pid < MMU_MAX_PROCESS_SPACES; pid++){
+        proc_space_active[pid] = 0;
+    }
+    for (unsigned int core = 0; core < MMU_MAX_CORES; core++){
+        core_active_pid[core] = -1;
+    }
+    mmu_set_ttbr0((unsigned long)l1_table);
+    mmu_local_tlbi_self();
+    spin_unlock_irqrestore(&g_mmu_lock, irq);
+}
+
+int mmu_process_space_create(int pid, unsigned long user_pa_start, unsigned long user_size){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES || user_size == 0u){
+        return -1;
+    }
+
+    static const mmu_block_attrs_t user_code = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_RW,
+        .xn = PXN_BIT
+    };
+
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+
+    for (unsigned int i = 0; i < L1_ENTRIES; i++){
+        proc_l1_table[pid][i] = l1_table[i];
+    }
+    for (unsigned int i = 0; i < L2_ENTRIES; i++){
+        proc_l2_table[pid][i] = l2_table[i];
+        proc_l2_table_1[pid][i] = l2_table_1[i];
+    }
+
+    proc_l1_table[pid][0] = ((unsigned long)proc_l2_table[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+    proc_l1_table[pid][1] = ((unsigned long)proc_l2_table_1[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+
+    apply_region_attrs_for_tables(proc_l2_table[pid], proc_l2_table_1[pid], user_pa_start, user_size, &user_code);
+    proc_space_active[pid] = 1;
+
+    mmu_tlb_shootdown_all_locked();
+    spin_unlock_irqrestore(&g_mmu_lock, irq);
+    return 0;
+}
+
+void mmu_process_space_destroy(int pid){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES){
+        return;
+    }
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+    proc_space_active[pid] = 0;
+    for (unsigned int core = 0; core < MMU_MAX_CORES; core++){
+        if (core_active_pid[core] == pid){
+            core_active_pid[core] = -1;
+        }
+    }
+    mmu_tlb_shootdown_all_locked();
+    spin_unlock_irqrestore(&g_mmu_lock, irq);
+}
+
+void mmu_switch_to_pid(int pid){
+    unsigned long* table = l1_table;
+    int effective_pid = -1;
+    if (pid >= 0 && (unsigned int)pid < MMU_MAX_PROCESS_SPACES && proc_space_active[pid]){
+        table = proc_l1_table[pid];
+        effective_pid = pid;
+    }
+
+    unsigned int core = mmu_local_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+    if (core_active_pid[core] != effective_pid){
+        mmu_set_ttbr0((unsigned long)table);
+        mmu_local_tlbi_self();
+        core_active_pid[core] = effective_pid;
+    }
+    spin_unlock_irqrestore(&g_mmu_lock, irq);
+}
+
 void mmu_map_device_region(unsigned long pa_start, unsigned long size){
     static const mmu_block_attrs_t kernel_device = {
         .attridx = ATTRIDX_DEVICE,
@@ -232,7 +355,7 @@ void mmu_map_device_region(unsigned long pa_start, unsigned long size){
         .xn = PXN_BIT | UXN_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
-    apply_region_attrs(pa_start, size, &kernel_device);
+    apply_region_attrs_all_spaces(pa_start, size, &kernel_device);
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
@@ -244,7 +367,8 @@ void mmu_map_user_code_region(unsigned long pa_start, unsigned long size){
         .xn = PXN_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
-    apply_region_attrs(pa_start, size, &user_code);
+    apply_region_attrs_for_tables(l2_table, l2_table_1, pa_start, size, &user_code);
+    mmu_tlb_shootdown_all_locked();
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
@@ -256,7 +380,8 @@ void mmu_map_user_data_region(unsigned long pa_start, unsigned long size){
         .xn = PXN_BIT | UXN_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
-    apply_region_attrs(pa_start, size, &user_data);
+    apply_region_attrs_for_tables(l2_table, l2_table_1, pa_start, size, &user_data);
+    mmu_tlb_shootdown_all_locked();
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
@@ -268,7 +393,7 @@ void mmu_map_kernel_private_region(unsigned long pa_start, unsigned long size){
         .xn = PXN_BIT | UXN_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
-    apply_region_attrs(pa_start, size, &kernel_private);
+    apply_region_attrs_all_spaces(pa_start, size, &kernel_private);
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 

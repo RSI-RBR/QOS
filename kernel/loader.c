@@ -93,8 +93,8 @@ void* alloc_program_memory(unsigned int size){
             wipe[j] = 0;
         }
 
-        // Entire slot is user-executable to keep block-level isolation simple.
-        mmu_map_user_code_region(base, PROGRAM_SLOT_SIZE);
+        // Keep global kernel table private; EL0 access is granted per-process
+        // via its own TTBR0 page tables when the scheduler switches to that PID.
 
         return addr;
     }
