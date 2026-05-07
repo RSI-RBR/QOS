@@ -144,7 +144,9 @@ def main() -> int:
     if pq_sign_key_bin:
         if not pq_out_file:
             raise RuntimeError("PQ sign key provided but pq-out-file missing")
-        pq_sig = sign_mldsa65(pq_sign_key_bin, bytes(msg))
+        # ML-DSA sidecar signs SHA-256(canonical kernel-sign message).
+        msg_digest = hashlib.sha256(bytes(msg)).digest()
+        pq_sig = sign_mldsa65(pq_sign_key_bin, msg_digest)
         if len(pq_sig) != MLDSA65_SIG_BYTES:
             raise RuntimeError(f"unexpected ML-DSA-65 signature length: {len(pq_sig)}")
         write_pq_sidecar(pq_out_file, int(signer_key_id), QOS_SIG_ALG_MLDSA65, pq_sig)

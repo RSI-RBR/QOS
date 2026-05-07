@@ -133,7 +133,9 @@ if pq_sign_key:
     msg.extend(struct.pack("<I", sig_alg))
     msg.extend(struct.pack("<I", size))
     msg.extend(digest)
-    pq_sig = sign_mldsa65(pq_sign_key, bytes(msg))
+    # ML-DSA sidecar signs SHA-256(canonical program-sign message).
+    msg_digest = hashlib.sha256(bytes(msg)).digest()
+    pq_sig = sign_mldsa65(pq_sign_key, msg_digest)
     if len(pq_sig) != MLDSA65_SIG_BYTES:
         print("ML-DSA-65 signature length mismatch")
         sys.exit(1)
