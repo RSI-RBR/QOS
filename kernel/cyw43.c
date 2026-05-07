@@ -65,6 +65,8 @@
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  2048u
 #define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
+#define CYW43_WLC_UP            2u
+#define CYW43_WLC_DOWN          3u
 #define CYW43_WLC_SET_INFRA     20u
 #define CYW43_WLC_SET_AUTH      22u
 #define CYW43_WLC_SET_SSID      26u
@@ -1576,11 +1578,19 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: firmware start failed\n");
         return -1;
     }
+    if (!g_cyw43.iface_up &&
+        cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
+        uart_puts("CYW43: WLC_UP failed\n");
+        return -1;
+    }
     g_cyw43.iface_up = 1;
     return 0;
 }
 
 int cyw43_ioctl_down(void){
+    if (g_cyw43.fw_running && g_cyw43.iface_up){
+        (void)cyw43_wl_cmd(1, CYW43_WLC_DOWN, 0, 0, 0, 0, 0);
+    }
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.joined_ssid[0] = 0;
