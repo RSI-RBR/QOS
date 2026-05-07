@@ -64,12 +64,13 @@
 #define CYW43_SDPCM_FIRSTREAD   64u
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  4096u
-#define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
+#define CYW43_PACKET_ADDR       0u
 #define CYW43_WLC_UP            2u
 #define CYW43_WLC_DOWN          3u
 #define CYW43_WLC_SET_INFRA     20u
 #define CYW43_WLC_SET_AUTH      22u
 #define CYW43_WLC_SET_SSID      26u
+#define CYW43_WLC_SET_PASSIVE_SCAN 49u
 #define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
@@ -85,7 +86,7 @@
 #define CYW43_ESCAN_SYNC_ID     0x1234u
 
 #define CYW43_WL_IOVAR_BUF_LEN  256u
-#define CYW43_WL_ESCAN_PARAMS_LEN 76u
+#define CYW43_WL_ESCAN_PARAMS_LEN 136u
 #define CYW43_WL_MAX_SSID_LEN   32u
 #define CYW43_DOT11_BSSTYPE_ANY 2u
 #define CYW43_WSEC_AES          0x0004u
@@ -171,10 +172,6 @@ static unsigned int get_be32(const unsigned char in[4]){
 
 static unsigned int round4_u32(unsigned int n){
     return (n + 3u) & ~3u;
-}
-
-static unsigned int round64_u32(unsigned int n){
-    return (n + 63u) & ~63u;
 }
 
 static void mem_zero_local(unsigned char* p, unsigned int n){
@@ -1173,11 +1170,12 @@ static void cyw43_rx_halt_and_drain(void){
 
 static int cyw43_prepare_packet_window(void){
     /*
-     * Broadcom SDIO Function 2 packet I/O is addressed through the selected
-     * backplane window. Linux brcmfmac points the window at chipcommon
-     * (0x18000000) and uses address 0x8000 for 4-byte packet access.
+     * Circle's ether4330 packetrw() uses Function 2 fixed-address packet I/O
+     * at Enumbase. Its CMD53 helper masks addresses to 17 bits, so Enumbase
+     * becomes address 0. This path is a FIFO and does not need the Function 1
+     * backplane window used for register/SOCRAM access.
      */
-    return cyw43_backplane_window(CYW43_ENUM_BASE);
+    return 0;
 }
 
 static int cyw43_control_tx_has_credit(void){
@@ -1208,7 +1206,7 @@ static int cyw43_wait_control_tx_credit(void){
 }
 
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
-    unsigned int xfer_len = round64_u32(len);
+    unsigned int xfer_len = round4_u32(len);
     if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
         return -1;
     }
@@ -1524,14 +1522,19 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
 
 static int cyw43_wl_escan_submit(void){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
+    static const unsigned char chanspecs[14u * 2u] = {
+        0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
+        0x05u, 0x2Eu, 0x06u, 0x2Eu, 0x07u, 0x2Eu,
+        0x08u, 0x2Bu, 0x09u, 0x2Bu, 0x0Au, 0x2Bu, 0x0Bu, 0x2Bu,
+        0x0Cu, 0x2Bu, 0x0Du, 0x2Bu, 0x0Eu, 0x2Bu,
+    };
 
     mem_zero_local(params, sizeof(params));
     /*
-     * wl_escan_params:
-     *   uint32 version;
-     *   uint16 action;
-     *   uint16 sync_id;
-     *   wl_scan_params params;  // wildcard SSID, broadcast BSSID
+     * Match Circle's ether4330 wlscanstart() layout:
+     * version/action/sync_id + wildcard wl_scan_params + 14 chanspecs +
+     * one empty SSID slot. The CYW4343x firmware is picky here; the shorter
+     * generic 76-byte form can leave the SET_VAR("escan") command unanswered.
      */
     put_le32(params + 0u, CYW43_ESCAN_REQ_VERSION);
     put_le16(params + 4u, CYW43_ESCAN_ACTION_START);
@@ -1542,13 +1545,15 @@ static int cyw43_wl_escan_submit(void){
     }
     params[50u] = CYW43_DOT11_BSSTYPE_ANY;
     params[51u] = 0u;
-    put_le32(params + 52u, 3u);    // probes per channel
-    put_le32(params + 56u, 120u);  // active dwell ms
-    put_le32(params + 60u, 360u);  // passive dwell ms
-    put_le32(params + 64u, 40u);   // home channel dwell ms
-    put_le32(params + 68u, 0u);
-    put_le16(params + 72u, 0u);
+    put_le32(params + 52u, 0xFFFFFFFFu);
+    put_le32(params + 56u, 0xFFFFFFFFu);
+    put_le32(params + 60u, 0xFFFFFFFFu);
+    put_le32(params + 64u, 0xFFFFFFFFu);
+    put_le16(params + 68u, 14u);
+    put_le16(params + 70u, 1u);
+    mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
 
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
     return cyw43_wl_set_var("escan", params, sizeof(params));
 }
 
