@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -49,7 +50,9 @@ def ensure_tool() -> Path:
     if not _needs_rebuild(bin_path, srcs):
         return bin_path
 
-    cc = os.environ.get("HOST_CC", "cc")
+    cc = os.environ.get("HOST_CC")
+    if not cc:
+        cc = "gcc" if shutil.which("gcc") else "cc"
     include_common = root / "third_party" / "pqclean" / "common"
     include_clean = root / "third_party" / "pqclean" / "crypto_sign" / "ml-dsa-65" / "clean"
 

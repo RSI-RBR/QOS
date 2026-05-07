@@ -12,7 +12,8 @@ DEV_PQ_PUB ?=
 ADMIN_PQ_SIGN_KEY ?=
 DEV_PQ_SIGN_KEY ?=
 
-# Backward-compatible aliases.
+# Backward-compatible aliases from older Lamport variable names.
+# These map old env vars to the current PQ variable names.
 ifneq ($(strip $(ADMIN_LAMPORT_PUB)),)
 ADMIN_PQ_PUB := $(ADMIN_LAMPORT_PUB)
 endif
