@@ -2,6 +2,7 @@
 #include "net.h"
 #include "timer.h"
 #include "uart.h"
+#include "process.h"
 
 typedef struct {
     unsigned long rx_total;
@@ -423,7 +424,7 @@ int arp_resolve_gateway(unsigned int timeout_ms){
         if (g_gateway_resolved){
             return 0;
         }
-        asm volatile("nop");
+        process_sleep(1);
     }
     return -1;
 }

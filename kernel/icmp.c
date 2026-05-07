@@ -5,6 +5,7 @@
 #include "net_proto.h"
 #include "timer.h"
 #include "uart.h"
+#include "process.h"
 
 typedef struct __attribute__((packed)) {
     unsigned char type;
@@ -301,7 +302,7 @@ int icmp_ping_gateway(unsigned int timeout_ms){
             write_daif(saved_daif);
             return -1;
         }
-        asm volatile("nop");
+        process_sleep(1);
     }
 
     write_daif(saved_daif);
