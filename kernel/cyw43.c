@@ -45,6 +45,7 @@
 #define CYW43_SD_INT_FRAME      (1u << 6)
 #define CYW43_SD_INT_MAILBOX    (1u << 7)
 #define CYW43_SD_FW_READY       0x80u
+#define CYW43_SD_FW_READY_ALT   0x08u // Circle's intwait path checks this bit.
 
 #define CYW43_CRESCAN_SIZE      512u
 
@@ -617,12 +618,18 @@ static int cyw43_enable_ht_clock(void){
 }
 
 static int cyw43_enable_function2(void){
+    uart_puts("CYW43: enabling function 2\n");
     if (sdio_bus_enable_func(2) != 0 ||
         sdio_bus_wait_func_ready(2, 1000) != 0){
         uart_puts("CYW43: function 2 not ready\n");
         return -1;
     }
-    (void)sdio_bus_cmd52_write(0, 0x04u, (1u << 1) | (1u << 2) | 1u);
+    uart_puts("CYW43: function 2 ready\n");
+    if (sdio_bus_cmd52_write(0, 0x04u, (1u << 1) | (1u << 2) | 1u) != 0){
+        uart_puts("CYW43: host int enable failed\n");
+        return -1;
+    }
+    uart_puts("CYW43: host interrupts enabled\n");
     g_cyw43.func2_ready = 1;
     return 0;
 }
@@ -630,11 +637,23 @@ static int cyw43_enable_function2(void){
 static int cyw43_wait_firmware_ready(void){
     unsigned int ints = 0;
     unsigned int mbox = 0;
-    for (unsigned int i = 0; i < 200000u; i++){
+    unsigned char intpend = 0;
+    uart_puts("CYW43: waiting firmware mailbox\n");
+    for (unsigned int i = 0; i < 100u; i++){
         if (g_cyw43.sd_regs != 0u){
+            (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
-            if (mbox & CYW43_SD_FW_READY){
+            if ((i % 10u) == 0u){
+                uart_puts("CYW43: fw poll pend=");
+                uart_puthex(intpend);
+                uart_puts(" ints=");
+                uart_puthex(ints);
+                uart_puts(" mbox=");
+                uart_puthex(mbox);
+                uart_puts("\n");
+            }
+            if (mbox & (CYW43_SD_FW_READY | CYW43_SD_FW_READY_ALT)){
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                 uart_puts("CYW43: firmware ready\n");
                 return 0;
@@ -643,12 +662,14 @@ static int cyw43_wait_firmware_ready(void){
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
             }
         }
-        cyw43_delay(5000u);
+        cyw43_delay(250000u);
     }
     uart_puts("CYW43: firmware ready timeout ints=");
     uart_puthex(ints);
     uart_puts(" mbox=");
     uart_puthex(mbox);
+    uart_puts(" pend=");
+    uart_puthex(intpend);
     uart_puts("\n");
     return -1;
 }
@@ -687,12 +708,14 @@ static int cyw43_start_firmware(void){
     if (cyw43_enable_ht_clock() != 0){
         return -1;
     }
+    uart_puts("CYW43: programming SDIO mailbox/intmask\n");
     if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0 ||
         cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_MASK,
                                 CYW43_SD_INT_FRAME | CYW43_SD_INT_MAILBOX | CYW43_SD_INT_FC_CHANGE) != 0){
         uart_puts("CYW43: SDIO interrupt setup failed\n");
         return -1;
     }
+    uart_puts("CYW43: SDIO mailbox/intmask OK\n");
     if (cyw43_enable_function2() != 0){
         return -1;
     }
