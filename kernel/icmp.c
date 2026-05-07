@@ -174,7 +174,19 @@ int icmp_ping_gateway(unsigned int timeout_ms){
         return -3;
     }
     if (!arp_gateway_resolved() || arp_get_gateway_mac(gateway_mac) != 0){
-        if (arp_resolve_gateway(timeout_ms) != 0 || arp_get_gateway_mac(gateway_mac) != 0){
+        int resolved = 0;
+        for (unsigned int attempt = 0; attempt < 2u && !resolved; attempt++){
+            if (!net_link_up()){
+                (void)net_try_select_wifi_backend();
+            }
+            if (arp_resolve_gateway(timeout_ms) == 0 &&
+                arp_get_gateway_mac(gateway_mac) == 0){
+                resolved = 1;
+                break;
+            }
+            (void)net_try_select_wifi_backend();
+        }
+        if (!resolved){
             return -2;
         }
     }

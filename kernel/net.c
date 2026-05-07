@@ -39,6 +39,29 @@ static spinlock_t g_net_state_lock;
 static spinlock_t g_net_rxq_lock;
 static spinlock_t g_net_io_lock;
 
+static int net_switch_backend(const nic_driver_t* nic){
+    if (!nic || !nic->init || !nic->poll || !nic->send || !nic->set_rx_handler){
+        return -1;
+    }
+    if (nic->set_rx_handler(net_ingest_rx_from_driver) != 0){
+        return -1;
+    }
+    if (nic->init() != 0){
+        return -1;
+    }
+    {
+        unsigned long irq = spin_lock_irqsave(&g_net_rxq_lock);
+        net_rxq_reset();
+        spin_unlock_irqrestore(&g_net_rxq_lock, irq);
+    }
+    {
+        unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+        g_nic = nic;
+        spin_unlock_irqrestore(&g_net_state_lock, irq);
+    }
+    return 0;
+}
+
 static void net_rxq_reset(void){
     g_rxq.head = 0;
     g_rxq.tail = 0;
@@ -310,6 +333,29 @@ int net_send_test_frame(void){
 
 int net_ping_gateway(unsigned int timeout_ms){
     return icmp_ping_gateway(timeout_ms);
+}
+
+int net_try_select_wifi_backend(void){
+    const nic_driver_t* wifi = nic_probe_cyw43();
+    if (!wifi){
+        return -1;
+    }
+    return net_switch_backend(wifi);
+}
+
+int net_try_select_default_backend(void){
+    const nic_driver_t* d = nic_probe_default();
+    if (!d){
+        return -1;
+    }
+    if (net_switch_backend(d) == 0){
+        return 0;
+    }
+    d = nic_probe_stub();
+    if (!d){
+        return -1;
+    }
+    return net_switch_backend(d);
 }
 
 void net_dump_stats(void){

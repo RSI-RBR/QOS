@@ -44,6 +44,8 @@ typedef struct {
     unsigned int last_scan_count;
 } cyw43_status_t;
 
+typedef void (*cyw43_rx_handler_t)(const unsigned char* frame, unsigned int len);
+
 int cyw43_init(void);
 int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
                                        unsigned int fw_len,
@@ -64,5 +66,12 @@ int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
 
 int cyw43_get_status(cyw43_status_t* out);
 void cyw43_dump_status(void);
+
+// Minimal Ethernet datapath bridge for the kernel NIC layer.
+int cyw43_net_set_rx_handler(cyw43_rx_handler_t handler);
+int cyw43_net_poll(void);
+int cyw43_net_send_ethernet(const unsigned char* frame, unsigned int len);
+int cyw43_net_link_up(void);
+int cyw43_net_ready(void);
 
 #endif

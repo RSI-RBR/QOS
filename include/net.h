@@ -19,6 +19,10 @@ int net_ping_gateway(unsigned int timeout_ms);
 void net_set_rx_callback(net_rx_callback_t cb);
 void net_dump_stats(void);
 
+// Runtime NIC backend switching helpers.
+int net_try_select_wifi_backend(void);
+int net_try_select_default_backend(void);
+
 // Called by NIC drivers when a frame is received.
 void net_ingest_rx_from_driver(const unsigned char* frame, unsigned int len);
 

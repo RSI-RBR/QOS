@@ -16,6 +16,7 @@ typedef struct {
 // Current implementation provides a loopback stub to unblock protocol work.
 const nic_driver_t* nic_probe_default(void);
 const nic_driver_t* nic_probe_smsc95xx(void);
+const nic_driver_t* nic_probe_cyw43(void);
 const nic_driver_t* nic_probe_stub(void);
 
 #endif

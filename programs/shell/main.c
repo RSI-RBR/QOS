@@ -749,7 +749,7 @@ static void cmd_wifijoin(const char* ssid, const char* password){
     }
     rc = qos_wifi_join(ssid, password);
     if (rc == 0){
-        qos_puts("WiFi join submitted\n");
+        qos_puts("WiFi join OK\n");
     } else{
         qos_puts("WiFi join failed\n");
     }

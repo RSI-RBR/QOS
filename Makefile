@@ -63,6 +63,7 @@ kernel/trust.c \
 kernel/remote_login.c \
 kernel/sdio_bus.c \
 kernel/cyw43.c \
+kernel/nic_cyw43.c \
 kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c \
