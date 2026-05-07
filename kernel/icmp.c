@@ -123,15 +123,9 @@ void icmp_handle_ipv4_packet(const unsigned char* src_ip,
         return;
     }
 
-    unsigned char expected_gateway[4];
-    net_proto_get_gateway_ip(expected_gateway);
-    if (src_ip[0] != expected_gateway[0] ||
-        src_ip[1] != expected_gateway[1] ||
-        src_ip[2] != expected_gateway[2] ||
-        src_ip[3] != expected_gateway[3]){
-        g_icmp_stats.bad_reply++;
-        return;
-    }
+    // Accept matching echo replies by ident+seq regardless of source IP.
+    // On some setups gateway/source rewriting can cause the strict source
+    // check to reject valid replies intermittently.
 
     {
         unsigned long cnt_now = read_cntpct_lo();

@@ -1274,24 +1274,29 @@ static int cyw43_prepare_packet_window(void){
     return 0;
 }
 
-static int cyw43_control_tx_has_credit(void){
+static int cyw43_tx_has_credit(unsigned int channel){
     unsigned char seq = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
     unsigned char delta = (unsigned char)(g_cyw43.tx_window - seq);
 
-    if (g_cyw43.flow_mask & (1u << CYW43_SDPCM_CH_CONTROL)){
+    if (channel >= 8u){
+        return 0;
+    }
+    if (g_cyw43.flow_mask & (1u << channel)){
         return 0;
     }
     return (delta != 0u && delta < 128u);
 }
 
-static int cyw43_wait_control_tx_credit(void){
+static int cyw43_wait_tx_credit(unsigned int channel){
     for (unsigned int i = 0; i < 200000u; i++){
-        if (cyw43_control_tx_has_credit()){
+        if (cyw43_tx_has_credit(channel)){
             return 0;
         }
         cyw43_delay(50u);
     }
-    uart_puts("CYW43: control tx credit timeout seq=");
+    uart_puts("CYW43: tx credit timeout ch=");
+    uart_putdec(channel);
+    uart_puts(" seq=");
     uart_putdec(g_cyw43.sdpcm_tx_seq & 0xFFu);
     uart_puts(" win=");
     uart_putdec(g_cyw43.tx_window);
@@ -1303,11 +1308,13 @@ static int cyw43_wait_control_tx_credit(void){
 
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
     unsigned int xfer_len = round4_u32(len);
+    unsigned int channel = 0;
     if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
         return -1;
     }
-    if ((data[5] & 0x0Fu) == CYW43_SDPCM_CH_CONTROL &&
-        cyw43_wait_control_tx_credit() != 0){
+    channel = data[5] & 0x0Fu;
+    if ((channel == CYW43_SDPCM_CH_CONTROL || channel == CYW43_SDPCM_CH_DATA) &&
+        cyw43_wait_tx_credit(channel) != 0){
         return -1;
     }
     if (cyw43_prepare_packet_window() != 0){
