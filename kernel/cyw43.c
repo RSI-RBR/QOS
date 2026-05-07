@@ -68,6 +68,7 @@
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  4096u
 #define CYW43_PACKET_ADDR       0u
+#define CYW43_DATA_PAD_LEN      2u
 #define CYW43_BDC_HEADER_LEN    4u
 #define CYW43_BDC_PROTO_VER     2u
 #define CYW43_BDC_VER_SHIFT     4u
@@ -134,6 +135,12 @@ typedef struct {
     unsigned short reqid;
     unsigned char flow_mask;
     unsigned char tx_window;
+    unsigned int net_tx_ok;
+    unsigned int net_tx_fail;
+    unsigned int net_rx_data;
+    unsigned int net_rx_event;
+    unsigned int net_rx_control;
+    unsigned int net_rx_other;
     unsigned int last_scan_count;
     char joined_ssid[33];
 } cyw43_state_t;
@@ -890,6 +897,12 @@ static void cyw43_drop_sdio_state(void){
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
     g_cyw43.tx_window = 1;
+    g_cyw43.net_tx_ok = 0;
+    g_cyw43.net_tx_fail = 0;
+    g_cyw43.net_rx_data = 0;
+    g_cyw43.net_rx_event = 0;
+    g_cyw43.net_rx_control = 0;
+    g_cyw43.net_rx_other = 0;
     sdio_bus_reset_state();
     blockdev_reserve_emmc_for_wifi(0);
 }
@@ -928,6 +941,12 @@ int cyw43_init(void){
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
     g_cyw43.tx_window = 1;
+    g_cyw43.net_tx_ok = 0;
+    g_cyw43.net_tx_fail = 0;
+    g_cyw43.net_rx_data = 0;
+    g_cyw43.net_rx_event = 0;
+    g_cyw43.net_rx_control = 0;
+    g_cyw43.net_rx_other = 0;
     g_cyw43.last_scan_count = 0;
     g_cyw43.joined_ssid[0] = 0;
 
@@ -1354,8 +1373,8 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
 
     mem_zero_local(tx, sizeof(tx));
-    put_le16(tx + 0u, frame_len);
-    put_le16(tx + 2u, frame_len ^ 0xFFFFu);
+    put_le16(tx + 0u, raw_frame_len);
+    put_le16(tx + 2u, raw_frame_len ^ 0xFFFFu);
     tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
     tx[5] = CYW43_SDPCM_CH_CONTROL;
     tx[6] = 0;
@@ -2286,7 +2305,7 @@ int cyw43_net_send_ethernet(const unsigned char* frame, unsigned int len){
         return -1;
     }
 
-    payload_len = CYW43_BDC_HEADER_LEN + len;
+    payload_len = CYW43_DATA_PAD_LEN + CYW43_BDC_HEADER_LEN + len;
     raw_len = CYW43_SDPCM_HDR_LEN + payload_len;
     frame_len = round4_u32(raw_len);
     if (frame_len > sizeof(tx)){
@@ -2294,29 +2313,32 @@ int cyw43_net_send_ethernet(const unsigned char* frame, unsigned int len){
     }
 
     mem_zero_local(tx, sizeof(tx));
-    put_le16(tx + 0u, frame_len);
-    put_le16(tx + 2u, frame_len ^ 0xFFFFu);
+    put_le16(tx + 0u, raw_len);
+    put_le16(tx + 2u, raw_len ^ 0xFFFFu);
     tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
     tx[5] = CYW43_SDPCM_CH_DATA;
     tx[6] = 0u;
-    tx[7] = CYW43_SDPCM_HDR_LEN;
+    tx[7] = CYW43_SDPCM_HDR_LEN + CYW43_DATA_PAD_LEN;
     tx[8] = 0u;
     tx[9] = 0u;
     tx[10] = 0u;
     tx[11] = 0u;
 
-    // Broadcom Data Control header (BDC v2), interface 0 (STA), no metadata.
-    tx[CYW43_SDPCM_HDR_LEN + 0u] = (unsigned char)(CYW43_BDC_PROTO_VER << CYW43_BDC_VER_SHIFT);
-    tx[CYW43_SDPCM_HDR_LEN + 1u] = 0u;
-    tx[CYW43_SDPCM_HDR_LEN + 2u] = 0u;
-    tx[CYW43_SDPCM_HDR_LEN + 3u] = 0u;
+    // Data channel uses two bytes of padding before the BDC header.
+    unsigned int bdc_off = CYW43_SDPCM_HDR_LEN + CYW43_DATA_PAD_LEN;
+    tx[bdc_off + 0u] = (unsigned char)(CYW43_BDC_PROTO_VER << CYW43_BDC_VER_SHIFT);
+    tx[bdc_off + 1u] = 0u;
+    tx[bdc_off + 2u] = 0u; // interface 0 (STA)
+    tx[bdc_off + 3u] = 0u;
 
-    mem_copy_local(tx + CYW43_SDPCM_HDR_LEN + CYW43_BDC_HEADER_LEN, frame, len);
+    mem_copy_local(tx + bdc_off + CYW43_BDC_HEADER_LEN, frame, len);
 
     if (cyw43_packet_write(tx, frame_len) != 0){
+        g_cyw43.net_tx_fail++;
         return -1;
     }
     g_cyw43.sdpcm_tx_seq++;
+    g_cyw43.net_tx_ok++;
     return 0;
 }
 
@@ -2340,9 +2362,16 @@ int cyw43_net_poll(void){
         }
         channel = rx[5] & 0x0Fu;
         if (channel == CYW43_SDPCM_CH_DATA){
+            g_cyw43.net_rx_data++;
             if (cyw43_net_deliver_data(rx, rx_len) > 0){
                 delivered++;
             }
+        } else if (channel == CYW43_SDPCM_CH_EVENT){
+            g_cyw43.net_rx_event++;
+        } else if (channel == CYW43_SDPCM_CH_CONTROL){
+            g_cyw43.net_rx_control++;
+        } else{
+            g_cyw43.net_rx_other++;
         }
     }
     return delivered;
@@ -2403,5 +2432,18 @@ void cyw43_dump_status(void){
     }
     uart_puts(" country=");
     uart_puts(g_cyw43.country[0] ? g_cyw43.country : "??");
+    uart_puts("\n");
+    uart_puts("CYW43 net tx_ok=");
+    uart_putdec(g_cyw43.net_tx_ok);
+    uart_puts(" tx_fail=");
+    uart_putdec(g_cyw43.net_tx_fail);
+    uart_puts(" rx_data=");
+    uart_putdec(g_cyw43.net_rx_data);
+    uart_puts(" rx_event=");
+    uart_putdec(g_cyw43.net_rx_event);
+    uart_puts(" rx_ctl=");
+    uart_putdec(g_cyw43.net_rx_control);
+    uart_puts(" rx_other=");
+    uart_putdec(g_cyw43.net_rx_other);
     uart_puts("\n");
 }
