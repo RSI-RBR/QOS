@@ -8,13 +8,21 @@
 #define CYW43_FW_MAX_BYTES      (768u * 1024u)
 #define CYW43_NVRAM_MAX_BYTES   (16u * 1024u)
 #define CYW43_NVRAM_PACKED_MAX  (20u * 1024u)
-#define CYW43_SDIO_XFER_CHUNK   256u
+#define CYW43_SDIO_XFER_CHUNK   64u
 
-// Minimal backplane RAM staging addresses.
-// These are placeholders for phase-1 bring-up and will be refined once
-// full backplane window + core reset/clock sequence is implemented.
-#define CYW43_FW_STAGE_ADDR     0x00002000u
-#define CYW43_NVRAM_STAGE_ADDR  0x000E0000u
+// Circle/ether4330 backplane access constants.
+#define CYW43_SB_WINDOW_SIZE    0x8000u
+#define CYW43_SB_32BIT_ADDR     0x8000u
+#define CYW43_SB_ADDR_REG       0x1000Au
+#define CYW43_CLKCSR_REG        0x1000Eu
+#define CYW43_CLK_REQ_ALP       0x08u
+#define CYW43_CLK_ALP_AVAIL     0x40u
+#define CYW43_ENUM_BASE         0x18000000u
+
+// CYW43430/CYW43438 firmware RAM layout. The full Circle path discovers this
+// by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
+#define CYW43_RAM_BASE          0x00000000u
+#define CYW43_RAM_SIZE          0x000C8000u
 
 typedef struct {
     unsigned char enabled;
@@ -34,6 +42,20 @@ static cyw43_state_t g_cyw43;
 
 static unsigned int kmin_u32(unsigned int a, unsigned int b){
     return (a < b) ? a : b;
+}
+
+static void put_le32(unsigned char out[4], unsigned int v){
+    out[0] = (unsigned char)(v & 0xFFu);
+    out[1] = (unsigned char)((v >> 8) & 0xFFu);
+    out[2] = (unsigned char)((v >> 16) & 0xFFu);
+    out[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
+static unsigned int get_le32(const unsigned char in[4]){
+    return ((unsigned int)in[0]) |
+           ((unsigned int)in[1] << 8) |
+           ((unsigned int)in[2] << 16) |
+           ((unsigned int)in[3] << 24);
 }
 
 static int c_is_space(char c){
@@ -189,20 +211,105 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
         return -1;
     }
     packed[w++] = 0; // double-NUL terminator
+    while (w & 3u){
+        if (w >= packed_cap){
+            return -1;
+        }
+        packed[w++] = 0;
+    }
     *packed_len = w;
     return 0;
 }
 
-static int cyw43_write_stage(unsigned int addr, const unsigned char* data, unsigned int len){
+static int cyw43_backplane_window(unsigned int addr){
+    unsigned int window = addr & ~(CYW43_SB_WINDOW_SIZE - 1u);
+    if (sdio_bus_cmd52_write(1, CYW43_SB_ADDR_REG + 0u, (unsigned char)((window >> 8) & 0xFFu)) != 0){
+        return -1;
+    }
+    if (sdio_bus_cmd52_write(1, CYW43_SB_ADDR_REG + 1u, (unsigned char)((window >> 16) & 0xFFu)) != 0){
+        return -1;
+    }
+    if (sdio_bus_cmd52_write(1, CYW43_SB_ADDR_REG + 2u, (unsigned char)((window >> 24) & 0xFFu)) != 0){
+        return -1;
+    }
+    return 0;
+}
+
+static int cyw43_backplane_write(unsigned int addr, const unsigned char* data, unsigned int len){
     unsigned int off = 0;
     while (off < len){
+        unsigned int cur = addr + off;
+        unsigned int window_left = CYW43_SB_WINDOW_SIZE - (cur & (CYW43_SB_WINDOW_SIZE - 1u));
         unsigned int n = kmin_u32(CYW43_SDIO_XFER_CHUNK, len - off);
-        if (sdio_bus_cmd53_write(1, addr + off, &data[off], n) != 0){
+        n = kmin_u32(n, window_left);
+
+        if (cyw43_backplane_window(cur) != 0){
+            return -1;
+        }
+        if (sdio_bus_cmd53_write(1, (cur & (CYW43_SB_WINDOW_SIZE - 1u)) | CYW43_SB_32BIT_ADDR,
+                                 &data[off], n) != 0){
+            uart_puts("CYW43: backplane write fail off=");
+            uart_puthex(off);
+            uart_puts(" addr=");
+            uart_puthex(cur);
+            uart_puts("\n");
             return -1;
         }
         off += n;
     }
     return 0;
+}
+
+static int cyw43_backplane_read(unsigned int addr, unsigned char* data, unsigned int len){
+    unsigned int off = 0;
+    while (off < len){
+        unsigned int cur = addr + off;
+        unsigned int window_left = CYW43_SB_WINDOW_SIZE - (cur & (CYW43_SB_WINDOW_SIZE - 1u));
+        unsigned int n = kmin_u32(CYW43_SDIO_XFER_CHUNK, len - off);
+        n = kmin_u32(n, window_left);
+
+        if (cyw43_backplane_window(cur) != 0){
+            return -1;
+        }
+        if (sdio_bus_cmd53_read(1, (cur & (CYW43_SB_WINDOW_SIZE - 1u)) | CYW43_SB_32BIT_ADDR,
+                                &data[off], n) != 0){
+            uart_puts("CYW43: backplane read fail off=");
+            uart_puthex(off);
+            uart_puts(" addr=");
+            uart_puthex(cur);
+            uart_puts("\n");
+            return -1;
+        }
+        off += n;
+    }
+    return 0;
+}
+
+static int cyw43_backplane_read32(unsigned int addr, unsigned int* out){
+    unsigned char b[4];
+    if (!out || cyw43_backplane_read(addr, b, sizeof(b)) != 0){
+        return -1;
+    }
+    *out = get_le32(b);
+    return 0;
+}
+
+static int cyw43_request_alp_clock(void){
+    unsigned char csr = 0;
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_ALP) != 0){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 200000u; i++){
+        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
+            (csr & CYW43_CLK_ALP_AVAIL)){
+            return 0;
+        }
+        asm volatile("nop");
+    }
+    uart_puts("CYW43: ALP clock timeout csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+    return -1;
 }
 
 static void cyw43_drop_sdio_state(void){
@@ -265,6 +372,12 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
                                        unsigned int nvram_len){
     static unsigned char nvram_packed[CYW43_NVRAM_PACKED_MAX];
     unsigned int nvram_packed_len = 0;
+    unsigned int nvram_addr = 0;
+    unsigned int nvram_words = 0;
+    unsigned int nvram_token = 0;
+    unsigned int chip_id = 0;
+    unsigned char token_buf[4];
+    unsigned char zero_buf[4] = {0, 0, 0, 0};
 
     if (!fw_bin || fw_len == 0u || !nvram_txt || nvram_len == 0u){
         return -1;
@@ -285,14 +398,54 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
         return -1;
     }
 
-    // Phase-1 uploader: copy firmware + packed NVRAM to staged RAM addresses.
-    // Full backplane core reset/clock and verify sequence comes next.
-    if (cyw43_write_stage(CYW43_FW_STAGE_ADDR, fw_bin, fw_len) != 0){
+    if (cyw43_request_alp_clock() != 0){
+        uart_puts("CYW43: ALP clock request failed\n");
+        return -1;
+    }
+
+    if (cyw43_backplane_read32(CYW43_ENUM_BASE, &chip_id) == 0){
+        uart_puts("CYW43: chip id/rev=");
+        uart_puthex(chip_id);
+        uart_puts("\n");
+    } else{
+        uart_puts("CYW43: chip id read failed\n");
+        return -1;
+    }
+
+    uart_puts("CYW43: uploading firmware bytes=");
+    uart_putdec(fw_len);
+    uart_puts("\n");
+
+    // Circle clears the last RAM word before the download, writes firmware at
+    // RAM base, then places packed NVRAM near the RAM top and writes a length
+    // token into the final word.
+    if (cyw43_backplane_write(CYW43_RAM_BASE + CYW43_RAM_SIZE - 4u, zero_buf, sizeof(zero_buf)) != 0){
+        uart_puts("CYW43: RAM token clear failed\n");
+        return -1;
+    }
+
+    if (cyw43_backplane_write(CYW43_RAM_BASE, fw_bin, fw_len) != 0){
         uart_puts("CYW43: firmware upload failed\n");
         return -1;
     }
-    if (cyw43_write_stage(CYW43_NVRAM_STAGE_ADDR, nvram_packed, nvram_packed_len) != 0){
+
+    nvram_addr = CYW43_RAM_BASE + CYW43_RAM_SIZE - nvram_packed_len - 4u;
+    uart_puts("CYW43: uploading NVRAM bytes=");
+    uart_putdec(nvram_packed_len);
+    uart_puts(" addr=");
+    uart_puthex(nvram_addr);
+    uart_puts("\n");
+
+    if (cyw43_backplane_write(nvram_addr, nvram_packed, nvram_packed_len) != 0){
         uart_puts("CYW43: NVRAM upload failed\n");
+        return -1;
+    }
+
+    nvram_words = nvram_packed_len / 4u;
+    nvram_token = (nvram_words & 0xFFFFu) | ((~nvram_words) << 16);
+    put_le32(token_buf, nvram_token);
+    if (cyw43_backplane_write(CYW43_RAM_BASE + CYW43_RAM_SIZE - 4u, token_buf, sizeof(token_buf)) != 0){
+        uart_puts("CYW43: NVRAM token write failed\n");
         return -1;
     }
 
