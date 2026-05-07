@@ -280,14 +280,21 @@ void sdio_bus_reset_state(void){
     g_ocr = 0;
 }
 
-static int sdio_bus_init_common(int pulse_wl_on){
+void sdio_bus_suspend_state(void){
+    g_ready = 0;
+}
+
+static int sdio_bus_init_common(int pulse_wl_on, int live_reattach){
     unsigned int resp = 0;
     unsigned int c1 = 0;
     unsigned int irpt = 0;
+    unsigned short saved_rca = g_rca;
 
     g_ready = 0;
-    g_rca = 0;
-    g_ocr = 0;
+    if (!live_reattach){
+        g_rca = 0;
+        g_ocr = 0;
+    }
 
     // Circle's ether4330 first disconnects EMMC from the SD-card pins
     // (GPIO48..53 ALT0), then connects EMMC to WiFi SDIO on GPIO34..39 ALT3.
@@ -344,6 +351,25 @@ static int sdio_bus_init_common(int pulse_wl_on){
     sdio_clear_interrupts();
     EMMC_IRPT_MASK = 0xFFFFFFFFu;
     EMMC_IRPT_EN = 0xFFFFFFFFu;
+
+    if (live_reattach && saved_rca != 0u){
+        g_rca = saved_rca;
+        uart_puts("SDIO: stage live reselect\n");
+        if (sdio_cmd(7, (unsigned int)g_rca << 16, CMD_RSPNS_48B | CMD_CRCCHK_EN | CMD_IXCHK_EN, 120) != 0){
+            uart_puts("SDIO: live reselect failed\n");
+            return -1;
+        }
+
+        g_ready = 1;
+        EMMC_CONTROL0 |= C0_HCTL_DWIDTH;
+        sdio_fn0_set_bits(SDIO_CCCR_HIGHSPEED, 0x02u);
+        sdio_fn0_set_bits(SDIO_CCCR_BUS_CTRL, 0x02u);
+        sdio_set_block_size(1, 64u);
+        sdio_set_block_size(2, 512u);
+        (void)sdio_cmd52(1, 0, SDIO_CCCR_INT_EN, 0x00u, 0);
+        uart_puts("SDIO: live reattach OK\n");
+        return 0;
+    }
 
     uart_puts("SDIO: stage CMD0\n");
     if (sdio_cmd(0, 0, CMD_RSPNS_NONE, 120) != 0){
@@ -426,11 +452,11 @@ static int sdio_bus_init_common(int pulse_wl_on){
 }
 
 int sdio_bus_init(void){
-    return sdio_bus_init_common(1);
+    return sdio_bus_init_common(1, 0);
 }
 
 int sdio_bus_reattach(void){
-    return sdio_bus_init_common(0);
+    return sdio_bus_init_common(0, 1);
 }
 
 int sdio_bus_cmd52_read(unsigned int fn, unsigned int addr, unsigned char* out_val){

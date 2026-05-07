@@ -963,7 +963,7 @@ int cyw43_release_emmc_for_storage(void){
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.wifi_configured = 0;
-    sdio_bus_reset_state();
+    sdio_bus_suspend_state();
     blockdev_reserve_emmc_for_wifi(0);
     return 0;
 }
