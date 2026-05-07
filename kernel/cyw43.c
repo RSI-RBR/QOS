@@ -70,8 +70,6 @@
 #define CYW43_WLC_SET_INFRA     20u
 #define CYW43_WLC_SET_AUTH      22u
 #define CYW43_WLC_SET_SSID      26u
-#define CYW43_WLC_SCAN          50u
-#define CYW43_WLC_SCAN_RESULTS  51u
 #define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
@@ -79,10 +77,15 @@
 #define CYW43_WLC_SET_VAR       263u
 #define CYW43_WLC_SET_WSEC_PMK  268u
 
+#define CYW43_EV_ESCAN_RESULT   69u
+#define CYW43_STATUS_SUCCESS    0u
+#define CYW43_STATUS_PARTIAL    8u
+#define CYW43_ESCAN_REQ_VERSION 1u
+#define CYW43_ESCAN_ACTION_START 1u
+#define CYW43_ESCAN_SYNC_ID     0x1234u
+
 #define CYW43_WL_IOVAR_BUF_LEN  256u
-#define CYW43_WL_BSS_INFO_VER   109u
-#define CYW43_WL_SCAN_BUF_LEN   1800u
-#define CYW43_WL_SCAN_PARAMS_LEN 64u
+#define CYW43_WL_ESCAN_PARAMS_LEN 76u
 #define CYW43_WL_MAX_SSID_LEN   32u
 #define CYW43_DOT11_BSSTYPE_ANY 2u
 #define CYW43_WSEC_AES          0x0004u
@@ -157,6 +160,13 @@ static unsigned int get_le32(const unsigned char in[4]){
            ((unsigned int)in[1] << 8) |
            ((unsigned int)in[2] << 16) |
            ((unsigned int)in[3] << 24);
+}
+
+static unsigned int get_be32(const unsigned char in[4]){
+    return ((unsigned int)in[0] << 24) |
+           ((unsigned int)in[1] << 16) |
+           ((unsigned int)in[2] << 8) |
+           ((unsigned int)in[3]);
 }
 
 static unsigned int round4_u32(unsigned int n){
@@ -1244,11 +1254,62 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     return 0;
 }
 
-static unsigned int cyw43_wl_cmd_max_tries(unsigned int op){
-    if (op == CYW43_WLC_SCAN){
-        return 12u;
+static int cyw43_wl_cmd_write_nowait(unsigned int op,
+                                     const unsigned char* data,
+                                     unsigned int data_len){
+    static unsigned char tx[CYW43_PACKET_MAX_BYTES];
+    unsigned int raw_frame_len = 0;
+    unsigned int frame_len = 0;
+    unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
+    unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
+    unsigned short reqid = 0;
+
+    if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
+        return -1;
     }
-    return 3u;
+    if (cyw43_sdio_keep_awake() != 0){
+        return -1;
+    }
+
+    raw_frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + data_len;
+    frame_len = round4_u32(raw_frame_len);
+    if (frame_len > CYW43_PACKET_MAX_BYTES){
+        return -1;
+    }
+
+    mem_zero_local(tx, sizeof(tx));
+    put_le16(tx + 0u, frame_len);
+    put_le16(tx + 2u, frame_len ^ 0xFFFFu);
+    tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
+    tx[5] = CYW43_SDPCM_CH_CONTROL;
+    tx[6] = 0;
+    tx[7] = CYW43_SDPCM_HDR_LEN;
+    tx[8] = 0;
+    tx[9] = 0;
+    tx[10] = 0;
+    tx[11] = 0;
+
+    reqid = (unsigned short)(g_cyw43.reqid + 1u);
+    if (reqid == 0u){
+        reqid = 1u;
+    }
+    g_cyw43.reqid = reqid;
+
+    put_le32(tx + cmd_off + 0u, op);
+    put_le32(tx + cmd_off + 4u, data_len);
+    put_le16(tx + cmd_off + 8u, 2u);
+    put_le16(tx + cmd_off + 10u, reqid);
+    put_le32(tx + cmd_off + 12u, 0u);
+
+    if (data && data_len > 0u){
+        mem_copy_local(tx + payload_off, data, data_len);
+    }
+
+    if (cyw43_packet_write(tx, frame_len) != 0){
+        return -1;
+    }
+    g_cyw43.sdpcm_tx_seq++;
+    return 0;
 }
 
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -1315,7 +1376,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
     g_cyw43.sdpcm_tx_seq++;
 
-    for (unsigned int tries = 0; tries < cyw43_wl_cmd_max_tries(op); tries++){
+    for (unsigned int tries = 0; tries < 3u; tries++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         unsigned int doffset = 0;
@@ -1430,6 +1491,35 @@ static int cyw43_wl_set_var(const char* name, const unsigned char* data,
     return cyw43_wl_cmd(1, CYW43_WLC_SET_VAR, buf, total_len, 0, 0, 0);
 }
 
+static int cyw43_wl_set_var_nowait(const char* name, const unsigned char* data,
+                                   unsigned int data_len){
+    unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
+    unsigned int name_len = 0;
+    unsigned int total_len = 0;
+
+    if (!name){
+        return -1;
+    }
+    name_len = strn_len_local(name, 63u);
+    if (name_len == 0u || name_len >= 64u){
+        return -1;
+    }
+    total_len = name_len + 1u + data_len;
+    if (total_len > sizeof(buf)){
+        return -1;
+    }
+
+    mem_zero_local(buf, sizeof(buf));
+    for (unsigned int i = 0; i < name_len; i++){
+        buf[i] = (unsigned char)name[i];
+    }
+    if (data && data_len > 0u){
+        mem_copy_local(buf + name_len + 1u, data, data_len);
+    }
+
+    return cyw43_wl_cmd_write_nowait(CYW43_WLC_SET_VAR, buf, total_len);
+}
+
 static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
     unsigned char buf[4];
     put_le32(buf, value);
@@ -1457,31 +1547,34 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_scan_submit(void){
-    unsigned char params[CYW43_WL_SCAN_PARAMS_LEN];
+static int cyw43_wl_escan_submit(void){
+    unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
 
     mem_zero_local(params, sizeof(params));
     /*
-     * wl_scan_params:
-     *   wlc_ssid_t ssid;        // len 0 = wildcard
-     *   ether_addr bssid;       // ff:ff:ff:ff:ff:ff = broadcast scan
-     *   int8 bss_type;          // any
-     *   uint8 scan_type;        // default active/passive policy
-     *   int32 nprobes/active/passive/home_time; bounded scan timings
-     *   int32 channel_num;      // 0 = all channels, no appended channel list
+     * wl_escan_params:
+     *   uint32 version;
+     *   uint16 action;
+     *   uint16 sync_id;
+     *   wl_scan_params params;  // wildcard SSID, broadcast BSSID
      */
-    for (unsigned int i = 36u; i < 42u; i++){
+    put_le32(params + 0u, CYW43_ESCAN_REQ_VERSION);
+    put_le16(params + 4u, CYW43_ESCAN_ACTION_START);
+    put_le16(params + 6u, CYW43_ESCAN_SYNC_ID);
+
+    for (unsigned int i = 44u; i < 50u; i++){
         params[i] = 0xFFu;
     }
-    params[42u] = CYW43_DOT11_BSSTYPE_ANY;
-    params[43u] = 0u;
-    put_le32(params + 44u, 3u);    // probes per channel
-    put_le32(params + 48u, 120u);  // active dwell ms
-    put_le32(params + 52u, 360u);  // passive dwell ms
-    put_le32(params + 56u, 40u);   // home channel dwell ms
-    put_le32(params + 60u, 0u);
+    params[50u] = CYW43_DOT11_BSSTYPE_ANY;
+    params[51u] = 0u;
+    put_le32(params + 52u, 3u);    // probes per channel
+    put_le32(params + 56u, 120u);  // active dwell ms
+    put_le32(params + 60u, 360u);  // passive dwell ms
+    put_le32(params + 64u, 40u);   // home channel dwell ms
+    put_le32(params + 68u, 0u);
+    put_le16(params + 72u, 0u);
 
-    return cyw43_wl_cmd(1, CYW43_WLC_SCAN, params, sizeof(params), 0, 0, 0);
+    return cyw43_wl_set_var_nowait("escan", params, sizeof(params));
 }
 
 static int cyw43_wl_set_pmk(const char* password){
@@ -1591,84 +1684,176 @@ static int cyw43_wifi_configure_on(void){
     return 0;
 }
 
-static unsigned int cyw43_bss_channel(const unsigned char* bss, unsigned int ver){
-    if (ver == 107u){
-        return (unsigned int)bss[72u];
+static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
+                                       unsigned int ev_scan_len,
+                                       cyw43_scan_result_t* out,
+                                       unsigned int cap,
+                                       unsigned int* count){
+    unsigned int ssid_len = 0;
+
+    if (!ev_scan || !out || !count || *count >= cap || ev_scan_len < 90u){
+        return -1;
     }
 
-    /*
-     * For 4343x chanspecs the low byte is the primary channel. ctl_ch is a
-     * useful fallback for modern version-109 BSS records.
-     */
-    unsigned int ch = get_le16(bss + 72u) & 0xFFu;
-    if (ch == 0u){
-        ch = (unsigned int)bss[88u];
+    ssid_len = (unsigned int)ev_scan[30u];
+    if (ssid_len > CYW43_WL_MAX_SSID_LEN){
+        ssid_len = CYW43_WL_MAX_SSID_LEN;
     }
-    return ch;
+    for (unsigned int i = 0; i < ssid_len; i++){
+        out[*count].ssid[i] = (char)ev_scan[31u + i];
+    }
+    out[*count].ssid[ssid_len] = 0;
+    if (ssid_len == 0u){
+        out[*count].ssid[0] = '<';
+        out[*count].ssid[1] = 'h';
+        out[*count].ssid[2] = 'i';
+        out[*count].ssid[3] = 'd';
+        out[*count].ssid[4] = 'd';
+        out[*count].ssid[5] = 'e';
+        out[*count].ssid[6] = 'n';
+        out[*count].ssid[7] = '>';
+        out[*count].ssid[8] = 0;
+    }
+
+    if (ev_scan_len >= 92u){
+        out[*count].channel = (unsigned char)(get_le16(ev_scan + 84u) & 0xFFu);
+        out[*count].auth = ev_scan[88u];
+        out[*count].rssi_dbm = get_le16s(ev_scan + 90u);
+    } else{
+        out[*count].channel = (unsigned char)(get_le16(ev_scan + 83u) & 0xFFu);
+        out[*count].auth = ev_scan[87u];
+        out[*count].rssi_dbm = get_le16s(ev_scan + 88u);
+    }
+    (*count)++;
+    return 0;
 }
 
-static void cyw43_parse_scan_results(const unsigned char* buf, unsigned int buf_len,
-                                     cyw43_scan_result_t* out, unsigned int cap,
-                                     unsigned int* out_count){
-    unsigned int firmware_count = 0;
-    unsigned int pos = 12u;
-    unsigned int count = 0;
+static int cyw43_find_escan_event_msg(const unsigned char* packet,
+                                      unsigned int packet_len,
+                                      unsigned int* event_msg_off){
+    if (!packet || !event_msg_off){
+        return -1;
+    }
 
-    if (!out_count){
+    if (packet_len >= 72u &&
+        get_be32(packet + 28u) == CYW43_EV_ESCAN_RESULT){
+        *event_msg_off = 24u;
+        return 0;
+    }
+
+    for (unsigned int off = 0; off + 72u <= packet_len && off < 160u; off++){
+        unsigned int event_type = get_be32(packet + off + 4u);
+        unsigned int status = get_be32(packet + off + 8u);
+        if (event_type == CYW43_EV_ESCAN_RESULT &&
+            (status == CYW43_STATUS_PARTIAL || status == CYW43_STATUS_SUCCESS)){
+            *event_msg_off = off;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void cyw43_log_control_status(const unsigned char* frame,
+                                     unsigned int frame_len){
+    unsigned int channel = 0;
+    unsigned int doffset = 0;
+    unsigned int status = 0;
+
+    if (!frame || frame_len < CYW43_SDPCM_HDR_LEN){
         return;
     }
-    *out_count = 0;
-    if (!buf || !out || cap == 0u || buf_len < 12u){
+    channel = frame[5] & 0x0Fu;
+    if (channel != CYW43_SDPCM_CH_CONTROL){
         return;
     }
+    doffset = frame[7];
+    if (doffset < CYW43_SDPCM_HDR_LEN ||
+        doffset + CYW43_CDC_HDR_LEN > frame_len){
+        return;
+    }
+    status = get_le32(frame + doffset + 12u);
+    if (status != 0u){
+        uart_puts("CYW43: control status=");
+        uart_putdec(status);
+        uart_puts("\n");
+    }
+}
 
-    firmware_count = get_le32(buf + 8u);
-    for (unsigned int i = 0; i < firmware_count && count < cap; i++){
-        const unsigned char* bss = buf + pos;
-        unsigned int ver = 0;
-        unsigned int len = 0;
-        unsigned int ssid_len = 0;
-        unsigned int capinfo = 0;
+static int cyw43_handle_escan_frame(const unsigned char* frame,
+                                    unsigned int frame_len,
+                                    cyw43_scan_result_t* out,
+                                    unsigned int cap,
+                                    unsigned int* count,
+                                    unsigned int* done){
+    unsigned int channel = 0;
+    unsigned int doffset = 0;
+    unsigned int payload_off = 0;
+    unsigned int event_type = 0;
+    unsigned int status = 0;
+    unsigned int data_len = 0;
+    unsigned int packet_len = 0;
+    unsigned int event_msg_off = 0;
+    const unsigned char* event_packet = 0;
+    const unsigned char* event_msg = 0;
 
-        if (pos + 82u > buf_len){
-            break;
-        }
-        ver = get_le32(bss + 0u);
-        len = get_le32(bss + 4u);
-        if (len < 82u || pos + len > buf_len){
-            break;
-        }
-
-        ssid_len = (unsigned int)bss[18u];
-        if (ssid_len > CYW43_WL_MAX_SSID_LEN){
-            ssid_len = CYW43_WL_MAX_SSID_LEN;
-        }
-        for (unsigned int s = 0; s < ssid_len; s++){
-            out[count].ssid[s] = (char)bss[19u + s];
-        }
-        out[count].ssid[ssid_len] = 0;
-        if (ssid_len == 0u){
-            out[count].ssid[0] = '<';
-            out[count].ssid[1] = 'h';
-            out[count].ssid[2] = 'i';
-            out[count].ssid[3] = 'd';
-            out[count].ssid[4] = 'd';
-            out[count].ssid[5] = 'e';
-            out[count].ssid[6] = 'n';
-            out[count].ssid[7] = '>';
-            out[count].ssid[8] = 0;
-        }
-
-        capinfo = get_le16(bss + 16u);
-        out[count].channel = (unsigned char)cyw43_bss_channel(bss, ver);
-        out[count].rssi_dbm = get_le16s(bss + 78u);
-        out[count].auth = (capinfo & 0x0010u) ? 3u : 0u;
-        count++;
-
-        pos += len;
+    if (done){
+        *done = 0;
+    }
+    if (!frame || !out || !count || !done || frame_len < CYW43_SDPCM_HDR_LEN){
+        return 0;
     }
 
-    *out_count = count;
+    channel = frame[5] & 0x0Fu;
+    if (channel != CYW43_SDPCM_CH_EVENT){
+        return 0;
+    }
+
+    doffset = frame[7];
+    if (doffset < CYW43_SDPCM_HDR_LEN || doffset + 4u > frame_len){
+        return 0;
+    }
+
+    payload_off = doffset + 4u + ((unsigned int)frame[doffset + 3u] << 2);
+    if (payload_off >= frame_len){
+        return 0;
+    }
+
+    event_packet = frame + payload_off;
+    packet_len = frame_len - payload_off;
+    if (cyw43_find_escan_event_msg(event_packet, packet_len, &event_msg_off) != 0){
+        return 0;
+    }
+
+    event_msg = event_packet + event_msg_off;
+    event_type = get_be32(event_msg + 4u);
+    status = get_be32(event_msg + 8u);
+    data_len = get_be32(event_msg + 20u);
+
+    if (event_type != CYW43_EV_ESCAN_RESULT){
+        return 0;
+    }
+
+    if (status == CYW43_STATUS_PARTIAL){
+        const unsigned char* ev_scan = event_msg + 48u;
+        unsigned int ev_scan_off = payload_off + event_msg_off + 48u;
+        unsigned int remain = frame_len - ev_scan_off;
+        if (data_len != 0u && data_len < remain){
+            remain = data_len;
+        }
+        (void)cyw43_add_scan_event_result(ev_scan, remain, out, cap, count);
+        return 1;
+    }
+
+    if (status == CYW43_STATUS_SUCCESS){
+        *done = 1;
+        return 1;
+    }
+
+    uart_puts("CYW43: escan status=");
+    uart_putdec(status);
+    uart_puts("\n");
+    *done = 1;
+    return 1;
 }
 
 int cyw43_get_firmware_version(char* out, unsigned int out_cap){
@@ -1744,8 +1929,9 @@ int cyw43_ioctl_down(void){
 }
 
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count){
-    static unsigned char results_buf[CYW43_WL_SCAN_BUF_LEN];
-    unsigned int actual = 0;
+    static unsigned char rx[CYW43_PACKET_MAX_BYTES];
+    unsigned int count = 0;
+    unsigned int done = 0;
 
     if (!out_count){
         return -1;
@@ -1755,35 +1941,27 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
         return -1;
     }
 
-    if (cyw43_wl_scan_submit() != 0){
-        uart_puts("CYW43: scan submit failed\n");
+    if (cyw43_wl_escan_submit() != 0){
+        uart_puts("CYW43: escan submit failed\n");
         return -1;
     }
 
-    /*
-     * Minimal blocking scan path. Later we should consume firmware events and
-     * make this asynchronous, but the first goal is to prove real radio results.
-     */
-    for (unsigned int wait = 0; wait < 16u; wait++){
-        mem_zero_local(results_buf, sizeof(results_buf));
-        put_le32(results_buf + 0u, sizeof(results_buf));
-        put_le32(results_buf + 4u, CYW43_WL_BSS_INFO_VER);
-        put_le32(results_buf + 8u, 0u);
-
-        if (cyw43_wl_cmd(0, CYW43_WLC_SCAN_RESULTS,
-                         results_buf, 12u,
-                         results_buf, sizeof(results_buf),
-                         &actual) == 0){
-            cyw43_parse_scan_results(results_buf, actual, out, cap, out_count);
-            if (*out_count > 0u || wait + 1u >= 16u){
-                g_cyw43.last_scan_count = *out_count;
-                return 0;
-            }
+    for (unsigned int wait = 0; wait < 12u && !done; wait++){
+        unsigned int rx_len = 0;
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len) != 0){
+            continue;
         }
-        cyw43_delay(500000u);
+        cyw43_log_control_status(rx, rx_len);
+        (void)cyw43_handle_escan_frame(rx, rx_len, out, cap, &count, &done);
     }
 
-    uart_puts("CYW43: scan results failed\n");
+    *out_count = count;
+    g_cyw43.last_scan_count = count;
+    if (done || count > 0u){
+        return 0;
+    }
+
+    uart_puts("CYW43: escan timed out\n");
     return -1;
 }
 
