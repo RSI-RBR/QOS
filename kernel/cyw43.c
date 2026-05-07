@@ -65,8 +65,25 @@
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  2048u
 #define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
+#define CYW43_WLC_SET_INFRA     20u
+#define CYW43_WLC_SET_AUTH      22u
+#define CYW43_WLC_SET_SSID      26u
+#define CYW43_WLC_SCAN          50u
+#define CYW43_WLC_SCAN_RESULTS  51u
+#define CYW43_WLC_SET_WSEC      134u
+#define CYW43_WLC_SET_WPA_AUTH  165u
 #define CYW43_WLC_GET_VAR       262u
 #define CYW43_WLC_SET_VAR       263u
+#define CYW43_WLC_SET_WSEC_PMK  268u
+
+#define CYW43_WL_BSS_INFO_VER   109u
+#define CYW43_WL_SCAN_BUF_LEN   1800u
+#define CYW43_WL_MAX_SSID_LEN   32u
+#define CYW43_WSEC_AES          0x0004u
+#define CYW43_WSEC_PASSPHRASE   0x0001u
+#define CYW43_WPA_AUTH_DISABLED 0x0000u
+#define CYW43_WPA_AUTH_PSK      0x0004u
+#define CYW43_WPA2_AUTH_PSK     0x0080u
 
 // CYW43430/CYW43438 firmware RAM layout. The full Circle path discovers this
 // by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
@@ -121,6 +138,11 @@ static void put_le16(unsigned char out[2], unsigned int v){
 static unsigned int get_le16(const unsigned char in[2]){
     return ((unsigned int)in[0]) |
            ((unsigned int)in[1] << 8);
+}
+
+static int get_le16s(const unsigned char in[2]){
+    unsigned int v = get_le16(in);
+    return (v & 0x8000u) ? ((int)v - 65536) : (int)v;
 }
 
 static unsigned int get_le32(const unsigned char in[4]){
@@ -1314,9 +1336,6 @@ static int cyw43_wl_cmd(int write, unsigned int op,
         }
 
         cdc_len = get_le32(rx + doffset + 4u);
-        if (result_actual){
-            *result_actual = cdc_len;
-        }
         if (!write && result && result_len > 0u){
             if (doffset + CYW43_CDC_HDR_LEN > rx_len){
                 return -1;
@@ -1329,6 +1348,9 @@ static int cyw43_wl_cmd(int write, unsigned int op,
                 copy_len = result_len;
             }
             mem_copy_local(result, rx + doffset + CYW43_CDC_HDR_LEN, copy_len);
+        }
+        if (result_actual){
+            *result_actual = copy_len ? copy_len : cdc_len;
         }
         return 0;
     }
@@ -1357,6 +1379,130 @@ static int cyw43_wl_get_var(const char* name, unsigned char* out,
     }
     return cyw43_wl_cmd(0, CYW43_WLC_GET_VAR, name_buf, name_len + 1u,
                         out, out_cap, out_len);
+}
+
+static int cyw43_wl_set_int(unsigned int op, unsigned int value){
+    unsigned char buf[4];
+    put_le32(buf, value);
+    return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
+}
+
+static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
+    unsigned char buf[36];
+    unsigned int len = 0;
+
+    mem_zero_local(buf, sizeof(buf));
+    if (ssid){
+        len = strn_len_local(ssid, CYW43_WL_MAX_SSID_LEN);
+    }
+    put_le32(buf, len);
+    for (unsigned int i = 0; i < len; i++){
+        buf[4u + i] = (unsigned char)ssid[i];
+    }
+    return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
+}
+
+static int cyw43_wl_set_pmk(const char* password){
+    unsigned char pmk[68];
+    unsigned int len = 0;
+
+    if (!password){
+        return -1;
+    }
+    len = strn_len_local(password, 65u);
+    if (len < 8u || len > 64u){
+        uart_puts("CYW43: WPA password must be 8..64 chars\n");
+        return -1;
+    }
+
+    mem_zero_local(pmk, sizeof(pmk));
+    put_le16(pmk + 0u, len);
+    put_le16(pmk + 2u, (len < 64u) ? CYW43_WSEC_PASSPHRASE : 0u);
+    for (unsigned int i = 0; i < len; i++){
+        pmk[4u + i] = (unsigned char)password[i];
+    }
+
+    return cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+}
+
+static unsigned int cyw43_bss_channel(const unsigned char* bss, unsigned int ver){
+    if (ver == 107u){
+        return (unsigned int)bss[72u];
+    }
+
+    /*
+     * For 4343x chanspecs the low byte is the primary channel. ctl_ch is a
+     * useful fallback for modern version-109 BSS records.
+     */
+    unsigned int ch = get_le16(bss + 72u) & 0xFFu;
+    if (ch == 0u){
+        ch = (unsigned int)bss[88u];
+    }
+    return ch;
+}
+
+static void cyw43_parse_scan_results(const unsigned char* buf, unsigned int buf_len,
+                                     cyw43_scan_result_t* out, unsigned int cap,
+                                     unsigned int* out_count){
+    unsigned int firmware_count = 0;
+    unsigned int pos = 12u;
+    unsigned int count = 0;
+
+    if (!out_count){
+        return;
+    }
+    *out_count = 0;
+    if (!buf || !out || cap == 0u || buf_len < 12u){
+        return;
+    }
+
+    firmware_count = get_le32(buf + 8u);
+    for (unsigned int i = 0; i < firmware_count && count < cap; i++){
+        const unsigned char* bss = buf + pos;
+        unsigned int ver = 0;
+        unsigned int len = 0;
+        unsigned int ssid_len = 0;
+        unsigned int capinfo = 0;
+
+        if (pos + 82u > buf_len){
+            break;
+        }
+        ver = get_le32(bss + 0u);
+        len = get_le32(bss + 4u);
+        if (len < 82u || pos + len > buf_len){
+            break;
+        }
+
+        ssid_len = (unsigned int)bss[18u];
+        if (ssid_len > CYW43_WL_MAX_SSID_LEN){
+            ssid_len = CYW43_WL_MAX_SSID_LEN;
+        }
+        for (unsigned int s = 0; s < ssid_len; s++){
+            out[count].ssid[s] = (char)bss[19u + s];
+        }
+        out[count].ssid[ssid_len] = 0;
+        if (ssid_len == 0u){
+            out[count].ssid[0] = '<';
+            out[count].ssid[1] = 'h';
+            out[count].ssid[2] = 'i';
+            out[count].ssid[3] = 'd';
+            out[count].ssid[4] = 'd';
+            out[count].ssid[5] = 'e';
+            out[count].ssid[6] = 'n';
+            out[count].ssid[7] = '>';
+            out[count].ssid[8] = 0;
+        }
+
+        capinfo = get_le16(bss + 16u);
+        out[count].channel = (unsigned char)cyw43_bss_channel(bss, ver);
+        out[count].rssi_dbm = get_le16s(bss + 78u);
+        out[count].auth = (capinfo & 0x0010u) ? 3u : 0u;
+        count++;
+
+        pos += len;
+    }
+
+    *out_count = count;
 }
 
 int cyw43_get_firmware_version(char* out, unsigned int out_cap){
@@ -1413,43 +1559,87 @@ int cyw43_ioctl_down(void){
 }
 
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count){
+    static unsigned char results_buf[CYW43_WL_SCAN_BUF_LEN];
+    unsigned int actual = 0;
+
     if (!out_count){
         return -1;
     }
+    *out_count = 0;
     if (!g_cyw43.iface_up){
-        *out_count = 0;
         return -1;
     }
 
-    // Phase-1 scaffold: report one synthetic AP entry so shell flow and
-    // userspace integration can be validated before full event path lands.
-    if (out && cap > 0u){
-        unsigned int i = 0;
-        const char* demo = "QOS-LAB";
-        for (i = 0; i < 32u && demo[i]; i++){
-            out[0].ssid[i] = demo[i];
-        }
-        out[0].ssid[i] = 0;
-        out[0].channel = 6;
-        out[0].rssi_dbm = -42;
-        out[0].auth = 3; // WPA2-PSK style marker in this scaffold.
-        *out_count = 1u;
-    } else{
-        *out_count = 0u;
+    if (cyw43_wl_set_ssid_cmd(CYW43_WLC_SCAN, "") != 0){
+        uart_puts("CYW43: scan submit failed\n");
+        return -1;
     }
 
-    g_cyw43.last_scan_count = *out_count;
-    return 0;
+    /*
+     * Minimal blocking scan path. Later we should consume firmware events and
+     * make this asynchronous, but the first goal is to prove real radio results.
+     */
+    for (unsigned int wait = 0; wait < 16u; wait++){
+        mem_zero_local(results_buf, sizeof(results_buf));
+        put_le32(results_buf + 0u, sizeof(results_buf));
+        put_le32(results_buf + 4u, CYW43_WL_BSS_INFO_VER);
+        put_le32(results_buf + 8u, 0u);
+
+        if (cyw43_wl_cmd(0, CYW43_WLC_SCAN_RESULTS,
+                         results_buf, 12u,
+                         results_buf, sizeof(results_buf),
+                         &actual) == 0){
+            cyw43_parse_scan_results(results_buf, actual, out, cap, out_count);
+            if (*out_count > 0u || wait + 1u >= 16u){
+                g_cyw43.last_scan_count = *out_count;
+                return 0;
+            }
+        }
+        cyw43_delay(500000u);
+    }
+
+    uart_puts("CYW43: scan results failed\n");
+    return -1;
 }
 
 int cyw43_ioctl_join(const char* ssid, const char* password){
     unsigned int n = 0;
-    (void)password;
 
     if (!ssid || !*ssid || !g_cyw43.iface_up){
         return -1;
     }
     n = strn_len_local(ssid, 32u);
+    if (n == 0u || n > CYW43_WL_MAX_SSID_LEN){
+        return -1;
+    }
+
+    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0 ||
+        cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
+        uart_puts("CYW43: join basic mode setup failed\n");
+        return -1;
+    }
+
+    if (password && *password){
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, CYW43_WSEC_AES) != 0 ||
+            cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH,
+                             CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK) != 0 ||
+            cyw43_wl_set_pmk(password) != 0){
+            uart_puts("CYW43: join WPA setup failed\n");
+            return -1;
+        }
+    } else{
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, 0u) != 0 ||
+            cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA_AUTH_DISABLED) != 0){
+            uart_puts("CYW43: join open setup failed\n");
+            return -1;
+        }
+    }
+
+    if (cyw43_wl_set_ssid_cmd(CYW43_WLC_SET_SSID, ssid) != 0){
+        uart_puts("CYW43: set ssid failed\n");
+        return -1;
+    }
+
     for (unsigned int i = 0; i < n; i++){
         g_cyw43.joined_ssid[i] = ssid[i];
     }
