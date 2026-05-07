@@ -6,6 +6,7 @@
 #include "net_proto.h"
 #include "icmp.h"
 #include "arp.h"
+#include "timer.h"
 #include "spinlock.h"
 #include "crypto.h"
 
