@@ -5,6 +5,7 @@ OBJCOPY = $(CROSS)objcopy
 
 CFLAGS = -ffreestanding -nostdlib -O2 -pie -mgeneral-regs-only -DQOS_USERSPACE -I../../include
 SIGN_KEY ?=
+PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 
 all: webbrowser.bin
@@ -23,7 +24,7 @@ webbrowser.raw: webbrowser.elf
 
 webbrowser.bin: webbrowser.raw
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py webbrowser.raw webbrowser.bin "WEBBROWSBIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)"
+	python3 build_program.py webbrowser.raw webbrowser.bin "WEBBROWSBIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" webbrowser.pqs
 
 clean:
-	rm -f *.o *.elf *.raw *.bin
+	rm -f *.o *.elf *.raw *.bin *.pqs

@@ -7,6 +7,10 @@ BUILD = build
 OPENSSL_BIN ?= openssl
 ADMIN_SIGN_KEY ?=
 DEV_SIGN_KEY ?=
+ADMIN_LAMPORT_PUB ?=
+DEV_LAMPORT_PUB ?=
+ADMIN_LAMPORT_SIGN_KEY ?=
+DEV_LAMPORT_SIGN_KEY ?=
 
 CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -Iinclude -Ithird_party/ed25519/src
 LDFLAGS = -T linker.ld
@@ -46,6 +50,7 @@ kernel/blockdev.c \
 kernel/syscall.c \
 kernel/kernel_verify.c \
 kernel/ed25519_verify.c \
+kernel/lamport.c \
 kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \
@@ -98,11 +103,11 @@ check-signing-inputs:
 	@if [ -z "$(DEV_SIGN_KEY)" ]; then echo "DEV_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
 
 trust-keys-header:
-	python3 tools/gen_trust_keys_header.py include/trust_keys_autogen.h "$(ADMIN_SIGN_KEY)" "$(DEV_SIGN_KEY)" "$(OPENSSL_BIN)"
+	python3 tools/gen_trust_keys_header.py include/trust_keys_autogen.h "$(ADMIN_SIGN_KEY)" "$(DEV_SIGN_KEY)" "$(OPENSSL_BIN)" "$(ADMIN_LAMPORT_PUB)" "$(DEV_LAMPORT_PUB)"
 
 # Generate kernel manifest header from current build.
 manifest-header: kernel8.img
-	python3 tools/gen_kernel_manifest.py $(BUILD)/kernel8.elf kernel8.img include/kernel_manifest_autogen.h $(CROSS)nm 0x1 "$(ADMIN_SIGN_KEY)" "$(OPENSSL_BIN)"
+	python3 tools/gen_kernel_manifest.py $(BUILD)/kernel8.elf kernel8.img include/kernel_manifest_autogen.h $(CROSS)nm 0x1 "$(ADMIN_SIGN_KEY)" "$(OPENSSL_BIN)" "$(ADMIN_LAMPORT_SIGN_KEY)" kernel8.pqs
 
 # Two-pass build:
 # 1) build kernel image
@@ -136,4 +141,4 @@ $(BUILD)/%.o: %.S
 # CLEAN
 # ---------------------------
 clean:
-	rm -rf $(BUILD) kernel8.img
+	rm -rf $(BUILD) kernel8.img kernel8.pqs

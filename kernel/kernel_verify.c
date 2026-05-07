@@ -27,10 +27,13 @@ typedef struct {
 // 0 = warn only, continue boot on failure.
 // 1 = halt boot on failure.
 static const int g_kernel_verify_enforce = 0;
+static const int g_require_kernel_ed25519 = 1;
+static const int g_require_kernel_pq = 0;
+
 static int g_warned_kernel_digest_only = 0;
 static int g_logged_kernel_verify_mode = 0;
 static int g_logged_kernel_ed25519_ok = 0;
-static const int g_require_kernel_ed25519 = 1;
+static int g_warned_kernel_pq_missing = 0;
 
 // Replace digest + signer metadata during provisioning.
 static volatile const kernel_manifest_t g_kernel_manifest
@@ -46,8 +49,15 @@ __attribute__((section(".kmanifest"), used)) = {
 };
 
 #define KERNEL_IMAGE_FAT_NAME "KERNEL8 IMG"
+#define KERNEL_PQ_SIG_FAT_NAME "KERNEL8 PQS"
 #define KERNEL_IMAGE_MAX_SIZE (4u * 1024u * 1024u)
+#define KERNEL_PQ_SIG_HEADER_BYTES 20u
+#define KERNEL_PQ_SIG_MAX (KERNEL_PQ_SIG_HEADER_BYTES + LAMPORT_SIG_BYTES + 32u)
+
 static unsigned char g_kernel_file_buf[KERNEL_IMAGE_MAX_SIZE];
+static unsigned char g_kernel_pq_sig_buf[KERNEL_PQ_SIG_MAX];
+static int g_kernel_pq_cached = 0;
+static int g_kernel_pq_cached_rc = 0;
 
 static char nibble_hex(unsigned int v){
     return (v < 10u) ? (char)('0' + v) : (char)('A' + (v - 10u));
@@ -83,6 +93,58 @@ static int digest_equal(const unsigned char a[32], const unsigned char b[32]){
     return 1;
 }
 
+static int alg_mask_has(unsigned int mask, unsigned int alg){
+    if (alg >= 32u){
+        return 0;
+    }
+    return (mask & (1u << alg)) != 0u;
+}
+
+static void put_u32_le(unsigned char* out, unsigned int v){
+    out[0] = (unsigned char)(v & 0xFFu);
+    out[1] = (unsigned char)((v >> 8) & 0xFFu);
+    out[2] = (unsigned char)((v >> 16) & 0xFFu);
+    out[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
+static unsigned int get_u32_le(const unsigned char* p){
+    return (unsigned int)p[0] |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
+}
+
+static int key_has_lamport_pubkey(const trust_key_t* key){
+    if (!key){
+        return 0;
+    }
+    unsigned char nz = 0;
+    for (unsigned int i = 0; i < LAMPORT_PUBKEY_BYTES; i++){
+        nz |= key->lamport_pubkey[i];
+    }
+    return nz != 0u;
+}
+
+static int build_kernel_sig_message(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
+    static const unsigned char tag[16] = {
+        'Q','O','S','-','K','E','R','N','-','S','I','G','-','V','1','\0'
+    };
+    const unsigned int need = 16u + 4u + 4u + 4u + 4u + 32u + 32u;
+    if (!out || !out_len || out_cap < need){
+        return -1;
+    }
+    unsigned int o = 0;
+    for (unsigned int i = 0; i < 16u; i++) out[o++] = tag[i];
+    put_u32_le(out + o, g_kernel_manifest.manifest_version); o += 4u;
+    put_u32_le(out + o, g_kernel_manifest.signer_key_id); o += 4u;
+    put_u32_le(out + o, g_kernel_manifest.sig_alg); o += 4u;
+    put_u32_le(out + o, g_kernel_manifest.flags); o += 4u;
+    for (unsigned int i = 0; i < 32u; i++) out[o++] = g_kernel_manifest.digest[i];
+    for (unsigned int i = 0; i < 32u; i++) out[o++] = g_kernel_manifest.file_digest[i];
+    *out_len = o;
+    return 0;
+}
+
 static int verify_manifest_policy(void){
     unsigned int signer_key_id = g_kernel_manifest.signer_key_id;
     unsigned int sig_alg = g_kernel_manifest.sig_alg;
@@ -106,7 +168,7 @@ static int verify_manifest_policy(void){
         uart_puts("Kernel verify: signer key missing kernel scope.\n");
         return -1;
     }
-    if ((key->sig_alg_mask & (1u << sig_alg)) == 0u){
+    if (!alg_mask_has(key->sig_alg_mask, sig_alg)){
         uart_puts("Kernel verify: signer key disallows signature algorithm.\n");
         return -1;
     }
@@ -145,13 +207,6 @@ static int verify_manifest_policy(void){
     return 0;
 }
 
-static void put_u32_le(unsigned char* out, unsigned int v){
-    out[0] = (unsigned char)(v & 0xFFu);
-    out[1] = (unsigned char)((v >> 8) & 0xFFu);
-    out[2] = (unsigned char)((v >> 16) & 0xFFu);
-    out[3] = (unsigned char)((v >> 24) & 0xFFu);
-}
-
 static int verify_manifest_signature(const trust_key_t* key){
     if (!key){
         return -1;
@@ -167,18 +222,15 @@ static int verify_manifest_signature(const trust_key_t* key){
 
     if (sig_alg == QOS_SIG_ALG_ED25519){
         unsigned char msg[16u + 4u + 4u + 4u + 4u + 32u + 32u];
-        static const unsigned char tag[16] = {
-            'Q','O','S','-','K','E','R','N','-','S','I','G','-','V','1','\0'
-        };
-        unsigned int o = 0;
-        for (unsigned int i = 0; i < 16u; i++) msg[o++] = tag[i];
-        put_u32_le(msg + o, g_kernel_manifest.manifest_version); o += 4u;
-        put_u32_le(msg + o, g_kernel_manifest.signer_key_id); o += 4u;
-        put_u32_le(msg + o, sig_alg); o += 4u;
-        put_u32_le(msg + o, g_kernel_manifest.flags); o += 4u;
-        for (unsigned int i = 0; i < 32u; i++) msg[o++] = g_kernel_manifest.digest[i];
-        for (unsigned int i = 0; i < 32u; i++) msg[o++] = g_kernel_manifest.file_digest[i];
-        if (!qos_ed25519_verify(g_kernel_manifest.signature, msg, o, key->ed25519_pubkey)){
+        unsigned char sig_copy[64];
+        unsigned int msg_len = 0;
+        if (build_kernel_sig_message(msg, sizeof(msg), &msg_len) != 0){
+            return -1;
+        }
+        for (unsigned int i = 0; i < 64u; i++){
+            sig_copy[i] = g_kernel_manifest.signature[i];
+        }
+        if (!qos_ed25519_verify(sig_copy, msg, msg_len, key->ed25519_pubkey)){
             uart_puts("Kernel verify: Ed25519 manifest signature failed.\n");
             return -1;
         }
@@ -192,6 +244,99 @@ static int verify_manifest_signature(const trust_key_t* key){
     return -1;
 }
 
+static int verify_manifest_pq_sidecar_uncached(const trust_key_t* key){
+    if (!key){
+        return -1;
+    }
+    if (!key_has_lamport_pubkey(key) ||
+        !alg_mask_has(key->pq_sig_alg_mask, QOS_SIG_ALG_LAMPORT_SHA256)){
+        if (g_require_kernel_pq){
+            uart_puts("Kernel verify: PQ required but trusted key lacks PQ material.\n");
+            return -1;
+        }
+        return 0;
+    }
+
+    if (fat32_init() != 0){
+        if (g_require_kernel_pq){
+            uart_puts("Kernel verify: PQ FAT init failed.\n");
+            return -1;
+        }
+        return 0;
+    }
+
+    int n = fat32_read_file(KERNEL_PQ_SIG_FAT_NAME, g_kernel_pq_sig_buf, (int)sizeof(g_kernel_pq_sig_buf));
+    if (n <= 0){
+        if (g_require_kernel_pq){
+            uart_puts("Kernel verify: required PQ sidecar missing.\n");
+            return -1;
+        }
+        if (!g_warned_kernel_pq_missing){
+            uart_puts("Kernel verify: PQ sidecar missing; continuing with Ed25519 only.\n");
+            g_warned_kernel_pq_missing = 1;
+        }
+        return 0;
+    }
+    if (n < (int)KERNEL_PQ_SIG_HEADER_BYTES){
+        uart_puts("Kernel verify: PQ sidecar too small.\n");
+        return -1;
+    }
+
+    unsigned int magic = get_u32_le(&g_kernel_pq_sig_buf[0]);
+    unsigned int version = get_u32_le(&g_kernel_pq_sig_buf[4]);
+    unsigned int signer_key_id = get_u32_le(&g_kernel_pq_sig_buf[8]);
+    unsigned int sig_alg = get_u32_le(&g_kernel_pq_sig_buf[12]);
+    unsigned int sig_len = get_u32_le(&g_kernel_pq_sig_buf[16]);
+
+    if (magic != QOS_PQ_SIG_MAGIC || version != QOS_PQ_SIG_VERSION){
+        uart_puts("Kernel verify: invalid PQ sidecar header.\n");
+        return -1;
+    }
+    if (signer_key_id != g_kernel_manifest.signer_key_id){
+        uart_puts("Kernel verify: PQ signer mismatch.\n");
+        return -1;
+    }
+    if (!alg_mask_has(key->pq_sig_alg_mask, sig_alg)){
+        uart_puts("Kernel verify: signer disallows PQ algorithm.\n");
+        return -1;
+    }
+    if ((KERNEL_PQ_SIG_HEADER_BYTES + sig_len) > (unsigned int)n){
+        uart_puts("Kernel verify: truncated PQ signature.\n");
+        return -1;
+    }
+
+    unsigned char msg[16u + 4u + 4u + 4u + 4u + 32u + 32u];
+    unsigned int msg_len = 0;
+    unsigned char msg_digest[32];
+    if (build_kernel_sig_message(msg, sizeof(msg), &msg_len) != 0){
+        return -1;
+    }
+    sha256_digest(msg, msg_len, msg_digest);
+
+    if (sig_alg == QOS_SIG_ALG_LAMPORT_SHA256){
+        if (lamport_verify_digest_sha256(msg_digest,
+                                         &g_kernel_pq_sig_buf[KERNEL_PQ_SIG_HEADER_BYTES], sig_len,
+                                         key->lamport_pubkey, LAMPORT_PUBKEY_BYTES) != 0){
+            uart_puts("Kernel verify: Lamport PQ signature failed.\n");
+            return -1;
+        }
+        uart_puts("Kernel verify: PQ Lamport signature OK.\n");
+        return 0;
+    }
+
+    uart_puts("Kernel verify: unsupported PQ signature algorithm.\n");
+    return -1;
+}
+
+static int verify_manifest_pq_sidecar(const trust_key_t* key){
+    if (g_kernel_pq_cached){
+        return g_kernel_pq_cached_rc;
+    }
+    g_kernel_pq_cached_rc = verify_manifest_pq_sidecar_uncached(key);
+    g_kernel_pq_cached = 1;
+    return g_kernel_pq_cached_rc;
+}
+
 int kernel_verify_self(void){
     uart_puts("Kernel verify: start\n");
     if (verify_manifest_policy() != 0){
@@ -199,6 +344,9 @@ int kernel_verify_self(void){
     }
     const trust_key_t* key = trust_find_key(g_kernel_manifest.signer_key_id);
     if (verify_manifest_signature(key) != 0){
+        return -1;
+    }
+    if (verify_manifest_pq_sidecar(key) != 0){
         return -1;
     }
 
@@ -261,6 +409,9 @@ int kernel_verify_storage_image(void){
     }
     const trust_key_t* key = trust_find_key(g_kernel_manifest.signer_key_id);
     if (verify_manifest_signature(key) != 0){
+        return -1;
+    }
+    if (verify_manifest_pq_sidecar(key) != 0){
         return -1;
     }
 

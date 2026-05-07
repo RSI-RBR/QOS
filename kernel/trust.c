@@ -3,6 +3,7 @@
 #include "uart.h"
 #include "ed25519_verify.h"
 #include "trust_keys_autogen.h"
+#include "fat32.h"
 
 #define TRUST_ART_USER_APP 0u
 #define TRUST_ART_SHELL    1u
@@ -11,6 +12,9 @@
 #define TRUST_KEY_ADMIN_MAIN 0x00000001u
 #define TRUST_KEY_DEV_MAIN   0x00010001u
 
+#define QOS_PQ_SIG_HEADER_BYTES 20u
+#define TRUST_PQ_SIDECAR_MAX (QOS_PQ_SIG_HEADER_BYTES + LAMPORT_SIG_BYTES + 32u)
+
 static const trust_key_t g_keys[] = {
     {
         TRUST_KEY_ADMIN_MAIN,
@@ -18,7 +22,9 @@ static const trust_key_t g_keys[] = {
         TRUST_ROLE_ADMIN,
         TRUST_SCOPE_KERNEL | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB | TRUST_SCOPE_USER_APP,
         (1u << QOS_SIG_ALG_DIGEST_ONLY) | (1u << QOS_SIG_ALG_ED25519),
+        (1u << QOS_SIG_ALG_LAMPORT_SHA256),
         TRUST_ADMIN_ED25519_PUBKEY_INIT,
+        TRUST_ADMIN_LAMPORT_PUBKEY_INIT,
         0
     },
     {
@@ -27,18 +33,32 @@ static const trust_key_t g_keys[] = {
         TRUST_ROLE_DEVELOPER,
         TRUST_SCOPE_USER_APP,
         (1u << QOS_SIG_ALG_DIGEST_ONLY) | (1u << QOS_SIG_ALG_ED25519),
+        (1u << QOS_SIG_ALG_LAMPORT_SHA256),
         TRUST_DEV_ED25519_PUBKEY_INIT,
+        TRUST_DEV_LAMPORT_PUBKEY_INIT,
         0
     }
 };
+
+static unsigned char g_pq_sidecar_buf[TRUST_PQ_SIDECAR_MAX];
 static int g_warned_digest_only = 0;
+static int g_warned_missing_program_pq = 0;
+static int g_logged_program_pq_ok = 0;
 static const int g_require_ed25519 = 1;
+static const int g_require_program_pq_for_admin_artifacts = 0;
 
 static void put_u32_le(unsigned char* out, unsigned int v){
     out[0] = (unsigned char)(v & 0xFFu);
     out[1] = (unsigned char)((v >> 8) & 0xFFu);
     out[2] = (unsigned char)((v >> 16) & 0xFFu);
     out[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
+static unsigned int get_u32_le(const unsigned char* p){
+    return (unsigned int)p[0] |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
 }
 
 static int build_program_sig_message(const char* fat_name_83,
@@ -100,6 +120,123 @@ static int has_scope(unsigned int scope_mask, unsigned int scope){
     return (scope_mask & scope) == scope;
 }
 
+static int alg_mask_has(unsigned int mask, unsigned int alg){
+    if (alg >= 32u){
+        return 0;
+    }
+    return (mask & (1u << alg)) != 0u;
+}
+
+static int key_has_lamport_pubkey(const trust_key_t* key){
+    if (!key){
+        return 0;
+    }
+    unsigned char nz = 0;
+    for (unsigned int i = 0; i < LAMPORT_PUBKEY_BYTES; i++){
+        nz |= key->lamport_pubkey[i];
+    }
+    return nz != 0u;
+}
+
+static void build_pq_sidecar_name(const char* fat_name_83, char out_name_83[12]){
+    for (unsigned int i = 0; i < 8u; i++){
+        out_name_83[i] = fat_name_83[i];
+    }
+    out_name_83[8] = 'P';
+    out_name_83[9] = 'Q';
+    out_name_83[10] = 'S';
+    out_name_83[11] = 0;
+}
+
+static int verify_program_pq_sidecar(const char* fat_name_83,
+                                     const program_sec_header_t* sec,
+                                     unsigned int code_size,
+                                     const trust_key_t* key,
+                                     int required){
+    unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 32u];
+    unsigned char msg_digest[32];
+    char pq_name[12];
+
+    if (!fat_name_83 || !sec || !key){
+        return -1;
+    }
+
+    if (!key_has_lamport_pubkey(key) ||
+        !alg_mask_has(key->pq_sig_alg_mask, QOS_SIG_ALG_LAMPORT_SHA256)){
+        if (required){
+            uart_puts("Trust: PQ signature required but signer has no PQ key.\n");
+            return -1;
+        }
+        return 0;
+    }
+
+    build_pq_sidecar_name(fat_name_83, pq_name);
+    int n = fat32_read_file(pq_name, g_pq_sidecar_buf, (int)sizeof(g_pq_sidecar_buf));
+    if (n <= 0){
+        if (required){
+            uart_puts("Trust: required PQ sidecar missing.\n");
+            return -1;
+        }
+        if (!g_warned_missing_program_pq){
+            uart_puts("Trust: PQ sidecar not present; continuing with Ed25519 only.\n");
+            g_warned_missing_program_pq = 1;
+        }
+        return 0;
+    }
+
+    if (n < (int)QOS_PQ_SIG_HEADER_BYTES){
+        uart_puts("Trust: PQ sidecar too small.\n");
+        return -1;
+    }
+
+    unsigned int magic = get_u32_le(&g_pq_sidecar_buf[0]);
+    unsigned int version = get_u32_le(&g_pq_sidecar_buf[4]);
+    unsigned int signer_key_id = get_u32_le(&g_pq_sidecar_buf[8]);
+    unsigned int sig_alg = get_u32_le(&g_pq_sidecar_buf[12]);
+    unsigned int sig_len = get_u32_le(&g_pq_sidecar_buf[16]);
+
+    if (magic != QOS_PQ_SIG_MAGIC || version != QOS_PQ_SIG_VERSION){
+        uart_puts("Trust: invalid PQ sidecar header.\n");
+        return -1;
+    }
+    if (signer_key_id != sec->signer_key_id){
+        uart_puts("Trust: PQ sidecar signer mismatch.\n");
+        return -1;
+    }
+    if (!alg_mask_has(key->pq_sig_alg_mask, sig_alg)){
+        uart_puts("Trust: signer disallows PQ signature algorithm.\n");
+        return -1;
+    }
+    if ((QOS_PQ_SIG_HEADER_BYTES + sig_len) > (unsigned int)n){
+        uart_puts("Trust: truncated PQ sidecar signature.\n");
+        return -1;
+    }
+
+    int msg_len = build_program_sig_message(fat_name_83, sec, code_size, msg, sizeof(msg));
+    if (msg_len <= 0){
+        uart_puts("Trust: failed to build PQ signature payload.\n");
+        return -1;
+    }
+    sha256_digest(msg, (unsigned int)msg_len, msg_digest);
+
+    if (sig_alg == QOS_SIG_ALG_LAMPORT_SHA256){
+        if (lamport_verify_digest_sha256(msg_digest,
+                                         &g_pq_sidecar_buf[QOS_PQ_SIG_HEADER_BYTES], sig_len,
+                                         key->lamport_pubkey, LAMPORT_PUBKEY_BYTES) != 0){
+            uart_puts("Trust: Lamport PQ signature verify failed.\n");
+            return -1;
+        }
+        if (!g_logged_program_pq_ok){
+            uart_puts("Trust: PQ Lamport signature OK.\n");
+            g_logged_program_pq_ok = 1;
+        }
+        return 0;
+    }
+
+    uart_puts("Trust: unsupported PQ signature algorithm.\n");
+    return -1;
+}
+
 int trust_verify_program_image(const char* fat_name_83,
                                const program_sec_header_t* sec,
                                const unsigned char* code,
@@ -138,7 +275,7 @@ int trust_verify_program_image(const char* fat_name_83,
         uart_puts("Trust: signer key revoked.\n");
         return -1;
     }
-    if ((key->sig_alg_mask & (1u << sec->sig_alg)) == 0u){
+    if (!alg_mask_has(key->sig_alg_mask, sec->sig_alg)){
         uart_puts("Trust: signer key does not allow this signature algorithm.\n");
         return -1;
     }
@@ -197,6 +334,15 @@ int trust_verify_program_image(const char* fat_name_83,
         }
         if (!qos_ed25519_verify(sec->signature, msg, (unsigned int)msg_len, key->ed25519_pubkey)){
             uart_puts("Trust: Ed25519 signature verify failed.\n");
+            return -1;
+        }
+
+        int require_pq = 0;
+        if (g_require_program_pq_for_admin_artifacts &&
+            (artifact == TRUST_ART_SHELL || artifact == TRUST_ART_WEB)){
+            require_pq = 1;
+        }
+        if (verify_program_pq_sidecar(fat_name_83, sec, code_size, key, require_pq) != 0){
             return -1;
         }
         return 0;

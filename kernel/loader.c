@@ -179,9 +179,8 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         }
     }
 
-    loader_unlock();
-
     if (size <= 0){
+        loader_unlock();
         uart_puts("Load failed.\n");
         return prog;
     }
@@ -189,6 +188,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     uart_puts("File read OK. \n");
 
     if (size < (int)sizeof(program_header_t)){
+        loader_unlock();
         uart_puts("Invalid program (too small)");
         return prog;
     }
@@ -203,6 +203,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     uart_puts("\n");
 
     if (hdr->magic != QOS_MAGIC){
+        loader_unlock();
         uart_puts("Bad magic.\n");
         return prog;
     }
@@ -215,32 +216,38 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     const program_sec_header_t* sec = 0;
 
     if (code_size > PROGRAM_MAX){
+        loader_unlock();
         uart_puts("Program too large.\n");
         return prog;
     }
 
     if ((unsigned int)size < code_off + code_size){
+        loader_unlock();
         uart_puts("Program truncated.\n");
         return prog;
     }
 
     // Security extension is mandatory: signatures are required for all programs.
     if ((unsigned int)size < (unsigned int)(sizeof(program_header_t) + sizeof(program_sec_header_t))){
+        loader_unlock();
         uart_puts("Program missing security header.\n");
         return prog;
     }
     {
         const program_sec_header_t* cand = (const program_sec_header_t*)(buffer + sizeof(program_header_t));
         if (cand->magic != QOS_SEC_MAGIC){
+            loader_unlock();
             uart_puts("Program missing SEC1 header.\n");
             return prog;
         }
         if (cand->header_size < sizeof(program_sec_header_t)){
+            loader_unlock();
             uart_puts("Bad security header.\n");
             return prog;
         }
         code_off += cand->header_size;
         if ((unsigned int)size < code_off + code_size){
+            loader_unlock();
             uart_puts("Program/security header size mismatch.\n");
             return prog;
         }
@@ -248,12 +255,14 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
 
     if (entry_offset >= code_size){
+        loader_unlock();
         uart_puts("Bad entry offset.\n");
         return prog;
     }
 
     unsigned char *src = buffer + code_off;
     if (trust_verify_program_image(file_83, sec, src, code_size) != 0){
+        loader_unlock();
         uart_puts("Program trust verification failed.\n");
         return prog;
     }
@@ -264,6 +273,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     void* dst = alloc_program_memory(code_size);
     unsigned char* d = (unsigned char*)dst;
     if (!dst){
+        loader_unlock();
         uart_puts("No memory for program!\n");
         return prog;
     }
@@ -289,6 +299,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     uart_puts("Entry at: ");
     uart_puthex((unsigned long)prog.entry);
     uart_puts("\n");
+    loader_unlock();
     return prog;
 }
 

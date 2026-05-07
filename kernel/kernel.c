@@ -29,6 +29,7 @@
 #include "tls_key_schedule.h"
 #include "tls_handshake.h"
 #include "tls_session.h"
+#include "lamport.h"
 #include "auth.h"
 #include "remote_login.h"
 
@@ -146,6 +147,11 @@ void kernel_main(void){
         uart_puts("X25519 self-test FAILED rc=");
         uart_putdec(x25519_abs);
         uart_puts("\n");
+    }
+    if (lamport_self_test() == 0){
+        uart_puts("Lamport PQ self-test OK\n");
+    } else{
+        uart_puts("Lamport PQ self-test FAILED\n");
     }
     if (tls13_key_schedule_self_test() == 0){
         uart_puts("TLS key schedule self-test OK\n");

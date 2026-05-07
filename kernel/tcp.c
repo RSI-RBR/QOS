@@ -321,6 +321,14 @@ static unsigned char g_tls_record_wire[TCP_TLS_APP_IO_CAP];
 static unsigned char g_tls_record_plain[TCP_TLS_REC_MAX];
 static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
 
+// Experimental PQ advertisement scaffolding:
+// - Group 0x6399: widely used experimental X25519+Kyber768 draft ID in the ecosystem.
+// - Signature scheme 0xFEA1: private-use placeholder for ML-DSA-65.
+// We still perform key_share with X25519 only for now.
+#define TLS13_GROUP_X25519_KYBER768_DRAFT00 0x6399u
+#define TLS13_SIGALG_MLDSA65_EXPERIMENTAL 0xFEA1u
+static const int g_tls13_advertise_pq = 1;
+
 static void be24_write(unsigned char* p, unsigned int v){
     p[0] = (unsigned char)((v >> 16) & 0xFFu);
     p[1] = (unsigned char)((v >> 8) & 0xFFu);
@@ -410,38 +418,74 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     out[i++] = 2u;
     be16_write(&out[i], TLS13_VERSION_1_3); i += 2u;
 
-    // supported_groups (x25519)
-    if (i + 8u > out_cap){
-        return -1;
+    // supported_groups
+    {
+        unsigned short groups[2];
+        unsigned int gcount = 0;
+        groups[gcount++] = TLS13_GROUP_X25519;
+        if (g_tls13_advertise_pq){
+            groups[gcount++] = TLS13_GROUP_X25519_KYBER768_DRAFT00;
+        }
+        unsigned int groups_bytes = gcount * 2u;
+        unsigned int ext_len = 2u + groups_bytes;
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+        be16_write(&out[i], 0x000Au); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        be16_write(&out[i], (unsigned short)groups_bytes); i += 2u;
+        for (unsigned int gi = 0; gi < gcount; gi++){
+            be16_write(&out[i], groups[gi]); i += 2u;
+        }
     }
-    be16_write(&out[i], 0x000Au); i += 2u;
-    be16_write(&out[i], 4u); i += 2u;
-    be16_write(&out[i], 2u); i += 2u;
-    be16_write(&out[i], TLS13_GROUP_X25519); i += 2u;
 
     // signature_algorithms
-    if (i + 12u > out_cap){
-        return -1;
+    {
+        unsigned short sigs[4];
+        unsigned int scount = 0;
+        sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
+        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0807u; // ed25519
+        if (g_tls13_advertise_pq){
+            sigs[scount++] = TLS13_SIGALG_MLDSA65_EXPERIMENTAL;
+        }
+        unsigned int sig_bytes = scount * 2u;
+        unsigned int ext_len = 2u + sig_bytes;
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+        be16_write(&out[i], 0x000Du); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        be16_write(&out[i], (unsigned short)sig_bytes); i += 2u;
+        for (unsigned int si = 0; si < scount; si++){
+            be16_write(&out[i], sigs[si]); i += 2u;
+        }
     }
-    be16_write(&out[i], 0x000Du); i += 2u;
-    be16_write(&out[i], 8u); i += 2u;
-    be16_write(&out[i], 6u); i += 2u;
-    be16_write(&out[i], 0x0804u); i += 2u; // rsa_pss_rsae_sha256
-    be16_write(&out[i], 0x0403u); i += 2u; // ecdsa_secp256r1_sha256
-    be16_write(&out[i], 0x0807u); i += 2u; // ed25519
 
     // signature_algorithms_cert
-    if (i + 12u > out_cap){
-        return -1;
+    {
+        unsigned short sigs[4];
+        unsigned int scount = 0;
+        sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
+        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0807u; // ed25519
+        if (g_tls13_advertise_pq){
+            sigs[scount++] = TLS13_SIGALG_MLDSA65_EXPERIMENTAL;
+        }
+        unsigned int sig_bytes = scount * 2u;
+        unsigned int ext_len = 2u + sig_bytes;
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+        be16_write(&out[i], 0x0032u); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        be16_write(&out[i], (unsigned short)sig_bytes); i += 2u;
+        for (unsigned int si = 0; si < scount; si++){
+            be16_write(&out[i], sigs[si]); i += 2u;
+        }
     }
-    be16_write(&out[i], 0x0032u); i += 2u;
-    be16_write(&out[i], 8u); i += 2u;
-    be16_write(&out[i], 6u); i += 2u;
-    be16_write(&out[i], 0x0804u); i += 2u; // rsa_pss_rsae_sha256
-    be16_write(&out[i], 0x0403u); i += 2u; // ecdsa_secp256r1_sha256
-    be16_write(&out[i], 0x0807u); i += 2u; // ed25519
 
-    // key_share (x25519)
+    // key_share (x25519 only until PQ KEM encapsulation is implemented)
     if (i + 42u > out_cap){
         return -1;
     }

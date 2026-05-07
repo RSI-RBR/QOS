@@ -5,6 +5,7 @@ OBJCOPY = $(CROSS)objcopy
 
 CFLAGS = -ffreestanding -nostdlib -O2 -pie -mgeneral-regs-only -DQOS_USERSPACE -I../../include
 SIGN_KEY ?=
+PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 
 all: program.bin
@@ -23,7 +24,7 @@ program.raw: program.elf
 
 program.bin: program.raw
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)"
+	python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" program.pqs
 
 clean:
-	rm -f *.o *.elf *.raw *.bin
+	rm -f *.o *.elf *.raw *.bin *.pqs

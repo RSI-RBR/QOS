@@ -4,6 +4,15 @@ import os
 import subprocess
 import sys
 import tempfile
+import struct
+
+QOS_PQ_SIG_MAGIC = 0x51505331
+QOS_PQ_SIG_VERSION = 1
+QOS_SIG_ALG_LAMPORT_SHA256 = 3
+LAMPORT_BITS = 256
+LAMPORT_ELEM_BYTES = 32
+LAMPORT_PRIV_BYTES = LAMPORT_BITS * 2 * LAMPORT_ELEM_BYTES
+LAMPORT_SIG_BYTES = LAMPORT_BITS * LAMPORT_ELEM_BYTES
 
 
 def parse_nm_symbol(nm_bin: str, elf_path: str, sym: str) -> int:
@@ -37,9 +46,41 @@ def sign_ed25519(openssl_bin: str, key_pem: str, message: bytes) -> bytes:
             return f.read()
 
 
+def sign_lamport_sha256(lamport_priv_path: str, message: bytes) -> bytes:
+    with open(lamport_priv_path, "rb") as f:
+        sk = f.read()
+    if len(sk) != LAMPORT_PRIV_BYTES:
+        raise RuntimeError(f"unexpected Lamport private key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES})")
+
+    digest = hashlib.sha256(message).digest()
+    out = bytearray(LAMPORT_SIG_BYTES)
+
+    for i in range(LAMPORT_BITS):
+        byte_i = i // 8
+        bit_i = 7 - (i % 8)
+        b = (digest[byte_i] >> bit_i) & 1
+        src_off = ((i * 2) + b) * LAMPORT_ELEM_BYTES
+        dst_off = i * LAMPORT_ELEM_BYTES
+        out[dst_off:dst_off + LAMPORT_ELEM_BYTES] = sk[src_off:src_off + LAMPORT_ELEM_BYTES]
+
+    return bytes(out)
+
+
+def write_pq_sidecar(out_path: str, signer_key_id: int, sig_alg: int, sig: bytes) -> None:
+    header = struct.pack("<IIIII",
+                         QOS_PQ_SIG_MAGIC,
+                         QOS_PQ_SIG_VERSION,
+                         signer_key_id,
+                         sig_alg,
+                         len(sig))
+    with open(out_path, "wb") as f:
+        f.write(header)
+        f.write(sig)
+
+
 def main() -> int:
-    if len(sys.argv) < 4 or len(sys.argv) > 8:
-        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id] [signing-key-pem] [openssl-bin]")
+    if len(sys.argv) < 4 or len(sys.argv) > 10:
+        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id] [signing-key-pem] [openssl-bin] [lamport-priv-bin] [pq-out-file]")
         return 1
 
     elf_path = sys.argv[1]
@@ -49,6 +90,8 @@ def main() -> int:
     signer_key_id = int(sys.argv[5], 0) if len(sys.argv) >= 6 else 0x00000001
     signing_key_pem = sys.argv[6] if len(sys.argv) >= 7 else ""
     openssl_bin = sys.argv[7] if len(sys.argv) >= 8 else "openssl"
+    lamport_priv_bin = sys.argv[8] if len(sys.argv) >= 9 else ""
+    pq_out_file = sys.argv[9] if len(sys.argv) >= 10 else ""
 
     text_start = parse_nm_symbol(nm_bin, elf_path, "__kernel_text_start")
     ro_verify_end = parse_nm_symbol(nm_bin, elf_path, "__kernel_rodata_verify_end")
@@ -89,23 +132,34 @@ def main() -> int:
     sig_alg = "QOS_SIG_ALG_DIGEST_ONLY"
     sig_len = 0
     sig_bytes = bytes(64)
+    msg_sig_alg = 1  # QOS_SIG_ALG_DIGEST_ONLY
     if signing_key_pem:
-        QOS_SIG_ALG_ED25519 = 2
-        QOS_PROG_FLAG_SHA256 = 1
-        msg = bytearray()
-        msg.extend(b"QOS-KERN-SIG-V1\x00")
-        msg.extend((1).to_bytes(4, "little"))
-        msg.extend(int(signer_key_id).to_bytes(4, "little"))
-        msg.extend(QOS_SIG_ALG_ED25519.to_bytes(4, "little"))
-        msg.extend(QOS_PROG_FLAG_SHA256.to_bytes(4, "little"))
-        msg.extend(mem_digest)
-        msg.extend(file_digest)
+        msg_sig_alg = 2  # QOS_SIG_ALG_ED25519
+    msg = bytearray()
+    msg.extend(b"QOS-KERN-SIG-V1\x00")
+    msg.extend((1).to_bytes(4, "little"))
+    msg.extend(int(signer_key_id).to_bytes(4, "little"))
+    msg.extend(msg_sig_alg.to_bytes(4, "little"))
+    msg.extend((1).to_bytes(4, "little"))  # QOS_PROG_FLAG_SHA256
+    msg.extend(mem_digest)
+    msg.extend(file_digest)
+    if signing_key_pem:
         sig = sign_ed25519(openssl_bin, signing_key_pem, bytes(msg))
         if len(sig) != 64:
             raise RuntimeError(f"unexpected Ed25519 signature length: {len(sig)}")
         sig_alg = "QOS_SIG_ALG_ED25519"
         sig_len = 64
         sig_bytes = sig
+
+    if lamport_priv_bin:
+        if not pq_out_file:
+            raise RuntimeError("lamport private key provided but pq-out-file missing")
+        pq_sig = sign_lamport_sha256(lamport_priv_bin, bytes(msg))
+        if len(pq_sig) != LAMPORT_SIG_BYTES:
+            raise RuntimeError(f"unexpected Lamport signature length: {len(pq_sig)}")
+        write_pq_sidecar(pq_out_file, int(signer_key_id), QOS_SIG_ALG_LAMPORT_SHA256, pq_sig)
+    elif pq_out_file and os.path.exists(pq_out_file):
+        os.remove(pq_out_file)
 
     sig_init = digest_c_initializer(sig_bytes)
 
@@ -141,6 +195,10 @@ def main() -> int:
         print(f"Kernel manifest Ed25519 signed with: {signing_key_pem}")
     else:
         print("Kernel manifest in digest-only mode (unsigned).")
+    if lamport_priv_bin:
+        print(f"Kernel PQ Lamport signature written to: {pq_out_file}")
+    else:
+        print("Kernel PQ signature not generated.")
     print(f"Wrote header: {out_header}")
     return 0
 

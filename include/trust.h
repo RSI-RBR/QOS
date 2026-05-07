@@ -2,6 +2,7 @@
 #define TRUST_H
 
 #include "program.h"
+#include "lamport.h"
 
 #define TRUST_ROLE_ADMIN     (1u << 0)
 #define TRUST_ROLE_DEVELOPER (1u << 1)
@@ -17,7 +18,9 @@ typedef struct {
     unsigned int role_mask;
     unsigned int scope_mask;
     unsigned int sig_alg_mask;
+    unsigned int pq_sig_alg_mask;
     unsigned char ed25519_pubkey[32];
+    unsigned char lamport_pubkey[LAMPORT_PUBKEY_BYTES];
     int revoked;
 } trust_key_t;
 

@@ -28,23 +28,37 @@ def pubkey_from_private_pem(openssl_bin: str, priv_pem: str) -> bytes:
 def bytes_init(b: bytes) -> str:
     return "{ " + ", ".join(f"0x{x:02X}" for x in b) + " }"
 
+def read_fixed(path: str, expected_len: int) -> bytes:
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) != expected_len:
+        raise RuntimeError(f"unexpected length for {path}: got {len(data)}, expected {expected_len}")
+    return data
 
 def main() -> int:
-    if len(sys.argv) < 2 or len(sys.argv) > 5:
-        print("Usage: gen_trust_keys_header.py <out-header> [admin-priv-pem] [dev-priv-pem] [openssl-bin]")
+    if len(sys.argv) < 2 or len(sys.argv) > 7:
+        print("Usage: gen_trust_keys_header.py <out-header> [admin-priv-pem] [dev-priv-pem] [openssl-bin] [admin-lamport-pub-bin] [dev-lamport-pub-bin]")
         return 1
 
     out_header = sys.argv[1]
     admin_priv = sys.argv[2] if len(sys.argv) >= 3 else ""
     dev_priv = sys.argv[3] if len(sys.argv) >= 4 else ""
     openssl_bin = sys.argv[4] if len(sys.argv) >= 5 else "openssl"
+    admin_lamport_pub_path = sys.argv[5] if len(sys.argv) >= 6 else ""
+    dev_lamport_pub_path = sys.argv[6] if len(sys.argv) >= 7 else ""
 
     admin_pub = bytes(32)
     dev_pub = bytes(32)
+    admin_lamport_pub = bytes(256 * 2 * 32)
+    dev_lamport_pub = bytes(256 * 2 * 32)
     if admin_priv:
         admin_pub = pubkey_from_private_pem(openssl_bin, admin_priv)
     if dev_priv:
         dev_pub = pubkey_from_private_pem(openssl_bin, dev_priv)
+    if admin_lamport_pub_path:
+        admin_lamport_pub = read_fixed(admin_lamport_pub_path, 256 * 2 * 32)
+    if dev_lamport_pub_path:
+        dev_lamport_pub = read_fixed(dev_lamport_pub_path, 256 * 2 * 32)
 
     text = f"""#ifndef TRUST_KEYS_AUTOGEN_H
 #define TRUST_KEYS_AUTOGEN_H
@@ -53,6 +67,8 @@ def main() -> int:
 
 #define TRUST_ADMIN_ED25519_PUBKEY_INIT {bytes_init(admin_pub)}
 #define TRUST_DEV_ED25519_PUBKEY_INIT   {bytes_init(dev_pub)}
+#define TRUST_ADMIN_LAMPORT_PUBKEY_INIT {bytes_init(admin_lamport_pub)}
+#define TRUST_DEV_LAMPORT_PUBKEY_INIT   {bytes_init(dev_lamport_pub)}
 
 #endif
 """
@@ -67,10 +83,17 @@ def main() -> int:
         print(f"Developer pubkey extracted from: {dev_priv}")
     else:
         print("Developer pubkey left as zero placeholder.")
+    if admin_lamport_pub_path:
+        print(f"Admin Lamport pubkey loaded from: {admin_lamport_pub_path}")
+    else:
+        print("Admin Lamport pubkey left as zero placeholder.")
+    if dev_lamport_pub_path:
+        print(f"Developer Lamport pubkey loaded from: {dev_lamport_pub_path}")
+    else:
+        print("Developer Lamport pubkey left as zero placeholder.")
     print(f"Wrote header: {out_header}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
