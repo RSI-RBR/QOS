@@ -576,18 +576,39 @@ static int cyw43_scan_socram(void){
 
 static int cyw43_enable_ht_clock(void){
     unsigned char csr = 0;
-    (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, 0u);
-    cyw43_delay(10000u);
-    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_HT) != 0){
+
+    (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
+    uart_puts("CYW43: HT pre csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_NO_HW_REQ | CYW43_CLK_REQ_HT) != 0){
         return -1;
     }
     uart_puts("CYW43: requesting HT clock\n");
-    for (unsigned int i = 0; i < 50u; i++){
-        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
-            (csr & CYW43_CLK_HT_AVAIL)){
-            return sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, (unsigned char)(csr | CYW43_CLK_FORCE_HT));
+    for (unsigned int i = 0; i < 20u; i++){
+        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) != 0){
+            uart_puts("CYW43: HT csr read failed i=");
+            uart_putdec(i);
+            uart_puts("\n");
+            return -1;
         }
-        cyw43_delay(1000000u);
+        if (i == 0u || i == 5u || i == 10u || i == 15u){
+            uart_puts("CYW43: HT poll csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+        }
+        if (csr & CYW43_CLK_HT_AVAIL){
+            if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_NO_HW_REQ | CYW43_CLK_FORCE_HT) != 0){
+                return -1;
+            }
+            (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
+            uart_puts("CYW43: HT forced csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+            return 0;
+        }
+        cyw43_delay(250000u);
     }
     uart_puts("CYW43: HT clock timeout csr=");
     uart_puthex(csr);
