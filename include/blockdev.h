@@ -5,5 +5,6 @@ int blockdev_init(void);
 int blockdev_reinit(void);
 int blockdev_read_block(unsigned int lba, unsigned char *buffer);
 const char* blockdev_name(void);
+void blockdev_reserve_emmc_for_wifi(int reserved);
 
 #endif

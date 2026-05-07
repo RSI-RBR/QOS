@@ -214,6 +214,7 @@ int cyw43_init(void){
         uart_puts("CYW43: SDIO init failed\n");
         return -1;
     }
+    blockdev_reserve_emmc_for_wifi(1);
 
     uart_puts("CYW43: enabling SDIO function 1\n");
     if (sdio_bus_enable_func(1) == 0 &&
