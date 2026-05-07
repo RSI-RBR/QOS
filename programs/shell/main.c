@@ -176,7 +176,7 @@ static void cmd_help(void){
     qos_puts(" tlstest\n");
     qos_puts(" wifiinit        - SDIO bus probe only; reboot before wifiload\n");
     qos_puts(" wifiload [fw83 nv83] - read firmware first, then init WiFi\n");
-    qos_puts(" wifiup\n");
+    qos_puts(" wifiup          - release WiFi firmware and enable data path\n");
     qos_puts(" wifidown\n");
     qos_puts(" wifistat\n");
     qos_puts(" wifiscan\n");

@@ -35,6 +35,7 @@ typedef struct {
     unsigned char func1_ready;
     unsigned char func2_ready;
     unsigned char fw_loaded;
+    unsigned char fw_running;
     unsigned char iface_up;
     unsigned char joined;
     unsigned char mac[6];

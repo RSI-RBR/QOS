@@ -16,8 +16,32 @@
 #define CYW43_SB_ADDR_REG       0x1000Au
 #define CYW43_CLKCSR_REG        0x1000Eu
 #define CYW43_CLK_REQ_ALP       0x08u
+#define CYW43_CLK_FORCE_ALP     0x01u
+#define CYW43_CLK_REQ_HT        0x10u
+#define CYW43_CLK_FORCE_HT      0x02u
 #define CYW43_CLK_ALP_AVAIL     0x40u
+#define CYW43_CLK_HT_AVAIL      0x80u
 #define CYW43_ENUM_BASE         0x18000000u
+
+#define CYW43_CORE_ARM_CM3      0x82Au
+#define CYW43_CORE_ARM_CR4      0x83Eu
+#define CYW43_CORE_D11          0x812u
+#define CYW43_CORE_SOCSRAM      0x80Eu
+#define CYW43_CORE_SDIO         0x829u
+
+#define CYW43_CORE_IOCTRL       0x408u
+#define CYW43_CORE_RESETCTRL    0x800u
+#define CYW43_SD_INT_STATUS     0x20u
+#define CYW43_SD_INT_MASK       0x24u
+#define CYW43_SD_SBMBOX         0x40u
+#define CYW43_SD_SBMBOX_DATA    0x48u
+#define CYW43_SD_HOSTMBOX_DATA  0x4Cu
+#define CYW43_SD_INT_FC_CHANGE  (1u << 5)
+#define CYW43_SD_INT_FRAME      (1u << 6)
+#define CYW43_SD_INT_MAILBOX    (1u << 7)
+#define CYW43_SD_FW_READY       0x80u
+
+#define CYW43_CRESCAN_SIZE      512u
 
 // CYW43430/CYW43438 firmware RAM layout. The full Circle path discovers this
 // by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
@@ -29,8 +53,18 @@ typedef struct {
     unsigned char func1_ready;
     unsigned char func2_ready;
     unsigned char fw_loaded;
+    unsigned char fw_running;
     unsigned char iface_up;
     unsigned char joined;
+    unsigned int chip_id;
+    unsigned int chip_rev;
+    unsigned int arm_core;
+    unsigned int arm_ctl;
+    unsigned int d11_ctl;
+    unsigned int socram_regs;
+    unsigned int socram_ctl;
+    unsigned int sd_regs;
+    unsigned int ram_size;
     unsigned char mac[6];
     char country[3];
     unsigned int sdpcm_tx_seq;
@@ -294,6 +328,18 @@ static int cyw43_backplane_read32(unsigned int addr, unsigned int* out){
     return 0;
 }
 
+static int cyw43_backplane_write32(unsigned int addr, unsigned int val){
+    unsigned char b[4];
+    put_le32(b, val);
+    return cyw43_backplane_write(addr, b, sizeof(b));
+}
+
+static void cyw43_delay(unsigned int n){
+    while (n--){
+        asm volatile("nop");
+    }
+}
+
 static int cyw43_request_alp_clock(void){
     unsigned char csr = 0;
     if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_ALP) != 0){
@@ -302,6 +348,7 @@ static int cyw43_request_alp_clock(void){
     for (unsigned int i = 0; i < 200000u; i++){
         if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
             (csr & CYW43_CLK_ALP_AVAIL)){
+            (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, (unsigned char)(csr | CYW43_CLK_FORCE_ALP));
             return 0;
         }
         asm volatile("nop");
@@ -312,10 +359,251 @@ static int cyw43_request_alp_clock(void){
     return -1;
 }
 
+static int cyw43_discover_cores(void){
+    unsigned int chip = 0;
+    unsigned int erom = 0;
+    unsigned char buf[CYW43_CRESCAN_SIZE];
+
+    g_cyw43.arm_core = 0;
+    g_cyw43.arm_ctl = 0;
+    g_cyw43.d11_ctl = 0;
+    g_cyw43.socram_regs = 0;
+    g_cyw43.socram_ctl = 0;
+    g_cyw43.sd_regs = 0;
+    g_cyw43.ram_size = CYW43_RAM_SIZE;
+
+    if (cyw43_backplane_read32(CYW43_ENUM_BASE, &chip) != 0){
+        uart_puts("CYW43: chip id read failed\n");
+        return -1;
+    }
+
+    g_cyw43.chip_id = chip & 0xFFFFu;
+    g_cyw43.chip_rev = (chip >> 16) & 0xFu;
+    uart_puts("CYW43: chip id/rev=");
+    uart_puthex(chip);
+    uart_puts("\n");
+
+    if (cyw43_backplane_read32(CYW43_ENUM_BASE + 63u * 4u, &erom) != 0 ||
+        cyw43_backplane_read(erom, buf, sizeof(buf)) != 0){
+        uart_puts("CYW43: core scan read failed\n");
+        return -1;
+    }
+
+    unsigned int coreid = 0;
+    for (unsigned int i = 0; i + 4u < sizeof(buf); i += 4u){
+        unsigned int tag = buf[i] & 0xFu;
+
+        if (tag == 0xFu){
+            break;
+        }
+        if (tag == 0x1u){
+            if (i + 7u < sizeof(buf) && ((buf[i + 4u] & 0xFu) == 0x1u)){
+                coreid = ((unsigned int)buf[i + 1u] | ((unsigned int)buf[i + 2u] << 8)) & 0xFFFu;
+                i += 4u;
+            }
+            continue;
+        }
+        if (tag == 0x5u){
+            unsigned int addr = ((unsigned int)buf[i + 1u] << 8) |
+                                ((unsigned int)buf[i + 2u] << 16) |
+                                ((unsigned int)buf[i + 3u] << 24);
+            addr &= ~0xFFFu;
+
+            if (coreid == CYW43_CORE_ARM_CM3 || coreid == CYW43_CORE_ARM_CR4){
+                g_cyw43.arm_core = coreid;
+                if (buf[i] & 0xC0u){
+                    if (g_cyw43.arm_ctl == 0u) g_cyw43.arm_ctl = addr;
+                }
+            } else if (coreid == CYW43_CORE_D11){
+                if (buf[i] & 0xC0u){
+                    g_cyw43.d11_ctl = addr;
+                }
+            } else if (coreid == CYW43_CORE_SOCSRAM){
+                if (buf[i] & 0xC0u){
+                    g_cyw43.socram_ctl = addr;
+                } else if (g_cyw43.socram_regs == 0u){
+                    g_cyw43.socram_regs = addr;
+                }
+            } else if (coreid == CYW43_CORE_SDIO){
+                if ((buf[i] & 0xC0u) == 0u){
+                    g_cyw43.sd_regs = addr;
+                }
+            }
+        }
+    }
+
+    uart_puts("CYW43: cores arm=");
+    uart_puthex(g_cyw43.arm_ctl);
+    uart_puts(" d11=");
+    uart_puthex(g_cyw43.d11_ctl);
+    uart_puts(" soc=");
+    uart_puthex(g_cyw43.socram_ctl);
+    uart_puts("/");
+    uart_puthex(g_cyw43.socram_regs);
+    uart_puts(" sd=");
+    uart_puthex(g_cyw43.sd_regs);
+    uart_puts("\n");
+
+    if (g_cyw43.arm_ctl == 0u || g_cyw43.d11_ctl == 0u || g_cyw43.sd_regs == 0u){
+        uart_puts("CYW43: required cores missing\n");
+        return -1;
+    }
+    if (g_cyw43.arm_core != CYW43_CORE_ARM_CM3){
+        uart_puts("CYW43: only ARM CM3 firmware release is implemented\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int cyw43_core_disable(unsigned int regs, unsigned int pre, unsigned int ioctl){
+    unsigned int reset = 0;
+    if (cyw43_backplane_read32(regs + CYW43_CORE_RESETCTRL, &reset) != 0){
+        return -1;
+    }
+    if (reset & 1u){
+        return cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 3u | ioctl);
+    }
+    if (cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 3u | pre) != 0 ||
+        cyw43_backplane_read32(regs + CYW43_CORE_IOCTRL, &reset) != 0 ||
+        cyw43_backplane_write32(regs + CYW43_CORE_RESETCTRL, 1u) != 0){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 10000u; i++){
+        if (cyw43_backplane_read32(regs + CYW43_CORE_RESETCTRL, &reset) == 0 && (reset & 1u)){
+            return cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 3u | ioctl);
+        }
+        cyw43_delay(1000u);
+    }
+    return -1;
+}
+
+static int cyw43_core_reset(unsigned int regs, unsigned int pre, unsigned int ioctl){
+    unsigned int reset = 0;
+    if (cyw43_core_disable(regs, pre, ioctl) != 0){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 10000u; i++){
+        if (cyw43_backplane_write32(regs + CYW43_CORE_RESETCTRL, 0u) != 0){
+            return -1;
+        }
+        cyw43_delay(4000u);
+        if (cyw43_backplane_read32(regs + CYW43_CORE_RESETCTRL, &reset) == 0 && !(reset & 1u)){
+            return cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 1u | ioctl);
+        }
+    }
+    return -1;
+}
+
+static int cyw43_prepare_firmware_cores(void){
+    if (cyw43_core_disable(g_cyw43.arm_ctl, 0u, 0u) != 0){
+        uart_puts("CYW43: ARM core disable failed\n");
+        return -1;
+    }
+    if (cyw43_core_reset(g_cyw43.d11_ctl, 8u | 4u, 4u) != 0){
+        uart_puts("CYW43: D11 core reset failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int cyw43_enable_ht_clock(void){
+    unsigned char csr = 0;
+    (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, 0u);
+    cyw43_delay(10000u);
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_HT) != 0){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 1000000u; i++){
+        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
+            (csr & CYW43_CLK_HT_AVAIL)){
+            return sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, (unsigned char)(csr | CYW43_CLK_FORCE_HT));
+        }
+        cyw43_delay(1000u);
+    }
+    uart_puts("CYW43: HT clock timeout csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+    return -1;
+}
+
+static int cyw43_enable_function2(void){
+    if (sdio_bus_enable_func(2) != 0 ||
+        sdio_bus_wait_func_ready(2, 1000) != 0){
+        uart_puts("CYW43: function 2 not ready\n");
+        return -1;
+    }
+    (void)sdio_bus_cmd52_write(0, 0x04u, (1u << 1) | (1u << 2) | 1u);
+    g_cyw43.func2_ready = 1;
+    return 0;
+}
+
+static int cyw43_wait_firmware_ready(void){
+    unsigned int ints = 0;
+    unsigned int mbox = 0;
+    for (unsigned int i = 0; i < 200000u; i++){
+        if (g_cyw43.sd_regs != 0u){
+            (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
+            (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
+            if (mbox & CYW43_SD_FW_READY){
+                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
+                uart_puts("CYW43: firmware ready\n");
+                return 0;
+            }
+            if (ints){
+                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+            }
+        }
+        cyw43_delay(5000u);
+    }
+    uart_puts("CYW43: firmware ready timeout ints=");
+    uart_puthex(ints);
+    uart_puts(" mbox=");
+    uart_puthex(mbox);
+    uart_puts("\n");
+    return -1;
+}
+
+static int cyw43_start_firmware(void){
+    if (g_cyw43.fw_running){
+        return 0;
+    }
+    if (!g_cyw43.fw_loaded){
+        return -1;
+    }
+    if (g_cyw43.arm_ctl == 0u || g_cyw43.sd_regs == 0u){
+        uart_puts("CYW43: missing core metadata for firmware start\n");
+        return -1;
+    }
+
+    uart_puts("CYW43: releasing firmware core\n");
+    if (cyw43_core_reset(g_cyw43.arm_ctl, 0u, 0u) != 0){
+        uart_puts("CYW43: ARM core release failed\n");
+        return -1;
+    }
+    if (cyw43_enable_ht_clock() != 0){
+        return -1;
+    }
+    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0 ||
+        cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_MASK,
+                                CYW43_SD_INT_FRAME | CYW43_SD_INT_MAILBOX | CYW43_SD_INT_FC_CHANGE) != 0){
+        uart_puts("CYW43: SDIO interrupt setup failed\n");
+        return -1;
+    }
+    if (cyw43_enable_function2() != 0){
+        return -1;
+    }
+    if (cyw43_wait_firmware_ready() != 0){
+        return -1;
+    }
+    g_cyw43.fw_running = 1;
+    return 0;
+}
+
 static void cyw43_drop_sdio_state(void){
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.func2_ready = 0;
+    g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     sdio_bus_reset_state();
@@ -348,6 +636,7 @@ int cyw43_init(void){
     g_cyw43.func2_ready = 0;
 
     g_cyw43.enabled = g_cyw43.func1_ready ? 1u : 0u;
+    g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.sdpcm_tx_seq = 0;
@@ -375,7 +664,6 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     unsigned int nvram_addr = 0;
     unsigned int nvram_words = 0;
     unsigned int nvram_token = 0;
-    unsigned int chip_id = 0;
     unsigned char token_buf[4];
     unsigned char zero_buf[4] = {0, 0, 0, 0};
 
@@ -403,12 +691,10 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
         return -1;
     }
 
-    if (cyw43_backplane_read32(CYW43_ENUM_BASE, &chip_id) == 0){
-        uart_puts("CYW43: chip id/rev=");
-        uart_puthex(chip_id);
-        uart_puts("\n");
-    } else{
-        uart_puts("CYW43: chip id read failed\n");
+    if (cyw43_discover_cores() != 0){
+        return -1;
+    }
+    if (cyw43_prepare_firmware_cores() != 0){
         return -1;
     }
 
@@ -419,7 +705,7 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     // Circle clears the last RAM word before the download, writes firmware at
     // RAM base, then places packed NVRAM near the RAM top and writes a length
     // token into the final word.
-    if (cyw43_backplane_write(CYW43_RAM_BASE + CYW43_RAM_SIZE - 4u, zero_buf, sizeof(zero_buf)) != 0){
+    if (cyw43_backplane_write(CYW43_RAM_BASE + g_cyw43.ram_size - 4u, zero_buf, sizeof(zero_buf)) != 0){
         uart_puts("CYW43: RAM token clear failed\n");
         return -1;
     }
@@ -429,7 +715,7 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
         return -1;
     }
 
-    nvram_addr = CYW43_RAM_BASE + CYW43_RAM_SIZE - nvram_packed_len - 4u;
+    nvram_addr = CYW43_RAM_BASE + g_cyw43.ram_size - nvram_packed_len - 4u;
     uart_puts("CYW43: uploading NVRAM bytes=");
     uart_putdec(nvram_packed_len);
     uart_puts(" addr=");
@@ -444,7 +730,7 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     nvram_words = nvram_packed_len / 4u;
     nvram_token = (nvram_words & 0xFFFFu) | ((~nvram_words) << 16);
     put_le32(token_buf, nvram_token);
-    if (cyw43_backplane_write(CYW43_RAM_BASE + CYW43_RAM_SIZE - 4u, token_buf, sizeof(token_buf)) != 0){
+    if (cyw43_backplane_write(CYW43_RAM_BASE + g_cyw43.ram_size - 4u, token_buf, sizeof(token_buf)) != 0){
         uart_puts("CYW43: NVRAM token write failed\n");
         return -1;
     }
@@ -538,6 +824,10 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: UP rejected (firmware not loaded)\n");
         return -1;
     }
+    if (!g_cyw43.fw_running && cyw43_start_firmware() != 0){
+        uart_puts("CYW43: firmware start failed\n");
+        return -1;
+    }
     g_cyw43.iface_up = 1;
     return 0;
 }
@@ -604,6 +894,7 @@ int cyw43_get_status(cyw43_status_t* out){
     out->func1_ready = g_cyw43.func1_ready;
     out->func2_ready = g_cyw43.func2_ready;
     out->fw_loaded = g_cyw43.fw_loaded;
+    out->fw_running = g_cyw43.fw_running;
     out->iface_up = g_cyw43.iface_up;
     out->joined = g_cyw43.joined;
     out->mac[0] = g_cyw43.mac[0];
@@ -631,6 +922,8 @@ void cyw43_dump_status(void){
     uart_putdec(g_cyw43.func2_ready);
     uart_puts(" fw=");
     uart_putdec(g_cyw43.fw_loaded);
+    uart_puts(" run=");
+    uart_putdec(g_cyw43.fw_running);
     uart_puts(" up=");
     uart_putdec(g_cyw43.iface_up);
     uart_puts(" joined=");
