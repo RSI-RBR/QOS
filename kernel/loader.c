@@ -221,7 +221,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         return prog;
     }
 
-    if ((unsigned int)size < code_off + code_size){
+    if ((unsigned int)size < code_off || code_size > ((unsigned int)size - code_off)){
         loader_unlock();
         uart_puts("Program truncated.\n");
         return prog;
@@ -234,19 +234,25 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         return prog;
     }
     {
+        const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
         const program_sec_header_t* cand = (const program_sec_header_t*)(buffer + sizeof(program_header_t));
         if (cand->magic != QOS_SEC_MAGIC){
             loader_unlock();
             uart_puts("Program missing SEC1 header.\n");
             return prog;
         }
-        if (cand->header_size < sizeof(program_sec_header_t)){
+        if (cand->header_size != sec_min){
             loader_unlock();
             uart_puts("Bad security header.\n");
             return prog;
         }
+        if (code_off > ((unsigned int)size - cand->header_size)){
+            loader_unlock();
+            uart_puts("Program/security header overflow.\n");
+            return prog;
+        }
         code_off += cand->header_size;
-        if ((unsigned int)size < code_off + code_size){
+        if ((unsigned int)size < code_off || code_size > ((unsigned int)size - code_off)){
             loader_unlock();
             uart_puts("Program/security header size mismatch.\n");
             return prog;

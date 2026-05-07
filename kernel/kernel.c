@@ -271,10 +271,22 @@ void kernel_main(void){
         uart_puts("Kernel file verify not provisioned yet.\n");
     }
 
+    {
+        int kernel_trust_ok = (kv == 0 && kv_file == 0);
+        if (!kernel_trust_ok){
+            uart_puts("Boot security policy: kernel trust not established.\n");
+            uart_puts("Boot security policy: local shell + remote login disabled.\n");
+            while (1){
+                asm volatile("wfi");
+            }
+        }
+    }
+
     if (auth_init() != 0){
         uart_puts("AUTH init failed; remote login disabled.\n");
+    } else{
+        (void)remote_login_init();
     }
-    (void)remote_login_init();
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
