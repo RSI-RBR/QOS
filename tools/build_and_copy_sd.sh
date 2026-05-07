@@ -5,10 +5,10 @@ SD_MOUNT="${SD_MOUNT:-/media/sd}"
 ADMIN_KEY="${ADMIN_KEY:-keys/admin_ed25519.pem}"
 DEV_KEY="${DEV_KEY:-keys/dev_ed25519.pem}"
 OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
-ADMIN_LAMPORT_PRIV="${ADMIN_LAMPORT_PRIV:-keys/admin_lamport_priv.bin}"
-DEV_LAMPORT_PRIV="${DEV_LAMPORT_PRIV:-keys/dev_lamport_priv.bin}"
-ADMIN_LAMPORT_PUB="${ADMIN_LAMPORT_PUB:-keys/admin_lamport_pub.bin}"
-DEV_LAMPORT_PUB="${DEV_LAMPORT_PUB:-keys/dev_lamport_pub.bin}"
+ADMIN_PQ_SIGN_KEY="${ADMIN_PQ_SIGN_KEY:-${ADMIN_LAMPORT_PRIV:-keys/admin_pq_compat_priv.bin}}"
+DEV_PQ_SIGN_KEY="${DEV_PQ_SIGN_KEY:-${DEV_LAMPORT_PRIV:-keys/dev_pq_compat_priv.bin}}"
+ADMIN_PQ_PUB="${ADMIN_PQ_PUB:-${ADMIN_LAMPORT_PUB:-keys/admin_pq_compat_pub.bin}}"
+DEV_PQ_PUB="${DEV_PQ_PUB:-${DEV_LAMPORT_PUB:-keys/dev_pq_compat_pub.bin}}"
 
 if [[ ! -d "$SD_MOUNT" ]]; then
   echo "SD mount path not found: $SD_MOUNT"
@@ -22,46 +22,46 @@ if [[ ! -f "$DEV_KEY" ]]; then
   echo "Developer key not found: $DEV_KEY"
   exit 1
 fi
-if [[ -n "$ADMIN_LAMPORT_PRIV" && ! -f "$ADMIN_LAMPORT_PRIV" ]]; then
-  echo "Admin Lamport private key not found: $ADMIN_LAMPORT_PRIV"
+if [[ -n "$ADMIN_PQ_SIGN_KEY" && ! -f "$ADMIN_PQ_SIGN_KEY" ]]; then
+  echo "Admin PQ sign key not found: $ADMIN_PQ_SIGN_KEY"
   exit 1
 fi
-if [[ -n "$DEV_LAMPORT_PRIV" && ! -f "$DEV_LAMPORT_PRIV" ]]; then
-  echo "Developer Lamport private key not found: $DEV_LAMPORT_PRIV"
+if [[ -n "$DEV_PQ_SIGN_KEY" && ! -f "$DEV_PQ_SIGN_KEY" ]]; then
+  echo "Developer PQ sign key not found: $DEV_PQ_SIGN_KEY"
   exit 1
 fi
-if [[ -n "$ADMIN_LAMPORT_PUB" && ! -f "$ADMIN_LAMPORT_PUB" ]]; then
-  echo "Admin Lamport public key not found: $ADMIN_LAMPORT_PUB"
+if [[ -n "$ADMIN_PQ_PUB" && ! -f "$ADMIN_PQ_PUB" ]]; then
+  echo "Admin PQ public key not found: $ADMIN_PQ_PUB"
   exit 1
 fi
-if [[ -n "$DEV_LAMPORT_PUB" && ! -f "$DEV_LAMPORT_PUB" ]]; then
-  echo "Developer Lamport public key not found: $DEV_LAMPORT_PUB"
+if [[ -n "$DEV_PQ_PUB" && ! -f "$DEV_PQ_PUB" ]]; then
+  echo "Developer PQ public key not found: $DEV_PQ_PUB"
   exit 1
 fi
 
 ADMIN_KEY_ABS="$(realpath "$ADMIN_KEY")"
 DEV_KEY_ABS="$(realpath "$DEV_KEY")"
-ADMIN_LAMPORT_PRIV_ABS=""
-DEV_LAMPORT_PRIV_ABS=""
-ADMIN_LAMPORT_PUB_ABS=""
-DEV_LAMPORT_PUB_ABS=""
-if [[ -n "$ADMIN_LAMPORT_PRIV" ]]; then ADMIN_LAMPORT_PRIV_ABS="$(realpath "$ADMIN_LAMPORT_PRIV")"; fi
-if [[ -n "$DEV_LAMPORT_PRIV" ]]; then DEV_LAMPORT_PRIV_ABS="$(realpath "$DEV_LAMPORT_PRIV")"; fi
-if [[ -n "$ADMIN_LAMPORT_PUB" ]]; then ADMIN_LAMPORT_PUB_ABS="$(realpath "$ADMIN_LAMPORT_PUB")"; fi
-if [[ -n "$DEV_LAMPORT_PUB" ]]; then DEV_LAMPORT_PUB_ABS="$(realpath "$DEV_LAMPORT_PUB")"; fi
+ADMIN_PQ_SIGN_KEY_ABS=""
+DEV_PQ_SIGN_KEY_ABS=""
+ADMIN_PQ_PUB_ABS=""
+DEV_PQ_PUB_ABS=""
+if [[ -n "$ADMIN_PQ_SIGN_KEY" ]]; then ADMIN_PQ_SIGN_KEY_ABS="$(realpath "$ADMIN_PQ_SIGN_KEY")"; fi
+if [[ -n "$DEV_PQ_SIGN_KEY" ]]; then DEV_PQ_SIGN_KEY_ABS="$(realpath "$DEV_PQ_SIGN_KEY")"; fi
+if [[ -n "$ADMIN_PQ_PUB" ]]; then ADMIN_PQ_PUB_ABS="$(realpath "$ADMIN_PQ_PUB")"; fi
+if [[ -n "$DEV_PQ_PUB" ]]; then DEV_PQ_PUB_ABS="$(realpath "$DEV_PQ_PUB")"; fi
 
 echo "[1/4] Building signed kernel..."
 make clean
 make OPENSSL_BIN="$OPENSSL_BIN" \
   ADMIN_SIGN_KEY="$ADMIN_KEY_ABS" DEV_SIGN_KEY="$DEV_KEY_ABS" \
-  ADMIN_LAMPORT_SIGN_KEY="$ADMIN_LAMPORT_PRIV_ABS" DEV_LAMPORT_SIGN_KEY="$DEV_LAMPORT_PRIV_ABS" \
-  ADMIN_LAMPORT_PUB="$ADMIN_LAMPORT_PUB_ABS" DEV_LAMPORT_PUB="$DEV_LAMPORT_PUB_ABS"
+  ADMIN_PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS" DEV_PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS" \
+  ADMIN_PQ_PUB="$ADMIN_PQ_PUB_ABS" DEV_PQ_PUB="$DEV_PQ_PUB_ABS"
 
 echo "[2/4] Building signed programs..."
-make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_LAMPORT_PRIV_ABS"
-make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_LAMPORT_PRIV_ABS"
-make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_LAMPORT_PRIV_ABS"
-make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_LAMPORT_PRIV_ABS"
+make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
+make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
+make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 
 echo "[3/4] Copying artifacts to $SD_MOUNT ..."
 cp -f kernel8.img "$SD_MOUNT/KERNEL8.IMG"

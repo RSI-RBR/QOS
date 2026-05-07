@@ -322,11 +322,11 @@ static unsigned char g_tls_record_plain[TCP_TLS_REC_MAX];
 static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
 
 // Experimental PQ advertisement scaffolding:
-// - Group 0x6399: widely used experimental X25519+Kyber768 draft ID in the ecosystem.
-// - Signature scheme 0xFEA1: private-use placeholder for ML-DSA-65.
-// We still perform key_share with X25519 only for now.
+// - Group 0x6399: ecosystem draft ID for X25519+Kyber768 style KEM hybrids.
+// - Signature scheme 0x0905: draft allocation for ML-DSA-65 (Dilithium level 3).
+// TLS key exchange remains X25519-only until a KEM backend is integrated.
 #define TLS13_GROUP_X25519_KYBER768_DRAFT00 0x6399u
-#define TLS13_SIGALG_MLDSA65_EXPERIMENTAL 0xFEA1u
+#define TLS13_SIGALG_MLDSA65 0x0905u
 static const int g_tls13_advertise_pq = 1;
 
 static void be24_write(unsigned char* p, unsigned int v){
@@ -447,7 +447,7 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
         sigs[scount++] = 0x0807u; // ed25519
         if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65_EXPERIMENTAL;
+            sigs[scount++] = TLS13_SIGALG_MLDSA65;
         }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
@@ -470,7 +470,7 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
         sigs[scount++] = 0x0807u; // ed25519
         if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65_EXPERIMENTAL;
+            sigs[scount++] = TLS13_SIGALG_MLDSA65;
         }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;

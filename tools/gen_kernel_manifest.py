@@ -8,7 +8,7 @@ import struct
 
 QOS_PQ_SIG_MAGIC = 0x51505331
 QOS_PQ_SIG_VERSION = 1
-QOS_SIG_ALG_LAMPORT_SHA256 = 3
+QOS_SIG_ALG_MLDSA65 = 3
 LAMPORT_BITS = 256
 LAMPORT_ELEM_BYTES = 32
 LAMPORT_PRIV_BYTES = LAMPORT_BITS * 2 * LAMPORT_ELEM_BYTES
@@ -46,11 +46,13 @@ def sign_ed25519(openssl_bin: str, key_pem: str, message: bytes) -> bytes:
             return f.read()
 
 
-def sign_lamport_sha256(lamport_priv_path: str, message: bytes) -> bytes:
-    with open(lamport_priv_path, "rb") as f:
+def sign_pq_compat_sha256(pq_sign_key_path: str, message: bytes) -> bytes:
+    with open(pq_sign_key_path, "rb") as f:
         sk = f.read()
     if len(sk) != LAMPORT_PRIV_BYTES:
-        raise RuntimeError(f"unexpected Lamport private key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES})")
+        raise RuntimeError(
+            f"unexpected PQ sign key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES} for legacy compatibility mode)"
+        )
 
     digest = hashlib.sha256(message).digest()
     out = bytearray(LAMPORT_SIG_BYTES)
@@ -80,7 +82,7 @@ def write_pq_sidecar(out_path: str, signer_key_id: int, sig_alg: int, sig: bytes
 
 def main() -> int:
     if len(sys.argv) < 4 or len(sys.argv) > 10:
-        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id] [signing-key-pem] [openssl-bin] [lamport-priv-bin] [pq-out-file]")
+        print("Usage: gen_kernel_manifest.py <kernel8.elf> <kernel8.img> <out-header> [nm-bin] [signer-key-id] [signing-key-pem] [openssl-bin] [pq-sign-key-bin] [pq-out-file]")
         return 1
 
     elf_path = sys.argv[1]
@@ -90,7 +92,7 @@ def main() -> int:
     signer_key_id = int(sys.argv[5], 0) if len(sys.argv) >= 6 else 0x00000001
     signing_key_pem = sys.argv[6] if len(sys.argv) >= 7 else ""
     openssl_bin = sys.argv[7] if len(sys.argv) >= 8 else "openssl"
-    lamport_priv_bin = sys.argv[8] if len(sys.argv) >= 9 else ""
+    pq_sign_key_bin = sys.argv[8] if len(sys.argv) >= 9 else ""
     pq_out_file = sys.argv[9] if len(sys.argv) >= 10 else ""
 
     text_start = parse_nm_symbol(nm_bin, elf_path, "__kernel_text_start")
@@ -151,13 +153,13 @@ def main() -> int:
         sig_len = 64
         sig_bytes = sig
 
-    if lamport_priv_bin:
+    if pq_sign_key_bin:
         if not pq_out_file:
-            raise RuntimeError("lamport private key provided but pq-out-file missing")
-        pq_sig = sign_lamport_sha256(lamport_priv_bin, bytes(msg))
+            raise RuntimeError("PQ sign key provided but pq-out-file missing")
+        pq_sig = sign_pq_compat_sha256(pq_sign_key_bin, bytes(msg))
         if len(pq_sig) != LAMPORT_SIG_BYTES:
-            raise RuntimeError(f"unexpected Lamport signature length: {len(pq_sig)}")
-        write_pq_sidecar(pq_out_file, int(signer_key_id), QOS_SIG_ALG_LAMPORT_SHA256, pq_sig)
+            raise RuntimeError(f"unexpected PQ compatibility signature length: {len(pq_sig)}")
+        write_pq_sidecar(pq_out_file, int(signer_key_id), QOS_SIG_ALG_MLDSA65, pq_sig)
     elif pq_out_file and os.path.exists(pq_out_file):
         os.remove(pq_out_file)
 
@@ -195,8 +197,9 @@ def main() -> int:
         print(f"Kernel manifest Ed25519 signed with: {signing_key_pem}")
     else:
         print("Kernel manifest in digest-only mode (unsigned).")
-    if lamport_priv_bin:
-        print(f"Kernel PQ Lamport signature written to: {pq_out_file}")
+    if pq_sign_key_bin:
+        print(f"Kernel PQ signature written to: {pq_out_file}")
+        print("NOTE: PQ signing is currently in legacy compatibility mode until native ML-DSA backend is linked.")
     else:
         print("Kernel PQ signature not generated.")
     print(f"Wrote header: {out_header}")

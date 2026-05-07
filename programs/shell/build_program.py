@@ -12,7 +12,7 @@ QOS_PQ_SIG_VERSION = 0x00000001
 QOS_PROG_FLAG_SHA256 = 0x00000001
 QOS_SIG_ALG_DIGEST_ONLY = 0x00000001
 QOS_SIG_ALG_ED25519 = 0x00000002
-QOS_SIG_ALG_LAMPORT_SHA256 = 0x00000003
+QOS_SIG_ALG_MLDSA65 = 0x00000003
 QOS_MAX_SIGNATURE_BYTES = 64
 LAMPORT_BITS = 256
 LAMPORT_ELEM_BYTES = 32
@@ -39,11 +39,13 @@ def sign_ed25519(openssl_bin, key_pem, message):
             return f.read()
 
 
-def sign_lamport_sha256(priv_path, message):
+def sign_pq_compat_sha256(priv_path, message):
     with open(priv_path, "rb") as f:
         sk = f.read()
     if len(sk) != LAMPORT_PRIV_BYTES:
-        raise RuntimeError(f"unexpected Lamport private key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES})")
+        raise RuntimeError(
+            f"unexpected PQ sign key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES} for legacy compatibility mode)"
+        )
     digest = hashlib.sha256(message).digest()
     sig = bytearray(LAMPORT_SIG_BYTES)
     for i in range(LAMPORT_BITS):
@@ -68,7 +70,7 @@ def write_pq_sidecar(path, signer_key_id, sig_alg, sig_bytes):
 
 
 if len(sys.argv) < 4 or len(sys.argv) > 9:
-    print("Usage: build_program.py input.raw output.bin fat_name_83 [signer_key_id] [sign_key_pem] [openssl_bin] [lamport_priv_bin] [pq_out_file]")
+    print("Usage: build_program.py input.raw output.bin fat_name_83 [signer_key_id] [sign_key_pem] [openssl_bin] [pq_sign_key_bin] [pq_out_file]")
     sys.exit(1)
 
 signer_key_id = DEFAULT_SIGNER_KEY_ID
@@ -80,7 +82,7 @@ if len(fat_name_83) != 11:
     sys.exit(1)
 sign_key_pem = sys.argv[5] if len(sys.argv) >= 6 else ""
 openssl_bin = sys.argv[6] if len(sys.argv) >= 7 else "openssl"
-lamport_priv = sys.argv[7] if len(sys.argv) >= 8 else ""
+pq_sign_key = sys.argv[7] if len(sys.argv) >= 8 else ""
 pq_out_file = sys.argv[8] if len(sys.argv) >= 9 else (sys.argv[2] + ".pqs")
 
 with open(sys.argv[1], "rb") as f:
@@ -129,7 +131,7 @@ with open(sys.argv[2], "wb") as f:
     f.write(sec_header)
     f.write(code)
 
-if lamport_priv:
+if pq_sign_key:
     msg = bytearray()
     msg.extend(b"QOS-PROG-SIG-V1\x00")
     msg.extend(fat_name_83.encode("ascii"))
@@ -138,13 +140,14 @@ if lamport_priv:
     msg.extend(struct.pack("<I", sig_alg))
     msg.extend(struct.pack("<I", size))
     msg.extend(digest)
-    lamport_sig = sign_lamport_sha256(lamport_priv, bytes(msg))
-    if len(lamport_sig) != LAMPORT_SIG_BYTES:
-        print("Lamport signature length mismatch")
+    pq_sig = sign_pq_compat_sha256(pq_sign_key, bytes(msg))
+    if len(pq_sig) != LAMPORT_SIG_BYTES:
+        print("PQ compatibility signature length mismatch")
         sys.exit(1)
-    write_pq_sidecar(pq_out_file, signer_key_id, QOS_SIG_ALG_LAMPORT_SHA256, lamport_sig)
+    write_pq_sidecar(pq_out_file, signer_key_id, QOS_SIG_ALG_MLDSA65, pq_sig)
     print("Built PQ sidecar:", pq_out_file)
+    print("NOTE: PQ signing is currently in legacy compatibility mode until native ML-DSA backend is linked.")
 else:
-    print("PQ sidecar not generated (no lamport_priv_bin provided).")
+    print("PQ sidecar not generated (no pq_sign_key_bin provided).")
 
 print("Built program.bin (size:", size, ")")

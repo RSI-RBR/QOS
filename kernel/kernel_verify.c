@@ -51,8 +51,8 @@ __attribute__((section(".kmanifest"), used)) = {
 #define KERNEL_IMAGE_FAT_NAME "KERNEL8 IMG"
 #define KERNEL_PQ_SIG_FAT_NAME "KERNEL8 PQS"
 #define KERNEL_IMAGE_MAX_SIZE (4u * 1024u * 1024u)
-#define KERNEL_PQ_SIG_HEADER_BYTES 20u
-#define KERNEL_PQ_SIG_MAX (KERNEL_PQ_SIG_HEADER_BYTES + LAMPORT_SIG_BYTES + 32u)
+#define KERNEL_PQ_SIG_HEADER_BYTES QOS_PQ_SIG_HEADER_BYTES
+#define KERNEL_PQ_SIG_MAX QOS_PQ_SIG_MAX
 
 static unsigned char g_kernel_file_buf[KERNEL_IMAGE_MAX_SIZE];
 static unsigned char g_kernel_pq_sig_buf[KERNEL_PQ_SIG_MAX];
@@ -114,13 +114,16 @@ static unsigned int get_u32_le(const unsigned char* p){
            ((unsigned int)p[3] << 24);
 }
 
-static int key_has_lamport_pubkey(const trust_key_t* key){
+static int key_has_pq_pubkey(const trust_key_t* key){
     if (!key){
         return 0;
     }
+    if (key->pq_pubkey_len == 0u || key->pq_pubkey_len > QOS_PQ_MAX_PUBKEY_BYTES){
+        return 0;
+    }
     unsigned char nz = 0;
-    for (unsigned int i = 0; i < LAMPORT_PUBKEY_BYTES; i++){
-        nz |= key->lamport_pubkey[i];
+    for (unsigned int i = 0; i < key->pq_pubkey_len; i++){
+        nz |= key->pq_pubkey[i];
     }
     return nz != 0u;
 }
@@ -248,8 +251,8 @@ static int verify_manifest_pq_sidecar_uncached(const trust_key_t* key){
     if (!key){
         return -1;
     }
-    if (!key_has_lamport_pubkey(key) ||
-        !alg_mask_has(key->pq_sig_alg_mask, QOS_SIG_ALG_LAMPORT_SHA256)){
+    if (!key_has_pq_pubkey(key) ||
+        !alg_mask_has(key->pq_sig_alg_mask, QOS_SIG_ALG_MLDSA65)){
         if (g_require_kernel_pq){
             uart_puts("Kernel verify: PQ required but trusted key lacks PQ material.\n");
             return -1;
@@ -313,19 +316,17 @@ static int verify_manifest_pq_sidecar_uncached(const trust_key_t* key){
     }
     sha256_digest(msg, msg_len, msg_digest);
 
-    if (sig_alg == QOS_SIG_ALG_LAMPORT_SHA256){
-        if (lamport_verify_digest_sha256(msg_digest,
-                                         &g_kernel_pq_sig_buf[KERNEL_PQ_SIG_HEADER_BYTES], sig_len,
-                                         key->lamport_pubkey, LAMPORT_PUBKEY_BYTES) != 0){
-            uart_puts("Kernel verify: Lamport PQ signature failed.\n");
-            return -1;
-        }
-        uart_puts("Kernel verify: PQ Lamport signature OK.\n");
-        return 0;
+    if (pq_sig_verify_digest_sha256(sig_alg,
+                                    msg_digest,
+                                    &g_kernel_pq_sig_buf[KERNEL_PQ_SIG_HEADER_BYTES], sig_len,
+                                    key->pq_pubkey, key->pq_pubkey_len) != 0){
+        uart_puts("Kernel verify: PQ signature failed.\n");
+        return -1;
     }
-
-    uart_puts("Kernel verify: unsupported PQ signature algorithm.\n");
-    return -1;
+    uart_puts("Kernel verify: PQ signature OK (");
+    uart_puts(pq_sig_alg_name(sig_alg));
+    uart_puts(").\n");
+    return 0;
 }
 
 static int verify_manifest_pq_sidecar(const trust_key_t* key){
