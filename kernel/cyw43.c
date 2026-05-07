@@ -31,6 +31,10 @@
 
 #define CYW43_CORE_IOCTRL       0x408u
 #define CYW43_CORE_RESETCTRL    0x800u
+#define CYW43_SOCRAM_COREINFO   0x00u
+#define CYW43_SOCRAM_BANKIDX    0x10u
+#define CYW43_SOCRAM_BANKINFO   0x40u
+#define CYW43_SOCRAM_BANKPDA    0x44u
 #define CYW43_SD_INT_STATUS     0x20u
 #define CYW43_SD_INT_MASK       0x24u
 #define CYW43_SD_SBMBOX         0x40u
@@ -506,6 +510,59 @@ static int cyw43_prepare_firmware_cores(void){
     return 0;
 }
 
+static int cyw43_scan_socram(void){
+    unsigned int coreinfo = 0;
+    unsigned int banks = 0;
+    unsigned int size = 0;
+
+    if (g_cyw43.socram_ctl == 0u || g_cyw43.socram_regs == 0u){
+        uart_puts("CYW43: SOCRAM core missing; using default RAM size\n");
+        g_cyw43.ram_size = CYW43_RAM_SIZE;
+        return 0;
+    }
+
+    if (cyw43_core_reset(g_cyw43.socram_ctl, 0u, 0u) != 0){
+        uart_puts("CYW43: SOCRAM reset failed\n");
+        return -1;
+    }
+    if (cyw43_backplane_read32(g_cyw43.socram_regs + CYW43_SOCRAM_COREINFO, &coreinfo) != 0){
+        uart_puts("CYW43: SOCRAM coreinfo read failed\n");
+        return -1;
+    }
+
+    banks = (coreinfo >> 4) & 0xFu;
+    if (banks == 0u || banks > 16u){
+        uart_puts("CYW43: bad SOCRAM bank count=");
+        uart_putdec(banks);
+        uart_puts(" coreinfo=");
+        uart_puthex(coreinfo);
+        uart_puts("\n");
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < banks; i++){
+        unsigned int bankinfo = 0;
+        if (cyw43_backplane_write32(g_cyw43.socram_regs + CYW43_SOCRAM_BANKIDX, i) != 0 ||
+            cyw43_backplane_read32(g_cyw43.socram_regs + CYW43_SOCRAM_BANKINFO, &bankinfo) != 0){
+            uart_puts("CYW43: SOCRAM bank read failed\n");
+            return -1;
+        }
+        size += 8192u * ((bankinfo & 0x3Fu) + 1u);
+    }
+
+    g_cyw43.ram_size = size;
+    uart_puts("CYW43: SOCRAM size=");
+    uart_puthex(g_cyw43.ram_size);
+    uart_puts("\n");
+
+    // Circle powers bank 3 for 43430 after scanning RAM banks.
+    if (g_cyw43.chip_id == 43430u){
+        (void)cyw43_backplane_write32(g_cyw43.socram_regs + CYW43_SOCRAM_BANKIDX, 3u);
+        (void)cyw43_backplane_write32(g_cyw43.socram_regs + CYW43_SOCRAM_BANKPDA, 0u);
+    }
+    return 0;
+}
+
 static int cyw43_enable_ht_clock(void){
     unsigned char csr = 0;
     (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, 0u);
@@ -695,6 +752,9 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
         return -1;
     }
     if (cyw43_prepare_firmware_cores() != 0){
+        return -1;
+    }
+    if (cyw43_scan_socram() != 0){
         return -1;
     }
 
