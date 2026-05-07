@@ -84,6 +84,7 @@
 #define CYW43_WLC_SET_SCAN_CHANNEL_TIME 185u
 #define CYW43_WLC_SET_SCAN_UNASSOC_TIME 187u
 #define CYW43_WLC_SET_SCAN_PASSIVE_TIME 258u
+#define CYW43_WLC_SET_PM       86u
 #define CYW43_WLC_GET_VAR       262u
 #define CYW43_WLC_SET_VAR       263u
 #define CYW43_WLC_SET_WSEC_PMK  268u
@@ -2092,6 +2093,12 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
+    // Latency-oriented defaults for bring-up: keep radio awake and disable
+    // minimum power consumption mode while we prioritize responsiveness.
+    if (cyw43_wl_set_int(CYW43_WLC_SET_PM, 0u) != 0 ||
+        cyw43_wl_set_var_u32("mpc", 0u) != 0){
+        uart_puts("CYW43: power-save tuning partial; continuing\n");
+    }
     return 0;
 }
 
