@@ -1698,6 +1698,29 @@ static int cyw43_wl_set_event_msgs(void){
     return cyw43_wl_set_var("event_msgs", mask, sizeof(mask));
 }
 
+static int cyw43_wait_assoc(unsigned int timeout_ms){
+    unsigned char bssid[8];
+    unsigned int actual = 0;
+    unsigned int loops = (timeout_ms / 100u) + 1u;
+
+    if (loops > 50u){
+        loops = 50u;
+    }
+
+    for (unsigned int i = 0; i < loops; i++){
+        mem_zero_local(bssid, sizeof(bssid));
+        actual = 0;
+        if (cyw43_wl_get_var("bssid", bssid, sizeof(bssid), &actual) == 0){
+            if (actual >= 6u &&
+                (bssid[0] || bssid[1] || bssid[2] || bssid[3] || bssid[4] || bssid[5])){
+                return 0;
+            }
+        }
+        cyw43_delay(150000u);
+    }
+    return -1;
+}
+
 static int cyw43_wifi_configure_on(void){
     int rc = 0;
 
@@ -2175,6 +2198,12 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         g_cyw43.joined_ssid[i] = ssid[i];
     }
     g_cyw43.joined_ssid[n] = 0;
+    if (cyw43_wait_assoc(2500u) != 0){
+        // Keep join non-fatal here; some firmware builds associate slightly
+        // later even after SET_SSID returned success.
+        uart_puts("CYW43: association pending\n");
+    }
+
     g_cyw43.joined = 1;
     net_proto_set_local_mac(g_cyw43.mac);
     if (net_try_select_wifi_backend() != 0){
@@ -2190,6 +2219,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
      */
     net_proto_get_gateway_ip(gateway_ip);
     arp_set_periodic_target(gateway_ip, 1000u);
+    (void)arp_send_request(gateway_ip);
     return 0;
 }
 
