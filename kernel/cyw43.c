@@ -49,14 +49,19 @@
 #define CYW43_SD_SBMBOX         0x40u
 #define CYW43_SD_SBMBOX_DATA    0x48u
 #define CYW43_SD_HOSTMBOX_DATA  0x4Cu
+#define CYW43_SD_INT_FC_STATE   (1u << 4)
 #define CYW43_SD_INT_FC_CHANGE  (1u << 5)
 #define CYW43_SD_INT_FRAME      (1u << 6)
 #define CYW43_SD_INT_MAILBOX    (1u << 7)
+#define CYW43_SD_INT_HOST_MASK  0x000000F0u
+#define CYW43_SD_INT_CHIPACTIVE (1u << 29)
+#define CYW43_SD_HOST_INT_MASK  (CYW43_SD_INT_HOST_MASK | CYW43_SD_INT_CHIPACTIVE)
 #define CYW43_SD_FW_READY       0x80u
 #define CYW43_SD_FW_READY_ALT   0x08u // Circle's intwait path checks this bit.
 
 #define CYW43_CRESCAN_SIZE      512u
 #define CYW43_SDPCM_HDR_LEN     12u
+#define CYW43_SDPCM_FIRSTREAD   64u
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  2048u
 #define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
@@ -797,17 +802,22 @@ static int cyw43_start_firmware(void){
         return -1;
     }
     uart_puts("CYW43: programming SDIO mailbox/intmask\n");
-    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0 ||
-        cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_MASK,
-                                CYW43_SD_INT_FRAME | CYW43_SD_INT_MAILBOX | CYW43_SD_INT_FC_CHANGE) != 0){
+    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, 0xFFFFFFFFu);
+    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0){
         uart_puts("CYW43: SDIO interrupt setup failed\n");
         return -1;
     }
-    uart_puts("CYW43: SDIO mailbox/intmask OK\n");
+    uart_puts("CYW43: SDIO mailbox OK\n");
     if (cyw43_enable_function2() != 0){
         return -1;
     }
     cyw43_program_f2_watermark();
+    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_MASK,
+                                CYW43_SD_HOST_INT_MASK) != 0){
+        uart_puts("CYW43: SDIO interrupt mask failed\n");
+        return -1;
+    }
+    uart_puts("CYW43: SDIO intmask OK\n");
     if (cyw43_wait_firmware_ready() != 0){
         return -1;
     }
@@ -1065,16 +1075,19 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms){
         if (g_cyw43.sd_regs != 0u){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
+                unsigned int ack = ints & ~CYW43_SD_INT_FRAME;
                 if (ints & CYW43_SD_INT_MAILBOX){
                     (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                 }
                 if (ints & CYW43_SD_INT_FRAME){
-                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                    if (ack){
+                        (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
+                    }
                     return 0;
                 }
-                if (ints){
-                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                if (ack){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
                 }
             }
         }
@@ -1132,13 +1145,17 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
 static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
     unsigned int len = 0;
     unsigned int lenck = 0;
-    unsigned int body_len = 0;
-    unsigned int body_xfer = 0;
+    unsigned int first_read = CYW43_SDPCM_FIRSTREAD;
+    unsigned int remain_len = 0;
+    unsigned int remain_xfer = 0;
 
     if (!out || !out_len || out_cap < CYW43_SDPCM_HDR_LEN){
         return -1;
     }
     *out_len = 0;
+    if (first_read > out_cap){
+        first_read = 4u;
+    }
 
     if (cyw43_wait_rx_frame(1500u) != 0){
         return -1;
@@ -1148,7 +1165,13 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     if (cyw43_prepare_packet_window() != 0){
         return -1;
     }
-    if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, 4u) != 0){
+    /*
+     * The dongle FIFO path expects the Linux/Circle-style "first read":
+     * consume enough bytes in one CMD53 to include the full SDPCM header, then
+     * fetch any remaining payload. Reading only the four-byte frame tag can
+     * leave the F2 FIFO in a bad partial-frame state.
+     */
+    if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, first_read) != 0){
         return -1;
     }
 
@@ -1170,13 +1193,14 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
         return -1;
     }
 
-    body_len = len - 4u;
-    if (body_len > 0u){
-        body_xfer = round4_u32(body_len);
-        if (4u + body_xfer > out_cap){
+    if (len > first_read){
+        remain_len = len - first_read;
+        remain_xfer = round4_u32(remain_len);
+        if (first_read + remain_xfer > out_cap){
             return -1;
         }
-        if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out + 4u, body_xfer) != 0){
+        if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR,
+                                      out + first_read, remain_xfer) != 0){
             return -1;
         }
     }
@@ -1192,6 +1216,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     static unsigned char tx[CYW43_PACKET_MAX_BYTES];
     static unsigned char rx[CYW43_PACKET_MAX_BYTES];
     unsigned int transfer_payload_len = 0;
+    unsigned int raw_frame_len = 0;
     unsigned int frame_len = 0;
     unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
     unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
@@ -1206,7 +1231,8 @@ static int cyw43_wl_cmd(int write, unsigned int op,
 
     transfer_payload_len = write ? (data_len + result_len) :
                                   ((data_len > result_len) ? data_len : result_len);
-    frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + transfer_payload_len;
+    raw_frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + transfer_payload_len;
+    frame_len = round4_u32(raw_frame_len);
     if (frame_len > CYW43_PACKET_MAX_BYTES){
         return -1;
     }
