@@ -1,3 +1,10 @@
 keys/
 *.pem
 *.key
+
+*.o
+*.elf
+*.raw
+*.bin
+*.img
+build/
