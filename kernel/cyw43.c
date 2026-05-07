@@ -21,6 +21,7 @@
 #define CYW43_CLK_FORCE_HT      0x02u
 #define CYW43_CLK_ALP_AVAIL     0x40u
 #define CYW43_CLK_HT_AVAIL      0x80u
+#define CYW43_CLK_NO_HW_REQ     0x20u
 #define CYW43_ENUM_BASE         0x18000000u
 
 #define CYW43_CORE_ARM_CM3      0x82Au
@@ -346,13 +347,13 @@ static void cyw43_delay(unsigned int n){
 
 static int cyw43_request_alp_clock(void){
     unsigned char csr = 0;
-    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_ALP) != 0){
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_NO_HW_REQ | CYW43_CLK_REQ_ALP) != 0){
         return -1;
     }
-    for (unsigned int i = 0; i < 200000u; i++){
+    for (unsigned int i = 0; i < 20000u; i++){
         if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
             (csr & CYW43_CLK_ALP_AVAIL)){
-            (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, (unsigned char)(csr | CYW43_CLK_FORCE_ALP));
+            (void)sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_NO_HW_REQ | CYW43_CLK_FORCE_ALP);
             return 0;
         }
         asm volatile("nop");
@@ -472,12 +473,17 @@ static int cyw43_core_disable(unsigned int regs, unsigned int pre, unsigned int 
         cyw43_backplane_write32(regs + CYW43_CORE_RESETCTRL, 1u) != 0){
         return -1;
     }
-    for (unsigned int i = 0; i < 10000u; i++){
+    for (unsigned int i = 0; i < 500u; i++){
         if (cyw43_backplane_read32(regs + CYW43_CORE_RESETCTRL, &reset) == 0 && (reset & 1u)){
             return cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 3u | ioctl);
         }
         cyw43_delay(1000u);
     }
+    uart_puts("CYW43: core disable timeout regs=");
+    uart_puthex(regs);
+    uart_puts(" reset=");
+    uart_puthex(reset);
+    uart_puts("\n");
     return -1;
 }
 
@@ -486,7 +492,7 @@ static int cyw43_core_reset(unsigned int regs, unsigned int pre, unsigned int io
     if (cyw43_core_disable(regs, pre, ioctl) != 0){
         return -1;
     }
-    for (unsigned int i = 0; i < 10000u; i++){
+    for (unsigned int i = 0; i < 500u; i++){
         if (cyw43_backplane_write32(regs + CYW43_CORE_RESETCTRL, 0u) != 0){
             return -1;
         }
@@ -495,6 +501,11 @@ static int cyw43_core_reset(unsigned int regs, unsigned int pre, unsigned int io
             return cyw43_backplane_write32(regs + CYW43_CORE_IOCTRL, 1u | ioctl);
         }
     }
+    uart_puts("CYW43: core reset timeout regs=");
+    uart_puthex(regs);
+    uart_puts(" reset=");
+    uart_puthex(reset);
+    uart_puts("\n");
     return -1;
 }
 
@@ -570,12 +581,13 @@ static int cyw43_enable_ht_clock(void){
     if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_HT) != 0){
         return -1;
     }
-    for (unsigned int i = 0; i < 1000000u; i++){
+    uart_puts("CYW43: requesting HT clock\n");
+    for (unsigned int i = 0; i < 50u; i++){
         if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) == 0 &&
             (csr & CYW43_CLK_HT_AVAIL)){
             return sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, (unsigned char)(csr | CYW43_CLK_FORCE_HT));
         }
-        cyw43_delay(1000u);
+        cyw43_delay(1000000u);
     }
     uart_puts("CYW43: HT clock timeout csr=");
     uart_puthex(csr);
@@ -621,6 +633,10 @@ static int cyw43_wait_firmware_ready(void){
 }
 
 static int cyw43_start_firmware(void){
+    unsigned int arm_reset = 0;
+    unsigned int arm_ioctl = 0;
+    unsigned char clkcsr = 0;
+
     if (g_cyw43.fw_running){
         return 0;
     }
@@ -637,6 +653,16 @@ static int cyw43_start_firmware(void){
         uart_puts("CYW43: ARM core release failed\n");
         return -1;
     }
+    (void)cyw43_backplane_read32(g_cyw43.arm_ctl + CYW43_CORE_RESETCTRL, &arm_reset);
+    (void)cyw43_backplane_read32(g_cyw43.arm_ctl + CYW43_CORE_IOCTRL, &arm_ioctl);
+    (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &clkcsr);
+    uart_puts("CYW43: ARM released reset=");
+    uart_puthex(arm_reset);
+    uart_puts(" ioctl=");
+    uart_puthex(arm_ioctl);
+    uart_puts(" clk=");
+    uart_puthex(clkcsr);
+    uart_puts("\n");
     if (cyw43_enable_ht_clock() != 0){
         return -1;
     }
