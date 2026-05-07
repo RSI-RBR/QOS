@@ -27,15 +27,11 @@ typedef struct {
 static icmp_stats_t g_icmp_stats;
 static volatile unsigned short g_ping_seq = 1u;
 static const unsigned short g_ping_ident = 0x5153u;
-static volatile int g_ping_have_last_send = 0;
-static volatile unsigned long g_ping_last_send_tick = 0;
 static volatile int g_ping_waiting = 0;
 static volatile unsigned short g_ping_wait_seq = 0;
 static volatile unsigned long g_ping_send_tick = 0;
 static volatile unsigned long g_ping_send_cnt_lo = 0;
 static volatile int g_ping_result_ms = -1;
-
-#define ICMP_MIN_ECHO_INTERVAL_MS 1000u
 
 static unsigned long read_daif(void){
     unsigned long v;
@@ -92,8 +88,6 @@ void icmp_init(void){
     g_icmp_stats.timeouts = 0;
     g_icmp_stats.bad_reply = 0;
     g_ping_seq = 1u;
-    g_ping_have_last_send = 0;
-    g_ping_last_send_tick = 0;
     g_ping_waiting = 0;
     g_ping_wait_seq = 0;
     g_ping_send_tick = 0;
@@ -198,13 +192,6 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     net_proto_get_local_ip(local_ip);
     net_proto_get_local_mac(local_mac);
 
-    if (g_ping_have_last_send){
-        unsigned long elapsed = system_ticks - g_ping_last_send_tick;
-        if (elapsed < ICMP_MIN_ECHO_INTERVAL_MS){
-            process_sleep((unsigned int)(ICMP_MIN_ECHO_INTERVAL_MS - elapsed));
-        }
-    }
-
     tx_frame_len = frame_len;
     if (tx_frame_len < ETH_MIN_FRAME_LEN){
         tx_frame_len = ETH_MIN_FRAME_LEN;
@@ -264,8 +251,6 @@ int icmp_ping_gateway(unsigned int timeout_ms){
         g_ping_waiting = 0;
         return -3;
     }
-    g_ping_last_send_tick = system_ticks;
-    g_ping_have_last_send = 1;
     g_icmp_stats.tx_echo_req++;
     for (unsigned int i = 0; i < 4u && g_ping_waiting; i++){
         (void)net_poll();

@@ -149,6 +149,8 @@ typedef struct {
 static cyw43_state_t g_cyw43;
 static cyw43_rx_handler_t g_cyw43_rx_handler = 0;
 
+static void cyw43_drain_pending_packets(unsigned int max_frames);
+
 static unsigned int kmin_u32(unsigned int a, unsigned int b){
     return (a < b) ? a : b;
 }
@@ -915,6 +917,7 @@ static int cyw43_attach_running_firmware(void){
     if (cyw43_sdio_keep_awake() != 0){
         uart_puts("CYW43: SDIO reattach wake warning; continuing\n");
     }
+    cyw43_drain_pending_packets(64u);
     return 0;
 }
 
@@ -1408,6 +1411,24 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap,
 
     *out_len = len;
     return 0;
+}
+
+static void cyw43_drain_pending_packets(unsigned int max_frames){
+    static unsigned char rx[CYW43_PACKET_MAX_BYTES];
+
+    if (!g_cyw43.func2_ready){
+        return;
+    }
+
+    for (unsigned int i = 0; i < max_frames; i++){
+        unsigned int rx_len = 0;
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 0u, 1) != 0){
+            break;
+        }
+        if (rx_len == 0u){
+            break;
+        }
+    }
 }
 
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -2176,6 +2197,7 @@ int cyw43_ioctl_up(void){
         cyw43_wl_set_var_u32("mpc", 0u) != 0){
         uart_puts("CYW43: power-save tuning partial; continuing\n");
     }
+    cyw43_drain_pending_packets(16u);
     return 0;
 }
 
@@ -2326,6 +2348,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         // later even after SET_SSID returned success.
         uart_puts("CYW43: association pending\n");
     }
+    cyw43_drain_pending_packets(64u);
 
     (void)cyw43_refresh_cur_etheraddr();
     g_cyw43.joined = 1;
