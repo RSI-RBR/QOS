@@ -9,6 +9,7 @@
 #include "crypto.h"
 
 #define NET_RX_QUEUE_LEN 32
+#define NET_POLL_DELIVER_BUDGET 8
 
 typedef struct {
     unsigned int len;
@@ -239,9 +240,9 @@ int net_send_raw(const unsigned char* frame, unsigned int len){
         return -1;
     }
 
-    unsigned long io_irq = spin_lock_irqsave(&g_net_io_lock);
+    spin_lock(&g_net_io_lock);
     int send_rc = nic->send(frame, len);
-    spin_unlock_irqrestore(&g_net_io_lock, io_irq);
+    spin_unlock(&g_net_io_lock);
 
     if (send_rc == 0){
         irq = spin_lock_irqsave(&g_net_state_lock);
@@ -293,15 +294,15 @@ int net_poll(void){
     cb = g_rx_cb;
     spin_unlock_irqrestore(&g_net_state_lock, irq);
 
-    unsigned long io_irq = spin_lock_irqsave(&g_net_io_lock);
+    spin_lock(&g_net_io_lock);
     if (nic->poll){
         nic->poll();
     }
-    spin_unlock_irqrestore(&g_net_io_lock, io_irq);
+    spin_unlock(&g_net_io_lock);
 
     int delivered = 0;
     net_frame_t frame;
-    while (net_rxq_pop(&frame) == 0){
+    while (delivered < NET_POLL_DELIVER_BUDGET && net_rxq_pop(&frame) == 0){
         // Kernel protocol stack entry point for every received raw frame.
         net_proto_handle_frame(frame.data, frame.len);
         if (cb){
@@ -361,8 +362,8 @@ int net_try_select_default_backend(void){
 }
 
 void net_wait_for_io_idle(void){
-    unsigned long irq = spin_lock_irqsave(&g_net_io_lock);
-    spin_unlock_irqrestore(&g_net_io_lock, irq);
+    spin_lock(&g_net_io_lock);
+    spin_unlock(&g_net_io_lock);
 }
 
 void net_dump_stats(void){
