@@ -206,8 +206,6 @@ static int cyw43_write_stage(unsigned int addr, const unsigned char* data, unsig
 }
 
 int cyw43_init(void){
-    unsigned char bus_if = 0;
-
     if (g_cyw43.enabled){
         return 0;
     }
@@ -217,27 +215,21 @@ int cyw43_init(void){
         return -1;
     }
 
+    uart_puts("CYW43: enabling SDIO function 1\n");
     if (sdio_bus_enable_func(1) == 0 &&
         sdio_bus_wait_func_ready(1, 500) == 0){
         g_cyw43.func1_ready = 1;
     } else{
         g_cyw43.func1_ready = 0;
+        uart_puts("CYW43: function 1 not ready\n");
     }
 
-    if (sdio_bus_enable_func(2) == 0 &&
-        sdio_bus_wait_func_ready(2, 500) == 0){
-        g_cyw43.func2_ready = 1;
-    } else{
-        g_cyw43.func2_ready = 0;
-    }
+    // Circle keeps Function 2 off at this early point. Function 2 is the
+    // packet data path and should be enabled after the backplane/firmware path
+    // is stable, not during plain wifiinit.
+    g_cyw43.func2_ready = 0;
 
-    // Reassert 4-bit bus mode in CCCR for consistency.
-    if (sdio_bus_cmd52_read(0, 0x07, &bus_if) == 0){
-        bus_if = (unsigned char)(bus_if | 0x02u);
-        (void)sdio_bus_cmd52_write(0, 0x07, bus_if);
-    }
-
-    g_cyw43.enabled = (g_cyw43.func1_ready || g_cyw43.func2_ready) ? 1u : 0u;
+    g_cyw43.enabled = g_cyw43.func1_ready ? 1u : 0u;
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.sdpcm_tx_seq = 0;
@@ -251,8 +243,7 @@ int cyw43_init(void){
 
     uart_puts("CYW43: SDIO F1=");
     uart_puts(g_cyw43.func1_ready ? "ready" : "down");
-    uart_puts(" F2=");
-    uart_puts(g_cyw43.func2_ready ? "ready" : "down");
+    uart_puts(" F2=deferred");
     uart_puts("\n");
     return 0;
 }

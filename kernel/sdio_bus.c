@@ -56,7 +56,12 @@
 
 #define SDIO_CCCR_IOEX      0x02u
 #define SDIO_CCCR_IORX      0x03u
+#define SDIO_CCCR_INT_EN    0x04u
 #define SDIO_CCCR_BUS_CTRL  0x07u
+#define SDIO_CCCR_BLKSIZE   0x10u
+#define SDIO_CCCR_HIGHSPEED 0x13u
+#define SDIO_FBR1_BASE      0x100u
+#define SDIO_FBR2_BASE      0x200u
 #define SDIO_OCR_33V_MASK   (3u << 20) // Circle ether4330: V3_3, 3.2-3.4V
 
 static int g_ready = 0;
@@ -167,6 +172,19 @@ static int sdio_cmd52(int write, unsigned int fn, unsigned int addr, unsigned ch
         *out = (unsigned char)(EMMC_RESP0 & 0xFFu);
     }
     return 0;
+}
+
+static void sdio_fn0_set_bits(unsigned int addr, unsigned char bits){
+    unsigned char val = 0;
+    if (sdio_cmd52(0, 0, addr, 0, &val) == 0){
+        (void)sdio_cmd52(1, 0, addr, (unsigned char)(val | bits), 0);
+    }
+}
+
+static void sdio_set_block_size(unsigned int fn, unsigned int size){
+    unsigned int base = (fn == 1u) ? SDIO_FBR1_BASE : SDIO_FBR2_BASE;
+    (void)sdio_cmd52(1, 0, base + SDIO_CCCR_BLKSIZE, (unsigned char)(size & 0xFFu), 0);
+    (void)sdio_cmd52(1, 0, base + SDIO_CCCR_BLKSIZE + 1u, (unsigned char)((size >> 8) & 0xFFu), 0);
 }
 
 static int sdio_cmd53_xfer(int write, unsigned int fn, unsigned int addr,
@@ -382,8 +400,14 @@ int sdio_bus_init(void){
     }
 
     // Request 4-bit bus mode via CCCR bus control register.
-    (void)sdio_cmd52(1, 0, SDIO_CCCR_BUS_CTRL, 0x02u, 0);
+    sdio_fn0_set_bits(SDIO_CCCR_HIGHSPEED, 0x02u);
+    sdio_fn0_set_bits(SDIO_CCCR_BUS_CTRL, 0x02u);
     EMMC_CONTROL0 |= C0_HCTL_DWIDTH;
+
+    // Circle programs the function block sizes before enabling Function 1.
+    sdio_set_block_size(1, 64u);
+    sdio_set_block_size(2, 512u);
+    (void)sdio_cmd52(1, 0, SDIO_CCCR_INT_EN, 0x00u, 0);
 
     g_ready = 1;
     uart_puts("SDIO: init OK\n");
