@@ -57,7 +57,7 @@
 #define SDIO_CCCR_IOEX      0x02u
 #define SDIO_CCCR_IORX      0x03u
 #define SDIO_CCCR_BUS_CTRL  0x07u
-#define SDIO_OCR_33V_MASK   0x00FF8000u
+#define SDIO_OCR_33V_MASK   (3u << 20) // Circle ether4330: V3_3, 3.2-3.4V
 
 static int g_ready = 0;
 static unsigned short g_rca = 0;
@@ -86,7 +86,7 @@ static int sdio_wait_status_clear(unsigned int mask, unsigned long timeout_ms){
 
 static int sdio_wait_irq(unsigned int mask, unsigned long timeout_ms, unsigned int* irpt_out){
     unsigned long start = system_ticks;
-    unsigned int spin = 200000u;
+    unsigned int spin = 10000000u;
     while (1){
         unsigned int irpt = EMMC_INTERRUPT;
         if (irpt & (mask | INT_ERROR_MASK | INT_ERR)){
@@ -262,6 +262,9 @@ int sdio_bus_init(void){
     g_rca = 0;
     g_ocr = 0;
 
+    // Circle's ether4330 first disconnects EMMC from the SD-card pins
+    // (GPIO48..53 ALT0), then connects EMMC to WiFi SDIO on GPIO34..39 ALT3.
+    gpio_init_sd();
     gpio_init_wifi_sdio();
     clock_init_wifi_lpo();
     gpio_wifi_wl_on_pulse();
@@ -325,15 +328,18 @@ int sdio_bus_init(void){
 
     // SDIO OCR negotiation via CMD5.
     uart_puts("SDIO: stage CMD5\n");
-    for (int i = 0; i < 16; i++){
-        if (sdio_cmd(5, 0, CMD_RSPNS_48, 120) != 0){
-            // Keep retrying: chip may still be coming out of reset.
-            continue;
-        }
-        resp = EMMC_RESP0;
+    (void)sdio_cmd(5, 0, CMD_RSPNS_48, 120);
+    resp = EMMC_RESP0;
 
-        // Request standard 3.3V OCR window per SDIO init guidance.
+    for (int i = 0; i < 8; i++){
+        if (resp & 0x80000000u){
+            g_ocr = resp;
+            break;
+        }
+
+        // Circle retries CMD5 with only the 3.2-3.4V OCR window and a real settle gap.
         if (sdio_cmd(5, SDIO_OCR_33V_MASK, CMD_RSPNS_48, 120) != 0){
+            sdio_short_delay(10000000u);
             continue;
         }
         resp = EMMC_RESP0;
@@ -341,7 +347,7 @@ int sdio_bus_init(void){
             g_ocr = resp;
             break;
         }
-        sdio_short_delay(1000);
+        sdio_short_delay(10000000u);
     }
     if ((resp & 0x80000000u) == 0){
         uart_puts("SDIO: CMD5 power-up timeout\n");
