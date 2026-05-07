@@ -4,7 +4,7 @@ import subprocess
 import sys
 import tempfile
 
-QOS_PQ_MAX_PUBKEY_BYTES = 256 * 2 * 32  # legacy Lamport upper bound for compatibility
+QOS_PQ_MAX_PUBKEY_BYTES = 2592  # ML-DSA-87 upper bound
 
 
 def pubkey_from_private_pem(openssl_bin: str, priv_pem: str) -> bytes:
@@ -38,6 +38,11 @@ def read_pq_pubkey(path: str) -> bytes:
         raise RuntimeError(
             f"unexpected PQ public key length for {path}: "
             f"{len(data)} (max {QOS_PQ_MAX_PUBKEY_BYTES})"
+        )
+    if len(data) not in (1312, 1952, 2592):
+        raise RuntimeError(
+            f"unexpected PQ public key length for {path}: {len(data)} "
+            f"(expected ML-DSA-44/65/87 public key length)"
         )
     return data
 

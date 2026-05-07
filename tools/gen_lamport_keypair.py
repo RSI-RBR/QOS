@@ -33,7 +33,7 @@ def main() -> int:
     print(f"Wrote Lamport private key: {priv_path} ({PRIV_BYTES} bytes)")
     print(f"Wrote Lamport public key:  {pub_path} ({PUB_BYTES} bytes)")
     print("WARNING: Lamport keys are one-time signatures. Do not reuse the same keypair for multiple artifacts.")
-    print("NOTE: Prefer tools/gen_mldsa65_compat_keypair.py for the current PQ compatibility path.")
+    print("NOTE: Prefer tools/gen_mldsa65_keypair.py for real ML-DSA-65 keys.")
     return 0
 
 

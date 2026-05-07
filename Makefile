@@ -26,7 +26,7 @@ ifneq ($(strip $(DEV_LAMPORT_SIGN_KEY)),)
 DEV_PQ_SIGN_KEY := $(DEV_LAMPORT_SIGN_KEY)
 endif
 
-CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -Iinclude -Ithird_party/ed25519/src
+CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean
 LDFLAGS = -T linker.ld
 
 # ---------------------------
@@ -38,6 +38,7 @@ kernel/uart.c \
 kernel/shell.c \
 kernel/memory.c \
 kernel/string.c \
+kernel/libc_compat.c \
 kernel/process.c \
 kernel/smp.c \
 kernel/mailbox.c \
@@ -64,8 +65,9 @@ kernel/blockdev.c \
 kernel/syscall.c \
 kernel/kernel_verify.c \
 kernel/ed25519_verify.c \
-kernel/lamport.c \
 kernel/pq_sig.c \
+kernel/pqclean_randombytes.c \
+kernel/pqclean_alloc.c \
 kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \
@@ -88,6 +90,15 @@ kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c \
 kernel/x25519.c \
+third_party/pqclean/common/fips202.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/ntt.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/packing.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/poly.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/polyvec.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/reduce.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/rounding.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/sign.c \
+third_party/pqclean/crypto_sign/ml-dsa-65/clean/symmetric-shake.c \
 third_party/ed25519/src/verify.c \
 third_party/ed25519/src/ge.c \
 third_party/ed25519/src/sc.c \

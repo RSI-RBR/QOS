@@ -10,14 +10,11 @@ import mldsa65_host
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("Usage: gen_mldsa65_compat_keypair.py <out-private-bin> <out-public-bin>")
+        print("Usage: gen_mldsa65_keypair.py <out-private-bin> <out-public-bin>")
         return 1
-
     priv_path = sys.argv[1]
     pub_path = sys.argv[2]
-
     mldsa65_host.keygen(pub_path, priv_path)
-    print("NOTE: This script name is deprecated; prefer gen_mldsa65_keypair.py.")
     print(f"Wrote ML-DSA-65 private key: {priv_path} (4032 bytes)")
     print(f"Wrote ML-DSA-65 public key:  {pub_path} (1952 bytes)")
     return 0

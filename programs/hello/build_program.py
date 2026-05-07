@@ -4,6 +4,14 @@ import hashlib
 import subprocess
 import tempfile
 import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIR = REPO_ROOT / "tools"
+import sys as _sys
+if str(TOOLS_DIR) not in _sys.path:
+    _sys.path.insert(0, str(TOOLS_DIR))
+import mldsa65_host
 
 QOS_MAGIC = 0x514F5350  # "QOSP"
 QOS_SEC_MAGIC = 0x53454331  # "SEC1"
@@ -14,10 +22,7 @@ QOS_SIG_ALG_DIGEST_ONLY = 0x00000001
 QOS_SIG_ALG_ED25519 = 0x00000002
 QOS_SIG_ALG_MLDSA65 = 0x00000003
 QOS_MAX_SIGNATURE_BYTES = 64
-LAMPORT_BITS = 256
-LAMPORT_ELEM_BYTES = 32
-LAMPORT_PRIV_BYTES = LAMPORT_BITS * 2 * LAMPORT_ELEM_BYTES
-LAMPORT_SIG_BYTES = LAMPORT_BITS * LAMPORT_ELEM_BYTES
+MLDSA65_SIG_BYTES = 3309
 DEFAULT_SIGNER_KEY_ID = 0x00010001  # dev-main
 
 
@@ -39,23 +44,11 @@ def sign_ed25519(openssl_bin, key_pem, message):
             return f.read()
 
 
-def sign_pq_compat_sha256(priv_path, message):
-    with open(priv_path, "rb") as f:
-        sk = f.read()
-    if len(sk) != LAMPORT_PRIV_BYTES:
-        raise RuntimeError(
-            f"unexpected PQ sign key length: {len(sk)} (expected {LAMPORT_PRIV_BYTES} for legacy compatibility mode)"
-        )
-    digest = hashlib.sha256(message).digest()
-    sig = bytearray(LAMPORT_SIG_BYTES)
-    for i in range(LAMPORT_BITS):
-        byte_i = i // 8
-        bit_i = 7 - (i % 8)
-        b = (digest[byte_i] >> bit_i) & 1
-        src_off = ((i * 2) + b) * LAMPORT_ELEM_BYTES
-        dst_off = i * LAMPORT_ELEM_BYTES
-        sig[dst_off:dst_off + LAMPORT_ELEM_BYTES] = sk[src_off:src_off + LAMPORT_ELEM_BYTES]
-    return bytes(sig)
+def sign_mldsa65(priv_path, message):
+    sig = mldsa65_host.sign(priv_path, message)
+    if len(sig) != MLDSA65_SIG_BYTES:
+        raise RuntimeError(f"unexpected ML-DSA-65 signature length: {len(sig)}")
+    return sig
 
 
 def write_pq_sidecar(path, signer_key_id, sig_alg, sig_bytes):
@@ -140,13 +133,13 @@ if pq_sign_key:
     msg.extend(struct.pack("<I", sig_alg))
     msg.extend(struct.pack("<I", size))
     msg.extend(digest)
-    pq_sig = sign_pq_compat_sha256(pq_sign_key, bytes(msg))
-    if len(pq_sig) != LAMPORT_SIG_BYTES:
-        print("PQ compatibility signature length mismatch")
+    pq_sig = sign_mldsa65(pq_sign_key, bytes(msg))
+    if len(pq_sig) != MLDSA65_SIG_BYTES:
+        print("ML-DSA-65 signature length mismatch")
         sys.exit(1)
     write_pq_sidecar(pq_out_file, signer_key_id, QOS_SIG_ALG_MLDSA65, pq_sig)
     print("Built PQ sidecar:", pq_out_file)
-    print("NOTE: PQ signing is currently in legacy compatibility mode until native ML-DSA backend is linked.")
+    print("PQ signature mode: ML-DSA-65")
 else:
     print("PQ sidecar not generated (no pq_sign_key_bin provided).")
 

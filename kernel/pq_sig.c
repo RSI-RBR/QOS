@@ -1,9 +1,8 @@
 #include "pq_sig.h"
 #include "crypto.h"
-#include "lamport.h"
+#include "sign.h"
 #include "uart.h"
 
-static int g_warned_legacy_lamport = 0;
 static int g_warned_missing_mldsa_backend = 0;
 
 const char* pq_sig_alg_name(unsigned int sig_alg){
@@ -41,30 +40,33 @@ int pq_sig_verify_digest_sha256(unsigned int sig_alg,
         return -1;
     }
 
-    // Compatibility bridge:
-    // Existing deployments may still carry legacy Lamport key/signature material.
-    // This path keeps current signed images bootable while ML-DSA verification
-    // backend is being integrated.
-    if (public_key_len == LAMPORT_PUBKEY_BYTES && signature_len == LAMPORT_SIG_BYTES){
-        if (!g_warned_legacy_lamport){
-            uart_puts("PQ verify: legacy Lamport compatibility mode active.\n");
-            g_warned_legacy_lamport = 1;
-        }
-        return lamport_verify_digest_sha256(digest, signature, signature_len,
-                                            public_key, public_key_len);
+    if (public_key_len != QOS_PQ_MLDSA65_PUBKEY_BYTES ||
+        signature_len != QOS_PQ_MLDSA65_SIG_BYTES){
+        return -1;
     }
 
-    // Real ML-DSA backend not linked yet.
-    if (!g_warned_missing_mldsa_backend){
-        uart_puts("PQ verify: ML-DSA backend not linked.\n");
-        g_warned_missing_mldsa_backend = 1;
+    if (PQCLEAN_MLDSA65_CLEAN_crypto_sign_verify(signature, (size_t)signature_len,
+                                                  digest, 32u, public_key) != 0){
+        return -1;
     }
-    return -1;
+    return 0;
 }
 
 int pq_sig_self_test(void){
-    // Keep deterministic baseline coverage through compatibility bridge.
-    if (lamport_self_test() != 0){
+    // Negative-path sanity only (no embedded test vectors here).
+    unsigned char digest[32];
+    unsigned char sig[QOS_PQ_MLDSA65_SIG_BYTES];
+    unsigned char pk[QOS_PQ_MLDSA65_PUBKEY_BYTES];
+    crypto_memzero(digest, sizeof(digest));
+    crypto_memzero(sig, sizeof(sig));
+    crypto_memzero(pk, sizeof(pk));
+
+    if (pq_sig_verify_digest_sha256(QOS_SIG_ALG_MLDSA65, digest, sig, sizeof(sig),
+                                    pk, sizeof(pk)) == 0){
+        if (!g_warned_missing_mldsa_backend){
+            uart_puts("PQ verify: ML-DSA self-test unexpectedly accepted zero vector.\n");
+            g_warned_missing_mldsa_backend = 1;
+        }
         return -1;
     }
     return 0;
