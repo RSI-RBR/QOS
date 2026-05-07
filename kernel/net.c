@@ -243,13 +243,6 @@ int net_send_raw(const unsigned char* frame, unsigned int len){
     }
 
     spin_lock(&g_net_io_lock);
-    /*
-     * CYW43 SDPCM credits arrive on RX/control frames. Drain pending NIC
-     * frames before TX so back-to-back sends do not use stale flow state.
-     */
-    if (nic->poll){
-        nic->poll();
-    }
     int send_rc = nic->send(frame, len);
     spin_unlock(&g_net_io_lock);
 
