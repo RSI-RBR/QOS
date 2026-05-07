@@ -4,7 +4,6 @@
 #include "blockdev.h"
 #include "memory.h"
 #include "uart.h"
-#include "timer.h"
 
 #define CYW43_FW_MAX_BYTES      (768u * 1024u)
 #define CYW43_NVRAM_MAX_BYTES   (16u * 1024u)
@@ -1001,9 +1000,13 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms){
     unsigned char intpend = 0;
     unsigned int ints = 0;
     unsigned int mbox = 0;
-    unsigned long start = system_ticks;
+    unsigned int loops = timeout_ms * 20u;
 
-    while ((system_ticks - start) <= timeout_ms){
+    if (loops < 1000u){
+        loops = 1000u;
+    }
+
+    while (loops-- > 0u){
         if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0) == 0 &&
             sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1) == 0){
             if (count0 || count1){
