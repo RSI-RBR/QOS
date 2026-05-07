@@ -9,6 +9,7 @@
 #define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_SIZE  (2UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_SLOT_SIZE)
+#define PROGRAM_PAGE_SIZE  4096UL
 #define PROGRAM_SEC_LAYOUT_V1_BYTES (sizeof(program_sec_layout_v1_t))
 
 static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
@@ -281,9 +282,9 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
                 uart_puts("Program memory layout invalid.\n");
                 return prog;
             }
-            if (user_rw_offset > code_size){
+            if ((user_rw_offset & (PROGRAM_PAGE_SIZE - 1UL)) != 0u){
                 loader_unlock();
-                uart_puts("Program RW offset beyond image size.\n");
+                uart_puts("Program RW offset must be page-aligned.\n");
                 return prog;
             }
             if (user_rw_size > (PROGRAM_SLOT_SIZE - user_rw_offset)){

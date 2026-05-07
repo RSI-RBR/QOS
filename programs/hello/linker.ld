@@ -12,6 +12,7 @@ SECTIONS
 
     .text : { *(.text*) } :text
     .rodata : {*(.rodata*) } :text
+    . = ALIGN(4096);
     __qos_data_start = .;
     .data : { *(.data*) } :data
 

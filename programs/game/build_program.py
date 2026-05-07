@@ -26,6 +26,7 @@ QOS_MAX_SIGNATURE_BYTES = 64
 MLDSA65_SIG_BYTES = 3309
 DEFAULT_SIGNER_KEY_ID = 0x00010001  # dev-main
 PROGRAM_SLOT_SIZE = 2 * 1024 * 1024
+PAGE_SIZE = 4096
 
 
 def parse_nm_symbol(nm_bin, elf_path, sym):
@@ -100,11 +101,11 @@ entry_offset = 0  # _start is at 0
 user_rw_offset = size
 if elf_path:
     user_rw_offset = parse_nm_symbol(nm_bin, elf_path, "__qos_data_start")
-if user_rw_offset > size:
-    print("Invalid layout: __qos_data_start beyond binary size")
-    sys.exit(1)
 if user_rw_offset >= PROGRAM_SLOT_SIZE:
     print("Invalid layout: __qos_data_start beyond program slot")
+    sys.exit(1)
+if (user_rw_offset & (PAGE_SIZE - 1)) != 0:
+    print("Invalid layout: __qos_data_start must be page-aligned")
     sys.exit(1)
 user_rw_size = PROGRAM_SLOT_SIZE - user_rw_offset
 

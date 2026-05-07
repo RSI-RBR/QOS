@@ -369,15 +369,18 @@ int mmu_process_space_create(int pid,
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
+    if ((user_rw_offset & (MMU_PAGE_SIZE - 1UL)) != 0UL){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_offset < MMU_PAGE_SIZE){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
     if (user_rw_size > (MMU_SLOT_SIZE - user_rw_offset)){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
-    if (user_rw_offset > user_size){
-        spin_unlock_irqrestore(&g_mmu_lock, irq);
-        return -1;
-    }
-
     for (unsigned int i = 0; i < L1_ENTRIES; i++){
         proc_l1_table[pid][i] = l1_table[i];
     }

@@ -65,6 +65,7 @@ static int read_program_layout_v1(const program_sec_header_t* sec,
                                   unsigned int code_size,
                                   unsigned int* out_rw_off,
                                   unsigned int* out_rw_size){
+    const unsigned int page_size = 4096u;
     const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
     const unsigned int need = sec_min + (unsigned int)sizeof(program_sec_layout_v1_t);
     if (!sec || !out_rw_off || !out_rw_size){
@@ -80,7 +81,11 @@ static int read_program_layout_v1(const program_sec_header_t* sec,
     const unsigned char* p = (const unsigned char*)sec + sec_min;
     unsigned int rw_off = get_u32_le(&p[0]);
     unsigned int rw_size = get_u32_le(&p[4]);
-    if (rw_off > code_size || rw_size == 0u){
+    (void)code_size;
+    if (rw_size == 0u){
+        return -1;
+    }
+    if ((rw_off & (page_size - 1u)) != 0u){
         return -1;
     }
     *out_rw_off = rw_off;
