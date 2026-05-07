@@ -96,6 +96,21 @@ int mailbox_set_power_state(unsigned int device_id, unsigned int state){
     return (mbox[6] & 1u) ? 0 : -1;
 }
 
+int mailbox_set_gpio_state(unsigned int pin, unsigned int state){
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+
+    mbox[2] = 0x00038041; // set GPIO state, used for firmware expander GPIOs
+    mbox[3] = 8;
+    mbox[4] = 8;
+    mbox[5] = pin;
+    mbox[6] = state ? 1u : 0u;
+
+    mbox[7] = 0;
+
+    return mailbox_call(MAILBOX_CHANNEL_PROP) ? 0 : -1;
+}
+
 int mailbox_power_on_usb(void){
     // Device ID 3 = USB HCD on Raspberry Pi firmware mailbox interface.
     // State: bit0=on, bit1=wait for stable state.
