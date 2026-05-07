@@ -97,6 +97,7 @@
 #define CYW43_WPA_AUTH_DISABLED 0x0000u
 #define CYW43_WPA_AUTH_PSK      0x0004u
 #define CYW43_WPA2_AUTH_PSK     0x0080u
+#define CYW43_EAPOL_KEY_TIMEOUT 5000u
 
 // CYW43430/CYW43438 firmware RAM layout. The full Circle path discovers this
 // by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
@@ -1519,6 +1520,15 @@ static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
     return cyw43_wl_set_var(name, buf, sizeof(buf));
 }
 
+static int cyw43_wl_set_var_u32_u32(const char* name,
+                                    unsigned int value0,
+                                    unsigned int value1){
+    unsigned char buf[8];
+    put_le32(buf + 0u, value0);
+    put_le32(buf + 4u, value1);
+    return cyw43_wl_set_var(name, buf, sizeof(buf));
+}
+
 static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     unsigned char buf[4];
     put_le32(buf, value);
@@ -1592,12 +1602,43 @@ static int cyw43_wl_set_pmk(const char* password){
 
     mem_zero_local(pmk, sizeof(pmk));
     put_le16(pmk + 0u, len);
-    put_le16(pmk + 2u, (len < 64u) ? CYW43_WSEC_PASSPHRASE : 0u);
+    /*
+     * Follow known-good CYW43 station join paths: always mark this as a
+     * passphrase payload when using WLC_SET_WSEC_PMK.
+     */
+    put_le16(pmk + 2u, CYW43_WSEC_PASSPHRASE);
     for (unsigned int i = 0; i < len; i++){
         pmk[4u + i] = (unsigned char)password[i];
     }
 
     return cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+}
+
+static int cyw43_wl_prepare_sta_supplicant(void){
+    int rc = 0;
+
+    /*
+     * Match the ordering used by working CYW43 stacks before PMK programming:
+     * bsscfg:sup_wpa, bsscfg:sup_wpa2_eapver=-1, bsscfg:sup_wpa_tmo=5000.
+     * Some firmware builds expose only one naming variant, so try both.
+     */
+    if (cyw43_wl_set_var_u32_u32("bsscfg:sup_wpa", 0u, 1u) != 0 &&
+        cyw43_wl_set_var_u32("sup_wpa", 1u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32_u32("bsscfg:sup_wpa2_eapver", 0u, 0xFFFFFFFFu) != 0 &&
+        cyw43_wl_set_var_u32("sup_wpa2_eapver", 0xFFFFFFFFu) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32_u32("bsscfg:sup_wpa_tmo", 0u, CYW43_EAPOL_KEY_TIMEOUT) != 0 &&
+        cyw43_wl_set_var_u32("sup_wpa_tmo", CYW43_EAPOL_KEY_TIMEOUT) != 0){
+        rc = -1;
+    }
+
+    if (rc != 0){
+        uart_puts("CYW43: supplicant iovar setup partial; continuing\n");
+    }
+    return 0;
 }
 
 static void cyw43_event_mask_set(unsigned char* mask, unsigned int event_id){
@@ -2054,6 +2095,7 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
 
 int cyw43_ioctl_join(const char* ssid, const char* password){
     unsigned int n = 0;
+    unsigned int wpa_auth = CYW43_WPA_AUTH_DISABLED;
 
     if (!ssid || !*ssid || !g_cyw43.iface_up){
         return -1;
@@ -2063,19 +2105,37 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         return -1;
     }
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0 ||
-        cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
-        uart_puts("CYW43: join basic mode setup failed\n");
-        return -1;
-    }
-
     if (password && *password){
+        wpa_auth = CYW43_WPA2_AUTH_PSK;
         if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, CYW43_WSEC_AES) != 0 ||
-            cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH,
-                             CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK) != 0 ||
-            cyw43_wl_set_pmk(password) != 0){
+            cyw43_wl_prepare_sta_supplicant() != 0){
             uart_puts("CYW43: join WPA setup failed\n");
             return -1;
+        }
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
+            uart_puts("CYW43: join WPA auth mode setup failed\n");
+            return -1;
+        }
+        /*
+         * CYW43 firmware can reject PMK writes if we push too soon after
+         * supplicant iovar setup. Keep a short settle delay.
+         */
+        cyw43_delay(200000u);
+        if (cyw43_wl_set_pmk(password) != 0){
+            /*
+             * Compatibility fallback for APs/firmware that insist on mixed
+             * WPA/WPA2 auth mode while using AES.
+             */
+            wpa_auth = CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK;
+            if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
+                uart_puts("CYW43: join WPA auth fallback setup failed\n");
+                return -1;
+            }
+            cyw43_delay(200000u);
+            if (cyw43_wl_set_pmk(password) != 0){
+                uart_puts("CYW43: join WPA setup failed\n");
+                return -1;
+            }
         }
     } else{
         if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, 0u) != 0 ||
@@ -2083,6 +2143,13 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
             uart_puts("CYW43: join open setup failed\n");
             return -1;
         }
+    }
+
+    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0 ||
+        cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0 ||
+        cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
+        uart_puts("CYW43: join basic mode setup failed\n");
+        return -1;
     }
 
     if (cyw43_wl_set_ssid_cmd(CYW43_WLC_SET_SSID, ssid) != 0){
