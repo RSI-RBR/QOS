@@ -5,6 +5,7 @@
 // This targets the Arasan host with SD1 pinmux (GPIO 34..39 ALT3).
 
 int sdio_bus_init(void);
+int sdio_bus_reattach(void);
 int sdio_bus_is_ready(void);
 unsigned short sdio_bus_get_rca(void);
 void sdio_bus_reset_state(void);

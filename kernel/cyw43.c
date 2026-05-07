@@ -887,6 +887,37 @@ static int cyw43_start_firmware(void){
     return 0;
 }
 
+static int cyw43_attach_running_firmware(void){
+    if (!g_cyw43.fw_running){
+        return -1;
+    }
+    if (g_cyw43.sd_regs == 0u){
+        uart_puts("CYW43: missing SD core metadata for firmware reattach\n");
+        return -1;
+    }
+    if (cyw43_enable_ht_clock() != 0){
+        return -1;
+    }
+    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, 0xFFFFFFFFu);
+    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0){
+        uart_puts("CYW43: SDIO reattach interrupt setup failed\n");
+        return -1;
+    }
+    if (cyw43_enable_function2() != 0){
+        return -1;
+    }
+    cyw43_program_f2_watermark();
+    if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_MASK,
+                                CYW43_SD_HOST_INT_MASK) != 0){
+        uart_puts("CYW43: SDIO reattach intmask failed\n");
+        return -1;
+    }
+    if (cyw43_sdio_keep_awake() != 0){
+        uart_puts("CYW43: SDIO reattach wake warning; continuing\n");
+    }
+    return 0;
+}
+
 static void cyw43_drop_sdio_state(void){
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
@@ -931,8 +962,6 @@ int cyw43_release_emmc_for_storage(void){
 
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
-    g_cyw43.fw_running = 0;
-    g_cyw43.fw_loaded = 0;
     g_cyw43.wifi_configured = 0;
     sdio_bus_reset_state();
     blockdev_reserve_emmc_for_wifi(0);
@@ -940,11 +969,15 @@ int cyw43_release_emmc_for_storage(void){
 }
 
 int cyw43_init(void){
+    int preserve_fw = g_cyw43.fw_loaded || g_cyw43.fw_running;
+    unsigned char was_fw_running = g_cyw43.fw_running;
+    unsigned int saved_sdpcm_tx_seq = g_cyw43.sdpcm_tx_seq;
+
     if (g_cyw43.enabled){
         return 0;
     }
 
-    if (sdio_bus_init() != 0){
+    if ((preserve_fw ? sdio_bus_reattach() : sdio_bus_init()) != 0){
         uart_puts("CYW43: SDIO init failed\n");
         return -1;
     }
@@ -965,11 +998,11 @@ int cyw43_init(void){
     g_cyw43.func2_ready = 0;
 
     g_cyw43.enabled = g_cyw43.func1_ready ? 1u : 0u;
-    g_cyw43.fw_running = 0;
+    g_cyw43.fw_running = was_fw_running;
     g_cyw43.iface_up = 0;
     g_cyw43.wifi_configured = 0;
     g_cyw43.joined = 0;
-    g_cyw43.sdpcm_tx_seq = 0;
+    g_cyw43.sdpcm_tx_seq = was_fw_running ? saved_sdpcm_tx_seq : 0;
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
     g_cyw43.tx_window = 1;
@@ -2100,9 +2133,16 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: UP rejected (firmware not loaded)\n");
         return -1;
     }
-    if (!g_cyw43.fw_running && cyw43_start_firmware() != 0){
-        uart_puts("CYW43: firmware start failed\n");
-        return -1;
+    if (g_cyw43.fw_running){
+        if (!g_cyw43.func2_ready && cyw43_attach_running_firmware() != 0){
+            uart_puts("CYW43: firmware reattach failed\n");
+            return -1;
+        }
+    } else{
+        if (cyw43_start_firmware() != 0){
+            uart_puts("CYW43: firmware start failed\n");
+            return -1;
+        }
     }
     if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){

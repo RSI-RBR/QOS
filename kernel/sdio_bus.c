@@ -280,7 +280,7 @@ void sdio_bus_reset_state(void){
     g_ocr = 0;
 }
 
-int sdio_bus_init(void){
+static int sdio_bus_init_common(int pulse_wl_on){
     unsigned int resp = 0;
     unsigned int c1 = 0;
     unsigned int irpt = 0;
@@ -294,7 +294,9 @@ int sdio_bus_init(void){
     gpio_init_sd();
     gpio_init_wifi_sdio();
     clock_init_wifi_lpo();
-    gpio_wifi_wl_on_pulse();
+    if (pulse_wl_on){
+        gpio_wifi_wl_on_pulse();
+    }
     mailbox_set_emmc_clock(25000000);
     uart_puts("SDIO: stage host reset\n");
 
@@ -421,6 +423,14 @@ int sdio_bus_init(void){
     g_ready = 1;
     uart_puts("SDIO: init OK\n");
     return 0;
+}
+
+int sdio_bus_init(void){
+    return sdio_bus_init_common(1);
+}
+
+int sdio_bus_reattach(void){
+    return sdio_bus_init_common(0);
 }
 
 int sdio_bus_cmd52_read(unsigned int fn, unsigned int addr, unsigned char* out_val){
