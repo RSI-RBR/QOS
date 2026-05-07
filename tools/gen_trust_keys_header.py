@@ -4,6 +4,8 @@ import subprocess
 import sys
 import tempfile
 
+QOS_PQ_MAX_PUBKEY_BYTES = 256 * 2 * 32  # legacy Lamport upper bound for compatibility
+
 
 def pubkey_from_private_pem(openssl_bin: str, priv_pem: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="qos_pub_") as td:
@@ -13,7 +15,7 @@ def pubkey_from_private_pem(openssl_bin: str, priv_pem: str) -> bytes:
             "-in", priv_pem,
             "-pubout",
             "-outform", "DER",
-            "-out", pub_der
+            "-out", pub_der,
         ])
         with open(pub_der, "rb") as f:
             der = f.read()
@@ -28,37 +30,59 @@ def pubkey_from_private_pem(openssl_bin: str, priv_pem: str) -> bytes:
 def bytes_init(b: bytes) -> str:
     return "{ " + ", ".join(f"0x{x:02X}" for x in b) + " }"
 
-def read_fixed(path: str, expected_len: int) -> bytes:
+
+def read_pq_pubkey(path: str) -> bytes:
     with open(path, "rb") as f:
         data = f.read()
-    if len(data) != expected_len:
-        raise RuntimeError(f"unexpected length for {path}: got {len(data)}, expected {expected_len}")
+    if len(data) > QOS_PQ_MAX_PUBKEY_BYTES:
+        raise RuntimeError(
+            f"unexpected PQ public key length for {path}: "
+            f"{len(data)} (max {QOS_PQ_MAX_PUBKEY_BYTES})"
+        )
     return data
+
+
+def pad_right(data: bytes, size: int) -> bytes:
+    if len(data) > size:
+        raise RuntimeError("pad_right overflow")
+    if len(data) == size:
+        return data
+    return data + bytes(size - len(data))
+
 
 def main() -> int:
     if len(sys.argv) < 2 or len(sys.argv) > 7:
-        print("Usage: gen_trust_keys_header.py <out-header> [admin-priv-pem] [dev-priv-pem] [openssl-bin] [admin-lamport-pub-bin] [dev-lamport-pub-bin]")
+        print(
+            "Usage: gen_trust_keys_header.py <out-header> "
+            "[admin-priv-pem] [dev-priv-pem] [openssl-bin] [admin-pq-pub-bin] [dev-pq-pub-bin]"
+        )
         return 1
 
     out_header = sys.argv[1]
     admin_priv = sys.argv[2] if len(sys.argv) >= 3 else ""
     dev_priv = sys.argv[3] if len(sys.argv) >= 4 else ""
     openssl_bin = sys.argv[4] if len(sys.argv) >= 5 else "openssl"
-    admin_lamport_pub_path = sys.argv[5] if len(sys.argv) >= 6 else ""
-    dev_lamport_pub_path = sys.argv[6] if len(sys.argv) >= 7 else ""
+    admin_pq_pub_path = sys.argv[5] if len(sys.argv) >= 6 else ""
+    dev_pq_pub_path = sys.argv[6] if len(sys.argv) >= 7 else ""
 
     admin_pub = bytes(32)
     dev_pub = bytes(32)
-    admin_lamport_pub = bytes(256 * 2 * 32)
-    dev_lamport_pub = bytes(256 * 2 * 32)
+    admin_pq_pub = bytes()
+    dev_pq_pub = bytes()
+
     if admin_priv:
         admin_pub = pubkey_from_private_pem(openssl_bin, admin_priv)
     if dev_priv:
         dev_pub = pubkey_from_private_pem(openssl_bin, dev_priv)
-    if admin_lamport_pub_path:
-        admin_lamport_pub = read_fixed(admin_lamport_pub_path, 256 * 2 * 32)
-    if dev_lamport_pub_path:
-        dev_lamport_pub = read_fixed(dev_lamport_pub_path, 256 * 2 * 32)
+    if admin_pq_pub_path:
+        admin_pq_pub = read_pq_pubkey(admin_pq_pub_path)
+    if dev_pq_pub_path:
+        dev_pq_pub = read_pq_pubkey(dev_pq_pub_path)
+
+    admin_pq_len = len(admin_pq_pub)
+    dev_pq_len = len(dev_pq_pub)
+    admin_pq_pub_padded = pad_right(admin_pq_pub, QOS_PQ_MAX_PUBKEY_BYTES)
+    dev_pq_pub_padded = pad_right(dev_pq_pub, QOS_PQ_MAX_PUBKEY_BYTES)
 
     text = f"""#ifndef TRUST_KEYS_AUTOGEN_H
 #define TRUST_KEYS_AUTOGEN_H
@@ -67,8 +91,11 @@ def main() -> int:
 
 #define TRUST_ADMIN_ED25519_PUBKEY_INIT {bytes_init(admin_pub)}
 #define TRUST_DEV_ED25519_PUBKEY_INIT   {bytes_init(dev_pub)}
-#define TRUST_ADMIN_LAMPORT_PUBKEY_INIT {bytes_init(admin_lamport_pub)}
-#define TRUST_DEV_LAMPORT_PUBKEY_INIT   {bytes_init(dev_lamport_pub)}
+
+#define TRUST_ADMIN_PQ_PUBKEY_LEN {admin_pq_len}u
+#define TRUST_DEV_PQ_PUBKEY_LEN   {dev_pq_len}u
+#define TRUST_ADMIN_PQ_PUBKEY_INIT {bytes_init(admin_pq_pub_padded)}
+#define TRUST_DEV_PQ_PUBKEY_INIT   {bytes_init(dev_pq_pub_padded)}
 
 #endif
 """
@@ -76,21 +103,21 @@ def main() -> int:
         f.write(text)
 
     if admin_priv:
-        print(f"Admin pubkey extracted from: {admin_priv}")
+        print(f"Admin Ed25519 pubkey extracted from: {admin_priv}")
     else:
-        print("Admin pubkey left as zero placeholder.")
+        print("Admin Ed25519 pubkey left as zero placeholder.")
     if dev_priv:
-        print(f"Developer pubkey extracted from: {dev_priv}")
+        print(f"Developer Ed25519 pubkey extracted from: {dev_priv}")
     else:
-        print("Developer pubkey left as zero placeholder.")
-    if admin_lamport_pub_path:
-        print(f"Admin Lamport pubkey loaded from: {admin_lamport_pub_path}")
+        print("Developer Ed25519 pubkey left as zero placeholder.")
+    if admin_pq_pub_path:
+        print(f"Admin PQ pubkey loaded from: {admin_pq_pub_path} ({admin_pq_len} bytes)")
     else:
-        print("Admin Lamport pubkey left as zero placeholder.")
-    if dev_lamport_pub_path:
-        print(f"Developer Lamport pubkey loaded from: {dev_lamport_pub_path}")
+        print("Admin PQ pubkey left as zero placeholder.")
+    if dev_pq_pub_path:
+        print(f"Developer PQ pubkey loaded from: {dev_pq_pub_path} ({dev_pq_len} bytes)")
     else:
-        print("Developer Lamport pubkey left as zero placeholder.")
+        print("Developer PQ pubkey left as zero placeholder.")
     print(f"Wrote header: {out_header}")
     return 0
 

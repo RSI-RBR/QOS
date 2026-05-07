@@ -11,7 +11,7 @@ PUB_BYTES = LAMPORT_BITS * 2 * ELEM_BYTES
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("Usage: gen_lamport_keypair.py <out-private-bin> <out-public-bin>")
+        print("Usage: gen_mldsa65_compat_keypair.py <out-private-bin> <out-public-bin>")
         return 1
 
     priv_path = sys.argv[1]
@@ -30,10 +30,9 @@ def main() -> int:
     with open(pub_path, "wb") as f:
         f.write(pk)
 
-    print(f"Wrote Lamport private key: {priv_path} ({PRIV_BYTES} bytes)")
-    print(f"Wrote Lamport public key:  {pub_path} ({PUB_BYTES} bytes)")
-    print("WARNING: Lamport keys are one-time signatures. Do not reuse the same keypair for multiple artifacts.")
-    print("NOTE: Prefer tools/gen_mldsa65_compat_keypair.py for the current PQ compatibility path.")
+    print(f"Wrote PQ compatibility private key: {priv_path} ({PRIV_BYTES} bytes)")
+    print(f"Wrote PQ compatibility public key:  {pub_path} ({PUB_BYTES} bytes)")
+    print("WARNING: This is a temporary ML-DSA compatibility bridge, not a real Dilithium keypair.")
     return 0
 
 

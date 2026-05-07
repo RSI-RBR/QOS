@@ -8,7 +8,9 @@
 #define QOS_PROG_FLAG_SHA256 0x00000001u
 #define QOS_SIG_ALG_DIGEST_ONLY 1u
 #define QOS_SIG_ALG_ED25519 2u
-#define QOS_SIG_ALG_LAMPORT_SHA256 3u
+#define QOS_SIG_ALG_MLDSA65 3u
+// Backward-compat alias for old builds/scripts. New code should use QOS_SIG_ALG_MLDSA65.
+#define QOS_SIG_ALG_LAMPORT_SHA256 QOS_SIG_ALG_MLDSA65
 #define QOS_MAX_SIGNATURE_BYTES 64u
 
 typedef struct{
