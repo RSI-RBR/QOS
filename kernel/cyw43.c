@@ -125,8 +125,26 @@ static unsigned int get_le32(const unsigned char in[4]){
            ((unsigned int)in[3] << 24);
 }
 
-static unsigned int round4_u32(unsigned int n){
-    return (n + 3u) & ~3u;
+static unsigned int round8_u32(unsigned int n){
+    return (n + 7u) & ~7u;
+}
+
+static unsigned int round16_u32(unsigned int n){
+    return (n + 15u) & ~15u;
+}
+
+static unsigned int round64_u32(unsigned int n){
+    return (n + 63u) & ~63u;
+}
+
+static unsigned int cyw43_sdio_rx_body_xfer_len(unsigned int body_len){
+    if (body_len <= 8u){
+        return round8_u32(body_len);
+    }
+    if (body_len <= 16u){
+        return round16_u32(body_len);
+    }
+    return round64_u32(body_len);
 }
 
 static void mem_zero_local(unsigned char* p, unsigned int n){
@@ -1110,7 +1128,7 @@ static void cyw43_rx_halt_and_drain(void){
 }
 
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
-    unsigned int xfer_len = round4_u32(len);
+    unsigned int xfer_len = round64_u32(len);
     if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
         return -1;
     }
@@ -1120,8 +1138,8 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
 static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
     unsigned int len = 0;
     unsigned int lenck = 0;
-    unsigned int payload_len = 0;
-    unsigned int payload_xfer = 0;
+    unsigned int body_len = 0;
+    unsigned int body_xfer = 0;
 
     if (!out || !out_len || out_cap < CYW43_SDPCM_HDR_LEN){
         return -1;
@@ -1133,7 +1151,7 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     }
 
     mem_zero_local(out, out_cap);
-    if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, CYW43_SDPCM_HDR_LEN) != 0){
+    if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, 4u) != 0){
         return -1;
     }
 
@@ -1155,15 +1173,13 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
         return -1;
     }
 
-    payload_len = len - CYW43_SDPCM_HDR_LEN;
-    if (payload_len > 0u){
-        payload_xfer = round4_u32(payload_len);
-        if (CYW43_SDPCM_HDR_LEN + payload_xfer > out_cap){
+    body_len = len - 4u;
+    if (body_len > 0u){
+        body_xfer = cyw43_sdio_rx_body_xfer_len(body_len);
+        if (4u + body_xfer > out_cap){
             return -1;
         }
-        if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR,
-                                      out + CYW43_SDPCM_HDR_LEN,
-                                      payload_xfer) != 0){
+        if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out + 4u, body_xfer) != 0){
             return -1;
         }
     }
