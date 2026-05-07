@@ -59,7 +59,7 @@
 #define CYW43_SDPCM_HDR_LEN     12u
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  2048u
-#define CYW43_PACKET_ADDR       CYW43_ENUM_BASE
+#define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
 #define CYW43_WLC_GET_VAR       262u
 #define CYW43_WLC_SET_VAR       263u
 
@@ -125,26 +125,8 @@ static unsigned int get_le32(const unsigned char in[4]){
            ((unsigned int)in[3] << 24);
 }
 
-static unsigned int round8_u32(unsigned int n){
-    return (n + 7u) & ~7u;
-}
-
-static unsigned int round16_u32(unsigned int n){
-    return (n + 15u) & ~15u;
-}
-
-static unsigned int round64_u32(unsigned int n){
-    return (n + 63u) & ~63u;
-}
-
-static unsigned int cyw43_sdio_rx_body_xfer_len(unsigned int body_len){
-    if (body_len <= 8u){
-        return round8_u32(body_len);
-    }
-    if (body_len <= 16u){
-        return round16_u32(body_len);
-    }
-    return round64_u32(body_len);
+static unsigned int round4_u32(unsigned int n){
+    return (n + 3u) & ~3u;
 }
 
 static void mem_zero_local(unsigned char* p, unsigned int n){
@@ -1127,12 +1109,24 @@ static void cyw43_rx_halt_and_drain(void){
     }
 }
 
+static int cyw43_prepare_packet_window(void){
+    /*
+     * Broadcom SDIO Function 2 packet I/O is addressed through the selected
+     * backplane window. Linux brcmfmac points the window at chipcommon
+     * (0x18000000) and uses address 0x8000 for 4-byte packet access.
+     */
+    return cyw43_backplane_window(CYW43_ENUM_BASE);
+}
+
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
-    unsigned int xfer_len = round64_u32(len);
+    unsigned int xfer_len = round4_u32(len);
     if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
         return -1;
     }
-    return sdio_bus_cmd53_write_fixed(2, CYW43_PACKET_ADDR, data, xfer_len);
+    if (cyw43_prepare_packet_window() != 0){
+        return -1;
+    }
+    return sdio_bus_cmd53_write(2, CYW43_PACKET_ADDR, data, xfer_len);
 }
 
 static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
@@ -1151,6 +1145,9 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     }
 
     mem_zero_local(out, out_cap);
+    if (cyw43_prepare_packet_window() != 0){
+        return -1;
+    }
     if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, 4u) != 0){
         return -1;
     }
@@ -1175,7 +1172,7 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
 
     body_len = len - 4u;
     if (body_len > 0u){
-        body_xfer = cyw43_sdio_rx_body_xfer_len(body_len);
+        body_xfer = round4_u32(body_len);
         if (4u + body_xfer > out_cap){
             return -1;
         }
