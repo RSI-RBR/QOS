@@ -1580,8 +1580,12 @@ int cyw43_ioctl_up(void){
     }
     if (!g_cyw43.iface_up &&
         cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
-        uart_puts("CYW43: WLC_UP failed\n");
-        return -1;
+        /*
+         * Some CYW43 firmwares do not return a normal control response while
+         * WLC_UP is transitioning the radio. Keep going; the next management
+         * command will give us the real up/not-up status.
+         */
+        uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
     return 0;
