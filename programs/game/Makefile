@@ -25,9 +25,9 @@ game.elf: main.o sdl_shim.o start.o
 game.raw: game.elf
 	$(OBJCOPY) game.elf -O binary game.raw
 
-game.bin: game.raw
+game.bin: game.raw game.elf
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py game.raw game.bin "GAME    BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" game.pqs
+	python3 build_program.py game.raw game.bin "GAME    BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" game.pqs game.elf "$(CROSS)nm"
 
 clean:
 	rm -f *.o *.elf *.raw *.bin *.pqs

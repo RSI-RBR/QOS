@@ -14,6 +14,8 @@ typedef struct{
     program_entry_t entry;
     void* memory;
     unsigned long size;
+    unsigned long user_rw_offset;
+    unsigned long user_rw_size;
     int heap_allocated;
 } loaded_program_t;
 

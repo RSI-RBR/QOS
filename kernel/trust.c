@@ -61,6 +61,33 @@ static unsigned int get_u32_le(const unsigned char* p){
            ((unsigned int)p[3] << 24);
 }
 
+static int read_program_layout_v1(const program_sec_header_t* sec,
+                                  unsigned int code_size,
+                                  unsigned int* out_rw_off,
+                                  unsigned int* out_rw_size){
+    const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
+    const unsigned int need = sec_min + (unsigned int)sizeof(program_sec_layout_v1_t);
+    if (!sec || !out_rw_off || !out_rw_size){
+        return -1;
+    }
+    if ((sec->flags & QOS_PROG_FLAG_MEM_LAYOUT_V1) == 0u){
+        return -1;
+    }
+    if (sec->header_size < need){
+        return -1;
+    }
+
+    const unsigned char* p = (const unsigned char*)sec + sec_min;
+    unsigned int rw_off = get_u32_le(&p[0]);
+    unsigned int rw_size = get_u32_le(&p[4]);
+    if (rw_off > code_size || rw_size == 0u){
+        return -1;
+    }
+    *out_rw_off = rw_off;
+    *out_rw_size = rw_size;
+    return 0;
+}
+
 static int build_program_sig_message(const char* fat_name_83,
                                      const program_sec_header_t* sec,
                                      unsigned int code_size,
@@ -69,8 +96,13 @@ static int build_program_sig_message(const char* fat_name_83,
     static const unsigned char tag[16] = {
         'Q','O','S','-','P','R','O','G','-','S','I','G','-','V','1','\0'
     };
-    const unsigned int need = 16u + 11u + 4u + 4u + 4u + 4u + 32u;
+    unsigned int rw_off = 0;
+    unsigned int rw_size = 0;
+    const unsigned int need = 16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u;
     if (!out || out_cap < need || !fat_name_83 || !sec){
+        return -1;
+    }
+    if (read_program_layout_v1(sec, code_size, &rw_off, &rw_size) != 0){
         return -1;
     }
 
@@ -81,6 +113,8 @@ static int build_program_sig_message(const char* fat_name_83,
     put_u32_le(out + o, sec->signer_key_id); o += 4u;
     put_u32_le(out + o, sec->sig_alg); o += 4u;
     put_u32_le(out + o, code_size); o += 4u;
+    put_u32_le(out + o, rw_off); o += 4u;
+    put_u32_le(out + o, rw_size); o += 4u;
     for (unsigned int i = 0; i < 32u; i++) out[o++] = sec->sha256[i];
     return (int)o;
 }
@@ -156,7 +190,7 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
                                      unsigned int code_size,
                                      const trust_key_t* key,
                                      int required){
-    unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 32u];
+    unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u];
     unsigned char msg_digest[32];
     char pq_name[12];
 
@@ -248,6 +282,8 @@ int trust_verify_program_image(const char* fat_name_83,
                                const program_sec_header_t* sec,
                                const unsigned char* code,
                                unsigned int code_size){
+    unsigned int rw_off = 0;
+    unsigned int rw_size = 0;
     if (!sec){
         uart_puts("Trust: missing security header.\n");
         return -1;
@@ -270,6 +306,14 @@ int trust_verify_program_image(const char* fat_name_83,
     }
     if ((sec->flags & QOS_PROG_FLAG_SHA256) == 0u){
         uart_puts("Trust: SHA-256 flag required.\n");
+        return -1;
+    }
+    if ((sec->flags & QOS_PROG_FLAG_MEM_LAYOUT_V1) == 0u){
+        uart_puts("Trust: MEM_LAYOUT_V1 flag required.\n");
+        return -1;
+    }
+    if (read_program_layout_v1(sec, code_size, &rw_off, &rw_size) != 0){
+        uart_puts("Trust: invalid MEM_LAYOUT_V1.\n");
         return -1;
     }
 
@@ -333,7 +377,7 @@ int trust_verify_program_image(const char* fat_name_83,
             uart_puts("Trust: Ed25519 signature must be 64 bytes.\n");
             return -1;
         }
-        unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 32u];
+        unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u];
         int msg_len = build_program_sig_message(fat_name_83, sec, code_size, msg, sizeof(msg));
         if (msg_len <= 0){
             uart_puts("Trust: failed to build signature payload.\n");

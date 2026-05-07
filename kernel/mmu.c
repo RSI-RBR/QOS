@@ -5,10 +5,12 @@
 
 #define L1_ENTRIES 512
 #define L2_ENTRIES 512
+#define L3_ENTRIES 512
 
 #define DESC_VALID          (1UL << 0)
 #define DESC_TABLE          (1UL << 1)
 #define DESC_BLOCK          (0UL << 1)
+#define DESC_PAGE           DESC_TABLE
 
 #define ATTRIDX_SHIFT       2
 #define SH_SHIFT            8
@@ -28,8 +30,11 @@
 #define AP_SHIFT            6
 #define AP_EL1_RW_EL0_NONE  (0UL << AP_SHIFT)
 #define AP_EL1_RW_EL0_RW    (1UL << AP_SHIFT)
+#define AP_EL1_RO_EL0_RO    (3UL << AP_SHIFT)
 #define MMU_MAX_CORES       4U
 #define MMU_MAX_PROCESS_SPACES 8U
+#define MMU_PAGE_SIZE       4096UL
+#define MMU_SLOT_SIZE       (L3_ENTRIES * MMU_PAGE_SIZE)
 
 typedef struct {
     unsigned long attridx;
@@ -44,6 +49,7 @@ static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l1_table[MMU_MAX_PROCESS_SPACES][L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l2_table[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l2_table_1[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l3_user_slot[MMU_MAX_PROCESS_SPACES][L3_ENTRIES] __attribute__((aligned(4096)));
 static unsigned char proc_space_active[MMU_MAX_PROCESS_SPACES];
 static int core_active_pid[MMU_MAX_CORES];
 static spinlock_t g_mmu_lock;
@@ -169,10 +175,21 @@ static void zero_tables(void){
             proc_l2_table_1[p][i] = 0;
         }
     }
+    for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
+        for (unsigned int i = 0; i < L3_ENTRIES; i++){
+            proc_l3_user_slot[p][i] = 0;
+        }
+    }
 }
 
 static unsigned long block_desc(unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long desc = (pa & 0xFFFFFFFFFFE00000UL) | DESC_VALID | DESC_BLOCK | AF_BIT;
+    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn;
+    return desc;
+}
+
+static unsigned long page_desc(unsigned long pa, const mmu_block_attrs_t* attrs){
+    unsigned long desc = (pa & 0xFFFFFFFFFFFFF000UL) | DESC_VALID | DESC_PAGE | AF_BIT;
     desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn;
     return desc;
 }
@@ -218,6 +235,44 @@ static void apply_region_attrs_all_spaces(unsigned long pa_start, unsigned long 
         apply_region_attrs_for_tables(proc_l2_table[pid], proc_l2_table_1[pid], pa_start, size, attrs);
     }
     mmu_tlb_shootdown_all_locked();
+}
+
+static void l3_fill_kernel_private(unsigned long* l3, unsigned long slot_base){
+    static const mmu_block_attrs_t kernel_private = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RW_EL0_NONE,
+        .xn = PXN_BIT | UXN_BIT
+    };
+    for (unsigned int i = 0; i < L3_ENTRIES; i++){
+        l3[i] = page_desc(slot_base + ((unsigned long)i * MMU_PAGE_SIZE), &kernel_private);
+    }
+}
+
+static void l3_map_range(unsigned long* l3,
+                         unsigned long slot_base,
+                         unsigned long off,
+                         unsigned long size,
+                         const mmu_block_attrs_t* attrs){
+    if (size == 0u){
+        return;
+    }
+    if (off >= MMU_SLOT_SIZE){
+        return;
+    }
+    if (size > (MMU_SLOT_SIZE - off)){
+        size = MMU_SLOT_SIZE - off;
+    }
+
+    unsigned long start = off & ~(MMU_PAGE_SIZE - 1UL);
+    unsigned long end = (off + size + (MMU_PAGE_SIZE - 1UL)) & ~(MMU_PAGE_SIZE - 1UL);
+    for (unsigned long p = start; p < end; p += MMU_PAGE_SIZE){
+        unsigned int idx = (unsigned int)(p / MMU_PAGE_SIZE);
+        if (idx >= L3_ENTRIES){
+            break;
+        }
+        l3[idx] = page_desc(slot_base + p, attrs);
+    }
 }
 
 void mmu_init(void){
@@ -281,19 +336,47 @@ void mmu_process_spaces_reset(void){
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
-int mmu_process_space_create(int pid, unsigned long user_pa_start, unsigned long user_size){
+int mmu_process_space_create(int pid,
+                             unsigned long user_pa_start,
+                             unsigned long user_size,
+                             unsigned long user_rw_offset,
+                             unsigned long user_rw_size){
     if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES || user_size == 0u){
         return -1;
     }
 
-    static const mmu_block_attrs_t user_code = {
+    static const mmu_block_attrs_t user_code_rx = {
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
+        .ap = AP_EL1_RO_EL0_RO,
+        .xn = PXN_BIT
+    };
+    static const mmu_block_attrs_t user_data_rw_nx = {
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_RW,
-        .xn = PXN_BIT
+        .xn = PXN_BIT | UXN_BIT
     };
 
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+
+    unsigned long slot_base = user_pa_start & ~(MMU_SLOT_SIZE - 1UL);
+    if (user_pa_start != slot_base || user_size > MMU_SLOT_SIZE){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_offset >= MMU_SLOT_SIZE || user_rw_size == 0u){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_size > (MMU_SLOT_SIZE - user_rw_offset)){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_offset > user_size){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
 
     for (unsigned int i = 0; i < L1_ENTRIES; i++){
         proc_l1_table[pid][i] = l1_table[i];
@@ -306,7 +389,23 @@ int mmu_process_space_create(int pid, unsigned long user_pa_start, unsigned long
     proc_l1_table[pid][0] = ((unsigned long)proc_l2_table[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
     proc_l1_table[pid][1] = ((unsigned long)proc_l2_table_1[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
 
-    apply_region_attrs_for_tables(proc_l2_table[pid], proc_l2_table_1[pid], user_pa_start, user_size, &user_code);
+    unsigned long l1_index = slot_base >> 30;
+    unsigned long l2_index = (slot_base >> 21) & 0x1FFUL;
+    unsigned long* l2 = 0;
+    if (l1_index == 0UL){
+        l2 = proc_l2_table[pid];
+    } else if (l1_index == 1UL){
+        l2 = proc_l2_table_1[pid];
+    } else{
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+
+    l2[l2_index] = ((unsigned long)proc_l3_user_slot[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+
+    l3_fill_kernel_private(proc_l3_user_slot[pid], slot_base);
+    l3_map_range(proc_l3_user_slot[pid], slot_base, 0u, user_rw_offset, &user_code_rx);
+    l3_map_range(proc_l3_user_slot[pid], slot_base, user_rw_offset, user_rw_size, &user_data_rw_nx);
     proc_space_active[pid] = 1;
 
     mmu_tlb_shootdown_all_locked();

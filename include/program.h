@@ -6,6 +6,7 @@
 #define QOS_PQ_SIG_MAGIC 0x51505331u // "QPS1"
 #define QOS_PQ_SIG_VERSION 1u
 #define QOS_PROG_FLAG_SHA256 0x00000001u
+#define QOS_PROG_FLAG_MEM_LAYOUT_V1 0x00000002u
 #define QOS_SIG_ALG_DIGEST_ONLY 1u
 #define QOS_SIG_ALG_ED25519 2u
 #define QOS_SIG_ALG_MLDSA65 3u
@@ -29,5 +30,10 @@ typedef struct{
     unsigned char sha256[32]; // SHA-256 over code payload bytes only
     unsigned char signature[QOS_MAX_SIGNATURE_BYTES];
 } program_sec_header_t;
+
+typedef struct{
+    unsigned int user_rw_offset;
+    unsigned int user_rw_size;
+} program_sec_layout_v1_t;
 
 #endif

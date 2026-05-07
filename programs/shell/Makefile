@@ -22,9 +22,9 @@ shell.elf: main.o start.o
 shell.raw: shell.elf
 	$(OBJCOPY) shell.elf -O binary shell.raw
 
-shell.bin: shell.raw
+shell.bin: shell.raw shell.elf
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" shell.pqs
+	python3 build_program.py shell.raw shell.bin "SHELL   BIN" 0x1 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" shell.pqs shell.elf "$(CROSS)nm"
 
 clean:
 	rm -f *.o *.elf *.raw *.bin *.pqs

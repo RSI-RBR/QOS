@@ -12,10 +12,12 @@ SECTIONS
 
     .text : { *(.text*) } :text
     .rodata : {*(.rodata*) } :text
+    __qos_data_start = .;
     .data : { *(.data*) } :data
 
     .bss : {
         *(.bss*)
         *(COMMON)
     } :data
+    __qos_image_end = .;
 }

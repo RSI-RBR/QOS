@@ -22,9 +22,9 @@ program.elf: main.o start.o
 program.raw: program.elf
 	$(OBJCOPY) program.elf -O binary program.raw
 
-program.bin: program.raw
+program.bin: program.raw program.elf
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" program.pqs
+	python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" program.pqs program.elf "$(CROSS)nm"
 
 clean:
 	rm -f *.o *.elf *.raw *.bin *.pqs

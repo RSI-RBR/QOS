@@ -427,6 +427,8 @@ static int process_create_common_locked(program_entry_t entry,
                                         void* user_sp,
                                         void* program_memory,
                                         unsigned long program_size,
+                                        unsigned long user_rw_offset,
+                                        unsigned long user_rw_size,
                                         int program_heap_alloc,
                                         unsigned int preferred_core){
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -459,7 +461,12 @@ static int process_create_common_locked(program_entry_t entry,
             processes[i].user_mode = 1;
             processes[i].user_sp = user_sp;
             processes[i].sp = build_initial_context_el0(stack, (unsigned long)entry, user_sp);
-            if (!program_memory || mmu_process_space_create(i, (unsigned long)program_memory, program_size) != 0){
+            if (!program_memory ||
+                mmu_process_space_create(i,
+                                         (unsigned long)program_memory,
+                                         program_size,
+                                         user_rw_offset,
+                                         user_rw_size) != 0){
                 free_stack(stack);
                 clear_process_descriptor(i);
                 return -1;
@@ -713,7 +720,7 @@ void free_stack(void *stack){
 int process_create(program_entry_t entry){
     unsigned int preferred_core = scheduler_core_id();
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
-    int pid = process_create_common_locked(entry, 0, 0, 0, 0, 0, preferred_core);
+    int pid = process_create_common_locked(entry, 0, 0, 0, 0, 0, 0, 0, preferred_core);
     if (pid < 0){
         uart_puts("No stack available.\n");
     }
@@ -734,6 +741,8 @@ int process_create_loaded(loaded_program_t prog){
                                            user_sp,
                                            prog.memory,
                                            prog.size,
+                                           prog.user_rw_offset,
+                                           prog.user_rw_size,
                                            prog.heap_allocated,
                                            preferred_core);
     spin_unlock_irqrestore(&g_process_lock, irq);

@@ -18,12 +18,23 @@ QOS_SEC_MAGIC = 0x53454331  # "SEC1"
 QOS_PQ_SIG_MAGIC = 0x51505331  # "QPS1"
 QOS_PQ_SIG_VERSION = 0x00000001
 QOS_PROG_FLAG_SHA256 = 0x00000001
+QOS_PROG_FLAG_MEM_LAYOUT_V1 = 0x00000002
 QOS_SIG_ALG_DIGEST_ONLY = 0x00000001
 QOS_SIG_ALG_ED25519 = 0x00000002
 QOS_SIG_ALG_MLDSA65 = 0x00000003
 QOS_MAX_SIGNATURE_BYTES = 64
 MLDSA65_SIG_BYTES = 3309
 DEFAULT_SIGNER_KEY_ID = 0x00010001  # dev-main
+PROGRAM_SLOT_SIZE = 2 * 1024 * 1024
+
+
+def parse_nm_symbol(nm_bin, elf_path, sym):
+    out = subprocess.check_output([nm_bin, "-n", elf_path], text=True, errors="strict")
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 3 and parts[2] == sym:
+            return int(parts[0], 16)
+    raise RuntimeError(f"symbol not found: {sym}")
 
 
 def sign_ed25519(openssl_bin, key_pem, message):
@@ -62,8 +73,8 @@ def write_pq_sidecar(path, signer_key_id, sig_alg, sig_bytes):
         f.write(sig_bytes)
 
 
-if len(sys.argv) < 4 or len(sys.argv) > 9:
-    print("Usage: build_program.py input.raw output.bin fat_name_83 [signer_key_id] [sign_key_pem] [openssl_bin] [pq_sign_key_bin] [pq_out_file]")
+if len(sys.argv) < 4 or len(sys.argv) > 11:
+    print("Usage: build_program.py input.raw output.bin fat_name_83 [signer_key_id] [sign_key_pem] [openssl_bin] [pq_sign_key_bin] [pq_out_file] [elf_path] [nm_bin]")
     sys.exit(1)
 
 signer_key_id = DEFAULT_SIGNER_KEY_ID
@@ -77,6 +88,8 @@ sign_key_pem = sys.argv[5] if len(sys.argv) >= 6 else ""
 openssl_bin = sys.argv[6] if len(sys.argv) >= 7 else "openssl"
 pq_sign_key = sys.argv[7] if len(sys.argv) >= 8 else ""
 pq_out_file = sys.argv[8] if len(sys.argv) >= 9 else (sys.argv[2] + ".pqs")
+elf_path = sys.argv[9] if len(sys.argv) >= 10 else ""
+nm_bin = sys.argv[10] if len(sys.argv) >= 11 else "aarch64-linux-gnu-nm"
 
 with open(sys.argv[1], "rb") as f:
     code = f.read()
@@ -84,8 +97,20 @@ with open(sys.argv[1], "rb") as f:
 size = len(code)
 entry_offset = 0  # _start is at 0
 
+user_rw_offset = size
+if elf_path:
+    user_rw_offset = parse_nm_symbol(nm_bin, elf_path, "__qos_data_start")
+if user_rw_offset > size:
+    print("Invalid layout: __qos_data_start beyond binary size")
+    sys.exit(1)
+if user_rw_offset >= PROGRAM_SLOT_SIZE:
+    print("Invalid layout: __qos_data_start beyond program slot")
+    sys.exit(1)
+user_rw_size = PROGRAM_SLOT_SIZE - user_rw_offset
+
 header = struct.pack("<III", QOS_MAGIC, size, entry_offset)
 digest = hashlib.sha256(code).digest()
+flags = QOS_PROG_FLAG_SHA256 | QOS_PROG_FLAG_MEM_LAYOUT_V1
 
 sig_alg = QOS_SIG_ALG_DIGEST_ONLY
 sig_len = 0
@@ -94,10 +119,12 @@ if sign_key_pem:
     msg = bytearray()
     msg.extend(b"QOS-PROG-SIG-V1\x00")
     msg.extend(fat_name_83.encode("ascii"))
-    msg.extend(struct.pack("<I", QOS_PROG_FLAG_SHA256))
+    msg.extend(struct.pack("<I", flags))
     msg.extend(struct.pack("<I", signer_key_id))
     msg.extend(struct.pack("<I", QOS_SIG_ALG_ED25519))
     msg.extend(struct.pack("<I", size))
+    msg.extend(struct.pack("<I", user_rw_offset))
+    msg.extend(struct.pack("<I", user_rw_size))
     msg.extend(digest)
     s = sign_ed25519(openssl_bin, sign_key_pem, bytes(msg))
     if len(s) != 64:
@@ -107,31 +134,35 @@ if sign_key_pem:
     sig_len = 64
     sig = s
 
-sec_header = struct.pack(
+sec_core = struct.pack(
     "<IIIIII32s64s",
     QOS_SEC_MAGIC,
-    struct.calcsize("<IIIIII32s64s"),
-    QOS_PROG_FLAG_SHA256,
+    struct.calcsize("<IIIIII32s64s") + struct.calcsize("<II"),
+    flags,
     signer_key_id,
     sig_alg,
     sig_len,
     digest,
     sig,
 )
+sec_layout = struct.pack("<II", user_rw_offset, user_rw_size)
 
 with open(sys.argv[2], "wb") as f:
     f.write(header)
-    f.write(sec_header)
+    f.write(sec_core)
+    f.write(sec_layout)
     f.write(code)
 
 if pq_sign_key:
     msg = bytearray()
     msg.extend(b"QOS-PROG-SIG-V1\x00")
     msg.extend(fat_name_83.encode("ascii"))
-    msg.extend(struct.pack("<I", QOS_PROG_FLAG_SHA256))
+    msg.extend(struct.pack("<I", flags))
     msg.extend(struct.pack("<I", signer_key_id))
     msg.extend(struct.pack("<I", sig_alg))
     msg.extend(struct.pack("<I", size))
+    msg.extend(struct.pack("<I", user_rw_offset))
+    msg.extend(struct.pack("<I", user_rw_size))
     msg.extend(digest)
     # ML-DSA sidecar signs SHA-256(canonical program-sign message).
     msg_digest = hashlib.sha256(bytes(msg)).digest()

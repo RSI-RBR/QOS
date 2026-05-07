@@ -9,6 +9,7 @@
 #define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_SIZE  (2UL * 1024UL * 1024UL)
 #define PROGRAM_SLOT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_SLOT_SIZE)
+#define PROGRAM_SEC_LAYOUT_V1_BYTES (sizeof(program_sec_layout_v1_t))
 
 static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
 
@@ -233,6 +234,8 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         uart_puts("Program missing security header.\n");
         return prog;
     }
+    unsigned int user_rw_offset = 0;
+    unsigned int user_rw_size = 0;
     {
         const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
         const program_sec_header_t* cand = (const program_sec_header_t*)(buffer + sizeof(program_header_t));
@@ -241,9 +244,9 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
             uart_puts("Program missing SEC1 header.\n");
             return prog;
         }
-        if (cand->header_size != sec_min){
+        if (cand->header_size < (sec_min + PROGRAM_SEC_LAYOUT_V1_BYTES) || cand->header_size > 256u){
             loader_unlock();
-            uart_puts("Bad security header.\n");
+            uart_puts("Bad security header size.\n");
             return prog;
         }
         if (code_off > ((unsigned int)size - cand->header_size)){
@@ -256,6 +259,38 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
             loader_unlock();
             uart_puts("Program/security header size mismatch.\n");
             return prog;
+        }
+
+        if ((cand->flags & QOS_PROG_FLAG_MEM_LAYOUT_V1) == 0u){
+            loader_unlock();
+            uart_puts("Program missing MEM_LAYOUT_V1 flag.\n");
+            return prog;
+        }
+        {
+            const unsigned char* ext = (const unsigned char*)cand + sec_min;
+            user_rw_offset = (unsigned int)ext[0] |
+                             ((unsigned int)ext[1] << 8) |
+                             ((unsigned int)ext[2] << 16) |
+                             ((unsigned int)ext[3] << 24);
+            user_rw_size = (unsigned int)ext[4] |
+                           ((unsigned int)ext[5] << 8) |
+                           ((unsigned int)ext[6] << 16) |
+                           ((unsigned int)ext[7] << 24);
+            if (user_rw_offset >= PROGRAM_SLOT_SIZE || user_rw_size == 0u){
+                loader_unlock();
+                uart_puts("Program memory layout invalid.\n");
+                return prog;
+            }
+            if (user_rw_offset > code_size){
+                loader_unlock();
+                uart_puts("Program RW offset beyond image size.\n");
+                return prog;
+            }
+            if (user_rw_size > (PROGRAM_SLOT_SIZE - user_rw_offset)){
+                loader_unlock();
+                uart_puts("Program RW size beyond slot bounds.\n");
+                return prog;
+            }
         }
         sec = cand;
     }
@@ -299,6 +334,8 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     prog.entry = (program_entry_t)((unsigned long)dst + entry_offset);
     prog.memory = dst;
     prog.size = code_size;
+    prog.user_rw_offset = user_rw_offset;
+    prog.user_rw_size = user_rw_size;
     prog.heap_allocated = 0;
     uart_puts("Program loaded at: ");
     uart_puthex((unsigned long)dst);
