@@ -953,10 +953,13 @@ int cyw43_release_emmc_for_storage(void){
     /*
      * Pi 3/Zero-class boards share the Arasan EMMC/SDHCI controller between
      * SD-card storage and CYW43 SDIO. Make the WiFi NIC immediately appear
-     * down so concurrent polling/sends stop touching EMMC registers. Keep the
-     * staged firmware image in chip RAM, but force a clean firmware restart on
-     * the next wifiup instead of reattaching to a half-detached data path.
+     * down so concurrent polling/sends stop touching EMMC registers.
      */
+    if (g_cyw43.fw_running && g_cyw43.func2_ready && g_cyw43.iface_up){
+        (void)cyw43_wl_cmd(1, CYW43_WLC_DOWN, 0, 0, 0, 0, 0);
+        cyw43_drain_pending_packets(16u);
+    }
+
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.func2_ready = 0;
@@ -967,12 +970,7 @@ int cyw43_release_emmc_for_storage(void){
 
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
-    g_cyw43.fw_running = 0;
     g_cyw43.wifi_configured = 0;
-    g_cyw43.sdpcm_tx_seq = 0;
-    g_cyw43.reqid = 0;
-    g_cyw43.flow_mask = 0;
-    g_cyw43.tx_window = 1;
     sdio_bus_suspend_state();
     blockdev_reserve_emmc_for_wifi(0);
     return 0;
@@ -981,6 +979,10 @@ int cyw43_release_emmc_for_storage(void){
 int cyw43_init(void){
     int preserve_fw = g_cyw43.fw_loaded || g_cyw43.fw_running;
     unsigned char was_fw_running = g_cyw43.fw_running;
+    unsigned int saved_sdpcm_tx_seq = g_cyw43.sdpcm_tx_seq;
+    unsigned short saved_reqid = g_cyw43.reqid;
+    unsigned char saved_flow_mask = g_cyw43.flow_mask;
+    unsigned char saved_tx_window = g_cyw43.tx_window;
 
     if (g_cyw43.enabled){
         return 0;
@@ -1011,10 +1013,17 @@ int cyw43_init(void){
     g_cyw43.iface_up = 0;
     g_cyw43.wifi_configured = 0;
     g_cyw43.joined = 0;
-    g_cyw43.sdpcm_tx_seq = 0;
-    g_cyw43.reqid = 0;
-    g_cyw43.flow_mask = 0;
-    g_cyw43.tx_window = 1;
+    if (was_fw_running){
+        g_cyw43.sdpcm_tx_seq = saved_sdpcm_tx_seq;
+        g_cyw43.reqid = saved_reqid;
+        g_cyw43.flow_mask = saved_flow_mask;
+        g_cyw43.tx_window = saved_tx_window ? saved_tx_window : 1u;
+    } else{
+        g_cyw43.sdpcm_tx_seq = 0;
+        g_cyw43.reqid = 0;
+        g_cyw43.flow_mask = 0;
+        g_cyw43.tx_window = 1;
+    }
     g_cyw43.net_tx_ok = 0;
     g_cyw43.net_tx_fail = 0;
     g_cyw43.net_rx_data = 0;
