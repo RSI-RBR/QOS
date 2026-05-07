@@ -63,7 +63,7 @@
 #define CYW43_SDPCM_HDR_LEN     12u
 #define CYW43_SDPCM_FIRSTREAD   64u
 #define CYW43_CDC_HDR_LEN       16u
-#define CYW43_PACKET_MAX_BYTES  2048u
+#define CYW43_PACKET_MAX_BYTES  4096u
 #define CYW43_PACKET_ADDR       CYW43_SB_32BIT_ADDR
 #define CYW43_WLC_UP            2u
 #define CYW43_WLC_DOWN          3u
@@ -1187,11 +1187,29 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
     return sdio_bus_cmd53_write(2, CYW43_PACKET_ADDR, data, xfer_len);
 }
 
+static unsigned int cyw43_packet_read_xfer_len(unsigned int len){
+    unsigned int rest = 0;
+
+    if (len <= 4u){
+        return 4u;
+    }
+
+    rest = len - 4u;
+    if (rest <= 8u){
+        rest = (rest + 7u) & ~7u;
+    } else if (rest <= 16u){
+        rest = (rest + 15u) & ~15u;
+    } else{
+        rest = (rest + 63u) & ~63u;
+    }
+    return 4u + rest;
+}
+
 static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
     unsigned int len = 0;
     unsigned int lenck = 0;
     unsigned int first_read = CYW43_SDPCM_FIRSTREAD;
-    unsigned int remain_len = 0;
+    unsigned int total_xfer = 0;
     unsigned int remain_xfer = 0;
 
     if (!out || !out_len || out_cap < CYW43_SDPCM_HDR_LEN){
@@ -1238,9 +1256,12 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
         return -1;
     }
 
-    if (len > first_read){
-        remain_len = len - first_read;
-        remain_xfer = round4_u32(remain_len);
+    total_xfer = cyw43_packet_read_xfer_len(len);
+    if (total_xfer < first_read){
+        total_xfer = first_read;
+    }
+    if (total_xfer > first_read){
+        remain_xfer = total_xfer - first_read;
         if (first_read + remain_xfer > out_cap){
             return -1;
         }
@@ -1932,6 +1953,10 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
     static unsigned char rx[CYW43_PACKET_MAX_BYTES];
     unsigned int count = 0;
     unsigned int done = 0;
+    unsigned int ctrl_frames = 0;
+    unsigned int event_frames = 0;
+    unsigned int data_frames = 0;
+    unsigned int other_frames = 0;
 
     if (!out_count){
         return -1;
@@ -1948,8 +1973,21 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
 
     for (unsigned int wait = 0; wait < 12u && !done; wait++){
         unsigned int rx_len = 0;
+        unsigned int channel = 0;
         if (cyw43_packet_read(rx, sizeof(rx), &rx_len) != 0){
             continue;
+        }
+        if (rx_len >= CYW43_SDPCM_HDR_LEN){
+            channel = rx[5] & 0x0Fu;
+            if (channel == CYW43_SDPCM_CH_CONTROL){
+                ctrl_frames++;
+            } else if (channel == CYW43_SDPCM_CH_EVENT){
+                event_frames++;
+            } else if (channel == CYW43_SDPCM_CH_DATA){
+                data_frames++;
+            } else{
+                other_frames++;
+            }
         }
         cyw43_log_control_status(rx, rx_len);
         (void)cyw43_handle_escan_frame(rx, rx_len, out, cap, &count, &done);
@@ -1961,7 +1999,15 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
         return 0;
     }
 
-    uart_puts("CYW43: escan timed out\n");
+    uart_puts("CYW43: escan timed out ctrl=");
+    uart_putdec(ctrl_frames);
+    uart_puts(" event=");
+    uart_putdec(event_frames);
+    uart_puts(" data=");
+    uart_putdec(data_frames);
+    uart_puts(" other=");
+    uart_putdec(other_frames);
+    uart_puts("\n");
     return -1;
 }
 
