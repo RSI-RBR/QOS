@@ -14,6 +14,8 @@ int sdio_bus_cmd52_write(unsigned int fn, unsigned int addr, unsigned char val);
 
 int sdio_bus_cmd53_read(unsigned int fn, unsigned int addr, unsigned char* out, unsigned int len);
 int sdio_bus_cmd53_write(unsigned int fn, unsigned int addr, const unsigned char* data, unsigned int len);
+int sdio_bus_cmd53_read_fixed(unsigned int fn, unsigned int addr, unsigned char* out, unsigned int len);
+int sdio_bus_cmd53_write_fixed(unsigned int fn, unsigned int addr, const unsigned char* data, unsigned int len);
 
 int sdio_bus_enable_func(unsigned int fn);
 int sdio_bus_wait_func_ready(unsigned int fn, unsigned int timeout_ms);

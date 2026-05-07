@@ -23,6 +23,9 @@
 #define CYW43_CLK_HT_AVAIL      0x80u
 #define CYW43_CLK_NO_HW_REQ     0x20u
 #define CYW43_ENUM_BASE         0x18000000u
+#define CYW43_FRAMECTL_REG      0x1000Du
+#define CYW43_RFRAME_COUNT_REG  0x1001Bu
+#define CYW43_FRAMECTL_RFHALT   0x01u
 
 #define CYW43_CORE_ARM_CM3      0x82Au
 #define CYW43_CORE_ARM_CR4      0x83Eu
@@ -48,6 +51,12 @@
 #define CYW43_SD_FW_READY_ALT   0x08u // Circle's intwait path checks this bit.
 
 #define CYW43_CRESCAN_SIZE      512u
+#define CYW43_SDPCM_HDR_LEN     12u
+#define CYW43_CDC_HDR_LEN       16u
+#define CYW43_PACKET_MAX_BYTES  2048u
+#define CYW43_PACKET_ADDR       CYW43_ENUM_BASE
+#define CYW43_WLC_GET_VAR       262u
+#define CYW43_WLC_SET_VAR       263u
 
 // CYW43430/CYW43438 firmware RAM layout. The full Circle path discovers this
 // by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
@@ -74,6 +83,9 @@ typedef struct {
     unsigned char mac[6];
     char country[3];
     unsigned int sdpcm_tx_seq;
+    unsigned short reqid;
+    unsigned char flow_mask;
+    unsigned char tx_window;
     unsigned int last_scan_count;
     char joined_ssid[33];
 } cyw43_state_t;
@@ -91,11 +103,43 @@ static void put_le32(unsigned char out[4], unsigned int v){
     out[3] = (unsigned char)((v >> 24) & 0xFFu);
 }
 
+static void put_le16(unsigned char out[2], unsigned int v){
+    out[0] = (unsigned char)(v & 0xFFu);
+    out[1] = (unsigned char)((v >> 8) & 0xFFu);
+}
+
+static unsigned int get_le16(const unsigned char in[2]){
+    return ((unsigned int)in[0]) |
+           ((unsigned int)in[1] << 8);
+}
+
 static unsigned int get_le32(const unsigned char in[4]){
     return ((unsigned int)in[0]) |
            ((unsigned int)in[1] << 8) |
            ((unsigned int)in[2] << 16) |
            ((unsigned int)in[3] << 24);
+}
+
+static unsigned int round4_u32(unsigned int n){
+    return (n + 3u) & ~3u;
+}
+
+static void mem_zero_local(unsigned char* p, unsigned int n){
+    if (!p){
+        return;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        p[i] = 0;
+    }
+}
+
+static void mem_copy_local(unsigned char* dst, const unsigned char* src, unsigned int n){
+    if (!dst || !src){
+        return;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        dst[i] = src[i];
+    }
 }
 
 static int c_is_space(char c){
@@ -733,6 +777,9 @@ static void cyw43_drop_sdio_state(void){
     g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
+    g_cyw43.reqid = 0;
+    g_cyw43.flow_mask = 0;
+    g_cyw43.tx_window = 0;
     sdio_bus_reset_state();
     blockdev_reserve_emmc_for_wifi(0);
 }
@@ -767,6 +814,9 @@ int cyw43_init(void){
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.sdpcm_tx_seq = 0;
+    g_cyw43.reqid = 0;
+    g_cyw43.flow_mask = 0;
+    g_cyw43.tx_window = 0;
     g_cyw43.last_scan_count = 0;
     g_cyw43.joined_ssid[0] = 0;
 
@@ -942,6 +992,274 @@ int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
     hdr->credit = 0;
     hdr->reserved = 0;
     return (int)frame_len;
+}
+
+static int cyw43_wait_rx_frame(void){
+    unsigned char count0 = 0;
+    unsigned char count1 = 0;
+
+    for (unsigned int i = 0; i < 2000u; i++){
+        if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0) == 0 &&
+            sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1) == 0){
+            if (count0 || count1){
+                return 0;
+            }
+        }
+        cyw43_delay(20000u);
+    }
+    return -1;
+}
+
+static void cyw43_rx_halt_and_drain(void){
+    unsigned char count0 = 0xFFu;
+    unsigned char count1 = 0xFFu;
+
+    (void)sdio_bus_cmd52_write(1, CYW43_FRAMECTL_REG, CYW43_FRAMECTL_RFHALT);
+    for (unsigned int i = 0; i < 1000u; i++){
+        if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0) != 0 ||
+            sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1) != 0){
+            break;
+        }
+        if (!count0 && !count1){
+            break;
+        }
+    }
+}
+
+static int cyw43_packet_write(const unsigned char* data, unsigned int len){
+    unsigned int xfer_len = round4_u32(len);
+    if (!data || len < CYW43_SDPCM_HDR_LEN || xfer_len > CYW43_PACKET_MAX_BYTES){
+        return -1;
+    }
+    return sdio_bus_cmd53_write_fixed(2, CYW43_PACKET_ADDR, data, xfer_len);
+}
+
+static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned int* out_len){
+    unsigned int len = 0;
+    unsigned int lenck = 0;
+    unsigned int payload_len = 0;
+    unsigned int payload_xfer = 0;
+
+    if (!out || !out_len || out_cap < CYW43_SDPCM_HDR_LEN){
+        return -1;
+    }
+    *out_len = 0;
+
+    if (cyw43_wait_rx_frame() != 0){
+        return -1;
+    }
+
+    mem_zero_local(out, out_cap);
+    if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR, out, CYW43_SDPCM_HDR_LEN) != 0){
+        return -1;
+    }
+
+    len = get_le16(out + 0u);
+    if (len == 0u){
+        return 0;
+    }
+    lenck = get_le16(out + 2u);
+    if (lenck != (len ^ 0xFFFFu) ||
+        len < CYW43_SDPCM_HDR_LEN ||
+        len > CYW43_PACKET_MAX_BYTES ||
+        len > out_cap){
+        uart_puts("CYW43: bad SDPCM len=");
+        uart_puthex(len);
+        uart_puts(" lenck=");
+        uart_puthex(lenck);
+        uart_puts("\n");
+        cyw43_rx_halt_and_drain();
+        return -1;
+    }
+
+    payload_len = len - CYW43_SDPCM_HDR_LEN;
+    if (payload_len > 0u){
+        payload_xfer = round4_u32(payload_len);
+        if (CYW43_SDPCM_HDR_LEN + payload_xfer > out_cap){
+            return -1;
+        }
+        if (sdio_bus_cmd53_read_fixed(2, CYW43_PACKET_ADDR,
+                                      out + CYW43_SDPCM_HDR_LEN,
+                                      payload_xfer) != 0){
+            return -1;
+        }
+    }
+
+    *out_len = len;
+    return 0;
+}
+
+static int cyw43_wl_cmd(int write, unsigned int op,
+                        const unsigned char* data, unsigned int data_len,
+                        unsigned char* result, unsigned int result_len,
+                        unsigned int* result_actual){
+    static unsigned char tx[CYW43_PACKET_MAX_BYTES];
+    static unsigned char rx[CYW43_PACKET_MAX_BYTES];
+    unsigned int transfer_payload_len = 0;
+    unsigned int frame_len = 0;
+    unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
+    unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
+    unsigned short reqid = 0;
+
+    if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
+        return -1;
+    }
+
+    transfer_payload_len = write ? (data_len + result_len) :
+                                  ((data_len > result_len) ? data_len : result_len);
+    frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + transfer_payload_len;
+    if (frame_len > CYW43_PACKET_MAX_BYTES){
+        return -1;
+    }
+
+    mem_zero_local(tx, sizeof(tx));
+    put_le16(tx + 0u, frame_len);
+    put_le16(tx + 2u, frame_len ^ 0xFFFFu);
+    tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
+    tx[5] = CYW43_SDPCM_CH_CONTROL;
+    tx[6] = 0;
+    tx[7] = CYW43_SDPCM_HDR_LEN;
+    tx[8] = 0;
+    tx[9] = 0;
+    tx[10] = 0;
+    tx[11] = 0;
+
+    reqid = (unsigned short)(g_cyw43.reqid + 1u);
+    if (reqid == 0u){
+        reqid = 1u;
+    }
+    g_cyw43.reqid = reqid;
+
+    put_le32(tx + cmd_off + 0u, op);
+    put_le32(tx + cmd_off + 4u, transfer_payload_len);
+    put_le16(tx + cmd_off + 8u, write ? 2u : 0u);
+    put_le16(tx + cmd_off + 10u, reqid);
+    put_le32(tx + cmd_off + 12u, 0u);
+
+    if (data && data_len > 0u){
+        mem_copy_local(tx + payload_off, data, data_len);
+    }
+    if (write && result && result_len > 0u){
+        mem_copy_local(tx + payload_off + data_len, result, result_len);
+    }
+
+    if (cyw43_packet_write(tx, frame_len) != 0){
+        return -1;
+    }
+    g_cyw43.sdpcm_tx_seq++;
+
+    for (unsigned int tries = 0; tries < 12u; tries++){
+        unsigned int rx_len = 0;
+        unsigned int channel = 0;
+        unsigned int doffset = 0;
+        unsigned int status = 0;
+        unsigned int cdc_len = 0;
+        unsigned int copy_len = 0;
+
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len) != 0){
+            continue;
+        }
+        if (rx_len == 0u){
+            continue;
+        }
+
+        g_cyw43.flow_mask = rx[8];
+        g_cyw43.tx_window = rx[9];
+        channel = rx[5] & 0x0Fu;
+        doffset = rx[7];
+        if (channel != CYW43_SDPCM_CH_CONTROL){
+            continue;
+        }
+        if (doffset < CYW43_SDPCM_HDR_LEN ||
+            doffset + CYW43_CDC_HDR_LEN > rx_len){
+            continue;
+        }
+        if ((unsigned short)get_le16(rx + doffset + 10u) != reqid){
+            continue;
+        }
+
+        status = get_le32(rx + doffset + 12u);
+        if (status != 0u){
+            uart_puts("CYW43: wl cmd status=");
+            uart_puthex(status);
+            uart_puts(" op=");
+            uart_putdec(op);
+            uart_puts("\n");
+            return -1;
+        }
+
+        cdc_len = get_le32(rx + doffset + 4u);
+        if (result_actual){
+            *result_actual = cdc_len;
+        }
+        if (!write && result && result_len > 0u){
+            if (doffset + CYW43_CDC_HDR_LEN > rx_len){
+                return -1;
+            }
+            copy_len = rx_len - doffset - CYW43_CDC_HDR_LEN;
+            if (copy_len > cdc_len){
+                copy_len = cdc_len;
+            }
+            if (copy_len > result_len){
+                copy_len = result_len;
+            }
+            mem_copy_local(result, rx + doffset + CYW43_CDC_HDR_LEN, copy_len);
+        }
+        return 0;
+    }
+
+    uart_puts("CYW43: wl cmd timeout op=");
+    uart_putdec(op);
+    uart_puts("\n");
+    return -1;
+}
+
+static int cyw43_wl_get_var(const char* name, unsigned char* out,
+                            unsigned int out_cap, unsigned int* out_len){
+    unsigned char name_buf[64];
+    unsigned int name_len = 0;
+
+    if (!name || !out || out_cap == 0u){
+        return -1;
+    }
+    name_len = strn_len_local(name, sizeof(name_buf) - 1u);
+    if (name_len == 0u || name_len >= sizeof(name_buf)){
+        return -1;
+    }
+    mem_zero_local(name_buf, sizeof(name_buf));
+    for (unsigned int i = 0; i < name_len; i++){
+        name_buf[i] = (unsigned char)name[i];
+    }
+    return cyw43_wl_cmd(0, CYW43_WLC_GET_VAR, name_buf, name_len + 1u,
+                        out, out_cap, out_len);
+}
+
+int cyw43_get_firmware_version(char* out, unsigned int out_cap){
+    unsigned int actual = 0;
+    unsigned int n = 0;
+
+    if (!out || out_cap == 0u){
+        return -1;
+    }
+    for (unsigned int i = 0; i < out_cap; i++){
+        out[i] = 0;
+    }
+    if (cyw43_wl_get_var("ver", (unsigned char*)out, out_cap - 1u, &actual) != 0){
+        return -1;
+    }
+
+    while (n + 1u < out_cap && out[n]){
+        if (out[n] == '\r' || out[n] == '\n'){
+            out[n] = 0;
+            break;
+        }
+        n++;
+    }
+    if (n + 1u >= out_cap){
+        out[out_cap - 1u] = 0;
+    }
+    (void)actual;
+    return 0;
 }
 
 int cyw43_ioctl_up(void){

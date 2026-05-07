@@ -546,6 +546,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
 
+        case SYS_WIFI_GET_VERSION:
+            frame[TF_X0] = (unsigned long)cyw43_get_firmware_version((char*)frame[TF_X0],
+                                                                      (unsigned int)frame[TF_X1]);
+            return frame_sp;
+
         default:
             frame[TF_X0] = (unsigned long)-1;
             return frame_sp;

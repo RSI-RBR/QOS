@@ -64,7 +64,8 @@ enum {
     SYS_WIFI_DOWN = 54,
     SYS_WIFI_SCAN = 55,
     SYS_WIFI_JOIN = 56,
-    SYS_WIFI_DUMP_STATUS = 57
+    SYS_WIFI_DUMP_STATUS = 57,
+    SYS_WIFI_GET_VERSION = 58
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -438,6 +439,10 @@ static inline int qos_wifi_join(const char* ssid, const char* password){
 
 static inline void qos_wifi_dump_status(void){
     (void)qos_syscall0(SYS_WIFI_DUMP_STATUS);
+}
+
+static inline int qos_wifi_get_version(char* out, unsigned int out_cap){
+    return (int)qos_syscall2(SYS_WIFI_GET_VERSION, (unsigned long)out, (unsigned long)out_cap);
 }
 
 __attribute__((noreturn))

@@ -55,6 +55,7 @@ int cyw43_ioctl_up(void);
 int cyw43_ioctl_down(void);
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
 int cyw43_ioctl_join(const char* ssid, const char* password);
+int cyw43_get_firmware_version(char* out, unsigned int out_cap);
 
 int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
                       unsigned char channel,

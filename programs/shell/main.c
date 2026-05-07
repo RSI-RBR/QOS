@@ -179,6 +179,7 @@ static void cmd_help(void){
     qos_puts(" wifiup          - release WiFi firmware and enable data path\n");
     qos_puts(" wifidown\n");
     qos_puts(" wifistat\n");
+    qos_puts(" wifiver\n");
     qos_puts(" wifiscan\n");
     qos_puts(" wifijoin <ssid> <password>\n");
 }
@@ -528,6 +529,21 @@ static void cmd_wifidown(void){
     }
 }
 
+static void cmd_wifiver(void){
+    char version[160];
+    int rc;
+
+    version[0] = 0;
+    rc = qos_wifi_get_version(version, sizeof(version));
+    if (rc == 0 && version[0]){
+        qos_puts("WiFi firmware: ");
+        qos_puts(version);
+        qos_puts("\n");
+    } else{
+        qos_puts("WiFi firmware version failed\n");
+    }
+}
+
 static void cmd_wifiscan(void){
     cyw43_scan_result_t results[8];
     int n = qos_wifi_scan(results, 8u);
@@ -677,6 +693,8 @@ static void execute_line(void){
         cmd_wifidown();
     } else if (str_eq(g_buf, "wifistat")){
         qos_wifi_dump_status();
+    } else if (str_eq(g_buf, "wifiver")){
+        cmd_wifiver();
     } else if (str_eq(g_buf, "wifiscan")){
         cmd_wifiscan();
     } else if (str_starts_with(g_buf, "wifijoin ")){

@@ -188,7 +188,7 @@ static void sdio_set_block_size(unsigned int fn, unsigned int size){
 }
 
 static int sdio_cmd53_xfer(int write, unsigned int fn, unsigned int addr,
-                           unsigned char* buf, unsigned int len){
+                           unsigned char* buf, unsigned int len, int incr){
     unsigned int done = 0;
     while (done < len){
         unsigned int chunk = len - done;
@@ -205,9 +205,12 @@ static int sdio_cmd53_xfer(int write, unsigned int fn, unsigned int addr,
             arg |= (1u << 31);
         }
         arg |= ((fn & 0x7u) << 28);
-        // byte mode (bit27=0), OP code increment address (bit26=1)
-        arg |= (1u << 26);
-        arg |= ((addr + done) & 0x1FFFFu) << 9;
+        // byte mode (bit27=0). Backplane accesses increment the address;
+        // SDPCM packet I/O uses a fixed Function 2 address like Circle.
+        if (incr){
+            arg |= (1u << 26);
+        }
+        arg |= ((addr + (incr ? done : 0u)) & 0x1FFFFu) << 9;
         // Byte mode count: 0 means 512 bytes.
         arg |= (chunk == 512u) ? 0u : (chunk & 0x1FFu);
 
@@ -438,7 +441,7 @@ int sdio_bus_cmd53_read(unsigned int fn, unsigned int addr, unsigned char* out, 
     if (!g_ready || !out || len == 0){
         return -1;
     }
-    return sdio_cmd53_xfer(0, fn, addr, out, len);
+    return sdio_cmd53_xfer(0, fn, addr, out, len, 1);
 }
 
 int sdio_bus_cmd53_write(unsigned int fn, unsigned int addr, const unsigned char* data, unsigned int len){
@@ -446,7 +449,22 @@ int sdio_bus_cmd53_write(unsigned int fn, unsigned int addr, const unsigned char
         return -1;
     }
     // Internal xfer helper expects mutable pointer but does not mutate write input.
-    return sdio_cmd53_xfer(1, fn, addr, (unsigned char*)data, len);
+    return sdio_cmd53_xfer(1, fn, addr, (unsigned char*)data, len, 1);
+}
+
+int sdio_bus_cmd53_read_fixed(unsigned int fn, unsigned int addr, unsigned char* out, unsigned int len){
+    if (!g_ready || !out || len == 0){
+        return -1;
+    }
+    return sdio_cmd53_xfer(0, fn, addr, out, len, 0);
+}
+
+int sdio_bus_cmd53_write_fixed(unsigned int fn, unsigned int addr, const unsigned char* data, unsigned int len){
+    if (!g_ready || !data || len == 0){
+        return -1;
+    }
+    // Internal xfer helper expects mutable pointer but does not mutate write input.
+    return sdio_cmd53_xfer(1, fn, addr, (unsigned char*)data, len, 0);
 }
 
 int sdio_bus_enable_func(unsigned int fn){
