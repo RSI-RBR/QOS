@@ -41,12 +41,79 @@ static unsigned int str_len(const char* s){
     return n;
 }
 
+static char* skip_spaces(char* p){
+    if (!p){
+        return 0;
+    }
+    while (*p == ' '){
+        p++;
+    }
+    return p;
+}
+
+static char* parse_arg_token(char** io){
+    char* p = 0;
+    char* start = 0;
+    if (!io || !*io){
+        return 0;
+    }
+    p = skip_spaces(*io);
+    if (!p || !*p){
+        *io = p;
+        return 0;
+    }
+    if (*p == '"'){
+        p++;
+        start = p;
+        while (*p && *p != '"'){
+            p++;
+        }
+        if (*p != '"'){
+            *io = p;
+            return 0;
+        }
+        *p++ = 0;
+        *io = p;
+        return start;
+    }
+    start = p;
+    while (*p && *p != ' '){
+        p++;
+    }
+    if (*p){
+        *p++ = 0;
+    }
+    *io = p;
+    return start;
+}
+
 static int mem_eq(const unsigned char* a, const unsigned char* b, unsigned int n){
     unsigned char diff = 0;
     for (unsigned int i = 0; i < n; i++){
         diff |= (unsigned char)(a[i] ^ b[i]);
     }
     return diff == 0;
+}
+
+static int parse_uint(const char* s, unsigned int* out){
+    unsigned int v = 0;
+    unsigned int n = 0;
+    if (!s || !*s || !out){
+        return -1;
+    }
+    while (s[n]){
+        char c = s[n];
+        if (c < '0' || c > '9'){
+            return -1;
+        }
+        v = (v * 10u) + (unsigned int)(c - '0');
+        if (v > 1000u){
+            return -1;
+        }
+        n++;
+    }
+    *out = v;
+    return 0;
 }
 
 static void print_prompt(void){
@@ -181,7 +248,8 @@ static void cmd_help(void){
     qos_puts(" wifistat\n");
     qos_puts(" wifiver\n");
     qos_puts(" wifiscan\n");
-    qos_puts(" wifijoin <ssid> <password>\n");
+    qos_puts(" wifiscanx [passes]\n");
+    qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
 }
 
 static void cmd_run(void){
@@ -569,10 +637,114 @@ static void cmd_wifiscan(void){
     }
 }
 
+static void scan_result_copy(cyw43_scan_result_t* dst, const cyw43_scan_result_t* src){
+    if (!dst || !src){
+        return;
+    }
+    for (unsigned int i = 0; i < sizeof(dst->ssid); i++){
+        dst->ssid[i] = src->ssid[i];
+    }
+    dst->ssid[sizeof(dst->ssid) - 1u] = 0;
+    dst->channel = src->channel;
+    dst->rssi_dbm = src->rssi_dbm;
+    dst->auth = src->auth;
+}
+
+static int scan_result_same_ap(const cyw43_scan_result_t* a, const cyw43_scan_result_t* b){
+    if (!a || !b){
+        return 0;
+    }
+    return (a->channel == b->channel) && str_eq(a->ssid, b->ssid);
+}
+
+static void cmd_wifiscanx(unsigned int passes){
+    cyw43_scan_result_t merged[32];
+    unsigned int merged_n = 0;
+    unsigned int ok_passes = 0;
+    unsigned int fail_passes = 0;
+
+    if (passes == 0u){
+        passes = 3u;
+    }
+    if (passes > 10u){
+        passes = 10u;
+    }
+
+    for (unsigned int p = 0; p < passes; p++){
+        cyw43_scan_result_t batch[8];
+        int n = qos_wifi_scan(batch, 8u);
+        if (n < 0){
+            fail_passes++;
+            continue;
+        }
+        ok_passes++;
+
+        for (int i = 0; i < n; i++){
+            int found = -1;
+            for (unsigned int j = 0; j < merged_n; j++){
+                if (scan_result_same_ap(&merged[j], &batch[i])){
+                    found = (int)j;
+                    break;
+                }
+            }
+
+            if (found < 0){
+                if (merged_n < (unsigned int)(sizeof(merged) / sizeof(merged[0]))){
+                    scan_result_copy(&merged[merged_n], &batch[i]);
+                    merged_n++;
+                }
+            } else{
+                if (batch[i].rssi_dbm > merged[found].rssi_dbm){
+                    merged[found].rssi_dbm = batch[i].rssi_dbm;
+                }
+                if (batch[i].auth > merged[found].auth){
+                    merged[found].auth = batch[i].auth;
+                }
+            }
+        }
+    }
+
+    for (unsigned int i = 0; i + 1u < merged_n; i++){
+        for (unsigned int j = i + 1u; j < merged_n; j++){
+            if (merged[j].rssi_dbm > merged[i].rssi_dbm){
+                cyw43_scan_result_t tmp;
+                scan_result_copy(&tmp, &merged[i]);
+                scan_result_copy(&merged[i], &merged[j]);
+                scan_result_copy(&merged[j], &tmp);
+            }
+        }
+    }
+
+    qos_puts("WiFi scanx passes=");
+    print_uint(passes);
+    qos_puts(" ok=");
+    print_uint(ok_passes);
+    qos_puts(" fail=");
+    print_uint(fail_passes);
+    qos_puts(" unique=");
+    print_uint(merged_n);
+    qos_puts("\n");
+
+    for (unsigned int i = 0; i < merged_n; i++){
+        qos_puts(" ");
+        print_uint(i);
+        qos_puts(": ");
+        qos_puts(merged[i].ssid);
+        qos_puts(" ch=");
+        print_uint((unsigned int)merged[i].channel);
+        qos_puts(" rssi=");
+        print_int(merged[i].rssi_dbm);
+        qos_puts(" auth=");
+        print_uint((unsigned int)merged[i].auth);
+        qos_puts("\n");
+    }
+}
+
 static void cmd_wifijoin(const char* ssid, const char* password){
     int rc;
     if (!ssid || !*ssid || !password || !*password){
         qos_puts("Usage: wifijoin <ssid> <password>\n");
+        qos_puts("   or: wifijoin \"ssid with spaces\" \"password with spaces\"\n");
         return;
     }
     rc = qos_wifi_join(ssid, password);
@@ -697,27 +869,33 @@ static void execute_line(void){
         cmd_wifiver();
     } else if (str_eq(g_buf, "wifiscan")){
         cmd_wifiscan();
-    } else if (str_starts_with(g_buf, "wifijoin ")){
-        char* p = g_buf + 9;
-        char* ssid = 0;
-        char* password = 0;
+    } else if (str_starts_with(g_buf, "wifiscanx ")){
+        const char* p = g_buf + 10;
+        unsigned int passes = 0;
         while (*p == ' '){
             p++;
         }
-        ssid = p;
-        while (*p && *p != ' '){
-            p++;
+        if (parse_uint(p, &passes) != 0){
+            qos_puts("Usage: wifiscanx [passes]\n");
+        } else{
+            cmd_wifiscanx(passes);
         }
-        if (*p){
-            *p++ = 0;
-            while (*p == ' '){
-                p++;
-            }
-            password = p;
+    } else if (str_eq(g_buf, "wifiscanx")){
+        cmd_wifiscanx(3u);
+    } else if (str_starts_with(g_buf, "wifijoin ")){
+        char* p = g_buf + 9;
+        char* ssid = parse_arg_token(&p);
+        char* password = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: wifijoin <ssid> <password>\n");
+            qos_puts("   or: wifijoin \"ssid with spaces\" \"password with spaces\"\n");
+        } else{
+            cmd_wifijoin(ssid, password);
         }
-        cmd_wifijoin(ssid, password);
     } else if (str_eq(g_buf, "wifijoin")){
         qos_puts("Usage: wifijoin <ssid> <password>\n");
+        qos_puts("   or: wifijoin \"ssid with spaces\" \"password with spaces\"\n");
     } else{
         qos_puts("Unknown command.\n");
     }
