@@ -317,9 +317,9 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
         goto out;
     }
 
-    if (g_cyw43.enabled){
-        uart_puts("CYW43: reclaiming EMMC for firmware read\n");
-        cyw43_drop_sdio_state();
+    if (g_cyw43.enabled || sdio_bus_is_ready()){
+        uart_puts("CYW43: wifiload must run before wifiinit; reboot first\n");
+        goto out;
     }
 
     if (blockdev_reinit_emmc() != 0){
