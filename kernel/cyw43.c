@@ -23,9 +23,14 @@
 #define CYW43_CLK_HT_AVAIL      0x80u
 #define CYW43_CLK_NO_HW_REQ     0x20u
 #define CYW43_ENUM_BASE         0x18000000u
+#define CYW43_WATERMARK_REG     0x10008u
 #define CYW43_FRAMECTL_REG      0x1000Du
 #define CYW43_RFRAME_COUNT_REG  0x1001Bu
+#define CYW43_SLEEP_CSR_REG     0x1001Fu
+#define CYW43_SLEEP_CSR_KSO     0x01u
+#define CYW43_SLEEP_CSR_DEVON   0x02u
 #define CYW43_FRAMECTL_RFHALT   0x01u
+#define CYW43_DEFAULT_F2_WM     0x08u
 
 #define CYW43_CORE_ARM_CM3      0x82Au
 #define CYW43_CORE_ARM_CR4      0x83Eu
@@ -678,6 +683,45 @@ static int cyw43_enable_function2(void){
     return 0;
 }
 
+static void cyw43_program_f2_watermark(void){
+    if (sdio_bus_cmd52_write(1, CYW43_WATERMARK_REG, CYW43_DEFAULT_F2_WM) != 0){
+        uart_puts("CYW43: F2 watermark write failed\n");
+    }
+}
+
+static int cyw43_sdio_keep_awake(void){
+    unsigned char csr = 0;
+    unsigned char want = CYW43_SLEEP_CSR_KSO | CYW43_SLEEP_CSR_DEVON;
+    unsigned char saw_kso = 0;
+
+    if (!g_cyw43.func1_ready){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < 64u; i++){
+        /*
+         * Broadcom SDIO KSO writes are synchronized through the low-speed PMU
+         * domain. Linux brcmfmac rewrites and rereads until KSO+DEVON stick.
+         */
+        (void)sdio_bus_cmd52_write(1, CYW43_SLEEP_CSR_REG, CYW43_SLEEP_CSR_KSO);
+        cyw43_delay(30000u);
+        if (sdio_bus_cmd52_read(1, CYW43_SLEEP_CSR_REG, &csr) == 0){
+            if ((csr & want) == want){
+                return 0;
+            }
+            if (csr & CYW43_SLEEP_CSR_KSO){
+                saw_kso = 1;
+            }
+        }
+        cyw43_delay(30000u);
+    }
+
+    uart_puts("CYW43: KSO wake incomplete csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+    return saw_kso ? 0 : -1;
+}
+
 static int cyw43_wait_firmware_ready(void){
     unsigned int ints = 0;
     unsigned int mbox = 0;
@@ -763,8 +807,12 @@ static int cyw43_start_firmware(void){
     if (cyw43_enable_function2() != 0){
         return -1;
     }
+    cyw43_program_f2_watermark();
     if (cyw43_wait_firmware_ready() != 0){
         return -1;
+    }
+    if (cyw43_sdio_keep_awake() != 0){
+        uart_puts("CYW43: SDIO wake warning; continuing\n");
     }
     g_cyw43.fw_running = 1;
     return 0;
@@ -1137,6 +1185,9 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     unsigned short reqid = 0;
 
     if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
+        return -1;
+    }
+    if (cyw43_sdio_keep_awake() != 0){
         return -1;
     }
 
