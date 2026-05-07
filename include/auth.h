@@ -12,6 +12,8 @@ const char* auth_username(void);
 int auth_get_salt(unsigned char out_salt[AUTH_SALT_BYTES]);
 int auth_issue_nonce(unsigned char out_nonce[AUTH_NONCE_BYTES]);
 
+int auth_verify_password(const char* username, const char* password);
+
 void create_password_hash(const char* password,
                           const unsigned char salt[AUTH_SALT_BYTES],
                           unsigned char out_hash[AUTH_HASH_BYTES]);

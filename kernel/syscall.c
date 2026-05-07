@@ -16,6 +16,7 @@
 #include "tls_session.h"
 #include "remote_login.h"
 #include "cyw43.h"
+#include "auth.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -36,6 +37,19 @@ static unsigned long clamp_puts_len(const char* s){
         n++;
     }
     return n;
+}
+
+static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
+    unsigned int i = 0;
+    if (!out || out_cap == 0u || !in){
+        return -1;
+    }
+    while (i + 1u < out_cap && in[i]){
+        out[i] = in[i];
+        i++;
+    }
+    out[i] = 0;
+    return 0;
 }
 
 static void syscall_poll_background_io(void){
@@ -527,6 +541,25 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_NET_SET_GATEWAY_IP:
             net_proto_set_gateway_ip((const unsigned char*)frame[TF_X0]);
             frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_AUTH_IS_READY:
+            frame[TF_X0] = (unsigned long)auth_is_ready();
+            return frame_sp;
+
+        case SYS_AUTH_GET_USERNAME:
+            if (!auth_is_ready()){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)copy_cstr_out((char*)frame[TF_X0],
+                                                        (unsigned int)frame[TF_X1],
+                                                        auth_username());
+            return frame_sp;
+
+        case SYS_AUTH_VERIFY_PASSWORD:
+            frame[TF_X0] = (unsigned long)auth_verify_password((const char*)frame[TF_X0],
+                                                               (const char*)frame[TF_X1]);
             return frame_sp;
 
         case SYS_WIFI_INIT:

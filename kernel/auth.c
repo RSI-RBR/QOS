@@ -169,6 +169,31 @@ int auth_issue_nonce(unsigned char out_nonce[AUTH_NONCE_BYTES]){
     return 0;
 }
 
+int auth_verify_password(const char* username, const char* password){
+    unsigned int name_len;
+    unsigned char calc_hash[AUTH_HASH_BYTES];
+    int ok;
+
+    if (!g_auth.ready || !username || !password){
+        return -1;
+    }
+
+    name_len = cstr_len_bounded(username, AUTH_USERNAME_MAX + 1u);
+    if (name_len != g_auth.username_len){
+        return -1;
+    }
+    for (unsigned int i = 0; i < name_len; i++){
+        if (username[i] != g_auth.username[i]){
+            return -1;
+        }
+    }
+
+    create_password_hash(password, g_auth.salt, calc_hash);
+    ok = crypto_consttime_equal(calc_hash, g_auth.stored_hash, AUTH_HASH_BYTES);
+    crypto_memzero(calc_hash, sizeof(calc_hash));
+    return ok ? 0 : -1;
+}
+
 int auth_verify_response(const char* username,
                          const unsigned char client_nonce[AUTH_NONCE_BYTES],
                          const unsigned char server_nonce[AUTH_NONCE_BYTES],

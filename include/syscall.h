@@ -67,7 +67,10 @@ enum {
     SYS_WIFI_DUMP_STATUS = 57,
     SYS_WIFI_GET_VERSION = 58,
     SYS_NET_GET_GATEWAY_IP = 59,
-    SYS_NET_SET_GATEWAY_IP = 60
+    SYS_NET_SET_GATEWAY_IP = 60,
+    SYS_AUTH_IS_READY = 61,
+    SYS_AUTH_GET_USERNAME = 62,
+    SYS_AUTH_VERIFY_PASSWORD = 63
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -421,6 +424,22 @@ static inline int qos_net_get_gateway_ip(unsigned char out_ip[4]){
 
 static inline int qos_net_set_gateway_ip(const unsigned char ip[4]){
     return (int)qos_syscall1(SYS_NET_SET_GATEWAY_IP, (unsigned long)ip);
+}
+
+static inline int qos_auth_is_ready(void){
+    return (int)qos_syscall0(SYS_AUTH_IS_READY);
+}
+
+static inline int qos_auth_get_username(char* out, unsigned int out_cap){
+    return (int)qos_syscall2(SYS_AUTH_GET_USERNAME,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_auth_verify_password(const char* username, const char* password){
+    return (int)qos_syscall2(SYS_AUTH_VERIFY_PASSWORD,
+                             (unsigned long)username,
+                             (unsigned long)password);
 }
 
 static inline int qos_wifi_init(void){

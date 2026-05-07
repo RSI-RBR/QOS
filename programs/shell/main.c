@@ -2,11 +2,15 @@
 #include "user_net.h"
 
 #define BUF_SIZE 128
+#define LOGIN_BUF_SIZE 64
+#define LOGIN_MAX_TRIES 3
 
 static char g_buf[BUF_SIZE];
 static int g_len = 0;
 static int g_tty_owned = 1;
 static int g_shell_pid = -1;
+static char g_login_user[LOGIN_BUF_SIZE];
+static char g_login_pass[LOGIN_BUF_SIZE];
 
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
@@ -114,6 +118,101 @@ static int parse_uint(const char* s, unsigned int* out){
     }
     *out = v;
     return 0;
+}
+
+static void secure_zero(char* buf, unsigned int n){
+    volatile char* p = (volatile char*)buf;
+    if (!p){
+        return;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        p[i] = 0;
+    }
+}
+
+static int read_line_input(char* out, unsigned int out_cap, int echo){
+    unsigned int len = 0;
+    if (!out || out_cap < 2u){
+        return -1;
+    }
+    out[0] = 0;
+
+    while (1){
+        int ch = qos_try_getc();
+        if (ch < 0){
+            qos_sleep(1);
+            continue;
+        }
+
+        if (ch == '\r' || ch == '\n'){
+            out[len] = 0;
+            qos_puts("\n");
+            return (int)len;
+        }
+
+        if (ch == 127 || ch == '\b'){
+            if (len > 0u){
+                len--;
+                out[len] = 0;
+                qos_puts("\b \b");
+            }
+            continue;
+        }
+
+        if (ch < 32 || ch > 126){
+            continue;
+        }
+
+        if (len + 1u < out_cap){
+            out[len++] = (char)ch;
+            out[len] = 0;
+            if (echo){
+                qos_putc((char)ch);
+            } else{
+                qos_putc('*');
+            }
+        }
+    }
+}
+
+static int require_local_login(void){
+    char expected_user[LOGIN_BUF_SIZE];
+
+    if (qos_auth_is_ready() == 0){
+        qos_puts("Local login unavailable: auth is not ready.\n");
+        return -1;
+    }
+    if (qos_auth_get_username(expected_user, sizeof(expected_user)) != 0 || expected_user[0] == 0){
+        qos_puts("Local login unavailable: username read failed.\n");
+        return -1;
+    }
+
+    qos_puts("Local login required.\n");
+
+    for (unsigned int attempt = 0; attempt < LOGIN_MAX_TRIES; attempt++){
+        qos_puts("login: ");
+        if (read_line_input(g_login_user, sizeof(g_login_user), 1) < 0){
+            continue;
+        }
+
+        qos_puts("password: ");
+        if (read_line_input(g_login_pass, sizeof(g_login_pass), 0) < 0){
+            secure_zero(g_login_pass, sizeof(g_login_pass));
+            continue;
+        }
+
+        if (qos_auth_verify_password(g_login_user, g_login_pass) == 0){
+            secure_zero(g_login_pass, sizeof(g_login_pass));
+            qos_puts("Access granted.\n");
+            return 0;
+        }
+
+        secure_zero(g_login_pass, sizeof(g_login_pass));
+        qos_puts("Access denied.\n");
+    }
+
+    qos_puts("Too many failed login attempts.\n");
+    return -1;
 }
 
 static void print_prompt(void){
@@ -939,6 +1038,11 @@ void program_main(void){
     }
     // Claim foreground console ownership explicitly on startup.
     (void)shell_claim_tty();
+    if (require_local_login() != 0){
+        while (1){
+            qos_sleep(1000);
+        }
+    }
 
     qos_puts("User shell ready.");
     print_prompt();
