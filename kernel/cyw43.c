@@ -150,6 +150,10 @@ static cyw43_state_t g_cyw43;
 static cyw43_rx_handler_t g_cyw43_rx_handler = 0;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
+static int cyw43_wl_cmd(int write, unsigned int op,
+                        const unsigned char* data, unsigned int data_len,
+                        unsigned char* result, unsigned int result_len,
+                        unsigned int* result_actual);
 
 static unsigned int kmin_u32(unsigned int a, unsigned int b){
     return (a < b) ? a : b;
