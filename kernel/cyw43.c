@@ -72,12 +72,14 @@
 #define CYW43_WLC_SET_SSID      26u
 #define CYW43_WLC_SCAN          50u
 #define CYW43_WLC_SCAN_RESULTS  51u
+#define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
 #define CYW43_WLC_GET_VAR       262u
 #define CYW43_WLC_SET_VAR       263u
 #define CYW43_WLC_SET_WSEC_PMK  268u
 
+#define CYW43_WL_IOVAR_BUF_LEN  256u
 #define CYW43_WL_BSS_INFO_VER   109u
 #define CYW43_WL_SCAN_BUF_LEN   1800u
 #define CYW43_WL_SCAN_PARAMS_LEN 64u
@@ -101,6 +103,7 @@ typedef struct {
     unsigned char fw_loaded;
     unsigned char fw_running;
     unsigned char iface_up;
+    unsigned char wifi_configured;
     unsigned char joined;
     unsigned int chip_id;
     unsigned int chip_rev;
@@ -860,6 +863,7 @@ static void cyw43_drop_sdio_state(void){
     g_cyw43.func2_ready = 0;
     g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
+    g_cyw43.wifi_configured = 0;
     g_cyw43.joined = 0;
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
@@ -896,6 +900,7 @@ int cyw43_init(void){
     g_cyw43.enabled = g_cyw43.func1_ready ? 1u : 0u;
     g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
+    g_cyw43.wifi_configured = 0;
     g_cyw43.joined = 0;
     g_cyw43.sdpcm_tx_seq = 0;
     g_cyw43.reqid = 0;
@@ -1000,6 +1005,10 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     }
 
     g_cyw43.fw_loaded = 1;
+    g_cyw43.fw_running = 0;
+    g_cyw43.iface_up = 0;
+    g_cyw43.wifi_configured = 0;
+    g_cyw43.joined = 0;
     uart_puts("CYW43: firmware + NVRAM staged over SDIO\n");
     return 0;
 }
@@ -1235,6 +1244,13 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     return 0;
 }
 
+static unsigned int cyw43_wl_cmd_max_tries(unsigned int op){
+    if (op == CYW43_WLC_SCAN){
+        return 12u;
+    }
+    return 3u;
+}
+
 static int cyw43_wl_cmd(int write, unsigned int op,
                         const unsigned char* data, unsigned int data_len,
                         unsigned char* result, unsigned int result_len,
@@ -1299,7 +1315,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
     g_cyw43.sdpcm_tx_seq++;
 
-    for (unsigned int tries = 0; tries < 3u; tries++){
+    for (unsigned int tries = 0; tries < cyw43_wl_cmd_max_tries(op); tries++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         unsigned int doffset = 0;
@@ -1385,6 +1401,41 @@ static int cyw43_wl_get_var(const char* name, unsigned char* out,
                         out, out_cap, out_len);
 }
 
+static int cyw43_wl_set_var(const char* name, const unsigned char* data,
+                            unsigned int data_len){
+    unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
+    unsigned int name_len = 0;
+    unsigned int total_len = 0;
+
+    if (!name){
+        return -1;
+    }
+    name_len = strn_len_local(name, 63u);
+    if (name_len == 0u || name_len >= 64u){
+        return -1;
+    }
+    total_len = name_len + 1u + data_len;
+    if (total_len > sizeof(buf)){
+        return -1;
+    }
+
+    mem_zero_local(buf, sizeof(buf));
+    for (unsigned int i = 0; i < name_len; i++){
+        buf[i] = (unsigned char)name[i];
+    }
+    if (data && data_len > 0u){
+        mem_copy_local(buf + name_len + 1u, data, data_len);
+    }
+
+    return cyw43_wl_cmd(1, CYW43_WLC_SET_VAR, buf, total_len, 0, 0, 0);
+}
+
+static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
+    unsigned char buf[4];
+    put_le32(buf, value);
+    return cyw43_wl_set_var(name, buf, sizeof(buf));
+}
+
 static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     unsigned char buf[4];
     put_le32(buf, value);
@@ -1416,7 +1467,7 @@ static int cyw43_wl_scan_submit(void){
      *   ether_addr bssid;       // ff:ff:ff:ff:ff:ff = broadcast scan
      *   int8 bss_type;          // any
      *   uint8 scan_type;        // default active/passive policy
-     *   int32 nprobes/active/passive/home_time; -1 = firmware default
+     *   int32 nprobes/active/passive/home_time; bounded scan timings
      *   int32 channel_num;      // 0 = all channels, no appended channel list
      */
     for (unsigned int i = 36u; i < 42u; i++){
@@ -1424,10 +1475,10 @@ static int cyw43_wl_scan_submit(void){
     }
     params[42u] = CYW43_DOT11_BSSTYPE_ANY;
     params[43u] = 0u;
-    put_le32(params + 44u, 0xFFFFFFFFu);
-    put_le32(params + 48u, 0xFFFFFFFFu);
-    put_le32(params + 52u, 0xFFFFFFFFu);
-    put_le32(params + 56u, 0xFFFFFFFFu);
+    put_le32(params + 44u, 3u);    // probes per channel
+    put_le32(params + 48u, 120u);  // active dwell ms
+    put_le32(params + 52u, 360u);  // passive dwell ms
+    put_le32(params + 56u, 40u);   // home channel dwell ms
     put_le32(params + 60u, 0u);
 
     return cyw43_wl_cmd(1, CYW43_WLC_SCAN, params, sizeof(params), 0, 0, 0);
@@ -1454,6 +1505,90 @@ static int cyw43_wl_set_pmk(const char* password){
     }
 
     return cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+}
+
+static void cyw43_event_mask_set(unsigned char* mask, unsigned int event_id){
+    mask[event_id >> 3u] |= (unsigned char)(1u << (event_id & 7u));
+}
+
+static int cyw43_wl_set_country(void){
+    unsigned char country[12];
+    char cc0 = g_cyw43.country[0] ? g_cyw43.country[0] : 'W';
+    char cc1 = g_cyw43.country[1] ? g_cyw43.country[1] : 'W';
+
+    mem_zero_local(country, sizeof(country));
+    country[0] = (unsigned char)cc0;
+    country[1] = (unsigned char)cc1;
+    put_le32(country + 4u, 0xFFFFFFFFu);
+    country[8] = (unsigned char)cc0;
+    country[9] = (unsigned char)cc1;
+    return cyw43_wl_set_var("country", country, sizeof(country));
+}
+
+static int cyw43_wl_set_event_msgs(void){
+    unsigned char mask[32];
+    unsigned char bsscfg_mask[36];
+
+    mem_zero_local(mask, sizeof(mask));
+    cyw43_event_mask_set(mask, 0u);   // SET_SSID
+    cyw43_event_mask_set(mask, 1u);   // JOIN
+    cyw43_event_mask_set(mask, 3u);   // AUTH
+    cyw43_event_mask_set(mask, 4u);   // AUTH_IND
+    cyw43_event_mask_set(mask, 5u);   // DEAUTH
+    cyw43_event_mask_set(mask, 6u);   // DEAUTH_IND
+    cyw43_event_mask_set(mask, 7u);   // ASSOC
+    cyw43_event_mask_set(mask, 8u);   // ASSOC_IND
+    cyw43_event_mask_set(mask, 11u);  // DISASSOC
+    cyw43_event_mask_set(mask, 16u);  // LINK
+    cyw43_event_mask_set(mask, 26u);  // SCAN_COMPLETE
+
+    mem_zero_local(bsscfg_mask, sizeof(bsscfg_mask));
+    put_le32(bsscfg_mask + 0u, 0u);
+    mem_copy_local(bsscfg_mask + 4u, mask, sizeof(mask));
+    if (cyw43_wl_set_var("bsscfg:event_msgs", bsscfg_mask, sizeof(bsscfg_mask)) == 0){
+        return 0;
+    }
+    return cyw43_wl_set_var("event_msgs", mask, sizeof(mask));
+}
+
+static int cyw43_wifi_configure_on(void){
+    int rc = 0;
+
+    /*
+     * This mirrors the important "wifi on" setup used by mature CYW43 stacks:
+     * set regulatory country/event delivery and disable aggregation knobs that
+     * make early bare-metal SDIO bring-up much harder to debug.
+     */
+    if (cyw43_wl_set_country() != 0){
+        rc = -1;
+    }
+
+    if (cyw43_wl_set_int(CYW43_WLC_SET_ANTDIV, 3u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("bus:txglom", 0u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("apsta", 1u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("ampdu_ba_wsize", 8u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("ampdu_mpdu", 4u) != 0){
+        rc = -1;
+    }
+    if (cyw43_wl_set_var_u32("ampdu_rx_factor", 0u) != 0){
+        rc = -1;
+    }
+
+    if (cyw43_wl_set_event_msgs() != 0){
+        rc = -1;
+    }
+    if (rc != 0){
+        uart_puts("CYW43: configure-on partial; continuing\n");
+    }
+    return 0;
 }
 
 static unsigned int cyw43_bss_channel(const unsigned char* bss, unsigned int ver){
@@ -1577,6 +1712,13 @@ int cyw43_ioctl_up(void){
     if (!g_cyw43.fw_running && cyw43_start_firmware() != 0){
         uart_puts("CYW43: firmware start failed\n");
         return -1;
+    }
+    if (!g_cyw43.wifi_configured){
+        if (cyw43_wifi_configure_on() != 0){
+            uart_puts("CYW43: WiFi configure-on failed\n");
+            return -1;
+        }
+        g_cyw43.wifi_configured = 1;
     }
     if (!g_cyw43.iface_up &&
         cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
