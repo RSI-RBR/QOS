@@ -252,7 +252,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
         return -3;
     }
     g_icmp_stats.tx_echo_req++;
-    (void)net_poll();
+    for (unsigned int i = 0; i < 4u && g_ping_waiting; i++){
+        (void)net_poll();
+    }
 
     // During SVC handling, IRQs may be masked. Allow timer IRQ while we wait,
     // otherwise system_ticks/net RX won't advance and ping appears frozen.
@@ -274,7 +276,9 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     // Tuned conservatively to avoid hanging the shell forever in syscall path.
     spin_budget = ((unsigned long)timeout_ms * 1000000UL) + 1000000UL;
     while (g_ping_waiting){
-        (void)net_poll();
+        for (unsigned int i = 0; i < 4u && g_ping_waiting; i++){
+            (void)net_poll();
+        }
         unsigned long now_cnt = read_cntpct_lo();
         unsigned long elapsed_cnt = now_cnt - start_cnt;
         if (!did_retry && elapsed_cnt >= resend_cnt){

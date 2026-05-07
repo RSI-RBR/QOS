@@ -969,8 +969,8 @@ void program_main(void){
 
         int ch = qos_try_getc();
         if (ch < 0){
-            // Keep shell RUNNING; timer IRQ preemption will schedule peers.
-            // This avoids sleep edge-cases when no alternate runnable task exists.
+            // Avoid turning an idle prompt into a hot loop that starves peers.
+            qos_sleep(1);
             continue;
         }
 

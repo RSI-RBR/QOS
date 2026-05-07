@@ -38,6 +38,18 @@ static unsigned long clamp_puts_len(const char* s){
     return n;
 }
 
+static void syscall_poll_background_io(void){
+    static unsigned long next_poll_tick = 0;
+    unsigned long now = system_ticks;
+
+    if ((long)(now - next_poll_tick) < 0){
+        return;
+    }
+    next_poll_tick = now + 10u;
+    (void)net_poll();
+    remote_login_poll();
+}
+
 static void syscall_write_puts(int pid, const char* s){
     if (!s){
         return;
@@ -162,8 +174,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TRY_GETC: {
             char c = 0;
-            (void)net_poll();
-            remote_login_poll();
+            syscall_poll_background_io();
             if (console_try_getc_for_pid(process_current_pid(), &c)){
                 frame[TF_X0] = (unsigned long)(unsigned char)c;
             } else{
