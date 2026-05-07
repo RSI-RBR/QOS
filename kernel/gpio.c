@@ -142,15 +142,21 @@ void gpio_init_wifi_sdio(void){
 }
 
 void gpio_wifi_wl_on_pulse(void){
-    // Pi 3 class boards expose WL_ON through the firmware GPIO expander.
-    // Expander line 1 maps to mailbox GPIO 129 (BT_ON is 128).
+    static const unsigned int wl_on_candidates[] = {129u, 1u};
+
     uart_puts("GPIO: WiFi WL_ON pulse\n");
-    if (mailbox_set_gpio_state(129, 0) != 0){
-        uart_puts("GPIO: WL_ON low failed\n");
+    for (unsigned int i = 0; i < (sizeof(wl_on_candidates) / sizeof(wl_on_candidates[0])); i++){
+        unsigned int pin = wl_on_candidates[i];
+        uart_puts("GPIO: WL_ON mailbox pin ");
+        uart_putdec(pin);
+        uart_puts("\n");
+        if (mailbox_set_gpio_state(pin, 0) != 0){
+            uart_puts("GPIO: WL_ON low failed\n");
+        }
+        delay(5000000);
+        if (mailbox_set_gpio_state(pin, 1) != 0){
+            uart_puts("GPIO: WL_ON high failed\n");
+        }
+        delay(50000000);
     }
-    delay(5000000);
-    if (mailbox_set_gpio_state(129, 1) != 0){
-        uart_puts("GPIO: WL_ON high failed\n");
-    }
-    delay(50000000);
 }
