@@ -78,7 +78,9 @@
 
 #define CYW43_WL_BSS_INFO_VER   109u
 #define CYW43_WL_SCAN_BUF_LEN   1800u
+#define CYW43_WL_SCAN_PARAMS_LEN 64u
 #define CYW43_WL_MAX_SSID_LEN   32u
+#define CYW43_DOT11_BSSTYPE_ANY 2u
 #define CYW43_WSEC_AES          0x0004u
 #define CYW43_WSEC_PASSPHRASE   0x0001u
 #define CYW43_WPA_AUTH_DISABLED 0x0000u
@@ -1402,6 +1404,33 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_wl_scan_submit(void){
+    unsigned char params[CYW43_WL_SCAN_PARAMS_LEN];
+
+    mem_zero_local(params, sizeof(params));
+    /*
+     * wl_scan_params:
+     *   wlc_ssid_t ssid;        // len 0 = wildcard
+     *   ether_addr bssid;       // ff:ff:ff:ff:ff:ff = broadcast scan
+     *   int8 bss_type;          // any
+     *   uint8 scan_type;        // default active/passive policy
+     *   int32 nprobes/active/passive/home_time; -1 = firmware default
+     *   int32 channel_num;      // 0 = all channels, no appended channel list
+     */
+    for (unsigned int i = 36u; i < 42u; i++){
+        params[i] = 0xFFu;
+    }
+    params[42u] = CYW43_DOT11_BSSTYPE_ANY;
+    params[43u] = 0u;
+    put_le32(params + 44u, 0xFFFFFFFFu);
+    put_le32(params + 48u, 0xFFFFFFFFu);
+    put_le32(params + 52u, 0xFFFFFFFFu);
+    put_le32(params + 56u, 0xFFFFFFFFu);
+    put_le32(params + 60u, 0u);
+
+    return cyw43_wl_cmd(1, CYW43_WLC_SCAN, params, sizeof(params), 0, 0, 0);
+}
+
 static int cyw43_wl_set_pmk(const char* password){
     unsigned char pmk[68];
     unsigned int len = 0;
@@ -1570,7 +1599,7 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
         return -1;
     }
 
-    if (cyw43_wl_set_ssid_cmd(CYW43_WLC_SCAN, "") != 0){
+    if (cyw43_wl_scan_submit() != 0){
         uart_puts("CYW43: scan submit failed\n");
         return -1;
     }
