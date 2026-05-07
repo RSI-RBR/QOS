@@ -271,6 +271,12 @@ unsigned short sdio_bus_get_rca(void){
     return g_rca;
 }
 
+void sdio_bus_reset_state(void){
+    g_ready = 0;
+    g_rca = 0;
+    g_ocr = 0;
+}
+
 int sdio_bus_init(void){
     unsigned int resp = 0;
     unsigned int c1 = 0;

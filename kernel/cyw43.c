@@ -205,6 +205,16 @@ static int cyw43_write_stage(unsigned int addr, const unsigned char* data, unsig
     return 0;
 }
 
+static void cyw43_drop_sdio_state(void){
+    g_cyw43.enabled = 0;
+    g_cyw43.func1_ready = 0;
+    g_cyw43.func2_ready = 0;
+    g_cyw43.iface_up = 0;
+    g_cyw43.joined = 0;
+    sdio_bus_reset_state();
+    blockdev_reserve_emmc_for_wifi(0);
+}
+
 int cyw43_init(void){
     if (g_cyw43.enabled){
         return 0;
@@ -307,8 +317,13 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
         goto out;
     }
 
-    if (blockdev_reinit() != 0){
-        uart_puts("CYW43: storage reinit failed\n");
+    if (g_cyw43.enabled){
+        uart_puts("CYW43: reclaiming EMMC for firmware read\n");
+        cyw43_drop_sdio_state();
+    }
+
+    if (blockdev_reinit_emmc() != 0){
+        uart_puts("CYW43: EMMC storage reinit failed\n");
         goto out;
     }
     if (fat32_init() != 0){
@@ -323,6 +338,9 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
         goto out;
     }
 
+    // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
+    // SDIO before touching the CYW43 backplane.
+    cyw43_drop_sdio_state();
     rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
                                             (const char*)nv_buf, (unsigned int)nv_len);
 

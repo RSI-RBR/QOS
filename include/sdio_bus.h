@@ -7,6 +7,7 @@
 int sdio_bus_init(void);
 int sdio_bus_is_ready(void);
 unsigned short sdio_bus_get_rca(void);
+void sdio_bus_reset_state(void);
 
 int sdio_bus_cmd52_read(unsigned int fn, unsigned int addr, unsigned char* out_val);
 int sdio_bus_cmd52_write(unsigned int fn, unsigned int addr, unsigned char val);

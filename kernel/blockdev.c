@@ -66,6 +66,17 @@ int blockdev_reinit(void){
     return blockdev_init();
 }
 
+int blockdev_reinit_emmc(void){
+    g_emmc_reserved_for_wifi = 0;
+    gpio_init_emmc();
+    if (emmc_init() == 0){
+        g_backend = BACKEND_EMMC;
+        return 0;
+    }
+    g_backend = BACKEND_NONE;
+    return -1;
+}
+
 void blockdev_reserve_emmc_for_wifi(int reserved){
     g_emmc_reserved_for_wifi = reserved ? 1 : 0;
     if (g_emmc_reserved_for_wifi && g_backend == BACKEND_EMMC){
