@@ -46,3 +46,10 @@ int memcmp(const void *a, const void *b, size_t n){
     }
     return 0;
 }
+
+void exit(int status){
+    (void)status;
+    for (;;){
+        asm volatile("wfi");
+    }
+}
