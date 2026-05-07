@@ -3,5 +3,6 @@
 
 void clock_debug_write(void);
 void clock_init_emmc(void);
+void clock_init_wifi_lpo(void);
 
 #endif

@@ -5,12 +5,16 @@
 
 #define CM_EMMCCTL (*(volatile unsigned int*)(CM_BASE + 0x1C))
 #define CM_EMMCDIV (*(volatile unsigned int*)(CM_BASE + 0x20))
+#define CM_GP2CTL  (*(volatile unsigned int*)(CM_BASE + 0x80))
+#define CM_GP2DIV  (*(volatile unsigned int*)(CM_BASE + 0x84))
 
 #define CM_PASSWORD 0x5A000000
 
 #define CM_CTL_ENAB (1 << 4)
 #define CM_CTL_KILL (1 << 5)
 #define CM_CTL_BUSY (1 << 7)
+#define CM_CTL_MASH_1 (1 << 9)
+#define CM_SRC_OSC 1
 
 void clock_debug_write(void)
 {
@@ -93,4 +97,39 @@ void clock_init_emmc(void) {
     }
 
     uart_puts("CLOCK: running\n");
+}
+
+void clock_init_wifi_lpo(void){
+    uart_puts("CLOCK: init WiFi LPO\n");
+
+    // GPIO43/GPCLK2 feeds the CYW4343x EXT_SLEEP_CLK on WiFi Pis.
+    // 19.2 MHz oscillator / 585.9375 = 32768 Hz.
+    CM_GP2CTL = CM_PASSWORD | CM_CTL_KILL;
+    mmio_barrier();
+    delay(5000);
+
+    int timeout = 1000000;
+    while ((CM_GP2CTL & CM_CTL_BUSY) && timeout--) {}
+    if (timeout <= 0){
+        uart_puts("CLOCK: GP2 stop timeout\n");
+        return;
+    }
+
+    CM_GP2DIV = CM_PASSWORD | (585u << 12) | 3840u;
+    mmio_barrier();
+    CM_GP2CTL = CM_PASSWORD | CM_CTL_MASH_1 | CM_SRC_OSC;
+    mmio_barrier();
+    delay(5000);
+    CM_GP2CTL = CM_PASSWORD | CM_CTL_MASH_1 | CM_CTL_ENAB | CM_SRC_OSC;
+    mmio_barrier();
+    delay(5000);
+
+    timeout = 1000000;
+    while (!(CM_GP2CTL & CM_CTL_BUSY) && timeout--) {}
+    if (timeout <= 0){
+        uart_puts("CLOCK: GP2 start timeout\n");
+        return;
+    }
+
+    uart_puts("CLOCK: WiFi LPO running\n");
 }

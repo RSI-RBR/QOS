@@ -4,6 +4,7 @@
 #include "timer.h"
 #include "uart.h"
 #include "debug.h"
+#include "clock.h"
 
 #define EMMC_BASE 0x3F300000UL
 
@@ -121,6 +122,8 @@ static int sdio_cmd(unsigned int cmd, unsigned int arg, unsigned int flags, unsi
     unsigned int irpt = 0;
 
     if (sdio_wait_status_clear(SR_CMD_INHIBIT, 120) != 0){
+        EMMC_CONTROL1 |= C1_SRST_CMD;
+        sdio_short_delay(10000);
         return -1;
     }
     if ((flags & CMD_ISDATA) || ((flags & CMD_RSPNS_48B) == CMD_RSPNS_48B)){
@@ -260,6 +263,7 @@ int sdio_bus_init(void){
     g_ocr = 0;
 
     gpio_init_wifi_sdio();
+    clock_init_wifi_lpo();
     gpio_wifi_wl_on_pulse();
     mailbox_set_emmc_clock(25000000);
     uart_puts("SDIO: stage host reset\n");
@@ -314,6 +318,8 @@ int sdio_bus_init(void){
         uart_puts("SDIO: CMD0 failed\n");
         return -1;
     }
+    (void)sdio_reset_lines();
+    sdio_clear_interrupts();
     // SDIO cards are initialized with CMD5 (not ACMD41/CMD8 flow).
     // Some chips may not respond sanely to CMD8 during SDIO bring-up.
 
