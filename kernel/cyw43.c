@@ -971,7 +971,6 @@ int cyw43_release_emmc_for_storage(void){
 int cyw43_init(void){
     int preserve_fw = g_cyw43.fw_loaded || g_cyw43.fw_running;
     unsigned char was_fw_running = g_cyw43.fw_running;
-    unsigned int saved_sdpcm_tx_seq = g_cyw43.sdpcm_tx_seq;
 
     if (g_cyw43.enabled){
         return 0;
@@ -1002,7 +1001,7 @@ int cyw43_init(void){
     g_cyw43.iface_up = 0;
     g_cyw43.wifi_configured = 0;
     g_cyw43.joined = 0;
-    g_cyw43.sdpcm_tx_seq = was_fw_running ? saved_sdpcm_tx_seq : 0;
+    g_cyw43.sdpcm_tx_seq = 0;
     g_cyw43.reqid = 0;
     g_cyw43.flow_mask = 0;
     g_cyw43.tx_window = 1;
