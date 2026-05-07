@@ -1275,64 +1275,6 @@ static int cyw43_packet_read(unsigned char* out, unsigned int out_cap, unsigned 
     return 0;
 }
 
-static int cyw43_wl_cmd_write_nowait(unsigned int op,
-                                     const unsigned char* data,
-                                     unsigned int data_len){
-    static unsigned char tx[CYW43_PACKET_MAX_BYTES];
-    unsigned int raw_frame_len = 0;
-    unsigned int frame_len = 0;
-    unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
-    unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
-    unsigned short reqid = 0;
-
-    if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
-        return -1;
-    }
-    if (cyw43_sdio_keep_awake() != 0){
-        return -1;
-    }
-
-    raw_frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + data_len;
-    frame_len = round4_u32(raw_frame_len);
-    if (frame_len > CYW43_PACKET_MAX_BYTES){
-        return -1;
-    }
-
-    mem_zero_local(tx, sizeof(tx));
-    put_le16(tx + 0u, frame_len);
-    put_le16(tx + 2u, frame_len ^ 0xFFFFu);
-    tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
-    tx[5] = CYW43_SDPCM_CH_CONTROL;
-    tx[6] = 0;
-    tx[7] = CYW43_SDPCM_HDR_LEN;
-    tx[8] = 0;
-    tx[9] = 0;
-    tx[10] = 0;
-    tx[11] = 0;
-
-    reqid = (unsigned short)(g_cyw43.reqid + 1u);
-    if (reqid == 0u){
-        reqid = 1u;
-    }
-    g_cyw43.reqid = reqid;
-
-    put_le32(tx + cmd_off + 0u, op);
-    put_le32(tx + cmd_off + 4u, data_len);
-    put_le16(tx + cmd_off + 8u, 2u);
-    put_le16(tx + cmd_off + 10u, reqid);
-    put_le32(tx + cmd_off + 12u, 0u);
-
-    if (data && data_len > 0u){
-        mem_copy_local(tx + payload_off, data, data_len);
-    }
-
-    if (cyw43_packet_write(tx, frame_len) != 0){
-        return -1;
-    }
-    g_cyw43.sdpcm_tx_seq++;
-    return 0;
-}
-
 static int cyw43_wl_cmd(int write, unsigned int op,
                         const unsigned char* data, unsigned int data_len,
                         unsigned char* result, unsigned int result_len,
@@ -1512,35 +1454,6 @@ static int cyw43_wl_set_var(const char* name, const unsigned char* data,
     return cyw43_wl_cmd(1, CYW43_WLC_SET_VAR, buf, total_len, 0, 0, 0);
 }
 
-static int cyw43_wl_set_var_nowait(const char* name, const unsigned char* data,
-                                   unsigned int data_len){
-    unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
-    unsigned int name_len = 0;
-    unsigned int total_len = 0;
-
-    if (!name){
-        return -1;
-    }
-    name_len = strn_len_local(name, 63u);
-    if (name_len == 0u || name_len >= 64u){
-        return -1;
-    }
-    total_len = name_len + 1u + data_len;
-    if (total_len > sizeof(buf)){
-        return -1;
-    }
-
-    mem_zero_local(buf, sizeof(buf));
-    for (unsigned int i = 0; i < name_len; i++){
-        buf[i] = (unsigned char)name[i];
-    }
-    if (data && data_len > 0u){
-        mem_copy_local(buf + name_len + 1u, data, data_len);
-    }
-
-    return cyw43_wl_cmd_write_nowait(CYW43_WLC_SET_VAR, buf, total_len);
-}
-
 static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
     unsigned char buf[4];
     put_le32(buf, value);
@@ -1595,7 +1508,7 @@ static int cyw43_wl_escan_submit(void){
     put_le32(params + 68u, 0u);
     put_le16(params + 72u, 0u);
 
-    return cyw43_wl_set_var_nowait("escan", params, sizeof(params));
+    return cyw43_wl_set_var("escan", params, sizeof(params));
 }
 
 static int cyw43_wl_set_pmk(const char* password){
