@@ -22,6 +22,7 @@ void net_dump_stats(void);
 // Runtime NIC backend switching helpers.
 int net_try_select_wifi_backend(void);
 int net_try_select_default_backend(void);
+void net_wait_for_io_idle(void);
 
 // Called by NIC drivers when a frame is received.
 void net_ingest_rx_from_driver(const unsigned char* frame, unsigned int len);

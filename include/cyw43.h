@@ -66,6 +66,7 @@ int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
 
 int cyw43_get_status(cyw43_status_t* out);
 void cyw43_dump_status(void);
+int cyw43_release_emmc_for_storage(void);
 
 // Minimal Ethernet datapath bridge for the kernel NIC layer.
 int cyw43_net_set_rx_handler(cyw43_rx_handler_t handler);

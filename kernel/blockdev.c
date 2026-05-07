@@ -3,6 +3,7 @@
 #include "sdhost.h"
 #include "gpio.h"
 #include "uart.h"
+#include "cyw43.h"
 
 enum {
     BACKEND_NONE = 0,
@@ -47,8 +48,9 @@ int blockdev_reinit(void){
         // Prefer reclaiming EMMC for storage when possible.
         // On Pi 3 this temporarily takes the shared host path away from WiFi.
         uart_puts("Blockdev: EMMC takeover from WiFi...\n");
+        (void)cyw43_release_emmc_for_storage();
         if (blockdev_reinit_emmc() == 0){
-            uart_puts("Blockdev: EMMC takeover OK (WiFi path paused)\n");
+            uart_puts("Blockdev: EMMC takeover OK (WiFi disabled)\n");
             return 0;
         }
 

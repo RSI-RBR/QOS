@@ -360,6 +360,11 @@ int net_try_select_default_backend(void){
     return net_switch_backend(d);
 }
 
+void net_wait_for_io_idle(void){
+    unsigned long irq = spin_lock_irqsave(&g_net_io_lock);
+    spin_unlock_irqrestore(&g_net_io_lock, irq);
+}
+
 void net_dump_stats(void){
     unsigned long rx_ok, rx_drop, tx_ok, tx_fail;
     unsigned int rxq_count;
