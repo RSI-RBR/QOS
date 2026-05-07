@@ -12,5 +12,6 @@ void net_proto_set_local_mac(const unsigned char mac[6]);
 void net_proto_get_local_ip(unsigned char out_ip[4]);
 void net_proto_get_gateway_ip(unsigned char out_ip[4]);
 void net_proto_set_local_ip(const unsigned char ip[4]);
+void net_proto_set_gateway_ip(const unsigned char ip[4]);
 
 #endif

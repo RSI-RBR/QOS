@@ -508,6 +508,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
 
+        case SYS_NET_GET_GATEWAY_IP:
+            net_proto_get_gateway_ip((unsigned char*)frame[TF_X0]);
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_NET_SET_GATEWAY_IP:
+            net_proto_set_gateway_ip((const unsigned char*)frame[TF_X0]);
+            frame[TF_X0] = 0;
+            return frame_sp;
+
         case SYS_WIFI_INIT:
             frame[TF_X0] = (unsigned long)cyw43_init();
             return frame_sp;

@@ -65,7 +65,9 @@ enum {
     SYS_WIFI_SCAN = 55,
     SYS_WIFI_JOIN = 56,
     SYS_WIFI_DUMP_STATUS = 57,
-    SYS_WIFI_GET_VERSION = 58
+    SYS_WIFI_GET_VERSION = 58,
+    SYS_NET_GET_GATEWAY_IP = 59,
+    SYS_NET_SET_GATEWAY_IP = 60
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -411,6 +413,14 @@ static inline int qos_net_get_local_ip(unsigned char out_ip[4]){
 
 static inline int qos_net_set_local_ip(const unsigned char ip[4]){
     return (int)qos_syscall1(SYS_NET_SET_LOCAL_IP, (unsigned long)ip);
+}
+
+static inline int qos_net_get_gateway_ip(unsigned char out_ip[4]){
+    return (int)qos_syscall1(SYS_NET_GET_GATEWAY_IP, (unsigned long)out_ip);
+}
+
+static inline int qos_net_set_gateway_ip(const unsigned char ip[4]){
+    return (int)qos_syscall1(SYS_NET_SET_GATEWAY_IP, (unsigned long)ip);
 }
 
 static inline int qos_wifi_init(void){

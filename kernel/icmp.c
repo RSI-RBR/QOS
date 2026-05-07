@@ -175,16 +175,18 @@ int icmp_ping_gateway(unsigned int timeout_ms){
     }
     if (!arp_gateway_resolved() || arp_get_gateway_mac(gateway_mac) != 0){
         int resolved = 0;
+        unsigned int attempt_timeout = timeout_ms;
         for (unsigned int attempt = 0; attempt < 2u && !resolved; attempt++){
             if (!net_link_up()){
                 (void)net_try_select_wifi_backend();
             }
-            if (arp_resolve_gateway(timeout_ms) == 0 &&
+            if (arp_resolve_gateway(attempt_timeout) == 0 &&
                 arp_get_gateway_mac(gateway_mac) == 0){
                 resolved = 1;
                 break;
             }
             (void)net_try_select_wifi_backend();
+            attempt_timeout = 300u;
         }
         if (!resolved){
             return -2;

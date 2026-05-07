@@ -18,7 +18,7 @@ typedef struct {
 static net_proto_stats_t g_np_stats;
 static unsigned char g_local_mac[6] = {0x02, 0x51, 0x4F, 0x53, 0x00, 0x01};
 static unsigned char g_local_ip[4] = {10, 0, 0, 88};
-static const unsigned char g_default_gateway_ip[4] = {10, 0, 0, 1};
+static unsigned char g_gateway_ip[4] = {10, 0, 0, 1};
 
 static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -39,8 +39,8 @@ void net_proto_init(void){
 
 void net_proto_configure_defaults(void){
     arp_set_local_interface(g_local_mac, g_local_ip);
-    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_default_gateway_ip);
-    arp_set_periodic_target(g_default_gateway_ip, 2000); // 2s retries until first reply.
+    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_gateway_ip);
+    arp_set_periodic_target(g_gateway_ip, 2000); // 2s retries until first reply.
     uart_puts("NET defaults: local ip ");
     uart_putdec(g_local_ip[0]);
     uart_puts(".");
@@ -49,7 +49,15 @@ void net_proto_configure_defaults(void){
     uart_putdec(g_local_ip[2]);
     uart_puts(".");
     uart_putdec(g_local_ip[3]);
-    uart_puts(", gateway 10.0.0.1\n");
+    uart_puts(", gateway ");
+    uart_putdec(g_gateway_ip[0]);
+    uart_puts(".");
+    uart_putdec(g_gateway_ip[1]);
+    uart_puts(".");
+    uart_putdec(g_gateway_ip[2]);
+    uart_puts(".");
+    uart_putdec(g_gateway_ip[3]);
+    uart_puts("\n");
 }
 
 void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
@@ -130,7 +138,7 @@ void net_proto_set_local_mac(const unsigned char mac[6]){
         g_local_mac[i] = mac[i];
     }
     arp_set_local_interface(g_local_mac, g_local_ip);
-    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_default_gateway_ip);
+    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_gateway_ip);
 }
 
 void net_proto_get_local_ip(unsigned char out_ip[4]){
@@ -150,7 +158,7 @@ void net_proto_set_local_ip(const unsigned char ip[4]){
         g_local_ip[i] = ip[i];
     }
     arp_set_local_interface(g_local_mac, g_local_ip);
-    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_default_gateway_ip);
+    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_gateway_ip);
 }
 
 void net_proto_get_gateway_ip(unsigned char out_ip[4]){
@@ -158,6 +166,18 @@ void net_proto_get_gateway_ip(unsigned char out_ip[4]){
         return;
     }
     for (unsigned int i = 0; i < 4; i++){
-        out_ip[i] = g_default_gateway_ip[i];
+        out_ip[i] = g_gateway_ip[i];
     }
+}
+
+void net_proto_set_gateway_ip(const unsigned char ip[4]){
+    if (!ip){
+        return;
+    }
+    for (unsigned int i = 0; i < 4; i++){
+        g_gateway_ip[i] = ip[i];
+    }
+    ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_gateway_ip);
+    // Re-arm ARP learning for the new gateway target.
+    arp_set_periodic_target(g_gateway_ip, 1000u);
 }

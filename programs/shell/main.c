@@ -237,6 +237,7 @@ static void cmd_help(void){
     qos_puts(" rloginstat\n");
     qos_puts(" ip\n");
     qos_puts(" setip <a.b.c.d>\n");
+    qos_puts(" setgw <a.b.c.d>\n");
     qos_puts(" ping\n");
     qos_puts(" dnscheck <domain>\n");
     qos_puts(" httpget <host> [path]\n");
@@ -323,12 +324,19 @@ static void cmd_rloginstat(void){
 
 static void cmd_ip(void){
     unsigned char ip[4];
+    unsigned char gw[4];
     if (qos_net_get_local_ip(ip) != 0){
         qos_puts("IP unavailable.\n");
         return;
     }
+    if (qos_net_get_gateway_ip(gw) != 0){
+        qos_puts("Gateway unavailable.\n");
+        return;
+    }
     qos_puts("Local IP ");
     print_ip4(ip);
+    qos_puts(" gateway ");
+    print_ip4(gw);
     qos_puts("\n");
 }
 
@@ -347,12 +355,27 @@ static void cmd_setip(const char* s){
     qos_puts("\n");
 }
 
+static void cmd_setgw(const char* s){
+    unsigned char ip[4];
+    if (!s || parse_ip4(s, ip) != 0){
+        qos_puts("Usage: setgw <a.b.c.d>\n");
+        return;
+    }
+    if (qos_net_set_gateway_ip(ip) != 0){
+        qos_puts("setgw failed.\n");
+        return;
+    }
+    qos_puts("Gateway set to ");
+    print_ip4(ip);
+    qos_puts("\n");
+}
+
 static void cmd_ps(void){
     qos_process_dump();
 }
 
 static void cmd_ping(void){
-    int rtt = qos_net_ping_gateway(2000);
+    int rtt = qos_net_ping_gateway(1200);
     if (rtt >= 0){
         qos_puts("PING reply time=");
         print_uint((unsigned int)rtt);
@@ -789,6 +812,14 @@ static void execute_line(void){
         cmd_setip(p);
     } else if (str_eq(g_buf, "setip")){
         qos_puts("Usage: setip <a.b.c.d>\n");
+    } else if (str_starts_with(g_buf, "setgw ")){
+        const char* p = g_buf + 6;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_setgw(p);
+    } else if (str_eq(g_buf, "setgw")){
+        qos_puts("Usage: setgw <a.b.c.d>\n");
     } else if (str_eq(g_buf, "ps")){
         cmd_ps();
     } else if (str_eq(g_buf, "validate")){
