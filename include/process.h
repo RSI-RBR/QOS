@@ -5,7 +5,7 @@
 #include "loader.h"
 
 #define MAX_PROCESSES 8
-#define STACK_SIZE 16384
+#define STACK_SIZE (128 * 1024)
 #define MAX_CPU_CORES 4
 
 typedef enum {

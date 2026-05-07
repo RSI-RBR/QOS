@@ -267,6 +267,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
 
     unsigned char *src = buffer + code_off;
+    uart_puts("Program trust verification start.\n");
     if (trust_verify_program_image(file_83, sec, src, code_size) != 0){
         loader_unlock();
         uart_puts("Program trust verification failed.\n");
