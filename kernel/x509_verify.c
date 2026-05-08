@@ -9,6 +9,7 @@
 #include "crypto.h"
 #include "string.h"
 #include "uart.h"
+#include "timer.h"
 
 #define X509_MAX_CHAIN_CERTS 8u
 #define X509_MAX_CA_ANCHORS 256u
@@ -1445,11 +1446,19 @@ int x509_verify_tls13_certificate(const char* host,
         // certificate must be signed by the trusted root public key.
         int anchor_idx = anchor_find_subject_hash(issuer_hashes[cur]);
         if (anchor_idx >= 0){
+            unsigned long t0 = system_ticks;
             if (verify_cert_signed_by_anchor(&certs[cur], &g_ca_anchors[(unsigned int)anchor_idx]) != 0){
                 uart_puts("X509: root signature verify failed alg=");
                 uart_puthex((unsigned int)certs[cur].cert_sig_alg);
                 uart_puts("\n");
                 return -1;
+            }
+            if ((long)(system_ticks - t0) > 250){
+                uart_puts("X509: root signature verify ms=");
+                uart_putdec((unsigned long)(system_ticks - t0));
+                uart_puts(" alg=");
+                uart_puthex((unsigned int)certs[cur].cert_sig_alg);
+                uart_puts("\n");
             }
             anchor_ok = 1;
             break;
@@ -1468,11 +1477,19 @@ int x509_verify_tls13_certificate(const char* host,
         if (next < 0){
             break;
         }
+        unsigned long t0 = system_ticks;
         if (verify_cert_signed_by_cert(&certs[cur], &certs[(unsigned int)next]) != 0){
             uart_puts("X509: chain signature verify failed alg=");
             uart_puthex((unsigned int)certs[cur].cert_sig_alg);
             uart_puts("\n");
             return -1;
+        }
+        if ((long)(system_ticks - t0) > 250){
+            uart_puts("X509: chain signature verify ms=");
+            uart_putdec((unsigned long)(system_ticks - t0));
+            uart_puts(" alg=");
+            uart_puthex((unsigned int)certs[cur].cert_sig_alg);
+            uart_puts("\n");
         }
         cur = (unsigned int)next;
         used[cur] = 1;
