@@ -130,6 +130,12 @@ static void secure_zero(char* buf, unsigned int n){
     }
 }
 
+static int remote_login_has_authed_tty(void){
+    unsigned int st = qos_remote_login_state();
+    unsigned int need = QOS_RLOGIN_STATE_AUTHED | QOS_RLOGIN_STATE_TTY_ATTACHED;
+    return ((st & need) == need) ? 1 : 0;
+}
+
 static int read_line_input(char* out, unsigned int out_cap, int echo){
     unsigned int len = 0;
     if (!out || out_cap < 2u){
@@ -190,11 +196,23 @@ static int require_local_login(void){
     qos_puts("Local login required.\n");
 
     for (unsigned int attempt = 0; attempt < LOGIN_MAX_TRIES; attempt++){
+        if (remote_login_has_authed_tty()){
+            qos_puts("Remote login already authenticated; bypassing local prompt.\n");
+            secure_zero(g_login_user, sizeof(g_login_user));
+            secure_zero(g_login_pass, sizeof(g_login_pass));
+            return 0;
+        }
         qos_puts("login: ");
         if (read_line_input(g_login_user, sizeof(g_login_user), 1) < 0){
             continue;
         }
 
+        if (remote_login_has_authed_tty()){
+            qos_puts("Remote login already authenticated; bypassing local prompt.\n");
+            secure_zero(g_login_user, sizeof(g_login_user));
+            secure_zero(g_login_pass, sizeof(g_login_pass));
+            return 0;
+        }
         qos_puts("password: ");
         if (read_line_input(g_login_pass, sizeof(g_login_pass), 0) < 0){
             secure_zero(g_login_pass, sizeof(g_login_pass));

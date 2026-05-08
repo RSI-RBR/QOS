@@ -70,7 +70,8 @@ enum {
     SYS_NET_SET_GATEWAY_IP = 60,
     SYS_AUTH_IS_READY = 61,
     SYS_AUTH_GET_USERNAME = 62,
-    SYS_AUTH_VERIFY_PASSWORD = 63
+    SYS_AUTH_VERIFY_PASSWORD = 63,
+    SYS_REMOTE_LOGIN_STATE = 64
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -408,6 +409,15 @@ static inline int qos_tls_is_ready(int tls_id){
 
 static inline void qos_remote_login_dump_stats(void){
     (void)qos_syscall0(SYS_REMOTE_LOGIN_STATS);
+}
+
+#define QOS_RLOGIN_STATE_ENABLED      (1u << 0)
+#define QOS_RLOGIN_STATE_ACTIVE       (1u << 1)
+#define QOS_RLOGIN_STATE_AUTHED       (1u << 2)
+#define QOS_RLOGIN_STATE_TTY_ATTACHED (1u << 3)
+
+static inline unsigned int qos_remote_login_state(void){
+    return (unsigned int)qos_syscall0(SYS_REMOTE_LOGIN_STATE);
 }
 
 static inline int qos_net_get_local_ip(unsigned char out_ip[4]){

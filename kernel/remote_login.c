@@ -1115,7 +1115,12 @@ void remote_login_poll(void){
         }
     }
 
-    flush_tty_output_once();
+    {
+        int tx_loops = 0;
+        while (tx_loops++ < 4 && g_tty_out_count > 0){
+            flush_tty_output_once();
+        }
+    }
 }
 
 void remote_login_dump_stats(void){
@@ -1170,4 +1175,21 @@ void remote_login_dump_stats(void){
     uart_puts(" kex_hybrid=");
     uart_putdec(g_stats.kex_hybrid);
     uart_puts("\n");
+}
+
+unsigned int remote_login_state_bits(void){
+    unsigned int bits = 0u;
+    if (g_enabled){
+        bits |= 1u;      // enabled
+    }
+    if (g_sess.active){
+        bits |= 1u << 1; // active session
+    }
+    if (g_sess.authed){
+        bits |= 1u << 2; // authenticated
+    }
+    if (g_sess.tty_attached){
+        bits |= 1u << 3; // tty attached
+    }
+    return bits;
 }

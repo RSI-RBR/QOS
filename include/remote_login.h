@@ -7,5 +7,6 @@ int remote_login_enabled(void);
 void remote_login_dump_stats(void);
 int remote_login_try_read_tty_char(char* out);
 void remote_login_on_tty_output_char(char c);
+unsigned int remote_login_state_bits(void);
 
 #endif

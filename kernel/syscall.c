@@ -83,7 +83,8 @@ static void syscall_poll_background_io(void){
     if ((long)(now - next_poll_tick) < 0){
         return;
     }
-    next_poll_tick = now + 1000u;
+    // Keep interactive shell and remote-login latency low.
+    next_poll_tick = now + 2u;
     (void)net_poll();
     remote_login_poll();
 }
@@ -214,6 +215,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_REMOTE_LOGIN_STATS:
         case SYS_NET_SET_LOCAL_IP:
         case SYS_NET_SET_GATEWAY_IP:
+        case SYS_REMOTE_LOGIN_STATE:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -937,6 +939,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             remote_login_poll();
             remote_login_dump_stats();
             frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_REMOTE_LOGIN_STATE:
+            frame[TF_X0] = (unsigned long)remote_login_state_bits();
             return frame_sp;
 
         case SYS_NET_GET_LOCAL_IP:
