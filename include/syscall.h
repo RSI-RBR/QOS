@@ -71,7 +71,8 @@ enum {
     SYS_AUTH_IS_READY = 61,
     SYS_AUTH_GET_USERNAME = 62,
     SYS_AUTH_VERIFY_PASSWORD = 63,
-    SYS_REMOTE_LOGIN_STATE = 64
+    SYS_REMOTE_LOGIN_STATE = 64,
+    SYS_TRY_GETC_EX = 65
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -189,6 +190,26 @@ static inline void qos_fb_present(void){
 
 static inline int qos_try_getc(void){
     return (int)qos_syscall0(SYS_TRY_GETC);
+}
+
+#define QOS_INPUT_SRC_UART   1u
+#define QOS_INPUT_SRC_REMOTE 2u
+
+typedef struct {
+    int ch;
+    unsigned int source;
+} qos_input_event_t;
+
+static inline int qos_try_getc_ex(qos_input_event_t* out_ev){
+    unsigned long v = qos_syscall0(SYS_TRY_GETC_EX);
+    if ((long)v < 0){
+        return -1;
+    }
+    if (out_ev){
+        out_ev->ch = (int)(v & 0xFFu);
+        out_ev->source = (unsigned int)((v >> 8) & 0xFFu);
+    }
+    return (int)(v & 0xFFu);
 }
 
 static inline int qos_run_program(void){

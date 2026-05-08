@@ -167,6 +167,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_RECT:
         case SYS_FB_PRESENT:
         case SYS_TRY_GETC:
+        case SYS_TRY_GETC_EX:
         case SYS_GETPID:
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
@@ -323,6 +324,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             syscall_poll_background_io();
             if (console_try_getc_for_pid(process_current_pid(), &c)){
                 frame[TF_X0] = (unsigned long)(unsigned char)c;
+            } else{
+                frame[TF_X0] = (unsigned long)-1;
+            }
+            return frame_sp;
+        }
+
+        case SYS_TRY_GETC_EX: {
+            char c = 0;
+            unsigned int src = 0u;
+            syscall_poll_background_io();
+            if (console_try_getc_for_pid_ex(process_current_pid(), &c, &src)){
+                frame[TF_X0] = ((unsigned long)(src & 0xFFu) << 8) |
+                               (unsigned long)((unsigned char)c);
             } else{
                 frame[TF_X0] = (unsigned long)-1;
             }

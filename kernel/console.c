@@ -4,6 +4,9 @@
 #include "spinlock.h"
 #include "remote_login.h"
 
+#define CONSOLE_INPUT_SRC_UART   1u
+#define CONSOLE_INPUT_SRC_REMOTE 2u
+
 static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
 static spinlock_t g_console_lock;
@@ -42,7 +45,7 @@ void console_init(void){
     g_console_prev_owner_pid = -1;
 }
 
-int console_try_getc_for_pid(int pid, char* out){
+int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
     if (!out || pid < 0 || pid >= MAX_PROCESSES){
         return 0;
     }
@@ -70,9 +73,22 @@ int console_try_getc_for_pid(int pid, char* out){
         return 0;
     }
     if (uart_try_getc(out)){
+        if (out_source){
+            *out_source = CONSOLE_INPUT_SRC_UART;
+        }
         return 1;
     }
-    return remote_login_try_read_tty_char(out);
+    if (remote_login_try_read_tty_char(out)){
+        if (out_source){
+            *out_source = CONSOLE_INPUT_SRC_REMOTE;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int console_try_getc_for_pid(int pid, char* out){
+    return console_try_getc_for_pid_ex(pid, out, 0);
 }
 
 int console_set_owner(int requester_pid, int target_pid){

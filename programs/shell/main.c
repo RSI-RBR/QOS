@@ -6,11 +6,22 @@
 #define LOGIN_MAX_TRIES 3
 
 static char g_buf[BUF_SIZE];
-static int g_len = 0;
+static char g_local_buf[BUF_SIZE];
+static int g_local_len = 0;
+static char g_remote_buf[BUF_SIZE];
+static int g_remote_len = 0;
 static int g_tty_owned = 1;
 static int g_shell_pid = -1;
 static char g_login_user[LOGIN_BUF_SIZE];
 static char g_login_pass[LOGIN_BUF_SIZE];
+static unsigned int g_login_user_len = 0u;
+static unsigned int g_login_pass_len = 0u;
+static unsigned int g_local_login_attempts = 0u;
+static int g_local_login_stage = 0; /* 0=needs prompt, 1=username, 2=password */
+static int g_local_authed = 0;
+static int g_local_locked = 0;
+
+static void print_prompt(void);
 
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
@@ -136,101 +147,125 @@ static int remote_login_has_authed_tty(void){
     return ((st & need) == need) ? 1 : 0;
 }
 
-static int read_line_input(char* out, unsigned int out_cap, int echo){
-    unsigned int len = 0;
-    if (!out || out_cap < 2u){
-        return -1;
+static void local_login_prompt_username(void){
+    qos_puts("\nLocal login required.\n");
+    qos_puts("login: ");
+    g_login_user_len = 0u;
+    g_login_user[0] = 0;
+    g_local_login_stage = 1;
+}
+
+static void local_login_prompt_password(void){
+    qos_puts("password: ");
+    g_login_pass_len = 0u;
+    g_login_pass[0] = 0;
+    g_local_login_stage = 2;
+}
+
+static void local_login_reset_sensitive(void){
+    secure_zero(g_login_user, sizeof(g_login_user));
+    secure_zero(g_login_pass, sizeof(g_login_pass));
+    g_login_user_len = 0u;
+    g_login_pass_len = 0u;
+}
+
+static void local_login_init(void){
+    g_local_authed = 0;
+    g_local_locked = 0;
+    g_local_login_attempts = 0u;
+    g_local_login_stage = 0;
+    local_login_reset_sensitive();
+
+    if (qos_auth_is_ready() == 0){
+        g_local_locked = 1;
+        qos_puts("Local login unavailable: auth is not ready.\n");
+        return;
     }
-    out[0] = 0;
-
-    while (1){
-        int ch = qos_try_getc();
-        if (ch < 0){
-            qos_sleep(1);
-            continue;
-        }
-
-        if (ch == '\r' || ch == '\n'){
-            out[len] = 0;
-            qos_puts("\n");
-            return (int)len;
-        }
-
-        if (ch == 127 || ch == '\b'){
-            if (len > 0u){
-                len--;
-                out[len] = 0;
-                qos_puts("\b \b");
-            }
-            continue;
-        }
-
-        if (ch < 32 || ch > 126){
-            continue;
-        }
-
-        if (len + 1u < out_cap){
-            out[len++] = (char)ch;
-            out[len] = 0;
-            if (echo){
-                qos_putc((char)ch);
-            } else{
-                qos_putc('*');
-            }
+    {
+        char expected_user[LOGIN_BUF_SIZE];
+        if (qos_auth_get_username(expected_user, sizeof(expected_user)) != 0 || expected_user[0] == 0){
+            g_local_locked = 1;
+            qos_puts("Local login unavailable: username read failed.\n");
+        } else{
+            qos_puts("Local console login required (UART input).\n");
         }
     }
 }
 
-static int require_local_login(void){
-    char expected_user[LOGIN_BUF_SIZE];
-
-    if (qos_auth_is_ready() == 0){
-        qos_puts("Local login unavailable: auth is not ready.\n");
-        return -1;
+static void local_login_handle_char(int ch){
+    if (g_local_authed || g_local_locked){
+        return;
     }
-    if (qos_auth_get_username(expected_user, sizeof(expected_user)) != 0 || expected_user[0] == 0){
-        qos_puts("Local login unavailable: username read failed.\n");
-        return -1;
+    if (g_local_login_stage == 0){
+        local_login_prompt_username();
     }
 
-    qos_puts("Local login required.\n");
-
-    for (unsigned int attempt = 0; attempt < LOGIN_MAX_TRIES; attempt++){
-        if (remote_login_has_authed_tty()){
-            qos_puts("Remote login already authenticated; bypassing local prompt.\n");
-            secure_zero(g_login_user, sizeof(g_login_user));
-            secure_zero(g_login_pass, sizeof(g_login_pass));
-            return 0;
+    if (g_local_login_stage == 1){
+        if (ch == '\r' || ch == '\n'){
+            g_login_user[g_login_user_len] = 0;
+            qos_puts("\n");
+            local_login_prompt_password();
+            return;
         }
-        qos_puts("login: ");
-        if (read_line_input(g_login_user, sizeof(g_login_user), 1) < 0){
-            continue;
+        if (ch == 127 || ch == '\b'){
+            if (g_login_user_len > 0u){
+                g_login_user_len--;
+                g_login_user[g_login_user_len] = 0;
+                qos_puts("\b \b");
+            }
+            return;
         }
-
-        if (remote_login_has_authed_tty()){
-            qos_puts("Remote login already authenticated; bypassing local prompt.\n");
-            secure_zero(g_login_user, sizeof(g_login_user));
-            secure_zero(g_login_pass, sizeof(g_login_pass));
-            return 0;
+        if (ch < 32 || ch > 126){
+            return;
         }
-        qos_puts("password: ");
-        if (read_line_input(g_login_pass, sizeof(g_login_pass), 0) < 0){
-            secure_zero(g_login_pass, sizeof(g_login_pass));
-            continue;
+        if (g_login_user_len + 1u < (unsigned int)sizeof(g_login_user)){
+            g_login_user[g_login_user_len++] = (char)ch;
+            g_login_user[g_login_user_len] = 0;
+            qos_putc((char)ch);
         }
-
-        if (qos_auth_verify_password(g_login_user, g_login_pass) == 0){
-            secure_zero(g_login_pass, sizeof(g_login_pass));
-            qos_puts("Access granted.\n");
-            return 0;
-        }
-
-        secure_zero(g_login_pass, sizeof(g_login_pass));
-        qos_puts("Access denied.\n");
+        return;
     }
 
-    qos_puts("Too many failed login attempts.\n");
-    return -1;
+    if (g_local_login_stage == 2){
+        if (ch == '\r' || ch == '\n'){
+            g_login_pass[g_login_pass_len] = 0;
+            qos_puts("\n");
+            if (qos_auth_verify_password(g_login_user, g_login_pass) == 0){
+                g_local_authed = 1;
+                g_local_login_attempts = 0u;
+                local_login_reset_sensitive();
+                qos_puts("Access granted.\n");
+                print_prompt();
+                return;
+            }
+            local_login_reset_sensitive();
+            g_local_login_attempts++;
+            qos_puts("Access denied.\n");
+            if (g_local_login_attempts >= LOGIN_MAX_TRIES){
+                g_local_locked = 1;
+                qos_puts("Local console login locked after too many attempts.\n");
+                return;
+            }
+            g_local_login_stage = 0;
+            return;
+        }
+        if (ch == 127 || ch == '\b'){
+            if (g_login_pass_len > 0u){
+                g_login_pass_len--;
+                g_login_pass[g_login_pass_len] = 0;
+                qos_puts("\b \b");
+            }
+            return;
+        }
+        if (ch < 32 || ch > 126){
+            return;
+        }
+        if (g_login_pass_len + 1u < (unsigned int)sizeof(g_login_pass)){
+            g_login_pass[g_login_pass_len++] = (char)ch;
+            g_login_pass[g_login_pass_len] = 0;
+            qos_putc('*');
+        }
+    }
 }
 
 static void print_prompt(void){
@@ -896,10 +931,11 @@ static void cmd_wifijoin(const char* ssid, const char* password){
 }
 
 static void execute_line(void){
-    if (g_len <= 0){
+    unsigned int line_len = str_len(g_buf);
+    if (line_len == 0u){
         return;
     }
-    g_buf[g_len] = 0;
+    g_buf[line_len] = 0;
 
     if (str_eq(g_buf, "help")){
         cmd_help();
@@ -1049,6 +1085,58 @@ static void execute_line(void){
     }
 }
 
+static void execute_source_buffer(char* src_buf, int* src_len){
+    if (!src_buf || !src_len){
+        return;
+    }
+    if (*src_len <= 0){
+        return;
+    }
+    if (*src_len >= BUF_SIZE){
+        *src_len = BUF_SIZE - 1;
+    }
+    for (int i = 0; i < *src_len; i++){
+        g_buf[i] = src_buf[i];
+    }
+    g_buf[*src_len] = 0;
+    execute_line();
+    *src_len = 0;
+    src_buf[0] = 0;
+}
+
+static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
+    if (!src_buf || !src_len){
+        return;
+    }
+
+    if (ch == '\r' || ch == '\n'){
+        qos_puts("\n");
+        execute_source_buffer(src_buf, src_len);
+        print_prompt();
+        return;
+    }
+
+    if (ch == 127 || ch == '\b'){
+        if (*src_len > 0){
+            (*src_len)--;
+            src_buf[*src_len] = 0;
+            qos_puts("\b \b");
+        }
+        return;
+    }
+
+    if (ch < 32 || ch > 126){
+        return;
+    }
+
+    if (*src_len < (BUF_SIZE - 1)){
+        src_buf[*src_len] = (char)ch;
+        (*src_len)++;
+        src_buf[*src_len] = 0;
+        qos_putc((char)ch);
+    }
+}
+
 void program_main(void){
     g_shell_pid = qos_getpid();
     if (g_shell_pid < 0){
@@ -1056,11 +1144,7 @@ void program_main(void){
     }
     // Claim foreground console ownership explicitly on startup.
     (void)shell_claim_tty();
-    if (require_local_login() != 0){
-        while (1){
-            qos_sleep(1000);
-        }
-    }
+    local_login_init();
 
     qos_puts("User shell ready.");
     print_prompt();
@@ -1089,34 +1173,27 @@ void program_main(void){
             continue;
         }
 
-        int ch = qos_try_getc();
+        qos_input_event_t ev;
+        int ch = qos_try_getc_ex(&ev);
         if (ch < 0){
             // Avoid turning an idle prompt into a hot loop that starves peers.
             qos_sleep(1);
             continue;
         }
 
-        if (ch == '\r' || ch == '\n'){
-            qos_puts("\n");
-            execute_line();
-            g_len = 0;
-            g_buf[0] = 0;
-            print_prompt();
-            continue;
-        }
-
-        if (ch == 127 || ch == '\b'){
-            if (g_len > 0){
-                g_len--;
-                g_buf[g_len] = 0;
-                qos_puts("\b \b");
+        if (ev.source == QOS_INPUT_SRC_REMOTE){
+            if (!remote_login_has_authed_tty()){
+                continue;
             }
+            shell_handle_input_char(g_remote_buf, &g_remote_len, ch);
             continue;
         }
 
-        if (g_len < (BUF_SIZE - 1)){
-            g_buf[g_len++] = (char)ch;
-            qos_putc((char)ch);
+        if (!g_local_authed){
+            local_login_handle_char(ch);
+            continue;
         }
+
+        shell_handle_input_char(g_local_buf, &g_local_len, ch);
     }
 }
