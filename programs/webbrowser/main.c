@@ -3,7 +3,7 @@
 
 #define INPUT_CAP 192
 #define REQ_CAP 1024
-#define RESP_CAP 65536
+#define RESP_CAP 262144
 #define DNS_TIMEOUT_MS 3000u
 #define RECV_TIMEOUT_MS 6000u
 #define HOST_CAP 128
