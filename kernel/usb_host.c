@@ -606,7 +606,7 @@ static int usb_hid_poll_once(void){
         return 0;
     }
     g_root_info.hid_report_count++;
-    if (actual >= 4u && report[0] != 0u && report[1] == 0u){
+    if (actual >= 9u && report[0] != 0u && report[1] == 0u){
         // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
         usb_hid_process_report(&report[1]);
     } else{
