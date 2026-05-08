@@ -1258,6 +1258,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
     tls13_record_ctx_t app_tx;
     tls13_record_ctx_t app_rx;
     sha256_ctx_t transcript;
+    int force_x25519_only = 0;
+    int retried_after_pq_timeout = 0;
 
 #define HTTPS_FAIL(_code) do { fail_code = (_code); goto https_fail_secure; } while (0)
 
@@ -1274,6 +1276,36 @@ int tcp_https_get(const unsigned char dst_ip[4],
         return g_tcp_https_last_error;
     }
     g_tls13_last_kex_was_pq = 0;
+
+https_retry_connect:
+    consumed = 0u;
+    hs_used = 0u;
+    saw_server_hello = 0;
+    saw_server_finished = 0;
+    saw_server_certificate = 0;
+    saw_server_certificate_verify = 0;
+    x509_cert_checked = 0;
+    server_cert_verify_alg = 0u;
+    need_client_empty_cert = 0;
+    app_bytes = 0;
+    result = -1;
+    fail_code = -1;
+    rec_len = 0u;
+    rec_type = 0;
+    rec_payload = 0;
+    ch_len = 0u;
+    sh_len = 0u;
+    sh_kex_group = 0u;
+    sh_kex = 0;
+    sh_kex_len = 0u;
+    kem_ct = 0;
+    sh_x25519 = 0;
+    client_kex_pref = TLS13_GROUP_X25519;
+    client_hybrid_enabled = 0;
+    negotiated_shared_ptr = shared;
+    negotiated_shared_len = sizeof(shared);
+    hs_record_len = 0u;
+    app_req_record_len = 0u;
 
     if (g_conn.active){
         g_conn.active = 0;
@@ -1337,7 +1369,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         return g_tcp_https_last_error;
     }
 
-    if (g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
+    if (!force_x25519_only && g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
         if (pq_kem_mlkem768_keypair(mlkem_client_pk, sizeof(mlkem_client_pk),
                                      mlkem_client_sk, sizeof(mlkem_client_sk)) == 0){
             client_kex_pref = TLS13_GROUP_X25519_MLKEM768;
@@ -1381,6 +1413,14 @@ int tcp_https_get(const unsigned char dst_ip[4],
 
     while (!saw_server_hello){
         if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 4500u) != 0){
+            if (client_hybrid_enabled && !force_x25519_only && !retried_after_pq_timeout){
+                retried_after_pq_timeout = 1;
+                force_x25519_only = 1;
+                g_conn.active = 0;
+                g_conn.state = TCP_ST_CLOSED;
+                uart_puts("HTTPS: ServerHello timeout after PQ ClientHello; retrying with X25519.\n");
+                goto https_retry_connect;
+            }
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
