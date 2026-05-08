@@ -50,16 +50,12 @@ extern volatile unsigned long system_ticks;
 #define IRQ_FRAME_USER_SP_IDX 33
 #define INITIAL_SPSR_EL1H 0x345
 #define INITIAL_SPSR_EL0T 0x000
-#define SPSR_MODE_MASK 0xFUL
-#define SPSR_MODE_EL0T 0x0UL
 
 static void runq_enqueue(unsigned int core, int pid);
 static void mark_need_resched_locked(unsigned int core_id);
 static int is_pid_pending_zombie(int pid);
 static int pid_running_on_other_core_locked(int pid, unsigned int core);
 static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable);
-static int frame_targets_el0(const void* frame_sp);
-static int mmu_pid_for_target_frame(int pid, const void* frame_sp);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -793,7 +789,7 @@ void process_exit(int pid){
 void process_exit_current(void){
     unsigned int core = scheduler_core_id();
     int next_pid = -1;
-    int mmu_pid = -1;
+    int next_user_mode = 0;
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
@@ -810,11 +806,11 @@ void process_exit_current(void){
     void* next_sp = next ? next->sp : 0;
     if (next){
         next_pid = current_pid[core];
-        mmu_pid = mmu_pid_for_target_frame(next_pid, next_sp);
+        next_user_mode = next->user_mode;
     }
     spin_unlock_irqrestore(&g_process_lock, irq);
     if (next_sp){
-        mmu_switch_to_pid(mmu_pid);
+        mmu_switch_to_pid(next_user_mode ? next_pid : -1);
         restore_context_and_eret(next_sp);
     }
 
@@ -900,21 +896,6 @@ static int process_user_range_check(const process_t* p, unsigned long addr, unsi
     return (addr >= base && end < rw_end) ? 1 : 0;
 }
 
-static int frame_targets_el0(const void* frame_sp){
-    const unsigned long* frame = (const unsigned long*)frame_sp;
-    if (!frame){
-        return 0;
-    }
-    return ((frame[IRQ_FRAME_SPSR_IDX] & SPSR_MODE_MASK) == SPSR_MODE_EL0T) ? 1 : 0;
-}
-
-static int mmu_pid_for_target_frame(int pid, const void* frame_sp){
-    if (pid < 0 || pid >= MAX_PROCESSES){
-        return -1;
-    }
-    return frame_targets_el0(frame_sp) ? pid : -1;
-}
-
 int process_user_range_readable(const void* user_ptr, unsigned long len){
     process_t* p = get_current_process();
     return process_user_range_check(p, (unsigned long)user_ptr, len, 0);
@@ -988,7 +969,7 @@ void scheduler_run_once(void){
     unsigned int core = scheduler_core_id();
     process_cleanup_t cleanup;
     int next_pid = -1;
-    int mmu_pid = -1;
+    int next_user_mode = 0;
     cleanup_init(&cleanup);
 
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
@@ -1011,10 +992,10 @@ void scheduler_run_once(void){
     }
     void* next_sp = next->sp;
     next_pid = current_pid[core];
-    mmu_pid = mmu_pid_for_target_frame(next_pid, next_sp);
+    next_user_mode = next->user_mode;
     spin_unlock_irqrestore(&g_process_lock, irq);
     release_process_resources(&cleanup);
-    mmu_switch_to_pid(mmu_pid);
+    mmu_switch_to_pid(next_user_mode ? next_pid : -1);
     restore_context_and_eret(next_sp);
 }
 
@@ -1050,7 +1031,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
     unsigned int core = scheduler_core_id();
     process_cleanup_t cleanup;
     int next_pid = -1;
-    int mmu_pid = -1;
+    int next_user_mode = 0;
     cleanup_init(&cleanup);
 
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
@@ -1070,10 +1051,10 @@ void* scheduler_on_irq(void* irq_frame_sp){
         if (next){
             void* out_sp = next->sp;
             next_pid = current_pid[core];
-            mmu_pid = mmu_pid_for_target_frame(next_pid, out_sp);
+            next_user_mode = next->user_mode;
             spin_unlock_irqrestore(&g_process_lock, irq);
             release_process_resources(&cleanup);
-            mmu_switch_to_pid(mmu_pid);
+            mmu_switch_to_pid(next_user_mode ? next_pid : -1);
             return out_sp;
         }
         spin_unlock_irqrestore(&g_process_lock, irq);
@@ -1116,10 +1097,10 @@ void* scheduler_on_irq(void* irq_frame_sp){
 
     void* out_sp = next->sp;
     next_pid = current_pid[core];
-    mmu_pid = mmu_pid_for_target_frame(next_pid, out_sp);
+    next_user_mode = next->user_mode;
     spin_unlock_irqrestore(&g_process_lock, irq);
     release_process_resources(&cleanup);
-    mmu_switch_to_pid(mmu_pid);
+    mmu_switch_to_pid(next_user_mode ? next_pid : -1);
     return out_sp;
 }
 

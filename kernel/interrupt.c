@@ -42,6 +42,22 @@ static unsigned int preempt_core_id(void){
     return core;
 }
 
+static void ensure_return_ttbr_for_frame(void* frame_sp){
+    unsigned long* frame = (unsigned long*)frame_sp;
+    if (!frame){
+        return;
+    }
+    if ((frame[IRQ_FRAME_SPSR_IDX] & SPSR_MODE_MASK) != SPSR_MODE_EL0T){
+        return;
+    }
+
+    process_t* cur = get_current_process();
+    int pid = process_current_pid();
+    if (cur && cur->user_mode && pid >= 0){
+        mmu_switch_to_pid(pid);
+    }
+}
+
 void interrupt_init(void){
     asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
     asm volatile("isb");
@@ -151,6 +167,7 @@ void* irq_handler(void* irq_frame_sp){
         if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel || sleeping_syscall)){
             return scheduler_on_irq(irq_frame_sp);
         }
+        ensure_return_ttbr_for_frame(irq_frame_sp);
         return irq_frame_sp;
     }
 
@@ -167,6 +184,7 @@ void* irq_handler(void* irq_frame_sp){
         if (need_resched && (in_el0 || kernel_preempt_enabled() || idle_kernel || sleeping_syscall)){
             return scheduler_on_irq(irq_frame_sp);
         }
+        ensure_return_ttbr_for_frame(irq_frame_sp);
         return irq_frame_sp;
     }
 
@@ -178,16 +196,19 @@ void* irq_handler(void* irq_frame_sp){
             }
             if (bank2_pending & g_bank2_irq_bits[i]){
                 g_bank2_irq_handlers[i]();
+                ensure_return_ttbr_for_frame(irq_frame_sp);
                 return irq_frame_sp;
             }
         }
         // Backward compatibility fallback if legacy SDHOST registration is used.
         if ((bank2_pending & IRQ_SDHOST_PENDING_BIT) && g_sdhost_irq_handler){
             g_sdhost_irq_handler();
+            ensure_return_ttbr_for_frame(irq_frame_sp);
             return irq_frame_sp;
         }
     }
 
+    ensure_return_ttbr_for_frame(irq_frame_sp);
     return irq_frame_sp;
 }
 
@@ -197,7 +218,9 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
     asm volatile("mrs %0, far_el1" : "=r"(far));
 
     if (ec == 0x15UL){
-        return syscall_handle(frame_sp, esr);
+        void* out = syscall_handle(frame_sp, esr);
+        ensure_return_ttbr_for_frame(out);
+        return out;
     }
 
     uart_puts("\nSYNC EXCEPTION\n");

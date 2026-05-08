@@ -667,12 +667,12 @@ void mmu_switch_to_pid(int pid){
         effective_asid = proc_asid[pid];
     }
 
-    if (core_active_pid[core] != effective_pid || core_active_asid[core] != effective_asid){
-        // Context switch now selects both a page-table root and ASID.
-        mmu_set_ttbr0((unsigned long)table, effective_asid);
-        core_active_pid[core] = effective_pid;
-        core_active_asid[core] = effective_asid;
-    }
+    // Always rewrite TTBR0 on an explicit switch. The cached pid/asid fields
+    // are useful diagnostics, but TTBR0 is the real security boundary and can
+    // be disturbed by low-level recovery/init paths.
+    mmu_set_ttbr0((unsigned long)table, effective_asid);
+    core_active_pid[core] = effective_pid;
+    core_active_asid[core] = effective_asid;
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
