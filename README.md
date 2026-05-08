@@ -110,6 +110,23 @@ make ADMIN_SIGN_KEY=keys/admin_ed25519.pem DEV_SIGN_KEY=keys/dev_ed25519.pem
 
 Build output: `kernel8.img`
 
+### 5) Sync CA Roots From 3 Sources (Automated)
+
+This pulls and cross-checks roots from:
+- Mozilla NSS (`certdata.txt`)
+- curl CA extract (`cacert.pem`)
+- Debian `ca-certificates` bundle (`ca-certificates.crt` from latest `.deb`)
+
+Then it writes a consensus bundle (default policy: present in at least 2 of 3 sources):
+
+```bash
+make ca-roots-sync
+```
+
+Outputs:
+- `build/ca/ca_roots_consensus.pem`
+- `build/ca/ca_roots_consensus_report.json`
+
 ## SD Card Setup
 
 Copy files to the SD card boot/root FAT partition:

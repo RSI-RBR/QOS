@@ -129,6 +129,9 @@ $(patsubst %.S,$(BUILD)/%.o,$(ASM_SOURCES))
 # ---------------------------
 all: provisioned-kernel
 
+ca-roots-sync:
+	python3 tools/sync_ca_roots.py
+
 check-signing-inputs:
 	@if [ -z "$(ADMIN_SIGN_KEY)" ]; then echo "ADMIN_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
 	@if [ -z "$(DEV_SIGN_KEY)" ]; then echo "DEV_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
