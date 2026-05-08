@@ -13,6 +13,14 @@ CA_BUNDLE_SRC="${CA_BUNDLE_SRC:-build/ca/ca_roots_consensus.pem}"
 CA_REPORT_SRC="${CA_REPORT_SRC:-build/ca/ca_roots_consensus_report.json}"
 CA_SIGNER_KEY_ID="${CA_SIGNER_KEY_ID:-0x1}"
 
+TMP_CA_DIR=""
+cleanup_tmp_ca() {
+  if [[ -n "$TMP_CA_DIR" && -d "$TMP_CA_DIR" ]]; then
+    rm -rf "$TMP_CA_DIR"
+  fi
+}
+trap cleanup_tmp_ca EXIT
+
 if [[ ! -d "$SD_MOUNT" ]]; then
   echo "SD mount path not found: $SD_MOUNT"
   exit 1
@@ -40,6 +48,19 @@ fi
 if [[ -n "$DEV_PQ_PUB" && ! -f "$DEV_PQ_PUB" ]]; then
   echo "Developer PQ public key not found: $DEV_PQ_PUB"
   exit 1
+fi
+
+# Preserve CA artifacts across "make clean" (which removes build/ by default).
+if [[ -f "$CA_BUNDLE_SRC" || -f "$CA_REPORT_SRC" ]]; then
+  TMP_CA_DIR="$(mktemp -d -t qos-ca-XXXXXX)"
+  if [[ -f "$CA_BUNDLE_SRC" ]]; then
+    cp -f "$CA_BUNDLE_SRC" "$TMP_CA_DIR/ca_roots_consensus.pem"
+    CA_BUNDLE_SRC="$TMP_CA_DIR/ca_roots_consensus.pem"
+  fi
+  if [[ -f "$CA_REPORT_SRC" ]]; then
+    cp -f "$CA_REPORT_SRC" "$TMP_CA_DIR/ca_roots_consensus_report.json"
+    CA_REPORT_SRC="$TMP_CA_DIR/ca_roots_consensus_report.json"
+  fi
 fi
 
 ADMIN_KEY_ABS="$(realpath "$ADMIN_KEY")"
