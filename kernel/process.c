@@ -8,6 +8,7 @@
 #include "smp.h"
 #include "mmu.h"
 #include "trust.h"
+#include "panic.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -217,6 +218,7 @@ static void runq_reset(unsigned int core){
     if (core >= MAX_CPU_CORES){
         return;
     }
+    QOS_ASSERT_BOUNDS(core, MAX_CPU_CORES);
     runq[core].head = 0;
     runq[core].tail = 0;
     runq[core].count = 0;
@@ -231,6 +233,9 @@ static int runq_contains(unsigned int core, int pid){
     }
 
     run_queue_t* q = &runq[core];
+    QOS_ASSERT(q->head < MAX_PROCESSES);
+    QOS_ASSERT(q->tail < MAX_PROCESSES);
+    QOS_ASSERT(q->count <= MAX_PROCESSES);
     for (unsigned int i = 0; i < q->count; i++){
         unsigned int idx = (q->head + i) % MAX_PROCESSES;
         if (q->pid[idx] == pid){
@@ -246,6 +251,9 @@ static void runq_enqueue(unsigned int core, int pid){
     }
 
     run_queue_t* q = &runq[core];
+    QOS_ASSERT(q->head < MAX_PROCESSES);
+    QOS_ASSERT(q->tail < MAX_PROCESSES);
+    QOS_ASSERT(q->count <= MAX_PROCESSES);
     if (q->count >= MAX_PROCESSES){
         return;
     }
@@ -302,6 +310,9 @@ static int runq_dequeue_ready(unsigned int core){
     }
 
     run_queue_t* q = &runq[core];
+    QOS_ASSERT(q->head < MAX_PROCESSES);
+    QOS_ASSERT(q->tail < MAX_PROCESSES);
+    QOS_ASSERT(q->count <= MAX_PROCESSES);
     unsigned int checks = q->count;
     while (checks-- > 0 && q->count > 0){
         int pid = q->pid[q->head];
@@ -365,6 +376,9 @@ static int runq_has_ready(unsigned int core){
         return 0;
     }
     run_queue_t* q = &runq[core];
+    QOS_ASSERT(q->head < MAX_PROCESSES);
+    QOS_ASSERT(q->tail < MAX_PROCESSES);
+    QOS_ASSERT(q->count <= MAX_PROCESSES);
     for (unsigned int i = 0; i < q->count; i++){
         unsigned int idx = (q->head + i) % MAX_PROCESSES;
         int pid = q->pid[idx];
@@ -474,6 +488,21 @@ static int process_create_common_locked(program_entry_t entry,
                                         unsigned int signer_role_mask,
                                         unsigned int signer_scope_mask,
                                         unsigned int preferred_core){
+    if (!entry){
+        return -1;
+    }
+    if (user_mode){
+        if (!program_memory || !user_sp || program_size == 0u || user_rw_size == 0u){
+            return -1;
+        }
+        if (user_rw_offset >= program_size){
+            return -1;
+        }
+        if ((program_size - user_rw_offset) < user_rw_size){
+            return -1;
+        }
+    }
+
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (is_pid_pending_zombie(i)){
             continue;
@@ -913,6 +942,12 @@ static int process_user_range_check(const process_t* p, unsigned long addr, unsi
     if (!p || !p->user_mode || !p->program_memory){
         return 0;
     }
+    QOS_ASSERT(p->pid >= 0 && p->pid < MAX_PROCESSES);
+    QOS_ASSERT(p->program_size > 0u);
+    QOS_ASSERT(p->user_rw_size > 0u);
+    QOS_ASSERT(p->user_rw_offset < p->program_size);
+    QOS_ASSERT((p->program_size - p->user_rw_offset) >= p->user_rw_size);
+
     if (len == 0u){
         return 1;
     }

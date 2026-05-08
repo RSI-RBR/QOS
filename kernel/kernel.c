@@ -33,6 +33,7 @@
 #include "pq_sig.h"
 #include "auth.h"
 #include "remote_login.h"
+#include "panic.h"
 
 
 //extern kernel_api_t kapi;
@@ -112,6 +113,7 @@ void kernel_main(void){
         : "x0");
 
     uart_init();
+    qos_stack_canary_init();
     uart_puts("Uart initialized!\n");
 
     (void)mailbox_power_on_usb();

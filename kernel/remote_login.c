@@ -7,6 +7,7 @@
 #include "aes_gcm.h"
 #include "uart.h"
 #include "timer.h"
+#include "panic.h"
 
 #define RLOGIN_PORT 2222u
 #define RLOGIN_MAGIC 0x51524C47u /* QRLG */
@@ -313,6 +314,9 @@ static int parse_header(const unsigned char* in,
     *out_session_id = read_be32(&in[8]);
     *out_seq = read_be32(&in[12]);
     *out_payload_len = read_be16(&in[16]);
+    if (*out_payload_len > RLOGIN_PAYLOAD_MAX){
+        return -1;
+    }
     if ((unsigned int)(20u + *out_payload_len) > in_len){
         return -1;
     }
@@ -556,6 +560,9 @@ static int decrypt_payload(const unsigned char* frame,
 
 static int tty_in_enqueue(const unsigned char* data, unsigned int len){
     unsigned int pushed = 0;
+    QOS_ASSERT(g_tty_in_head < RLOGIN_TTY_IN_CAP);
+    QOS_ASSERT(g_tty_in_tail < RLOGIN_TTY_IN_CAP);
+    QOS_ASSERT(g_tty_in_count <= RLOGIN_TTY_IN_CAP);
     for (unsigned int i = 0; i < len; i++){
         if (g_tty_in_count >= RLOGIN_TTY_IN_CAP){
             break;
@@ -569,6 +576,9 @@ static int tty_in_enqueue(const unsigned char* data, unsigned int len){
 }
 
 static int tty_out_enqueue_char(unsigned char c){
+    QOS_ASSERT(g_tty_out_head < RLOGIN_TTY_OUT_CAP);
+    QOS_ASSERT(g_tty_out_tail < RLOGIN_TTY_OUT_CAP);
+    QOS_ASSERT(g_tty_out_count <= RLOGIN_TTY_OUT_CAP);
     if (g_tty_out_count >= RLOGIN_TTY_OUT_CAP){
         return -1;
     }
@@ -647,6 +657,10 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     int have_pq_shared = 0;
     int fail = 0;
 
+    if (payload_len > RLOGIN_PAYLOAD_MAX){
+        g_stats.bad_header++;
+        return;
+    }
     if (payload_len < (32u + AUTH_NONCE_BYTES + 1u)){
         g_stats.bad_header++;
         return;
@@ -1002,6 +1016,9 @@ static void handle_tty_input(const unsigned char* frame,
 static void flush_tty_output_once(void){
     unsigned char payload[RLOGIN_TTY_OUT_CHUNK];
     unsigned int n = 0;
+    QOS_ASSERT(g_tty_out_head < RLOGIN_TTY_OUT_CAP);
+    QOS_ASSERT(g_tty_out_tail < RLOGIN_TTY_OUT_CAP);
+    QOS_ASSERT(g_tty_out_count <= RLOGIN_TTY_OUT_CAP);
     if (!g_sess.active || !g_sess.authed || !g_sess.tty_attached || g_tty_out_count == 0){
         return;
     }
@@ -1089,6 +1106,10 @@ void remote_login_poll(void){
         n = udp_recv_filtered(RLOGIN_PORT, 0, 0, 0, frame, sizeof(frame), &meta);
         if (n <= 0){
             break;
+        }
+        if ((unsigned int)n > sizeof(frame)){
+            g_stats.bad_header++;
+            continue;
         }
         g_stats.rx_total++;
 
