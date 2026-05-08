@@ -629,6 +629,395 @@ static int hex_value(unsigned char c){
     return -1;
 }
 
+typedef struct {
+    const unsigned char* in;
+    int in_len;
+    int in_pos;
+    unsigned int bitbuf;
+    int bitcnt;
+} inflate_reader_t;
+
+typedef struct {
+    unsigned short count[16];
+    unsigned short symbol[320];
+} inflate_huff_t;
+
+static int inflate_bits(inflate_reader_t* r, int n, unsigned int* out){
+    if (!r || !out || n < 0 || n > 16){
+        return -1;
+    }
+    while (r->bitcnt < n){
+        if (r->in_pos >= r->in_len){
+            return -1;
+        }
+        r->bitbuf |= ((unsigned int)r->in[r->in_pos++]) << r->bitcnt;
+        r->bitcnt += 8;
+    }
+    if (n == 0){
+        *out = 0u;
+        return 0;
+    }
+    *out = r->bitbuf & ((1u << n) - 1u);
+    r->bitbuf >>= n;
+    r->bitcnt -= n;
+    return 0;
+}
+
+static void inflate_align_byte(inflate_reader_t* r){
+    int drop;
+    if (!r){
+        return;
+    }
+    drop = r->bitcnt & 7;
+    if (drop > 0){
+        r->bitbuf >>= drop;
+        r->bitcnt -= drop;
+    }
+}
+
+static int inflate_huff_build(inflate_huff_t* h, const unsigned char* lens, int n){
+    unsigned short offs[17];
+    int left = 1;
+    int i;
+
+    if (!h || !lens || n < 0 || n > 320){
+        return -1;
+    }
+    for (i = 0; i <= 15; i++){
+        h->count[i] = 0;
+    }
+    for (i = 0; i < n; i++){
+        if (lens[i] > 15u){
+            return -1;
+        }
+        h->count[lens[i]]++;
+    }
+    h->count[0] = 0;
+    for (i = 1; i <= 15; i++){
+        left <<= 1;
+        left -= (int)h->count[i];
+        if (left < 0){
+            return -1;
+        }
+    }
+
+    offs[1] = 0;
+    for (i = 1; i < 16; i++){
+        offs[i + 1] = (unsigned short)(offs[i] + h->count[i]);
+    }
+    for (i = 0; i < n; i++){
+        unsigned int len = lens[i];
+        if (len != 0u){
+            h->symbol[offs[len]++] = (unsigned short)i;
+        }
+    }
+    return 0;
+}
+
+static int inflate_huff_decode(inflate_reader_t* r, const inflate_huff_t* h, int* sym){
+    unsigned int code = 0u;
+    unsigned int first = 0u;
+    unsigned int index = 0u;
+    int len;
+
+    if (!r || !h || !sym){
+        return -1;
+    }
+    for (len = 1; len <= 15; len++){
+        unsigned int bit = 0u;
+        unsigned int count;
+        if (inflate_bits(r, 1, &bit) != 0){
+            return -1;
+        }
+        code |= (bit << (len - 1));
+        count = (unsigned int)h->count[len];
+        if (code < first + count){
+            *sym = (int)h->symbol[index + (code - first)];
+            return 0;
+        }
+        index += count;
+        first += count;
+        first <<= 1;
+        code <<= 1;
+    }
+    return -1;
+}
+
+static int inflate_build_fixed(inflate_huff_t* ll, inflate_huff_t* dd){
+    unsigned char ll_lens[288];
+    unsigned char dd_lens[32];
+    int i;
+    for (i = 0; i <= 143; i++) ll_lens[i] = 8;
+    for (i = 144; i <= 255; i++) ll_lens[i] = 9;
+    for (i = 256; i <= 279; i++) ll_lens[i] = 7;
+    for (i = 280; i <= 287; i++) ll_lens[i] = 8;
+    for (i = 0; i < 32; i++) dd_lens[i] = 5;
+    if (inflate_huff_build(ll, ll_lens, 288) != 0){
+        return -1;
+    }
+    if (inflate_huff_build(dd, dd_lens, 32) != 0){
+        return -1;
+    }
+    return 0;
+}
+
+static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsigned char* out, int out_cap){
+    static const unsigned short len_base[29] = {
+        3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
+        35,43,51,59,67,83,99,115,131,163,195,227,258
+    };
+    static const unsigned char len_extra[29] = {
+        0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
+    };
+    static const unsigned short dist_base[30] = {
+        1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,
+        257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577
+    };
+    static const unsigned char dist_extra[30] = {
+        0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13
+    };
+    static const unsigned char order[19] = {
+        16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
+    };
+    inflate_reader_t r;
+    inflate_huff_t ll;
+    inflate_huff_t dd;
+    int out_pos = 0;
+    int last = 0;
+
+    if (!in || in_len <= 0 || !out || out_cap <= 0){
+        return -1;
+    }
+    r.in = in;
+    r.in_len = in_len;
+    r.in_pos = 0;
+    r.bitbuf = 0u;
+    r.bitcnt = 0;
+
+    while (!last){
+        unsigned int bfinal = 0u;
+        unsigned int btype = 0u;
+        if (inflate_bits(&r, 1, &bfinal) != 0 || inflate_bits(&r, 2, &btype) != 0){
+            return -1;
+        }
+        last = (int)bfinal;
+
+        if (btype == 0u){
+            unsigned int len = 0u;
+            unsigned int nlen = 0u;
+            inflate_align_byte(&r);
+            if (inflate_bits(&r, 16, &len) != 0 || inflate_bits(&r, 16, &nlen) != 0){
+                return -1;
+            }
+            if (((len ^ 0xFFFFu) & 0xFFFFu) != (nlen & 0xFFFFu)){
+                return -1;
+            }
+            if (out_pos + (int)len > out_cap){
+                return -1;
+            }
+            while (len--){
+                unsigned int byte = 0u;
+                if (inflate_bits(&r, 8, &byte) != 0){
+                    return -1;
+                }
+                out[out_pos++] = (unsigned char)byte;
+            }
+            continue;
+        }
+
+        if (btype == 1u){
+            if (inflate_build_fixed(&ll, &dd) != 0){
+                return -1;
+            }
+        } else if (btype == 2u){
+            unsigned int hlit = 0u, hdist = 0u, hclen = 0u;
+            unsigned char clen_lens[19];
+            unsigned char ll_lens[288];
+            unsigned char dd_lens[32];
+            unsigned char lens[320];
+            inflate_huff_t clen;
+            int total, idx, sym, i;
+
+            for (i = 0; i < 19; i++) clen_lens[i] = 0;
+            for (i = 0; i < 288; i++) ll_lens[i] = 0;
+            for (i = 0; i < 32; i++) dd_lens[i] = 0;
+
+            if (inflate_bits(&r, 5, &hlit) != 0 ||
+                inflate_bits(&r, 5, &hdist) != 0 ||
+                inflate_bits(&r, 4, &hclen) != 0){
+                return -1;
+            }
+            hlit += 257u;
+            hdist += 1u;
+            hclen += 4u;
+            if (hlit > 286u || hdist > 32u){
+                return -1;
+            }
+
+            for (i = 0; i < (int)hclen; i++){
+                unsigned int v = 0u;
+                if (inflate_bits(&r, 3, &v) != 0){
+                    return -1;
+                }
+                clen_lens[order[i]] = (unsigned char)v;
+            }
+            if (inflate_huff_build(&clen, clen_lens, 19) != 0){
+                return -1;
+            }
+
+            total = (int)(hlit + hdist);
+            idx = 0;
+            while (idx < total){
+                if (inflate_huff_decode(&r, &clen, &sym) != 0){
+                    return -1;
+                }
+                if (sym >= 0 && sym <= 15){
+                    lens[idx++] = (unsigned char)sym;
+                } else if (sym == 16){
+                    unsigned int rep = 0u;
+                    unsigned char prev;
+                    if (idx == 0 || inflate_bits(&r, 2, &rep) != 0){
+                        return -1;
+                    }
+                    prev = lens[idx - 1];
+                    rep += 3u;
+                    while (rep-- && idx < total){
+                        lens[idx++] = prev;
+                    }
+                } else if (sym == 17){
+                    unsigned int rep = 0u;
+                    if (inflate_bits(&r, 3, &rep) != 0){
+                        return -1;
+                    }
+                    rep += 3u;
+                    while (rep-- && idx < total){
+                        lens[idx++] = 0;
+                    }
+                } else if (sym == 18){
+                    unsigned int rep = 0u;
+                    if (inflate_bits(&r, 7, &rep) != 0){
+                        return -1;
+                    }
+                    rep += 11u;
+                    while (rep-- && idx < total){
+                        lens[idx++] = 0;
+                    }
+                } else{
+                    return -1;
+                }
+            }
+
+            for (i = 0; i < (int)hlit; i++) ll_lens[i] = lens[i];
+            for (i = 0; i < (int)hdist; i++) dd_lens[i] = lens[(int)hlit + i];
+            if (inflate_huff_build(&ll, ll_lens, 288) != 0){
+                return -1;
+            }
+            if (inflate_huff_build(&dd, dd_lens, 32) != 0){
+                return -1;
+            }
+        } else{
+            return -1;
+        }
+
+        while (1){
+            int sym = 0;
+            if (inflate_huff_decode(&r, &ll, &sym) != 0){
+                return -1;
+            }
+            if (sym < 256){
+                if (out_pos >= out_cap){
+                    return -1;
+                }
+                out[out_pos++] = (unsigned char)sym;
+            } else if (sym == 256){
+                break;
+            } else if (sym >= 257 && sym <= 285){
+                unsigned int extra = 0u;
+                unsigned int dist_extra_v = 0u;
+                int len_idx = sym - 257;
+                int dist_sym = 0;
+                unsigned int len = len_base[len_idx];
+                unsigned int dist;
+                if (len_extra[len_idx] && inflate_bits(&r, len_extra[len_idx], &extra) != 0){
+                    return -1;
+                }
+                len += extra;
+                if (inflate_huff_decode(&r, &dd, &dist_sym) != 0 || dist_sym < 0 || dist_sym > 29){
+                    return -1;
+                }
+                dist = dist_base[dist_sym];
+                if (dist_extra[dist_sym] &&
+                    inflate_bits(&r, dist_extra[dist_sym], &dist_extra_v) != 0){
+                    return -1;
+                }
+                dist += dist_extra_v;
+                if (dist == 0u || (int)dist > out_pos){
+                    return -1;
+                }
+                if (out_pos + (int)len > out_cap){
+                    return -1;
+                }
+                while (len--){
+                    out[out_pos] = out[out_pos - (int)dist];
+                    out_pos++;
+                }
+            } else{
+                return -1;
+            }
+        }
+    }
+
+    return out_pos;
+}
+
+static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned char* out, int out_cap){
+    int pos;
+    unsigned int flags;
+    if (!in || in_len < 18 || !out || out_cap <= 0){
+        return -1;
+    }
+    if (in[0] != 0x1Fu || in[1] != 0x8Bu || in[2] != 8u){
+        return -1;
+    }
+    flags = in[3];
+    pos = 10;
+
+    if (flags & 0x04u){
+        int xlen;
+        if (pos + 2 > in_len){
+            return -1;
+        }
+        xlen = (int)in[pos] | ((int)in[pos + 1] << 8);
+        pos += 2 + xlen;
+    }
+    if (flags & 0x08u){
+        while (pos < in_len && in[pos] != 0){
+            pos++;
+        }
+        pos++;
+    }
+    if (flags & 0x10u){
+        while (pos < in_len && in[pos] != 0){
+            pos++;
+        }
+        pos++;
+    }
+    if (flags & 0x02u){
+        pos += 2;
+    }
+    if (pos >= in_len - 8){
+        return -1;
+    }
+
+    {
+        int out_n = inflate_raw_deflate_local(&in[pos], in_len - pos - 8, out, out_cap);
+        if (out_n <= 0){
+            return -1;
+        }
+        return out_n;
+    }
+}
+
 static int decode_chunked_body(const unsigned char* in, int len, unsigned char* out, int out_cap){
     int i = 0;
     int o = 0;
@@ -907,7 +1296,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         append_str(req, REQ_CAP, &rq,
                    "\r\nUser-Agent: QOS-WebBrowser/0.1"
                    "\r\nAccept: text/html,text/plain,*/*;q=0.8"
-                   "\r\nAccept-Encoding: identity"
+                   "\r\nAccept-Encoding: gzip, identity"
                    "\r\nConnection: close\r\n\r\n") != 0){
         qos_puts("Request build failed.\n");
         (void)qos_close(fd);
@@ -1016,7 +1405,7 @@ static void cmd_help(void){
 
 static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
-    static unsigned char render[RESP_CAP];
+    static unsigned char work[RESP_CAP];
     char req_host[HOST_CAP];
     char req_path[PATH_CAP];
     char target[URL_CAP];
@@ -1087,24 +1476,33 @@ static void cmd_open(char* host, const char* path){
         return;
     }
 
-    if (extract_header_value(resp, n, "Content-Encoding", header_value, sizeof(header_value)) == 0 &&
-        !str_contains_ci(header_value, "identity")){
-        qos_puts("Cannot display compressed response. Content-Encoding=");
-        qos_puts(header_value);
-        qos_puts("\n");
-        return;
-    }
-
     const unsigned char* body_ptr = &resp[body];
     int body_len = n - body;
     if (extract_header_value(resp, n, "Transfer-Encoding", header_value, sizeof(header_value)) == 0 &&
         str_contains_ci(header_value, "chunked")){
-        int decoded = decode_chunked_body(body_ptr, body_len, render, (int)sizeof(render));
+        int decoded = decode_chunked_body(body_ptr, body_len, work, (int)sizeof(work));
         if (decoded > 0){
-            body_ptr = render;
+            body_ptr = work;
             body_len = decoded;
         } else{
             qos_puts("Chunked response decode failed; showing raw body.\n");
+        }
+    }
+
+    if (extract_header_value(resp, n, "Content-Encoding", header_value, sizeof(header_value)) == 0){
+        if (str_contains_ci(header_value, "gzip")){
+            unsigned char* out_buf = (body_ptr == work) ? resp : work;
+            int decoded = gzip_decompress_local(body_ptr, body_len, out_buf, RESP_CAP);
+            if (decoded > 0){
+                body_ptr = out_buf;
+                body_len = decoded;
+            } else{
+                qos_puts("Gzip decode failed; showing raw body.\n");
+            }
+        } else if (!str_contains_ci(header_value, "identity")){
+            qos_puts("Unsupported Content-Encoding=");
+            qos_puts(header_value);
+            qos_puts(" (showing raw body)\n");
         }
     }
 
