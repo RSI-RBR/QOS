@@ -201,6 +201,7 @@ typedef struct {
     unsigned char hub_port;
     int use_split;
     int low_speed;
+    int boot_kbd;
     unsigned char prev_report[USB_HID_REPORT_LEN];
     int have_prev_report;
     unsigned char q[USB_HID_CHAR_QUEUE_LEN];
@@ -246,11 +247,13 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
                                               unsigned int len,
                                               unsigned char* out_iface,
                                               unsigned char* out_ep,
-                                              unsigned short* out_mps);
+                                              unsigned short* out_mps,
+                                              int* out_boot_kbd);
 static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
                                       unsigned short in_mps,
+                                      int boot_kbd,
                                       int use_split,
                                       int low_speed,
                                       unsigned char hub_addr,
@@ -375,17 +378,25 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
                                               unsigned int len,
                                               unsigned char* out_iface,
                                               unsigned char* out_ep,
-                                              unsigned short* out_mps){
+                                              unsigned short* out_mps,
+                                              int* out_boot_kbd){
     unsigned char cur_iface = 0xFFu;
-    int iface_is_kbd = 0;
+    int iface_is_hid = 0;
+    int iface_is_boot_kbd = 0;
+    int best_score = -1;
+    unsigned char best_iface = 0u;
+    unsigned char best_ep = 0u;
+    unsigned short best_mps = 0u;
+    int best_boot = 0;
 
-    if (!cfg || !out_iface || !out_ep || !out_mps || len < 9u){
+    if (!cfg || !out_iface || !out_ep || !out_mps || !out_boot_kbd || len < 9u){
         return -1;
     }
 
     *out_iface = 0u;
     *out_ep = 0u;
     *out_mps = 0u;
+    *out_boot_kbd = 0;
 
     unsigned int off = 0;
     while (off + 2u <= len){
@@ -400,22 +411,35 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
             unsigned char cls = cfg[off + 5u];
             unsigned char sub = cfg[off + 6u];
             unsigned char proto = cfg[off + 7u];
-            iface_is_kbd = (cls == 0x03u && sub == 0x01u && proto == 0x01u) ? 1 : 0;
-        } else if (iface_is_kbd && desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
+            iface_is_hid = (cls == 0x03u) ? 1 : 0;
+            iface_is_boot_kbd = (cls == 0x03u && sub == 0x01u && proto == 0x01u) ? 1 : 0;
+        } else if (iface_is_hid && desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
             unsigned char ep_addr = cfg[off + 2u];
             unsigned char attrs = cfg[off + 3u];
             unsigned short mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
             if ((attrs & 0x3u) == USB_ENDPOINT_XFER_INTERRUPT &&
                 (ep_addr & 0x80u) &&
-                mps >= USB_HID_REPORT_LEN){
-                *out_iface = cur_iface;
-                *out_ep = ep_addr;
-                *out_mps = mps;
-                return 0;
+                mps >= 3u){
+                int score = iface_is_boot_kbd ? 2 : 1;
+                if (score > best_score){
+                    best_score = score;
+                    best_iface = cur_iface;
+                    best_ep = ep_addr;
+                    best_mps = mps;
+                    best_boot = iface_is_boot_kbd ? 1 : 0;
+                }
             }
         }
 
         off += desc_len;
+    }
+
+    if (best_score >= 0){
+        *out_iface = best_iface;
+        *out_ep = best_ep;
+        *out_mps = best_mps;
+        *out_boot_kbd = best_boot;
+        return 0;
     }
 
     return -1;
@@ -425,6 +449,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
                                       unsigned short in_mps,
+                                      int boot_kbd,
                                       int use_split,
                                       int low_speed,
                                       unsigned char hub_addr,
@@ -433,14 +458,16 @@ static int usb_hid_keyboard_configure(unsigned char addr,
         usb_set_split_context(hub_addr, hub_port, 1, low_speed);
     }
 
-    // Boot protocol for fixed 8-byte reports.
-    (void)usb_std_request(addr,
-                          0x21,
-                          USB_HID_REQ_SET_PROTOCOL,
-                          0u,
-                          iface,
-                          0,
-                          0);
+    if (boot_kbd){
+        // Boot protocol for fixed 8-byte reports.
+        (void)usb_std_request(addr,
+                              0x21,
+                              USB_HID_REQ_SET_PROTOCOL,
+                              0u,
+                              iface,
+                              0,
+                              0);
+    }
 
     // Idle=0 -> only report when state changes.
     (void)usb_std_request(addr,
@@ -464,6 +491,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.hub_port = hub_port;
     g_kbd.use_split = use_split ? 1 : 0;
     g_kbd.low_speed = low_speed ? 1 : 0;
+    g_kbd.boot_kbd = boot_kbd ? 1 : 0;
     g_kbd.have_prev_report = 0;
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         g_kbd.prev_report[i] = 0;
@@ -478,8 +506,16 @@ static int usb_hid_poll_once(void){
         return 0;
     }
 
-    unsigned char report[USB_HID_REPORT_LEN];
-    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+    unsigned int report_cap = g_kbd.in_mps;
+    if (report_cap < USB_HID_REPORT_LEN){
+        report_cap = USB_HID_REPORT_LEN;
+    }
+    if (report_cap > 16u){
+        report_cap = 16u;
+    }
+
+    unsigned char report[16];
+    for (unsigned int i = 0; i < report_cap; i++){
         report[i] = 0;
     }
 
@@ -487,13 +523,25 @@ static int usb_hid_poll_once(void){
         usb_set_split_context(g_kbd.hub_addr, g_kbd.hub_port, 1, g_kbd.low_speed);
     }
 
+    unsigned short wValue = (unsigned short)(1u << 8); // INPUT report, report-id 0
     int rc = usb_std_request(g_kbd.addr,
                              0xA1u,
                              0x01u, // GET_REPORT
-                             (1u << 8), // INPUT report, report-id 0
+                             wValue,
                              g_kbd.iface,
                              report,
-                             USB_HID_REPORT_LEN);
+                             (unsigned short)report_cap);
+    if (rc != 0){
+        // Some HID devices require a non-zero report ID.
+        wValue = (unsigned short)((1u << 8) | 1u);
+        rc = usb_std_request(g_kbd.addr,
+                             0xA1u,
+                             0x01u,
+                             wValue,
+                             g_kbd.iface,
+                             report,
+                             (unsigned short)report_cap);
+    }
 
     if (g_kbd.use_split){
         usb_clear_split_context();
@@ -502,7 +550,12 @@ static int usb_hid_poll_once(void){
     if (rc != 0){
         return -1;
     }
-    usb_hid_process_report(report);
+    if (report_cap >= 9u && report[0] != 0u && report[1] == 0u){
+        // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
+        usb_hid_process_report(&report[1]);
+    } else{
+        usb_hid_process_report(report);
+    }
     return 0;
 }
 
@@ -689,6 +742,7 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char hid_iface = 0;
     unsigned char hid_ep = 0;
     unsigned short hid_mps = 0;
+    int hid_boot = 0;
     int hid_found = 0;
     int child_is_high_speed = 0;
     int child_is_low_speed = 0;
@@ -785,7 +839,8 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                         (unsigned int)cfg_read,
                                                         &hid_iface,
                                                         &hid_ep,
-                                                        &hid_mps) == 0) ? 1 : 0;
+                                                        &hid_mps,
+                                                        &hid_boot) == 0) ? 1 : 0;
     }
 
     // Preserve first child as the primary USB downstream function (used by NIC path).
@@ -816,20 +871,30 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     }
 
     if (hid_found && !g_kbd.present){
+        g_root_info.child_hid_kbd_address = child_addr;
+        g_root_info.child_hid_kbd_ep = hid_ep;
+        g_root_info.child_hid_kbd_iface = hid_iface;
+        g_root_info.child_hid_kbd_mps = hid_mps;
+        g_root_info.child_hid_kbd_present = 0;
         if (usb_hid_keyboard_configure(child_addr,
                                        hid_iface,
                                        hid_ep,
                                        hid_mps,
+                                       hid_boot,
                                        child_use_split,
                                        child_is_low_speed,
                                        hub_addr,
                                        (unsigned char)port) == 0){
             g_root_info.child_hid_kbd_present = 1;
-            g_root_info.child_hid_kbd_address = child_addr;
-            g_root_info.child_hid_kbd_ep = hid_ep;
-            g_root_info.child_hid_kbd_iface = hid_iface;
-            g_root_info.child_hid_kbd_mps = hid_mps;
             uart_puts("USB: HID keyboard configured addr=");
+            uart_puthex(child_addr);
+            uart_puts(" iface=");
+            uart_puthex(hid_iface);
+            uart_puts(" boot=");
+            uart_puthex((unsigned int)(hid_boot ? 1u : 0u));
+            uart_puts("\n");
+        } else{
+            uart_puts("USB: HID keyboard configure failed addr=");
             uart_puthex(child_addr);
             uart_puts(" iface=");
             uart_puthex(hid_iface);

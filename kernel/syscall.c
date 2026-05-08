@@ -157,6 +157,18 @@ static void syscall_dump_usb_info(void){
         syscall_write_puts(-1, " mps=");
         uart_puthex(info.child_hid_kbd_mps);
         syscall_write_puts(-1, "\n");
+    } else if (info.child_hid_kbd_address != 0u){
+        syscall_write_puts(-1, "USB HID kbd candidate addr=");
+        uart_puthex(info.child_hid_kbd_address);
+        syscall_write_puts(-1, " iface=");
+        uart_puthex(info.child_hid_kbd_iface);
+        syscall_write_puts(-1, " ep=");
+        uart_puthex(info.child_hid_kbd_ep);
+        syscall_write_puts(-1, " mps=");
+        uart_puthex(info.child_hid_kbd_mps);
+        syscall_write_puts(-1, " (not active)\n");
+    } else{
+        syscall_write_puts(-1, "USB HID kbd: none\n");
     }
 }
 
