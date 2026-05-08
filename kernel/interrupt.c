@@ -56,10 +56,6 @@ static void ensure_return_ttbr_for_frame(void* frame_sp){
     mmu_prepare_return_to_pid((cur && cur->user_mode && pid >= 0) ? pid : -1);
 }
 
-void interrupt_prepare_return(void* frame_sp){
-    ensure_return_ttbr_for_frame(frame_sp);
-}
-
 void interrupt_init(void){
     asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
     asm volatile("isb");

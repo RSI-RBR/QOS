@@ -82,8 +82,6 @@ restore_context_and_eret:
     // x0 = prebuilt frame pointer
 restore_from_frame:
     mov sp, x0
-    mov x0, sp
-    bl interrupt_prepare_return
 
     ldr x1, [sp, #248]
     msr elr_el1, x1
