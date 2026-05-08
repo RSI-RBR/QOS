@@ -29,6 +29,11 @@ typedef struct {
     unsigned int stream_rx_len;
     unsigned int stream_rx_off;
     int stream_pool_slot;
+    int stream_req_pending;
+    unsigned short stream_req_port;
+    unsigned char stream_req_ip[4];
+    char stream_req_host[128];
+    char stream_req_path[256];
 } kernel_socket_t;
 
 static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
@@ -186,6 +191,14 @@ static void clear_socket(kernel_socket_t* s){
     s->stream_rx_len = 0;
     s->stream_rx_off = 0;
     s->stream_pool_slot = -1;
+    s->stream_req_pending = 0;
+    s->stream_req_port = 0;
+    s->stream_req_ip[0] = 0;
+    s->stream_req_ip[1] = 0;
+    s->stream_req_ip[2] = 0;
+    s->stream_req_ip[3] = 0;
+    s->stream_req_host[0] = 0;
+    s->stream_req_path[0] = 0;
 }
 
 static void clear_socket_at_locked(int si){
@@ -325,6 +338,14 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     s->stream_rx_len = 0;
     s->stream_rx_off = 0;
     s->stream_pool_slot = -1;
+    s->stream_req_pending = 0;
+    s->stream_req_port = 0;
+    s->stream_req_ip[0] = 0;
+    s->stream_req_ip[1] = 0;
+    s->stream_req_ip[2] = 0;
+    s->stream_req_ip[3] = 0;
+    s->stream_req_host[0] = 0;
+    s->stream_req_path[0] = 0;
 
     g_fd_map[pid][fd] = si;
     spin_unlock_irqrestore(&g_socket_lock, irq);
@@ -360,9 +381,6 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     unsigned short remote_port = 0;
     unsigned char remote_ip[4] = {0, 0, 0, 0};
     int type = 0;
-    unsigned int stream_out_cap = 0;
-    unsigned char stream_remote_ip[4] = {0, 0, 0, 0};
-    unsigned short stream_remote_port = 0;
     char stream_host[128];
     char stream_path[256];
 
@@ -403,67 +421,32 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
             spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
         }
-        stream_out_cap = SOCKET_STREAM_RX_CAP - 1u;
-        stream_remote_ip[0] = s->remote_ip[0];
-        stream_remote_ip[1] = s->remote_ip[1];
-        stream_remote_ip[2] = s->remote_ip[2];
-        stream_remote_ip[3] = s->remote_ip[3];
-        stream_remote_port = s->remote_port;
-        spin_unlock_irqrestore(&g_socket_lock, irq);
-
-        unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
-        int n;
-        if (stream_remote_port == 443u){
-            uart_puts("HTTPS profile: kex_pref=");
-            uart_puts(tcp_tls13_pq_kex_offered() ? "X25519+ML-KEM-768->X25519" : "X25519");
-            uart_puts(", kex_pq_advertised=");
-            uart_puts(tcp_tls13_pq_kex_offered() ? "yes" : "no");
-            uart_puts(", sig_advertised=");
-            uart_puts(tcp_tls13_pq_sig_offered() ? "ML-DSA-first+fallback" : "classic-only");
-            uart_puts(", x509_hostname=on, x509_chain_sig=RSA+ECDSA, certverify=RSA+ECDSA\n");
-            n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
-            if (n >= 0){
-                uart_puts("HTTPS negotiated kex=");
-                uart_puts(tcp_tls13_pq_kex_active() ? "X25519+ML-KEM-768" : "X25519");
-                uart_puts("\n");
-            }
-        } else{
-            n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
-        }
-        spin_unlock_irqrestore(&g_socket_stream_lock, sio_irq);
-
-        irq = spin_lock_irqsave(&g_socket_lock);
-        si = lookup_socket_index(pid, fd);
-        if (si < 0){
-            spin_unlock_irqrestore(&g_socket_lock, irq);
-            return -1;
-        }
-        s = &g_sockets[si];
-        if (s->type != QOS_SOCK_STREAM){
-            spin_unlock_irqrestore(&g_socket_lock, irq);
-            return -1;
-        }
-        if (n < 0){
-            s->stream_rx_len = 0;
-            s->stream_rx_off = 0;
-            spin_unlock_irqrestore(&g_socket_lock, irq);
-            return n;
-        }
-        if ((unsigned int)n > stream_out_cap){
-            n = (int)stream_out_cap;
-        }
-        int stream_slot = ensure_stream_slot_locked(si);
-        if (stream_slot < 0){
-            s->stream_rx_len = 0;
-            s->stream_rx_off = 0;
-            spin_unlock_irqrestore(&g_socket_lock, irq);
-            return -1;
-        }
-        for (int i = 0; i < n; i++){
-            g_stream_rx_pool[stream_slot][i] = g_stream_http_tmp[i];
-        }
-        s->stream_rx_len = (unsigned int)n;
+        // Queue request metadata; actual network fetch happens in recv().
+        release_stream_slot_locked(si);
+        s->stream_rx_len = 0;
         s->stream_rx_off = 0;
+        s->stream_req_port = s->remote_port;
+        s->stream_req_ip[0] = s->remote_ip[0];
+        s->stream_req_ip[1] = s->remote_ip[1];
+        s->stream_req_ip[2] = s->remote_ip[2];
+        s->stream_req_ip[3] = s->remote_ip[3];
+        {
+            unsigned int i = 0;
+            while (i + 1u < (unsigned int)sizeof(s->stream_req_host) && stream_host[i]){
+                s->stream_req_host[i] = stream_host[i];
+                i++;
+            }
+            s->stream_req_host[i] = 0;
+        }
+        {
+            unsigned int i = 0;
+            while (i + 1u < (unsigned int)sizeof(s->stream_req_path) && stream_path[i]){
+                s->stream_req_path[i] = stream_path[i];
+                i++;
+            }
+            s->stream_req_path[i] = 0;
+        }
+        s->stream_req_pending = 1;
         spin_unlock_irqrestore(&g_socket_lock, irq);
         return (int)len;
     }
@@ -484,6 +467,12 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
         int nonblocking = 0;
         unsigned int effective_timeout = timeout_ms;
         int wait_forever = 0;
+        int stream_fetch_needed = 0;
+        unsigned int stream_out_cap = 0;
+        unsigned short stream_remote_port = 0;
+        unsigned char stream_remote_ip[4] = {0, 0, 0, 0};
+        char stream_host[128];
+        char stream_path[256];
 
         unsigned long irq = spin_lock_irqsave(&g_socket_lock);
         int si = lookup_socket_index(pid, fd);
@@ -500,7 +489,91 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
 
         if (s->type == QOS_SOCK_STREAM){
             if (s->stream_rx_off >= s->stream_rx_len){
+                if (s->stream_req_pending){
+                    stream_fetch_needed = 1;
+                    stream_out_cap = SOCKET_STREAM_RX_CAP - 1u;
+                    stream_remote_port = s->stream_req_port;
+                    stream_remote_ip[0] = s->stream_req_ip[0];
+                    stream_remote_ip[1] = s->stream_req_ip[1];
+                    stream_remote_ip[2] = s->stream_req_ip[2];
+                    stream_remote_ip[3] = s->stream_req_ip[3];
+                    {
+                        unsigned int i = 0;
+                        while (i + 1u < (unsigned int)sizeof(stream_host) && s->stream_req_host[i]){
+                            stream_host[i] = s->stream_req_host[i];
+                            i++;
+                        }
+                        stream_host[i] = 0;
+                    }
+                    {
+                        unsigned int i = 0;
+                        while (i + 1u < (unsigned int)sizeof(stream_path) && s->stream_req_path[i]){
+                            stream_path[i] = s->stream_req_path[i];
+                            i++;
+                        }
+                        stream_path[i] = 0;
+                    }
+                    s->stream_req_pending = 0;
+                }
                 spin_unlock_irqrestore(&g_socket_lock, irq);
+                if (stream_fetch_needed){
+                    unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
+                    int n;
+                    if (stream_remote_port == 443u){
+                        uart_puts("HTTPS profile: kex_pref=");
+                        uart_puts(tcp_tls13_pq_kex_offered() ? "X25519+ML-KEM-768->X25519" : "X25519");
+                        uart_puts(", kex_pq_advertised=");
+                        uart_puts(tcp_tls13_pq_kex_offered() ? "yes" : "no");
+                        uart_puts(", sig_advertised=");
+                        uart_puts(tcp_tls13_pq_sig_offered() ? "ML-DSA-first+fallback" : "classic-only");
+                        uart_puts(", x509_hostname=on, x509_chain_sig=RSA+ECDSA, certverify=RSA+ECDSA\n");
+                        n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+                        if (n >= 0){
+                            uart_puts("HTTPS negotiated kex=");
+                            uart_puts(tcp_tls13_pq_kex_active() ? "X25519+ML-KEM-768" : "X25519");
+                            uart_puts("\n");
+                        }
+                    } else{
+                        n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+                    }
+                    spin_unlock_irqrestore(&g_socket_stream_lock, sio_irq);
+
+                    irq = spin_lock_irqsave(&g_socket_lock);
+                    si = lookup_socket_index(pid, fd);
+                    if (si < 0){
+                        spin_unlock_irqrestore(&g_socket_lock, irq);
+                        return -1;
+                    }
+                    s = &g_sockets[si];
+                    if (s->type != QOS_SOCK_STREAM){
+                        spin_unlock_irqrestore(&g_socket_lock, irq);
+                        return -1;
+                    }
+                    if (n < 0){
+                        release_stream_slot_locked(si);
+                        s->stream_rx_len = 0;
+                        s->stream_rx_off = 0;
+                        spin_unlock_irqrestore(&g_socket_lock, irq);
+                        return n;
+                    }
+                    if ((unsigned int)n > stream_out_cap){
+                        n = (int)stream_out_cap;
+                    }
+                    int stream_slot = ensure_stream_slot_locked(si);
+                    if (stream_slot < 0){
+                        s->stream_rx_len = 0;
+                        s->stream_rx_off = 0;
+                        spin_unlock_irqrestore(&g_socket_lock, irq);
+                        return -1;
+                    }
+                    for (int i = 0; i < n; i++){
+                        g_stream_rx_pool[stream_slot][i] = g_stream_http_tmp[i];
+                    }
+                    s->stream_rx_len = (unsigned int)n;
+                    s->stream_rx_off = 0;
+                    spin_unlock_irqrestore(&g_socket_lock, irq);
+                    continue;
+                }
                 return 0;
             }
             int stream_slot = s->stream_pool_slot;
