@@ -387,6 +387,137 @@ static int find_http_body(const unsigned char* resp, int len){
     return 0;
 }
 
+static int http_header_name_eq_local(const unsigned char* p, int len, const char* name){
+    int nlen = 0;
+    if (!p || len <= 0 || !name){
+        return 0;
+    }
+    while (name[nlen]){
+        nlen++;
+    }
+    if (len != nlen){
+        return 0;
+    }
+    for (int i = 0; i < len; i++){
+        if (ascii_lower(p[i]) != ascii_lower((unsigned char)name[i])){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int http_value_has_token_local(const unsigned char* p, int len, const char* token){
+    int tlen = 0;
+    if (!p || len <= 0 || !token){
+        return 0;
+    }
+    while (token[tlen]){
+        tlen++;
+    }
+    if (tlen == 0 || len < tlen){
+        return 0;
+    }
+    for (int i = 0; i + tlen <= len; i++){
+        int j = 0;
+        while (j < tlen && ascii_lower(p[i + j]) == ascii_lower((unsigned char)token[j])){
+            j++;
+        }
+        if (j == tlen){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int http_response_completion_state_local(const unsigned char* buf, int len){
+    int body = 0;
+    int i = 0;
+    unsigned int content_len = 0u;
+    int have_content_len = 0;
+    int chunked = 0;
+
+    if (!buf || len <= 0){
+        return 0;
+    }
+
+    body = find_http_body(buf, len);
+    if (body <= 0){
+        return 0;
+    }
+
+    while (i < body){
+        int ls = i;
+        int le;
+        int colon = -1;
+        int vs;
+        int ve;
+
+        while (i < body && buf[i] != '\n'){
+            if (buf[i] == ':' && colon < 0){
+                colon = i;
+            }
+            i++;
+        }
+        le = i;
+        if (i < body && buf[i] == '\n'){
+            i++;
+        }
+        while (le > ls && (buf[le - 1] == '\r' || buf[le - 1] == '\n')){
+            le--;
+        }
+        if (le == ls){
+            break;
+        }
+        if (colon < 0 || colon <= ls || colon >= le){
+            continue;
+        }
+
+        vs = colon + 1;
+        while (vs < le && (buf[vs] == ' ' || buf[vs] == '\t')){
+            vs++;
+        }
+        ve = le;
+        while (ve > vs && (buf[ve - 1] == ' ' || buf[ve - 1] == '\t')){
+            ve--;
+        }
+
+        if (http_header_name_eq_local(&buf[ls], colon - ls, "content-length")){
+            unsigned int v = 0u;
+            int ok = 0;
+            for (int k = vs; k < ve; k++){
+                if (buf[k] < '0' || buf[k] > '9'){
+                    ok = 0;
+                    break;
+                }
+                ok = 1;
+                v = (v * 10u) + (unsigned int)(buf[k] - '0');
+            }
+            if (ok){
+                content_len = v;
+                have_content_len = 1;
+            }
+        } else if (http_header_name_eq_local(&buf[ls], colon - ls, "transfer-encoding") &&
+                   http_value_has_token_local(&buf[vs], ve - vs, "chunked")){
+            chunked = 1;
+        }
+    }
+
+    if (have_content_len){
+        return ((unsigned int)(len - body) >= content_len) ? 1 : 0;
+    }
+    if (chunked){
+        for (int k = body; k + 4 < len; k++){
+            if (buf[k] == '\r' && buf[k + 1] == '\n' &&
+                buf[k + 2] == '0' &&
+                (buf[k + 3] == '\r' || buf[k + 3] == ';')){
+                return 1;
+            }
+        }
+        return 0;
+    }
+    return -1;
+}
+
 static int str_contains_ci(const char* haystack, const char* needle){
     int needle_len = 0;
     if (!haystack || !needle || !*needle){
@@ -731,6 +862,9 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         }
         recv_chunks++;
         total += n;
+        if (http_response_completion_state_local(resp, total) == 1){
+            break;
+        }
     }
     recv_ms = qos_get_ticks() - t_stage_start;
 
