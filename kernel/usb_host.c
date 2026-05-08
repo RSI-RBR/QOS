@@ -1056,6 +1056,29 @@ static void spin_delay(unsigned int n){
     }
 }
 
+static void usb_wait_microframes(unsigned int count){
+    unsigned int last = HFNUM & 0xFFFFu;
+    unsigned int guard = 200000u + (count * 400000u);
+    while (count && guard--){
+        unsigned int cur = HFNUM & 0xFFFFu;
+        if (cur != last){
+            last = cur;
+            count--;
+        }
+    }
+    if (count){
+        spin_delay(50000u * count);
+    }
+}
+
+static unsigned int usb_next_data_pid(unsigned int pid){
+    return (pid == HCTSIZ_PID_DATA1) ? HCTSIZ_PID_DATA0 : HCTSIZ_PID_DATA1;
+}
+
+static int usb_valid_ep0_mps(unsigned int mps){
+    return mps == 8u || mps == 16u || mps == 32u || mps == 64u;
+}
+
 static unsigned long usb_cache_line_size(void){
     unsigned long ctr;
     asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
@@ -1605,53 +1628,122 @@ static int hc_transfer_split(unsigned int ch,
                              unsigned int in_len,
                              unsigned char hub_addr,
                              unsigned char hub_port){
+    if (ep_mps == 0){
+        ep_mps = USB_CTRL_EP_MPS_DEFAULT;
+    }
+
     unsigned int split_reg = HCSPLT_SPLTENA
         | ((HCSPLT_XACTPOS_ALL & 0x3u) << HCSPLT_XACTPOS_SHIFT)
         | (((unsigned int)hub_addr & 0x7Fu) << HCSPLT_HUBADDR_SHIFT)
         | (((unsigned int)hub_port & 0x7Fu) << HCSPLT_PRTADDR_SHIFT);
 
-    // Align split scheduling to microframe boundary for better stability.
-    for (unsigned int i = 0; i < 2000000; i++){
-        if ((HFNUM & 0x7u) == 0u){
-            break;
-        }
-        if (i == 1999999){
-            uart_puts("USB: split frame wait timeout\n");
-        }
-    }
-
     if (ep_in){
-        // Start-split for IN stage: expect ACK/CHHLTD handshake.
-        if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 1, ep_mps, pid,
-                            0, 0, 0, 0, split_reg, 0, 0) != 0){
-            HCSPLT(ch) = 0;
-            return -1;
-        }
-        // Complete-split can return NYET transiently; retry a few times.
-        for (unsigned int tries = 0; tries < 6; tries++){
+        unsigned int done = 0;
+        unsigned int cur_pid = pid;
+
+        do {
+            unsigned int want = in_len - done;
+            if (want > ep_mps){
+                want = ep_mps;
+            }
+
+            // Circle schedules split transactions as SSPLIT, delayed CSPLIT,
+            // and repeats SSPLIT again if the transfer stage is not complete.
+            usb_wait_microframes(1);
+            if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 1, ep_mps, cur_pid,
+                                0, 0, 0, want, split_reg, 1, 0) != 0){
+                HCSPLT(ch) = 0;
+                return -1;
+            }
+
+            usb_wait_microframes(2);
             unsigned int actual = 0;
-            if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 1, ep_mps, pid,
-                                0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT, 0, &actual) == 0 &&
-                (in_len == 0 || actual > 0)){
+            int packet_ok = 0;
+            for (unsigned int tries = 0; tries < 8; tries++){
+                actual = 0;
+                int rc = hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 1, ep_mps, cur_pid,
+                                         0, 0,
+                                         in_data ? &in_data[done] : 0,
+                                         want,
+                                         split_reg | HCSPLT_COMPSPLT,
+                                         1,
+                                         &actual);
+                if (rc == 0 && (want == 0 || actual > 0)){
+                    packet_ok = 1;
+                    break;
+                }
+                usb_wait_microframes(5);
+            }
+            if (!packet_ok){
+                HCSPLT(ch) = 0;
+                return -1;
+            }
+            if (want == 0){
                 HCSPLT(ch) = 0;
                 return 0;
             }
-            spin_delay(60000);
-        }
+
+            done += actual;
+            if (actual < want){
+                HCSPLT(ch) = 0;
+                return 0;
+            }
+            cur_pid = usb_next_data_pid(cur_pid);
+        } while (done < in_len);
+
+        HCSPLT(ch) = 0;
+        return 0;
     } else{
-        if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 0, ep_mps, pid,
-                            out_data, out_len, 0, 0, split_reg, 0, 0) != 0){
-            HCSPLT(ch) = 0;
-            return -1;
-        }
-        for (unsigned int tries = 0; tries < 6; tries++){
-            if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 0, ep_mps, pid,
-                                g_status_dummy, 0, 0, 0, split_reg | HCSPLT_COMPSPLT, 0, 0) == 0){
+        unsigned int done = 0;
+        unsigned int cur_pid = pid;
+
+        do {
+            unsigned int want = out_len - done;
+            if (want > ep_mps){
+                want = ep_mps;
+            }
+
+            usb_wait_microframes(1);
+            if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 0, ep_mps, cur_pid,
+                                out_data ? &out_data[done] : 0,
+                                want,
+                                0, 0,
+                                split_reg,
+                                1,
+                                0) != 0){
+                HCSPLT(ch) = 0;
+                return -1;
+            }
+
+            usb_wait_microframes(2);
+            int packet_ok = 0;
+            for (unsigned int tries = 0; tries < 8; tries++){
+                int rc = hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 0, ep_mps, cur_pid,
+                                         g_status_dummy, 0, 0, 0,
+                                         split_reg | HCSPLT_COMPSPLT,
+                                         1,
+                                         0);
+                if (rc == 0){
+                    packet_ok = 1;
+                    break;
+                }
+                usb_wait_microframes(5);
+            }
+            if (!packet_ok){
+                HCSPLT(ch) = 0;
+                return -1;
+            }
+            if (want == 0){
                 HCSPLT(ch) = 0;
                 return 0;
             }
-            spin_delay(60000);
-        }
+
+            done += want;
+            cur_pid = usb_next_data_pid(cur_pid);
+        } while (done < out_len);
+
+        HCSPLT(ch) = 0;
+        return 0;
     }
 
     HCSPLT(ch) = 0;
@@ -2010,12 +2102,16 @@ static int usb_get_device_descriptor_at(unsigned char dev_addr, unsigned char* o
     if (usb_std_request(dev_addr, 0x80, 0x06, 0x0100, 0x0000, out18, 8) != 0){
         return -1;
     }
-    if (out18[7] != 0){
-        g_ep0_mps = out18[7];
+    if (out18[0] < 8u || out18[1] != 0x01u || !usb_valid_ep0_mps(out18[7])){
+        return -1;
     }
+    g_ep0_mps = out18[7];
 
     // Full descriptor with established EP0 MPS.
     if (usb_std_request(dev_addr, 0x80, 0x06, 0x0100, 0x0000, out18, 18) != 0){
+        return -1;
+    }
+    if (out18[0] != 18u || out18[1] != 0x01u || !usb_valid_ep0_mps(out18[7])){
         return -1;
     }
     return 0;
@@ -2036,6 +2132,9 @@ static int usb_get_config_descriptor(unsigned char dev_addr,
     if (usb_std_request(dev_addr, 0x80, 0x06, 0x0200, 0x0000, buf, 9) != 0){
         return -1;
     }
+    if (buf[0] != 9u || buf[1] != 0x02u){
+        return -1;
+    }
     unsigned short total = le16(&buf[2]);
     if (total < 9){
         return -1;
@@ -2049,6 +2148,9 @@ static int usb_get_config_descriptor(unsigned char dev_addr,
         want = (unsigned short)cap;
     }
     if (usb_std_request(dev_addr, 0x80, 0x06, 0x0200, 0x0000, buf, want) != 0){
+        return -1;
+    }
+    if (buf[0] != 9u || buf[1] != 0x02u || le16(&buf[2]) != total){
         return -1;
     }
     return (int)want;
