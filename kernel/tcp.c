@@ -1022,7 +1022,6 @@ static int tls13_wait_for_established(void){
 }
 
 static int tls13_compact_rx(unsigned int* consumed){
-    unsigned int before_len;
     if (!consumed){
         return -1;
     }
@@ -1032,16 +1031,12 @@ static int tls13_compact_rx(unsigned int* consumed){
     if (*consumed > g_conn.out_len){
         return -1;
     }
-    before_len = g_conn.out_len;
     unsigned int rem = g_conn.out_len - *consumed;
     for (unsigned int i = 0; i < rem; i++){
         g_conn.out[i] = g_conn.out[*consumed + i];
     }
     g_conn.out_len = rem;
     *consumed = 0u;
-    if (g_conn.active && g_conn.state == TCP_ST_ESTABLISHED && rem < before_len){
-        (void)tcp_send_segment(TCP_FLAG_ACK, 0, 0);
-    }
     return 0;
 }
 

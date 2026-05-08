@@ -604,6 +604,8 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                         if (n >= 0){
                             uart_puts("HTTPS negotiated kex=");
                             uart_puts(tcp_tls13_pq_kex_active() ? "X25519+ML-KEM-768" : "X25519");
+                            uart_puts(" first_chunk=");
+                            uart_putdec((unsigned long)n);
                             uart_puts("\n");
                         }
                     } else if (stream_fetch_needed){
