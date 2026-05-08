@@ -27,6 +27,9 @@ typedef struct{
     unsigned long user_rw_offset;
     unsigned long user_rw_size;
     int program_heap_alloc;
+    unsigned int signer_key_id;
+    unsigned int signer_role_mask;
+    unsigned int signer_scope_mask;
     int user_mode;
     unsigned int owner_core;
     process_state_t state;

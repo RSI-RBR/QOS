@@ -366,6 +366,18 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     prog.user_rw_offset = user_rw_offset;
     prog.user_rw_size = user_rw_size;
     prog.heap_allocated = 0;
+    prog.signer_key_id = sec->signer_key_id;
+    {
+        const trust_key_t* key = trust_find_key(sec->signer_key_id);
+        if (!key){
+            loader_free_program_memory(dst, code_size);
+            loader_unlock();
+            uart_puts("Program signer key missing post-verify.\n");
+            return (loaded_program_t){0};
+        }
+        prog.signer_role_mask = key->role_mask;
+        prog.signer_scope_mask = key->scope_mask;
+    }
     uart_puts("Program loaded at: ");
     uart_puthex((unsigned long)dst);
     uart_puts("\n");

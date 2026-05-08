@@ -17,6 +17,7 @@
 #include "remote_login.h"
 #include "cyw43.h"
 #include "auth.h"
+#include "trust.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -146,6 +147,102 @@ static void syscall_dump_usb_info(void){
     }
 }
 
+static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
+    unsigned int req_scope_any = 0u;
+    unsigned int req_role_any = TRUST_ROLE_DEVELOPER | TRUST_ROLE_ADMIN;
+
+    if (!proc || !proc->user_mode){
+        return 1;
+    }
+
+    switch (nr){
+        case SYS_PUTC:
+        case SYS_PUTS:
+        case SYS_SLEEP:
+        case SYS_EXIT:
+        case SYS_FB_CLEAR:
+        case SYS_FB_GET_WIDTH:
+        case SYS_FB_GET_HEIGHT:
+        case SYS_FB_RECT:
+        case SYS_FB_PRESENT:
+        case SYS_TRY_GETC:
+        case SYS_GETPID:
+        case SYS_GET_TICKS:
+        case SYS_GET_COUNTER_HZ:
+        case SYS_GET_COUNTER_CYCLES:
+            req_scope_any = TRUST_SCOPE_USER_APP | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB;
+            break;
+
+        case SYS_NET_DUMP_STATS:
+        case SYS_NET_SEND_TEST_FRAME:
+        case SYS_NET_POLL:
+        case SYS_NET_RECV_RAW:
+        case SYS_NET_SEND_RAW:
+        case SYS_NET_PING_GATEWAY:
+        case SYS_NET_UDP_SEND_PROBE:
+        case SYS_NET_UDP_RECV:
+        case SYS_NET_UDP_SEND:
+        case SYS_NET_TCP_HTTP_GET:
+        case SYS_SOCKET_CREATE:
+        case SYS_SOCKET_CONNECT:
+        case SYS_SOCKET_SEND:
+        case SYS_SOCKET_RECV:
+        case SYS_SOCKET_CLOSE:
+        case SYS_SOCKET_SETOPT:
+        case SYS_TLS_OPEN:
+        case SYS_TLS_CLOSE:
+        case SYS_TLS_GET_LOCAL_PUBLIC:
+        case SYS_TLS_SET_PEER_PUBLIC:
+        case SYS_TLS_BUILD_CLIENT_HELLO:
+        case SYS_TLS_PROCESS_SERVER_HELLO:
+        case SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO:
+        case SYS_TLS_RECORD_ENCRYPT:
+        case SYS_TLS_RECORD_DECRYPT:
+        case SYS_TLS_IS_READY:
+        case SYS_NET_GET_LOCAL_IP:
+        case SYS_NET_GET_GATEWAY_IP:
+            req_scope_any = TRUST_SCOPE_WEB | TRUST_SCOPE_SHELL;
+            break;
+
+        case SYS_RUN_PROGRAM:
+        case SYS_RUN_PROGRAM_NAMED:
+        case SYS_TTY_SET_OWNER:
+        case SYS_TTY_RELEASE:
+        case SYS_TTY_GET_OWNER:
+        case SYS_TTY_CLAIM_SELF:
+        case SYS_PROCESS_DUMP:
+        case SYS_REMOTE_LOGIN_STATS:
+        case SYS_NET_SET_LOCAL_IP:
+        case SYS_NET_SET_GATEWAY_IP:
+        case SYS_AUTH_IS_READY:
+        case SYS_AUTH_GET_USERNAME:
+        case SYS_AUTH_VERIFY_PASSWORD:
+        case SYS_WIFI_INIT:
+        case SYS_WIFI_LOAD_FW:
+        case SYS_WIFI_UP:
+        case SYS_WIFI_DOWN:
+        case SYS_WIFI_SCAN:
+        case SYS_WIFI_JOIN:
+        case SYS_WIFI_DUMP_STATUS:
+        case SYS_WIFI_GET_VERSION:
+        case SYS_USB_DUMP_INFO:
+            req_scope_any = TRUST_SCOPE_SHELL;
+            req_role_any = TRUST_ROLE_ADMIN;
+            break;
+
+        default:
+            return 0;
+    }
+
+    if ((proc->signer_scope_mask & req_scope_any) == 0u){
+        return 0;
+    }
+    if ((proc->signer_role_mask & req_role_any) == 0u){
+        return 0;
+    }
+    return 1;
+}
+
 void* syscall_handle(void* frame_sp, unsigned long esr){
     unsigned long ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
     unsigned long* frame = (unsigned long*)frame_sp;
@@ -155,6 +252,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
     }
 
     unsigned long nr = frame[TF_X8];
+    process_t* caller = get_current_process();
+    if (!syscall_capability_allowed(caller, nr)){
+        frame[TF_X0] = (unsigned long)-1;
+        return frame_sp;
+    }
 
     switch (nr){
         case SYS_PUTC:

@@ -17,6 +17,9 @@ typedef struct{
     unsigned long user_rw_offset;
     unsigned long user_rw_size;
     int heap_allocated;
+    unsigned int signer_key_id;
+    unsigned int signer_role_mask;
+    unsigned int signer_scope_mask;
 } loaded_program_t;
 
 

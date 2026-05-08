@@ -7,6 +7,7 @@
 #include "spinlock.h"
 #include "smp.h"
 #include "mmu.h"
+#include "trust.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -416,6 +417,9 @@ static void clear_process_descriptor(int pid){
     processes[pid].user_rw_offset = 0;
     processes[pid].user_rw_size = 0;
     processes[pid].program_heap_alloc = 0;
+    processes[pid].signer_key_id = 0;
+    processes[pid].signer_role_mask = 0;
+    processes[pid].signer_scope_mask = 0;
     processes[pid].user_mode = 0;
     processes[pid].owner_core = 0;
     processes[pid].wake_tick = 0;
@@ -466,6 +470,9 @@ static int process_create_common_locked(program_entry_t entry,
                                         unsigned long user_rw_offset,
                                         unsigned long user_rw_size,
                                         int program_heap_alloc,
+                                        unsigned int signer_key_id,
+                                        unsigned int signer_role_mask,
+                                        unsigned int signer_scope_mask,
                                         unsigned int preferred_core){
     for (int i = 0; i < MAX_PROCESSES; i++){
         if (is_pid_pending_zombie(i)){
@@ -489,6 +496,9 @@ static int process_create_common_locked(program_entry_t entry,
         processes[i].user_rw_offset = 0;
         processes[i].user_rw_size = 0;
         processes[i].program_heap_alloc = 0;
+        processes[i].signer_key_id = 0;
+        processes[i].signer_role_mask = 0;
+        processes[i].signer_scope_mask = 0;
         processes[i].user_mode = 0;
         processes[i].user_sp = 0;
 
@@ -498,6 +508,9 @@ static int process_create_common_locked(program_entry_t entry,
             processes[i].user_rw_offset = user_rw_offset;
             processes[i].user_rw_size = user_rw_size;
             processes[i].program_heap_alloc = program_heap_alloc;
+            processes[i].signer_key_id = signer_key_id;
+            processes[i].signer_role_mask = signer_role_mask;
+            processes[i].signer_scope_mask = signer_scope_mask;
             processes[i].user_mode = 1;
             processes[i].user_sp = user_sp;
             processes[i].sp = build_initial_context_el0(stack, (unsigned long)entry, user_sp);
@@ -762,7 +775,18 @@ void free_stack(void *stack){
 int process_create(program_entry_t entry){
     unsigned int preferred_core = scheduler_core_id();
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
-    int pid = process_create_common_locked(entry, 0, 0, 0, 0, 0, 0, 0, preferred_core);
+    int pid = process_create_common_locked(entry,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           0u,
+                                           TRUST_ROLE_ADMIN,
+                                           TRUST_SCOPE_KERNEL | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB | TRUST_SCOPE_USER_APP,
+                                           preferred_core);
     if (pid < 0){
         uart_puts("No stack available.\n");
     }
@@ -786,6 +810,9 @@ int process_create_loaded(loaded_program_t prog){
                                            prog.user_rw_offset,
                                            prog.user_rw_size,
                                            prog.heap_allocated,
+                                           prog.signer_key_id,
+                                           prog.signer_role_mask,
+                                           prog.signer_scope_mask,
                                            preferred_core);
     spin_unlock_irqrestore(&g_process_lock, irq);
     return pid;
