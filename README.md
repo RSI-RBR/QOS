@@ -1,217 +1,332 @@
 # QOS - Quantum OS for Raspberry Pi
 
-Minimal bare-metal operating system for Raspberry Pi 3 (AArch64).  
-Work in progress.
+Quantum OS is a bare-metal AArch64 operating system for Raspberry Pi, currently
+developed and tested primarily on Raspberry Pi 3. It is still a research/dev OS,
+but it now has enough kernel, user program, security, networking, and SMP
+foundation to run real signed user programs and keep iterating toward larger
+applications.
 
-## Current Status
+## Current Project Status
 
-QOS boots to a user-mode shell process and now includes:
-- preemptive multitasking (timer IRQ)
-- SMP bring-up and per-core scheduling foundations
-- MMU-based user/kernel isolation foundations
-- dynamic FAT32 program loading
-- early networking stack + user socket syscalls
-- strict Ed25519 signature verification policy for kernel/program trust flow
+QOS currently boots into a signed, scheduled user-mode shell instead of a
+permanent privileged kernel shell. The kernel now has:
 
-## Current Capabilities
+- EL1 bare-metal boot with UART, framebuffer, timer IRQs, and exception vectors
+- preemptive process scheduling with `sleep()`, `exit()`, process cleanup, and secure memory wipe
+- SMP bring-up for cores 1-3 with per-core scheduler state and core-aware run queues
+- per-process MMU address spaces using TTBR0/ASIDs
+- user/kernel separation, user pointer validation, guard pages, W^X user mappings, and TLB shootdown plumbing
+- FAT32 program loading from the SD card using signed 8.3 `*.BIN` program files
+- capability-gated syscalls based on signer role/scope
+- local login and remote encrypted shell login backed by `AUTH.BIN`
+- Ed25519 signatures plus ML-DSA-65 post-quantum sidecar signatures for trusted artifacts
+- Ethernet networking through the Raspberry Pi 3 LAN9514/SMSC95xx path
+- experimental CYW43438 Wi-Fi path for Pi 3 / Pi Zero 2 W style hardware
+- ARP, IPv4, ICMP ping, UDP, DNS, minimal TCP, and an experimental HTTPS client path
+- kernel socket syscalls for user programs
+- a text-mode user web browser demo and SDL-like game scaffold
 
-- AArch64 bare-metal boot to EL1
-- UART console and interactive user shell
-- Preemptive scheduler (timer IRQ driven)
-- SMP core bring-up (multi-core online)
-- Process model with PID/state/exit/cleanup
-- External program loading from FAT32 (`*.BIN`, 8.3 naming)
-- Secure process teardown and memory wipe on exit
-- Phase-1 MMU enabled with kernel/user mapping foundations
-- Framebuffer init and drawing syscalls
-- USB host + LAN9514/SMSC95xx networking path
-- IPv4/ARP/ICMP/UDP basics
-- Socket syscall scaffold for user programs:
-  - `socket`, `connect`, `send`, `recv`, `close`
-  - blocking/non-blocking mode
-  - recv timeout configuration
-- User-mode DNS over UDP via socket syscalls
-- User-mode text web browser demo (`programs/webbrowser`)
-- Trust framework:
-  - kernel trust store with role/scope policy
-  - admin-only enforcement for `SHELL.BIN` and `WEBBROWS.BIN`
-  - developer-signed user program support
-- Signature verification:
-  - Ed25519 verification integrated in kernel
-  - kernel manifest verification (memory + storage image checks)
-  - program manifest verification during load
+The biggest recent architectural milestones are SMP scheduling, stronger MMU
+isolation, signed/PQ-verified program loading, Argon2id login support, and the
+first working Ethernet/Wi-Fi networking paths.
 
-## Progress Notes
+## Current User Programs
 
-- Shell is a scheduled user process (not a permanent privileged loop).
-- Scheduler now stays responsive during long operations (program load / network waits).
-- TTY ownership handoff was added so foreground apps (like webbrowser) can exclusively read input and return cleanly to shell.
-- Build/sign pipeline now supports embedding trusted public keys and signing artifacts with OpenSSL Ed25519 keys.
+- `programs/shell`: signed user shell, local login, program launcher, diagnostics, network commands
+- `programs/hello`: cube/demo graphics program, performance instrumentation scaffold
+- `programs/webbrowser`: text web browser using DNS/socket/TCP/HTTPS syscalls
+- `programs/game`: early game/SDL compatibility scaffold for future ports
+
+Programs are built as position-independent user binaries, wrapped with a QOS
+program header, signed with Ed25519, and paired with an ML-DSA-65 `.PQS`
+sidecar when PQ signing keys are available.
+
+## Shell Commands
+
+Common shell commands:
+
+```text
+help
+run
+game
+web
+ps
+validate
+clear
+fbinfo
+usbstat
+netstat
+rloginstat
+ip
+setip <a.b.c.d>
+setgw <a.b.c.d>
+ping
+dnscheck <domain>
+httpget <host> [path]
+tlstest
+wifiinit
+wifiload [fw83 nv83]
+wifiup
+wifidown
+wifistat
+wifiver
+wifiscan
+wifiscanx [passes]
+wifijoin <ssid> <password>
+```
+
+`run` loads `PROGRAM.BIN`, `web` loads `WEBBROWS.BIN`, and `game` loads
+`GAME.BIN` from the FAT32 SD root.
+
+## Security Status
+
+Implemented:
+
+- kernel trust store with admin/developer roles and scope masks
+- admin-only signing requirement for `SHELL.BIN` and `WEBBROWS.BIN`
+- developer-signed user application support
+- required Ed25519 program signatures
+- required ML-DSA-65 PQ sidecar signatures for programs
+- kernel manifest verification for in-memory and on-SD `KERNEL8.IMG`
+- kernel ML-DSA-65 PQ sidecar verification support
+- local shell login using `AUTH.BIN`
+- Argon2id-compatible password hash format
+- encrypted remote login tunnel using X25519 + AES-GCM
+- remote login rate limiting, lockout status, and replay sequencing
+- boot policy disables shell/remote login if kernel trust is not established
+
+Important limitation:
+
+- Raspberry Pi 3 does not provide a full hardware root-of-trust for this custom
+  kernel. Kernel verification is valuable, but true secure boot depends on board
+  support or an external boot trust mechanism.
+
+## Networking Status
+
+Implemented:
+
+- Ethernet frame TX/RX through the LAN9514/SMSC95xx USB Ethernet path
+- CYW43438 SDIO firmware load/up/version/scan/join path, still experimental
+- ARP gateway learning
+- IPv4 packet handling
+- ICMP gateway ping with RTT display
+- UDP send/receive and DNS A-record queries
+- minimal TCP connect/send/receive path
+- user socket API with blocking/non-blocking and receive timeout support
+- experimental HTTPS fetch path using TLS-style crypto building blocks
+
+TLS/HTTPS note:
+
+- TLS record crypto, X25519, AES-GCM, key schedule tests, and HTTPS fetching are present.
+- Certificate-chain validation is not complete/enforced yet. CA root sync/copy tooling exists as preparation for that step.
+- Current HTTPS key exchange is X25519. ML-DSA-65 is available for artifact signatures, not as a TLS key exchange replacement.
 
 ## Known Limitations
 
-- FAT loader is currently 8.3 filename based.
-- Socket `SOCK_STREAM` path is currently minimal and HTTP-oriented for demo usage.
-- Networking is early-stage and not yet full POSIX-like behavior.
-- No TLS yet.
-- Secure boot root-of-trust is still board/bootloader dependent (Pi 3 limitation).
+- The loader uses FAT 8.3 filenames.
+- Process count and user-memory slots are still fixed-size kernel tables.
+- Wi-Fi is useful but still a bring-up path, not a polished driver.
+- HTTPS works for some sites but does not yet provide browser-grade validation or compatibility.
+- No DHCP yet; IP/gateway are configured manually or by current defaults.
+- No full USB keyboard/mouse stack yet.
+- No GPU acceleration yet; graphics are framebuffer based.
+- Pi 5 and Pi Zero 2 W compatibility are planned but not completed.
 
 ## Requirements
 
-- Raspberry Pi 3 B/B+
+- Raspberry Pi 3 B/B+ for current main testing
 - FAT32 microSD card
 - Linux build machine
-- USB-UART adapter for serial console
-- OpenSSL (for Ed25519 signing)
+- `aarch64-linux-gnu` cross toolchain
+- OpenSSL
+- Python 3
+- Python packages for host tooling:
+  - `argon2-cffi`
+  - `cryptography`
 
-## Build
-
-### 1) Install Cross Toolchain
+Example Linux setup:
 
 ```bash
 sudo apt update
-sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu openssl
+sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu openssl python3 python3-venv
+python3 -m venv .venv
+. .venv/bin/activate
+pip install argon2-cffi cryptography
 ```
 
-### 2) Generate Signing Keys (First Time)
+## First-Time Key Setup
+
+Generate Ed25519 admin/developer keys:
 
 ```bash
 bash tools/gen_ed25519_keys.sh keys
 ```
 
-This creates:
-- `keys/admin_ed25519.pem`
-- `keys/dev_ed25519.pem`
+Generate ML-DSA-65 admin/developer PQ keys:
 
-### 3) Build Signed Kernel + Signed Programs + Copy to SD (Recommended)
+```bash
+python3 tools/gen_mldsa65_keypair.py keys/admin_mldsa65_sk.bin keys/admin_mldsa65_pk.bin
+python3 tools/gen_mldsa65_keypair.py keys/dev_mldsa65_sk.bin keys/dev_mldsa65_pk.bin
+```
+
+Default key IDs:
+
+- admin: `0x00000001`
+- developer: `0x00010001`
+
+Admin scope includes kernel, shell, web, and user apps. Developer scope is for
+normal user apps.
+
+## Create Login Password File
+
+Create `AUTH.BIN` with Argon2id password hashing:
+
+```bash
+python3 tools/gen_auth_blob.py --username admin --password 'change-me' --out AUTH.BIN
+cp AUTH.BIN /media/sd/AUTH.BIN
+```
+
+Use your real password instead of `change-me`. The default shell username is
+whatever username you place into `AUTH.BIN`; most current testing uses `admin`.
+
+## Build And Copy To SD
+
+Recommended full build:
 
 ```bash
 bash tools/build_and_copy_sd.sh
 ```
 
-Defaults used by the script:
+Defaults:
+
 - SD mount: `/media/sd`
-- Admin key: `keys/admin_ed25519.pem`
-- Dev key: `keys/dev_ed25519.pem`
+- admin Ed25519 key: `keys/admin_ed25519.pem`
+- developer Ed25519 key: `keys/dev_ed25519.pem`
+- admin PQ key: `keys/admin_mldsa65_sk.bin`
+- developer PQ key: `keys/dev_mldsa65_sk.bin`
 
-Override if needed:
-```bash
-SD_MOUNT=/media/sd ADMIN_KEY=keys/admin_ed25519.pem DEV_KEY=keys/dev_ed25519.pem bash tools/build_and_copy_sd.sh
-```
-
-### 4) Manual Build (Advanced)
+Override paths if needed:
 
 ```bash
-git clone https://github.com/RSI-RBR/QOS.git
-cd QOS
-make clean
-make ADMIN_SIGN_KEY=keys/admin_ed25519.pem DEV_SIGN_KEY=keys/dev_ed25519.pem
+SD_MOUNT=/media/sd \
+ADMIN_KEY=keys/admin_ed25519.pem \
+DEV_KEY=keys/dev_ed25519.pem \
+ADMIN_PQ_SIGN_KEY=keys/admin_mldsa65_sk.bin \
+DEV_PQ_SIGN_KEY=keys/dev_mldsa65_sk.bin \
+bash tools/build_and_copy_sd.sh
 ```
 
-Build output: `kernel8.img`
+The script builds and copies:
 
-### 5) Sync CA Roots From 3 Sources (Automated)
+- `KERNEL8.IMG`
+- `KERNEL8.PQS`
+- `SHELL.BIN` / `SHELL.PQS`
+- `WEBBROWS.BIN` / `WEBBROWS.PQS`
+- `PROGRAM.BIN` / `PROGRAM.PQS`
+- `GAME.BIN` / `GAME.PQS`
+- signed CA root artifacts if they already exist under `build/ca`
 
-This pulls and cross-checks roots from:
-- Mozilla NSS (`certdata.txt`)
-- curl CA extract (`cacert.pem`)
-- Debian `ca-certificates` bundle (`ca-certificates.crt` from latest `.deb`)
+Also copy boot config if needed:
 
-Then it writes a consensus bundle (default policy: present in at least 2 of 3 sources):
+```bash
+cp boot/config.txt /media/sd/config.txt
+```
+
+## Manual CA Root Sync
+
+CA root sync is intentionally manual. Run it only when you want to refresh the
+local root bundle:
 
 ```bash
 make ca-roots-sync
 ```
 
-Outputs:
+It cross-checks Mozilla NSS, curl, and Debian sources, then writes:
+
 - `build/ca/ca_roots_consensus.pem`
 - `build/ca/ca_roots_consensus_report.json`
 
-## SD Card Setup
+The build/copy script signs and copies these to SD if present.
 
-Copy files to the SD card boot/root FAT partition:
+## Build A User Program
 
-```bash
-cp kernel8.img /path/to/sd/
-cp boot/config.txt /path/to/sd/
-```
+Use `programs/hello` or `programs/game` as a starting point.
 
-Copy user programs (`*.BIN`) to SD root as needed (8.3 names for loader lookup):
-- `SHELL.BIN`
-- `WEBBROWS.BIN`
-- `PROGRAM.BIN`
-- `GAME.BIN`
-
-## Boot
-
-1. Insert SD card into Pi
-2. Connect UART (`TX/RX/GND`)
-3. Open serial terminal:
+Example developer-signed app:
 
 ```bash
-screen /dev/ttyUSB0 115200
-```
-
-4. Power on the Pi
-
-## Shell / Program Notes
-
-- Default shell command: `run` loads default `PROGRAM.BIN`
-- Web browser demo command: `web` (expects `WEBBROWS.BIN` on SD root)
-- Game demo command: `game` (expects `GAME.BIN`)
-
-## Build Your Own Signed Program
-
-### 1) Create Program
-
-Use `programs/hello` or `programs/game` as a template.
-
-### 2) Pick a Key + Key ID
-
-Current built-in trust table includes:
-- Admin key ID: `0x00000001` (admin scope: kernel/shell/web/user)
-- Dev key ID: `0x00010001` (user-app scope)
-
-### 3) Build and Sign
-
-Example using dev key:
-```bash
-make -C programs/hello clean all SIGN_KEY=../../keys/dev_ed25519.pem
-```
-
-This generates a signed `PROGRAM.BIN`.
-
-### 4) Copy to SD
-
-```bash
+make -C programs/hello clean all \
+  SIGN_KEY="$(pwd)/keys/dev_ed25519.pem" \
+  PQ_SIGN_KEY="$(pwd)/keys/dev_mldsa65_sk.bin"
 cp programs/hello/program.bin /media/sd/PROGRAM.BIN
+cp programs/hello/program.pqs /media/sd/PROGRAM.PQS
 ```
 
-### 5) Run
+Admin-only examples:
 
-Boot QOS and run:
+```bash
+make -C programs/shell clean all \
+  SIGN_KEY="$(pwd)/keys/admin_ed25519.pem" \
+  PQ_SIGN_KEY="$(pwd)/keys/admin_mldsa65_sk.bin"
+
+make -C programs/webbrowser clean all \
+  SIGN_KEY="$(pwd)/keys/admin_ed25519.pem" \
+  PQ_SIGN_KEY="$(pwd)/keys/admin_mldsa65_sk.bin"
+```
+
+## Remote Login
+
+Remote login uses UDP port `2222`, X25519 key exchange, AES-GCM transport
+encryption, and the same `AUTH.BIN` password material as local login.
+
+Example client:
+
+```bash
+python3 tools/rlogin_client.py --host 10.0.0.88 --username admin --password 'change-me'
+```
+
+Broadcast discovery mode:
+
+```bash
+python3 tools/rlogin_client.py --host 255.255.255.255 --broadcast --username admin --password 'change-me'
+```
+
+## Wi-Fi Firmware Notes
+
+The current CYW43438 path expects firmware/NVRAM blobs on the SD card using
+8.3-compatible names:
+
+- `4343WIFI.BIN`
+- `4343NVRM.TXT`
+
+Typical sequence from the shell:
+
 ```text
-UQOS> run
+wifiload
+wifiup
+wifiver
+wifiscan
+wifijoin "SSID" "password"
+ping
 ```
 
-## Adding Another Developer Key
+`wifiinit` is a low-level SDIO probe helper. In normal use, prefer `wifiload`
+first because it handles the current SDIO/storage handoff path.
 
-Current implementation keeps the trust table in kernel source.
+## Roadmap
 
-To add another developer:
-1. Add a new key entry in `kernel/trust.c` with a new `key_id`, `TRUST_ROLE_DEVELOPER`, and `TRUST_SCOPE_USER_APP`.
-2. Extend `include/trust_keys_autogen.h` (or key generator) with that user’s Ed25519 public key bytes.
-3. Rebuild kernel with updated trust keys.
-4. Have that developer sign program manifests with their private key and matching key ID.
+Near-term priorities:
 
-## Roadmap Direction (Near Term)
-
-- Expand trust-key management tooling (more than admin/dev slots)
-- Replace static trust-key slots with scalable key manifest ingestion
-- Continue network stack hardening and protocol completeness
-- Add post-quantum signature path alongside Ed25519 (hybrid transition)
+- finish certificate-chain validation for HTTPS
+- harden TCP/socket behavior for real user programs and future servers
+- expand process/user memory limits beyond fixed tables
+- add DHCP
+- improve Wi-Fi reliability and Pi Zero 2 W portability
+- add USB keyboard/mouse input
+- continue Pi 5 compatibility work
+- improve graphics performance and explore acceleration options
+- evolve PQ crypto from artifact signatures toward network/session use where practical
 
 ## License
 
 All rights reserved.
-
