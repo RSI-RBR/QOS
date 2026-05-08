@@ -220,6 +220,7 @@ typedef struct {
     unsigned char in_toggle;
     unsigned char prev_report[USB_HID_REPORT_LEN];
     int have_prev_report;
+    unsigned long last_report_tick;
     unsigned char q[USB_HID_CHAR_QUEUE_LEN];
     unsigned int q_head;
     unsigned int q_tail;
@@ -424,6 +425,7 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
         g_kbd.prev_report[i] = report[i];
     }
     g_kbd.have_prev_report = 1;
+    g_kbd.last_report_tick = system_ticks;
 }
 
 static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
@@ -547,6 +549,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.boot_kbd = boot_kbd ? 1 : 0;
     g_kbd.in_toggle = 0;
     g_kbd.have_prev_report = 0;
+    g_kbd.last_report_tick = system_ticks;
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         g_kbd.prev_report[i] = 0;
     }
@@ -592,6 +595,14 @@ static int usb_hid_poll_once(void){
     g_root_info.hid_last_actual = actual;
     if (actual < 3u){
         g_root_info.hid_nodata_count++;
+        if (g_kbd.have_prev_report && (long)(system_ticks - g_kbd.last_report_tick) > 30){
+            for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+                g_kbd.prev_report[i] = 0;
+            }
+            g_kbd.have_prev_report = 0;
+            g_kbd.last_report_tick = system_ticks;
+            g_root_info.hid_stale_clear_count++;
+        }
         return 0;
     }
     g_root_info.hid_report_count++;
@@ -2518,6 +2529,9 @@ void usb_host_poll(void){
     }
     g_kbd_next_poll_tick = now + 1u;
     (void)usb_hid_poll_once();
+    if (g_kbd.q_count == 0u){
+        (void)usb_hid_poll_once();
+    }
 }
 
 int usb_host_try_getc(char* out){

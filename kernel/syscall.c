@@ -204,6 +204,8 @@ static void syscall_dump_usb_info(void){
         uart_putdec(info.hid_error_count);
         syscall_write_puts(-1, " last=");
         uart_putdec(info.hid_last_actual);
+        syscall_write_puts(-1, " stale_clear=");
+        uart_putdec(info.hid_stale_clear_count);
         syscall_write_puts(-1, "\n");
     } else if (info.child_hid_kbd_address != 0u){
         syscall_write_puts(-1, "USB HID kbd candidate addr=");
