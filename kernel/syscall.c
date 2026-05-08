@@ -436,6 +436,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
 
+            (void)terminal_attach_pid(pid, terminal_get_for_pid(process_current_pid()));
             kernel_preempt_exit();
             frame[TF_X0] = (unsigned long)pid;
             return frame_sp;
@@ -474,6 +475,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
 
+            (void)terminal_attach_pid(pid, terminal_get_for_pid(process_current_pid()));
             kernel_preempt_exit();
             frame[TF_X0] = (unsigned long)pid;
             return frame_sp;

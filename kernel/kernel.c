@@ -60,6 +60,7 @@ static int create_boot_shell_process(void){
     if (shell_prog.entry){
         int pid = process_create_loaded(shell_prog);
         if (pid >= 0){
+            (void)terminal_attach_pid(pid, 0);
             uart_puts("User shell started as PID ");
             uart_send('0' + pid);
             uart_puts("\n");
