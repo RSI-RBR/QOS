@@ -16,12 +16,10 @@ void klog_send(char c){
         return;
     }
 
-    int pid = process_current_pid();
-    if (pid >= 0){
-        terminal_putc_for_pid(pid, c);
-    } else{
-        terminal_putc(terminal_get_active(), -1, c);
-    }
+    char s[2];
+    s[0] = c;
+    s[1] = 0;
+    klog_puts(s);
 }
 
 void klog_puts(const char* s){
@@ -61,7 +59,7 @@ void klog_putdec(unsigned long val){
     int o = 0;
 
     if (val == 0UL){
-        klog_send('0');
+        klog_puts("0");
         return;
     }
 
