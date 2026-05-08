@@ -49,7 +49,7 @@
 #define TTBR0_ASID_SHIFT    48U
 #define TTBR0_ASID_MASK     (0xFFUL << TTBR0_ASID_SHIFT)
 #define MMU_TLB_WAIT_RETRY_INTERVAL 1024U
-#define MMU_TLB_WAIT_MAX_SPINS 2000000U
+#define MMU_TLB_WAIT_MAX_SPINS 20000000U
 
 typedef struct {
     unsigned long attridx;
@@ -233,7 +233,11 @@ static void mmu_tlb_shootdown_all_locked(void){
             spins = 0u;
             mmu_poke_unacked_cores(online, epoch, core);
         }
-        asm volatile("wfe");
+        // Do not sleep with WFE here: if a secondary core missed the IPI/SEV,
+        // the timeout counter would stop advancing and process creation could
+        // hang forever. Keep this as a bounded poll so unhealthy cores are
+        // quarantined and boot/shell startup remains recoverable.
+        asm volatile("nop" : : : "memory");
     }
     asm volatile("dmb ish" : : : "memory");
 }

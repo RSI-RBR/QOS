@@ -12,6 +12,7 @@
 #define SOCKET_EPHEMERAL_PORT_BASE 49152u
 #define SOCKET_EPHEMERAL_PORT_LAST 65535u
 #define SOCKET_STREAM_RX_CAP 65536u
+#define SOCKET_STREAM_POOL_SLOTS 4
 
 typedef struct {
     int used;
@@ -27,7 +28,7 @@ typedef struct {
     int connected;
     unsigned int stream_rx_len;
     unsigned int stream_rx_off;
-    unsigned char stream_rx[SOCKET_STREAM_RX_CAP];
+    int stream_pool_slot;
 } kernel_socket_t;
 
 static kernel_socket_t g_sockets[SOCKET_MAX_GLOBAL];
@@ -36,6 +37,8 @@ static unsigned short g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
 static spinlock_t g_socket_lock;
 static spinlock_t g_socket_stream_lock;
 static unsigned char g_stream_http_tmp[SOCKET_STREAM_RX_CAP];
+static unsigned char g_stream_rx_pool[SOCKET_STREAM_POOL_SLOTS][SOCKET_STREAM_RX_CAP];
+static int g_stream_pool_owner[SOCKET_STREAM_POOL_SLOTS];
 
 static unsigned char ascii_lower(unsigned char c){
     if (c >= 'A' && c <= 'Z'){
@@ -129,6 +132,39 @@ static int parse_http_get_request(const unsigned char* data,
     return host[0] ? 0 : -1;
 }
 
+static void release_stream_slot_locked(int si){
+    if (si < 0 || si >= SOCKET_MAX_GLOBAL){
+        return;
+    }
+    int slot = g_sockets[si].stream_pool_slot;
+    if (slot >= 0 && slot < SOCKET_STREAM_POOL_SLOTS &&
+        g_stream_pool_owner[slot] == si){
+        g_stream_pool_owner[slot] = -1;
+    }
+    g_sockets[si].stream_pool_slot = -1;
+    g_sockets[si].stream_rx_len = 0;
+    g_sockets[si].stream_rx_off = 0;
+}
+
+static int ensure_stream_slot_locked(int si){
+    if (si < 0 || si >= SOCKET_MAX_GLOBAL){
+        return -1;
+    }
+    int slot = g_sockets[si].stream_pool_slot;
+    if (slot >= 0 && slot < SOCKET_STREAM_POOL_SLOTS &&
+        g_stream_pool_owner[slot] == si){
+        return slot;
+    }
+    for (int i = 0; i < SOCKET_STREAM_POOL_SLOTS; i++){
+        if (g_stream_pool_owner[i] < 0){
+            g_stream_pool_owner[i] = si;
+            g_sockets[si].stream_pool_slot = i;
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void clear_socket(kernel_socket_t* s){
     if (!s){
         return;
@@ -149,6 +185,15 @@ static void clear_socket(kernel_socket_t* s){
     s->connected = 0;
     s->stream_rx_len = 0;
     s->stream_rx_off = 0;
+    s->stream_pool_slot = -1;
+}
+
+static void clear_socket_at_locked(int si){
+    if (si < 0 || si >= SOCKET_MAX_GLOBAL){
+        return;
+    }
+    release_stream_slot_locked(si);
+    clear_socket(&g_sockets[si]);
 }
 
 static int valid_pid(int pid){
@@ -209,7 +254,11 @@ void socket_layer_init(void){
     spinlock_init(&g_socket_stream_lock);
     unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     g_next_ephemeral_port = SOCKET_EPHEMERAL_PORT_BASE;
+    for (int i = 0; i < SOCKET_STREAM_POOL_SLOTS; i++){
+        g_stream_pool_owner[i] = -1;
+    }
     for (int i = 0; i < SOCKET_MAX_GLOBAL; i++){
+        g_sockets[i].stream_pool_slot = -1;
         clear_socket(&g_sockets[i]);
     }
     for (int p = 0; p < MAX_PROCESSES; p++){
@@ -228,7 +277,7 @@ void socket_close_all_for_pid(int pid){
     for (int fd = 0; fd < SOCKET_MAX_PER_PROCESS; fd++){
         int si = g_fd_map[pid][fd];
         if (si >= 0 && si < SOCKET_MAX_GLOBAL){
-            clear_socket(&g_sockets[si]);
+            clear_socket_at_locked(si);
         }
         g_fd_map[pid][fd] = -1;
     }
@@ -254,7 +303,7 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     }
     int fd = allocate_process_fd(pid);
     if (fd < 0){
-        clear_socket(&g_sockets[si]);
+        clear_socket_at_locked(si);
         spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
@@ -275,6 +324,7 @@ int ksocket_create(int pid, int domain, int type, int protocol){
     s->connected = 0;
     s->stream_rx_len = 0;
     s->stream_rx_off = 0;
+    s->stream_pool_slot = -1;
 
     g_fd_map[pid][fd] = si;
     spin_unlock_irqrestore(&g_socket_lock, irq);
@@ -391,8 +441,15 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         if ((unsigned int)n > stream_out_cap){
             n = (int)stream_out_cap;
         }
+        int stream_slot = ensure_stream_slot_locked(si);
+        if (stream_slot < 0){
+            s->stream_rx_len = 0;
+            s->stream_rx_off = 0;
+            spin_unlock_irqrestore(&g_socket_lock, irq);
+            return -1;
+        }
         for (int i = 0; i < n; i++){
-            s->stream_rx[i] = g_stream_http_tmp[i];
+            g_stream_rx_pool[stream_slot][i] = g_stream_http_tmp[i];
         }
         s->stream_rx_len = (unsigned int)n;
         s->stream_rx_off = 0;
@@ -435,12 +492,21 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                 spin_unlock_irqrestore(&g_socket_lock, irq);
                 return 0;
             }
+            int stream_slot = s->stream_pool_slot;
+            if (stream_slot < 0 || stream_slot >= SOCKET_STREAM_POOL_SLOTS ||
+                g_stream_pool_owner[stream_slot] != si){
+                spin_unlock_irqrestore(&g_socket_lock, irq);
+                return -1;
+            }
             unsigned int available = s->stream_rx_len - s->stream_rx_off;
             unsigned int n = out_cap < available ? out_cap : available;
             for (unsigned int i = 0; i < n; i++){
-                out[i] = s->stream_rx[s->stream_rx_off + i];
+                out[i] = g_stream_rx_pool[stream_slot][s->stream_rx_off + i];
             }
             s->stream_rx_off += n;
+            if (s->stream_rx_off >= s->stream_rx_len){
+                release_stream_slot_locked(si);
+            }
             spin_unlock_irqrestore(&g_socket_lock, irq);
             return (int)n;
         }
@@ -490,7 +556,7 @@ int ksocket_close(int pid, int fd){
         spin_unlock_irqrestore(&g_socket_lock, irq);
         return -1;
     }
-    clear_socket(&g_sockets[si]);
+    clear_socket_at_locked(si);
     g_fd_map[pid][fd] = -1;
     spin_unlock_irqrestore(&g_socket_lock, irq);
     return 0;
