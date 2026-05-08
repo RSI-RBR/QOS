@@ -13,7 +13,7 @@
 
 static char g_input[INPUT_CAP];
 static int g_input_len = 0;
-static int g_accept_gzip = 0;
+static int g_accept_gzip = 1;
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
