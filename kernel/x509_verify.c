@@ -78,6 +78,15 @@ typedef struct {
     unsigned int path_len_constraint;
     int key_usage_present;
     unsigned int key_usage_bits;
+    int cert_policies_present;
+    int cert_policy_any;
+    int policy_mappings_present;
+    int policy_constraints_req_exp_present;
+    unsigned int policy_constraints_req_exp;
+    int policy_constraints_inhibit_map_present;
+    unsigned int policy_constraints_inhibit_map;
+    int inhibit_any_policy_present;
+    unsigned int inhibit_any_policy_skip;
     int name_constraints_present;
     int name_constraints_critical;
     int name_constraints_parse_error;
@@ -1009,6 +1018,109 @@ static int parse_extended_key_usage(const unsigned char* ext_value_der,
     return 0;
 }
 
+static int parse_certificate_policies_ext(const unsigned char* ext_value_der,
+                                          unsigned int ext_value_der_len,
+                                          int* out_has_any){
+    static const unsigned char OID_ANY_POLICY[] = { 0x55,0x1D,0x20,0x00 };
+    asn1_tlv_t pols;
+    unsigned int off = 0u;
+    int has_any = 0;
+    if (!ext_value_der || ext_value_der_len == 0u || !out_has_any){
+        return -1;
+    }
+    if (asn1_parse_tlv(ext_value_der, ext_value_der_len, &pols) != 0 || pols.tag != 0x30u){
+        return -1;
+    }
+    while (off < pols.val_len){
+        asn1_tlv_t pi;
+        asn1_tlv_t oid;
+        if (asn1_parse_tlv(pols.val + off, pols.val_len - off, &pi) != 0 || pi.tag != 0x30u){
+            return -1;
+        }
+        if (asn1_parse_tlv(pi.val, pi.val_len, &oid) != 0 || oid.tag != 0x06u){
+            return -1;
+        }
+        if (oid_equal(&oid, OID_ANY_POLICY, sizeof(OID_ANY_POLICY))){
+            has_any = 1;
+        }
+        off += pi.total_len;
+    }
+    *out_has_any = has_any;
+    return 0;
+}
+
+static int parse_policy_constraints_ext(const unsigned char* ext_value_der,
+                                        unsigned int ext_value_der_len,
+                                        int* out_req_present,
+                                        unsigned int* out_req,
+                                        int* out_map_present,
+                                        unsigned int* out_map){
+    asn1_tlv_t pc;
+    unsigned int off = 0u;
+    if (!ext_value_der || ext_value_der_len == 0u ||
+        !out_req_present || !out_req || !out_map_present || !out_map){
+        return -1;
+    }
+    if (asn1_parse_tlv(ext_value_der, ext_value_der_len, &pc) != 0 || pc.tag != 0x30u){
+        return -1;
+    }
+    while (off < pc.val_len){
+        asn1_tlv_t fld;
+        if (asn1_parse_tlv(pc.val + off, pc.val_len - off, &fld) != 0){
+            return -1;
+        }
+        if (fld.tag == 0xA0u || fld.tag == 0xA1u){
+            asn1_tlv_t iv;
+            const unsigned char* p = 0;
+            unsigned int n = 0u;
+            unsigned int v = 0u;
+            if (asn1_parse_tlv(fld.val, fld.val_len, &iv) != 0 || iv.tag != 0x02u){
+                return -1;
+            }
+            if (asn1_integer_positive_bytes(&iv, &p, &n) != 0 || n > 4u){
+                return -1;
+            }
+            for (unsigned int i = 0; i < n; i++){
+                v = (v << 8) | p[i];
+            }
+            if (fld.tag == 0xA0u){
+                *out_req_present = 1;
+                *out_req = v;
+            } else{
+                *out_map_present = 1;
+                *out_map = v;
+            }
+        } else{
+            return -1;
+        }
+        off += fld.total_len;
+    }
+    return 0;
+}
+
+static int parse_inhibit_any_policy_ext(const unsigned char* ext_value_der,
+                                        unsigned int ext_value_der_len,
+                                        unsigned int* out_skip){
+    asn1_tlv_t iv;
+    const unsigned char* p = 0;
+    unsigned int n = 0u;
+    unsigned int v = 0u;
+    if (!ext_value_der || ext_value_der_len == 0u || !out_skip){
+        return -1;
+    }
+    if (asn1_parse_tlv(ext_value_der, ext_value_der_len, &iv) != 0 || iv.tag != 0x02u){
+        return -1;
+    }
+    if (asn1_integer_positive_bytes(&iv, &p, &n) != 0 || n > 4u){
+        return -1;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        v = (v << 8) | p[i];
+    }
+    *out_skip = v;
+    return 0;
+}
+
 static int parse_name_constraints_dns_subtrees(const unsigned char* payload,
                                                unsigned int payload_len,
                                                const unsigned char** out_names,
@@ -1137,6 +1249,10 @@ static int parse_cert_tbs(const unsigned char* tbs_tlv,
     static const unsigned char OID_SAN[] = { 0x55,0x1D,0x11 };
     static const unsigned char OID_BASIC_CONSTRAINTS[] = { 0x55,0x1D,0x13 };
     static const unsigned char OID_KEY_USAGE[] = { 0x55,0x1D,0x0F };
+    static const unsigned char OID_CERT_POLICIES[] = { 0x55,0x1D,0x20 };
+    static const unsigned char OID_POLICY_MAPPINGS[] = { 0x55,0x1D,0x21 };
+    static const unsigned char OID_POLICY_CONSTRAINTS[] = { 0x55,0x1D,0x24 };
+    static const unsigned char OID_INHIBIT_ANY_POLICY[] = { 0x55,0x1D,0x36 };
     static const unsigned char OID_NAME_CONSTRAINTS[] = { 0x55,0x1D,0x1E };
     static const unsigned char OID_EKU[] = { 0x55,0x1D,0x25 };
     static const unsigned char OID_SUBJECT_KEY_ID[] = { 0x55,0x1D,0x0E };
@@ -1303,6 +1419,29 @@ static int parse_cert_tbs(const unsigned char* tbs_tlv,
                 if (san_match){
                     match = 1;
                 }
+            } else if (oid_equal(&oid, OID_CERT_POLICIES, sizeof(OID_CERT_POLICIES))){
+                int has_any = 0;
+                if (parse_certificate_policies_ext(ext_value.val, ext_value.val_len, &has_any) != 0){
+                    return -1;
+                }
+                out->cert_policies_present = 1;
+                out->cert_policy_any = has_any;
+            } else if (oid_equal(&oid, OID_POLICY_MAPPINGS, sizeof(OID_POLICY_MAPPINGS))){
+                out->policy_mappings_present = 1;
+            } else if (oid_equal(&oid, OID_POLICY_CONSTRAINTS, sizeof(OID_POLICY_CONSTRAINTS))){
+                if (parse_policy_constraints_ext(ext_value.val, ext_value.val_len,
+                                                 &out->policy_constraints_req_exp_present,
+                                                 &out->policy_constraints_req_exp,
+                                                 &out->policy_constraints_inhibit_map_present,
+                                                 &out->policy_constraints_inhibit_map) != 0){
+                    return -1;
+                }
+            } else if (oid_equal(&oid, OID_INHIBIT_ANY_POLICY, sizeof(OID_INHIBIT_ANY_POLICY))){
+                if (parse_inhibit_any_policy_ext(ext_value.val, ext_value.val_len,
+                                                 &out->inhibit_any_policy_skip) != 0){
+                    return -1;
+                }
+                out->inhibit_any_policy_present = 1;
             } else if (oid_equal(&oid, OID_NAME_CONSTRAINTS, sizeof(OID_NAME_CONSTRAINTS))){
                 out->name_constraints_present = 1;
                 out->name_constraints_critical = critical ? 1 : 0;
@@ -1400,6 +1539,15 @@ static int parse_cert_identity(const unsigned char* der,
     out->path_len_constraint = 0u;
     out->key_usage_present = 0;
     out->key_usage_bits = 0u;
+    out->cert_policies_present = 0;
+    out->cert_policy_any = 0;
+    out->policy_mappings_present = 0;
+    out->policy_constraints_req_exp_present = 0;
+    out->policy_constraints_req_exp = 0u;
+    out->policy_constraints_inhibit_map_present = 0;
+    out->policy_constraints_inhibit_map = 0u;
+    out->inhibit_any_policy_present = 0;
+    out->inhibit_any_policy_skip = 0u;
     out->name_constraints_present = 0;
     out->name_constraints_critical = 0;
     out->name_constraints_parse_error = 0;
@@ -2048,6 +2196,16 @@ static int cert_is_revoked(const unsigned char issuer_hash[32],
     return 0;
 }
 
+static int cert_is_self_issued(const parsed_cert_t* cert){
+    if (!cert || !cert->subject_tlv || !cert->issuer_tlv){
+        return 0;
+    }
+    if (cert->subject_tlv_len != cert->issuer_tlv_len){
+        return 0;
+    }
+    return memcmp(cert->subject_tlv, cert->issuer_tlv, cert->subject_tlv_len) == 0;
+}
+
 static int leaf_host_allowed_by_name_constraints(const parsed_cert_t* ca,
                                                  const char* host,
                                                  unsigned int host_len){
@@ -2263,6 +2421,9 @@ int x509_verify_tls13_certificate(const char* host,
     int anchor_idx = -1;
     int anchor_in_chain = 0;
     long long now_unix = 0;
+    unsigned int explicit_policy = 0u;
+    unsigned int inhibit_any_policy = 0u;
+    unsigned int policy_mapping = 0u;
 
     if (out_result){
         out_result->chain_certs = 0u;
@@ -2345,6 +2506,9 @@ int x509_verify_tls13_certificate(const char* host,
     if (off != list_end || cert_count == 0u){
         return -1;
     }
+    explicit_policy = cert_count + 1u;
+    inhibit_any_policy = cert_count + 1u;
+    policy_mapping = cert_count + 1u;
 
     for (unsigned int i = 0u; i < cert_count; i++){
         int leaf = (i == 0u) ? 1 : 0;
@@ -2357,6 +2521,12 @@ int x509_verify_tls13_certificate(const char* host,
         }
         if (certs[i].unknown_critical_ext){
             uart_puts("X509: unknown critical extension.\n");
+            return -1;
+        }
+        if (certs[i].name_constraints_present &&
+            certs[i].name_constraints_critical &&
+            certs[i].name_constraints_parse_error){
+            uart_puts("X509: critical nameConstraints parse failed.\n");
             return -1;
         }
         if (cert_time_valid_now(&certs[i], now_unix) != 0){
@@ -2471,7 +2641,13 @@ int x509_verify_tls13_certificate(const char* host,
     // path_idx[0] is the leaf; all later certificates are CAs.
     for (unsigned int i = 1u; i < path_len; i++){
         const parsed_cert_t* ca = &certs[path_idx[i]];
-        unsigned int ca_below = i - 1u; // number of CA certs between leaf and this CA
+        unsigned int ca_below = 0u; // non-self-issued CA certs between leaf and this CA
+        for (unsigned int k = 1u; k < i; k++){
+            const parsed_cert_t* lower = &certs[path_idx[k]];
+            if (!cert_is_self_issued(lower)){
+                ca_below++;
+            }
+        }
         if (leaf_host_allowed_by_name_constraints(ca, host, host_len) != 0){
             uart_puts("X509: nameConstraints reject leaf host.\n");
             return -1;
@@ -2482,8 +2658,14 @@ int x509_verify_tls13_certificate(const char* host,
         }
     }
     if (!anchor_in_chain && anchor_idx >= 0){
-        unsigned int ca_below_anchor = (path_len > 0u) ? (path_len - 1u) : 0u;
+        unsigned int ca_below_anchor = 0u;
         const ca_anchor_t* a = &g_ca_anchors[(unsigned int)anchor_idx];
+        for (unsigned int k = 1u; k < path_len; k++){
+            const parsed_cert_t* lower = &certs[path_idx[k]];
+            if (!cert_is_self_issued(lower)){
+                ca_below_anchor++;
+            }
+        }
         if (a->path_len_present && ca_below_anchor > a->path_len_constraint){
             uart_puts("X509: pathLen constraint violated (anchor).\n");
             return -1;
@@ -2496,6 +2678,55 @@ int x509_verify_tls13_certificate(const char* host,
         if (cert_is_revoked(issuer_hashes[ci], &certs[ci])){
             uart_puts("X509: certificate revoked by local policy.\n");
             return -1;
+        }
+    }
+
+    // Policy-state processing (compact RFC5280-style counters).
+    // Traverse from trust side to leaf (path_idx[path_len-1] .. path_idx[0]).
+    for (unsigned int ridx = path_len; ridx > 0u; ridx--){
+        unsigned int ci = path_idx[ridx - 1u];
+        const parsed_cert_t* c = &certs[ci];
+        int is_leaf = (ridx == 1u) ? 1 : 0;
+        int self_issued = cert_is_self_issued(c);
+
+        if (policy_mapping == 0u && c->policy_mappings_present){
+            uart_puts("X509: policyMappings inhibited.\n");
+            return -1;
+        }
+        if (explicit_policy == 0u && !c->cert_policies_present){
+            uart_puts("X509: explicit policy required but missing certificatePolicies.\n");
+            return -1;
+        }
+        if (inhibit_any_policy == 0u &&
+            c->cert_policies_present && c->cert_policy_any &&
+            !(self_issued && !is_leaf)){
+            uart_puts("X509: anyPolicy inhibited.\n");
+            return -1;
+        }
+
+        if (!self_issued){
+            if (explicit_policy > 0u){
+                explicit_policy--;
+            }
+            if (policy_mapping > 0u){
+                policy_mapping--;
+            }
+            if (inhibit_any_policy > 0u){
+                inhibit_any_policy--;
+            }
+        }
+
+        if (c->policy_constraints_req_exp_present &&
+            c->policy_constraints_req_exp < explicit_policy){
+            explicit_policy = c->policy_constraints_req_exp;
+        }
+        if (c->policy_constraints_inhibit_map_present &&
+            c->policy_constraints_inhibit_map < policy_mapping){
+            policy_mapping = c->policy_constraints_inhibit_map;
+        }
+        if (c->inhibit_any_policy_present &&
+            c->inhibit_any_policy_skip < inhibit_any_policy){
+            inhibit_any_policy = c->inhibit_any_policy_skip;
         }
     }
 
