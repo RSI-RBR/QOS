@@ -6,6 +6,10 @@
 #define RESP_CAP 16384
 #define DNS_TIMEOUT_MS 3000u
 #define RECV_TIMEOUT_MS 6000u
+#define HOST_CAP 128
+#define PATH_CAP 256
+#define URL_CAP 384
+#define MAX_REDIRECTS 4
 
 static char g_input[INPUT_CAP];
 static int g_input_len = 0;
@@ -67,6 +71,262 @@ static int str_starts_with(const char* s, const char* prefix){
         prefix++;
     }
     return 1;
+}
+
+static int copy_cstr(char* dst, int cap, const char* src){
+    int i = 0;
+    if (!dst || cap <= 0 || !src){
+        return -1;
+    }
+    while (src[i]){
+        if (i >= (cap - 1)){
+            return -1;
+        }
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+    return 0;
+}
+
+static int str_eq_ci_n(const unsigned char* a, const char* b, int n){
+    int i = 0;
+    if (!a || !b || n < 0){
+        return 0;
+    }
+    while (i < n && b[i]){
+        if (ascii_lower(a[i]) != ascii_lower((unsigned char)b[i])){
+            return 0;
+        }
+        i++;
+    }
+    return (i == n && b[i] == 0);
+}
+
+static int parse_http_status_code(const unsigned char* resp, int len){
+    int i = 0;
+    if (!resp || len <= 0){
+        return 0;
+    }
+    while (i < len && resp[i] != ' ' && resp[i] != '\r' && resp[i] != '\n'){
+        i++;
+    }
+    while (i < len && resp[i] == ' '){
+        i++;
+    }
+    if (i + 2 >= len){
+        return 0;
+    }
+    if (resp[i] < '0' || resp[i] > '9' ||
+        resp[i + 1] < '0' || resp[i + 1] > '9' ||
+        resp[i + 2] < '0' || resp[i + 2] > '9'){
+        return 0;
+    }
+    return (resp[i] - '0') * 100 + (resp[i + 1] - '0') * 10 + (resp[i + 2] - '0');
+}
+
+static int extract_header_value(const unsigned char* resp, int len, const char* header_name,
+                                char* out, int out_cap){
+    int i = 0;
+    int name_len = 0;
+    if (!resp || len <= 0 || !header_name || !out || out_cap <= 1){
+        return -1;
+    }
+    while (header_name[name_len]){
+        name_len++;
+    }
+
+    // Skip status line.
+    while (i < len && resp[i] != '\n'){
+        i++;
+    }
+    if (i < len){
+        i++;
+    }
+
+    while (i < len){
+        int ls = i;
+        int le = ls;
+        int colon = -1;
+        int vs, ve, n, w;
+
+        while (le < len && resp[le] != '\n'){
+            if (colon < 0 && resp[le] == ':'){
+                colon = le;
+            }
+            le++;
+        }
+
+        while (le > ls && (resp[le - 1] == '\r' || resp[le - 1] == '\n')){
+            le--;
+        }
+        if (le == ls){
+            break;
+        }
+
+        if (colon > ls && str_eq_ci_n(&resp[ls], header_name, colon - ls)){
+            vs = colon + 1;
+            while (vs < le && (resp[vs] == ' ' || resp[vs] == '\t')){
+                vs++;
+            }
+            ve = le;
+            while (ve > vs && (resp[ve - 1] == ' ' || resp[ve - 1] == '\t')){
+                ve--;
+            }
+            n = ve - vs;
+            if (n <= 0){
+                return -1;
+            }
+            if (n > out_cap - 1){
+                n = out_cap - 1;
+            }
+            for (w = 0; w < n; w++){
+                out[w] = (char)resp[vs + w];
+            }
+            out[n] = 0;
+            return 0;
+        }
+
+        i = (le < len) ? (le + 1) : le;
+    }
+    return -1;
+}
+
+static int parse_url_target(const char* in, int default_https,
+                            int* out_https, char* out_host, int host_cap,
+                            char* out_path, int path_cap){
+    const char* p;
+    int https;
+    int hi = 0;
+    int pi = 0;
+    int colon_idx = -1;
+
+    if (!in || !*in || !out_https || !out_host || host_cap < 2 || !out_path || path_cap < 2){
+        return -1;
+    }
+
+    p = in;
+    https = default_https ? 1 : 0;
+    if (str_starts_with(p, "https://")){
+        https = 1;
+        p += 8;
+    } else if (str_starts_with(p, "http://")){
+        https = 0;
+        p += 7;
+    } else if (str_starts_with(p, "//")){
+        p += 2;
+    }
+
+    while (*p && *p != '/'){
+        if (hi >= host_cap - 1){
+            return -1;
+        }
+        if (*p == ':' && colon_idx < 0){
+            colon_idx = hi;
+        }
+        out_host[hi++] = *p++;
+    }
+    out_host[hi] = 0;
+    if (hi == 0){
+        return -1;
+    }
+
+    if (colon_idx >= 0){
+        int port = 0;
+        int j = colon_idx + 1;
+        if (j >= hi){
+            return -1;
+        }
+        while (j < hi){
+            char c = out_host[j++];
+            if (c < '0' || c > '9'){
+                return -1;
+            }
+            port = (port * 10) + (c - '0');
+        }
+        out_host[colon_idx] = 0;
+        if (port == 443){
+            https = 1;
+        } else if (port == 80){
+            https = 0;
+        }
+    }
+
+    if (*p == 0){
+        out_path[0] = '/';
+        out_path[1] = 0;
+    } else{
+        while (*p){
+            if (pi >= path_cap - 1){
+                return -1;
+            }
+            out_path[pi++] = *p++;
+        }
+        out_path[pi] = 0;
+    }
+
+    *out_https = https;
+    return 0;
+}
+
+static int resolve_redirect_target(const char* location,
+                                   int cur_https,
+                                   const char* cur_host,
+                                   const char* cur_path,
+                                   int* out_https,
+                                   char* out_host, int host_cap,
+                                   char* out_path, int path_cap){
+    char tmp[URL_CAP];
+    int k = 0;
+
+    if (!location || !*location || !cur_host || !*cur_host ||
+        !cur_path || !*cur_path || !out_https || !out_host || !out_path){
+        return -1;
+    }
+
+    if (str_starts_with(location, "https://") ||
+        str_starts_with(location, "http://") ||
+        str_starts_with(location, "//")){
+        return parse_url_target(location, cur_https, out_https, out_host, host_cap, out_path, path_cap);
+    }
+
+    if (location[0] == '/'){
+        if (copy_cstr(out_host, host_cap, cur_host) != 0 ||
+            copy_cstr(out_path, path_cap, location) != 0){
+            return -1;
+        }
+        *out_https = cur_https;
+        return 0;
+    }
+
+    // Relative location: resolve against current directory.
+    while (cur_path[k] && k < (URL_CAP - 1)){
+        tmp[k] = cur_path[k];
+        k++;
+    }
+    tmp[k] = 0;
+
+    if (k == 0 || tmp[0] != '/'){
+        tmp[0] = '/';
+        tmp[1] = 0;
+        k = 1;
+    }
+
+    while (k > 0 && tmp[k - 1] != '/'){
+        k--;
+    }
+    tmp[k] = 0;
+
+    if (append_str(tmp, URL_CAP, &k, location) != 0){
+        return -1;
+    }
+
+    if (copy_cstr(out_host, host_cap, cur_host) != 0 ||
+        copy_cstr(out_path, path_cap, tmp) != 0){
+        return -1;
+    }
+    *out_https = cur_https;
+    return 0;
 }
 
 static int append_char(char* dst, int cap, int* idx, char c){
@@ -316,6 +576,54 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
     return total;
 }
 
+static int http_fetch_follow_redirects(int use_https,
+                                       const char* host_in,
+                                       const char* path_in,
+                                       unsigned char* resp,
+                                       int resp_cap){
+    char host[HOST_CAP];
+    char path[PATH_CAP];
+    char location[URL_CAP];
+    int redirects = 0;
+    int n = 0;
+
+    if (copy_cstr(host, sizeof(host), host_in) != 0 ||
+        copy_cstr(path, sizeof(path), path_in) != 0){
+        return -1;
+    }
+
+    while (1){
+        unsigned short port = use_https ? 443u : 80u;
+        int status;
+
+        n = http_fetch_raw(host, path, port, resp, resp_cap);
+        if (n <= 0){
+            return n;
+        }
+
+        status = parse_http_status_code(resp, n);
+        if ((status != 301 && status != 302 && status != 303 && status != 307 && status != 308) ||
+            redirects >= MAX_REDIRECTS){
+            return n;
+        }
+
+        if (extract_header_value(resp, n, "Location", location, sizeof(location)) != 0){
+            return n;
+        }
+
+        qos_puts("Redirect -> ");
+        qos_puts(location);
+        qos_puts("\n");
+
+        if (resolve_redirect_target(location, use_https, host, path,
+                                    &use_https, host, sizeof(host), path, sizeof(path)) != 0){
+            return n;
+        }
+
+        redirects++;
+    }
+}
+
 static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
@@ -325,9 +633,10 @@ static void cmd_help(void){
 
 static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
-    const char* req_host = host;
-    const char* req_path = (path && *path) ? path : 0;
-    unsigned short port = 80u;
+    char req_host[HOST_CAP];
+    char req_path[PATH_CAP];
+    char target[URL_CAP];
+    int use_https = 0;
     int n;
 
     if (!host || !*host){
@@ -335,40 +644,39 @@ static void cmd_open(char* host, const char* path){
         return;
     }
 
-    if (str_starts_with(req_host, "https://")){
-        req_host += 8;
-        port = 443u;
-    } else if (str_starts_with(req_host, "http://")){
-        req_host += 7;
+    if (copy_cstr(target, sizeof(target), host) != 0){
+        qos_puts("Target too long.\n");
+        return;
     }
-
-    char* embedded_path = 0;
-    for (char* p = (char*)req_host; *p; p++){
-        if (*p == '/'){
-            *p = 0;
-            embedded_path = p;
-            break;
+    if (path && *path){
+        int tlen = 0;
+        while (target[tlen]){
+            tlen++;
+        }
+        if (tlen > 0 && target[tlen - 1] != '/' && path[0] != '/'){
+            if (append_char(target, sizeof(target), &tlen, '/') != 0){
+                qos_puts("Target too long.\n");
+                return;
+            }
+        }
+        if (append_str(target, sizeof(target), &tlen, path) != 0){
+            qos_puts("Target too long.\n");
+            return;
         }
     }
-    if ((!req_path || !*req_path) && embedded_path && *embedded_path){
-        req_path = embedded_path;
-    }
-    if (!req_path || !*req_path){
-        req_path = "/";
-    }
 
-    if (!*req_host){
+    if (parse_url_target(target, 0, &use_https, req_host, sizeof(req_host), req_path, sizeof(req_path)) != 0){
         qos_puts("Usage: open <url|host> [path]\n");
         return;
     }
 
     qos_puts("Fetching ");
-    qos_puts(port == 443u ? "https://" : "http://");
+    qos_puts(use_https ? "https://" : "http://");
     qos_puts(req_host);
     qos_puts(req_path);
     qos_puts("\n");
 
-    n = http_fetch_raw(req_host, req_path, port, resp, (int)sizeof(resp));
+    n = http_fetch_follow_redirects(use_https, req_host, req_path, resp, (int)sizeof(resp));
     if (n <= 0){
         qos_puts("Fetch failed or empty.\n");
         return;

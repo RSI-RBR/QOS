@@ -325,9 +325,10 @@ static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
 // - Group 0x6399: ecosystem draft ID for X25519+Kyber768 style KEM hybrids.
 // - Signature scheme 0x0905: draft allocation for ML-DSA-65 (Dilithium level 3).
 // TLS key exchange remains X25519-only until a KEM backend is integrated.
+// Keep this OFF by default for broad compatibility with strict servers.
 #define TLS13_GROUP_X25519_KYBER768_DRAFT00 0x6399u
 #define TLS13_SIGALG_MLDSA65 0x0905u
-static const int g_tls13_advertise_pq = 1;
+static const int g_tls13_advertise_pq = 0;
 
 static void be24_write(unsigned char* p, unsigned int v){
     p[0] = (unsigned char)((v >> 16) & 0xFFu);
