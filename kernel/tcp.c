@@ -600,7 +600,7 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms
     {
-        unsigned short sigs[9];
+        unsigned short sigs[16];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
@@ -608,9 +608,18 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
         sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
         sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
+        // Keep broader compatibility for CertificateVerify negotiation.
+        // Chain verification remains enforced in x509_verify.
+        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
+        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
+        sigs[scount++] = 0x0807u; // ed25519
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
+        if (g_tls13_advertise_pq){
+            sigs[scount++] = TLS13_SIGALG_MLDSA65;
+        }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
         if (i + 4u + ext_len > out_cap){
@@ -932,10 +941,16 @@ static int tls13_sigalg_is_supported(unsigned short alg){
         case 0x0809u: // rsa_pss_pss_sha256
         case 0x080Au: // rsa_pss_pss_sha384
         case 0x080Bu: // rsa_pss_pss_sha512
+        case 0x0403u: // ecdsa_secp256r1_sha256
+        case 0x0503u: // ecdsa_secp384r1_sha384
+        case 0x0603u: // ecdsa_secp521r1_sha512
+        case 0x0807u: // ed25519
         case 0x0401u: // rsa_pkcs1_sha256
         case 0x0501u: // rsa_pkcs1_sha384
         case 0x0601u: // rsa_pkcs1_sha512
             return 1;
+        case TLS13_SIGALG_MLDSA65:
+            return g_tls13_advertise_pq ? 1 : 0;
         default:
             return 0;
     }
@@ -1148,7 +1163,11 @@ int tcp_https_get(const unsigned char dst_ip[4],
                 unsigned int alert_desc = rec_payload[1];
                 uart_puts("HTTPS TLS alert desc=");
                 uart_putdec((unsigned long)alert_desc);
-                uart_puts("\n");
+                if (alert_desc == 40u){
+                    uart_puts(" (handshake_failure: likely no mutually accepted cert/signature path)\n");
+                } else{
+                    uart_puts("\n");
+                }
                 HTTPS_FAIL(-200 - (int)alert_desc);
             }
             HTTPS_FAIL(-109);
