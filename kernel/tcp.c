@@ -600,21 +600,14 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms
     {
-        unsigned short sigs[12];
+        unsigned short sigs[6];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
         sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
-        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
-        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
-        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
-        sigs[scount++] = 0x0807u; // ed25519
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
-        if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65;
-        }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
         if (i + 4u + ext_len > out_cap){
@@ -630,21 +623,14 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms_cert
     {
-        unsigned short sigs[12];
+        unsigned short sigs[6];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
         sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
-        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
-        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
-        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
-        sigs[scount++] = 0x0807u; // ed25519
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
-        if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65;
-        }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
         if (i + 4u + ext_len > out_cap){
@@ -937,19 +923,51 @@ static int tls13_sigalg_is_supported(unsigned short alg){
         case 0x0804u: // rsa_pss_rsae_sha256
         case 0x0805u: // rsa_pss_rsae_sha384
         case 0x0806u: // rsa_pss_rsae_sha512
-        case 0x0403u: // ecdsa_secp256r1_sha256
-        case 0x0503u: // ecdsa_secp384r1_sha384
-        case 0x0603u: // ecdsa_secp521r1_sha512
-        case 0x0807u: // ed25519
         case 0x0401u: // rsa_pkcs1_sha256
         case 0x0501u: // rsa_pkcs1_sha384
         case 0x0601u: // rsa_pkcs1_sha512
             return 1;
-        case TLS13_SIGALG_MLDSA65:
-            return g_tls13_advertise_pq ? 1 : 0;
         default:
             return 0;
     }
+}
+
+static int tls13_verify_server_certificate_verify(const x509_verify_result_t* cert,
+                                                  unsigned short sig_alg,
+                                                  const unsigned char transcript_hash[32],
+                                                  const unsigned char* signature,
+                                                  unsigned int signature_len){
+    static const char context[] = "TLS 1.3, server CertificateVerify";
+    unsigned char signed_msg[64u + sizeof(context) + 32u];
+    unsigned int o = 0u;
+
+    if (!cert || !transcript_hash || !signature || signature_len == 0u){
+        return -1;
+    }
+    if (!tls13_sigalg_is_supported(sig_alg)){
+        return -1;
+    }
+    if (cert->leaf_key_alg != X509_VERIFY_KEY_RSA ||
+        cert->leaf_rsa_n_len == 0u || cert->leaf_rsa_e_len == 0u){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < 64u; i++){
+        signed_msg[o++] = 0x20u;
+    }
+    for (unsigned int i = 0; i < (unsigned int)(sizeof(context) - 1u); i++){
+        signed_msg[o++] = (unsigned char)context[i];
+    }
+    signed_msg[o++] = 0u;
+    for (unsigned int i = 0; i < 32u; i++){
+        signed_msg[o++] = transcript_hash[i];
+    }
+
+    return rsa_verify_x509_signature(cert->leaf_rsa_n, cert->leaf_rsa_n_len,
+                                     cert->leaf_rsa_e, cert->leaf_rsa_e_len,
+                                     sig_alg,
+                                     signed_msg, o,
+                                     signature, signature_len);
 }
 
 int tcp_https_get(const unsigned char dst_ip[4],
@@ -1042,6 +1060,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
     x509_res.chain_certs = 0u;
     x509_res.anchor_count = 0u;
     x509_res.leaf_cert_sig_alg = 0u;
+    x509_res.leaf_key_alg = X509_VERIFY_KEY_NONE;
+    x509_res.leaf_rsa_n_len = 0u;
+    x509_res.leaf_rsa_e_len = 0u;
     x509_res.hostname_ok = 0;
     x509_res.chain_anchor_ok = 0;
     g_conn.state = TCP_ST_SYN_SENT;
@@ -1304,6 +1325,26 @@ int tcp_https_get(const unsigned char dst_ip[4],
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
                     HTTPS_FAIL(-138);
+                }
+                if (!x509_cert_checked){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-139);
+                }
+                sha256_snapshot(&transcript, thash);
+                if (tls13_verify_server_certificate_verify(&x509_res,
+                                                           sig_alg,
+                                                           thash,
+                                                           &hs_ptr[8],
+                                                           (unsigned int)sig_len) != 0){
+                    uart_puts("HTTPS CertificateVerify failed alg=");
+                    uart_puthex((unsigned int)sig_alg);
+                    uart_puts("\n");
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-142);
                 }
                 saw_server_certificate_verify = 1;
                 server_cert_verify_alg = sig_alg;

@@ -73,6 +73,7 @@ kernel/argon2_kdf.c \
 kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \
+kernel/rsa_verify.c \
 kernel/arp.c \
 kernel/ipv4.c \
 kernel/icmp.c \

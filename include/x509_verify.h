@@ -1,10 +1,20 @@
 #ifndef X509_VERIFY_H
 #define X509_VERIFY_H
 
+#include "rsa_verify.h"
+
+#define X509_VERIFY_KEY_NONE 0u
+#define X509_VERIFY_KEY_RSA 1u
+
 typedef struct {
     unsigned int chain_certs;
     unsigned int anchor_count;
     unsigned short leaf_cert_sig_alg;
+    unsigned int leaf_key_alg;
+    unsigned char leaf_rsa_n[RSA_VERIFY_MAX_MOD_BYTES];
+    unsigned int leaf_rsa_n_len;
+    unsigned char leaf_rsa_e[RSA_VERIFY_MAX_EXP_BYTES];
+    unsigned int leaf_rsa_e_len;
     int hostname_ok;
     int chain_anchor_ok;
 } x509_verify_result_t;
