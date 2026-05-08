@@ -27,6 +27,17 @@ static void atomic_or_u32(volatile unsigned int* addr, unsigned int bits){
     } while (st != 0);
 }
 
+static void atomic_and_u32(volatile unsigned int* addr, unsigned int bits){
+    unsigned int oldv;
+    unsigned int newv;
+    unsigned int st;
+    do{
+        asm volatile("ldaxr %w0, [%1]" : "=&r"(oldv) : "r"(addr) : "memory");
+        newv = oldv & bits;
+        asm volatile("stlxr %w0, %w1, [%2]" : "=&r"(st) : "r"(newv), "r"(addr) : "memory");
+    } while (st != 0);
+}
+
 static unsigned long cache_line_size(void){
     unsigned long ctr;
     asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
@@ -68,6 +79,15 @@ void smp_mark_core_online(unsigned int core_id){
         return;
     }
     atomic_or_u32(&g_smp_online_mask, 1u << core_id);
+}
+
+void smp_mark_core_offline(unsigned int core_id){
+    if (core_id > 31u){
+        return;
+    }
+    atomic_and_u32(&g_smp_online_mask, ~(1u << core_id));
+    asm volatile("dmb ishst" : : : "memory");
+    asm volatile("sev" : : : "memory");
 }
 
 unsigned int smp_online_mask(void){

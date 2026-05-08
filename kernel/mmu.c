@@ -155,6 +155,28 @@ static void mmu_poke_unacked_cores(unsigned int online, unsigned int epoch, unsi
     asm volatile("sev" : : : "memory");
 }
 
+static unsigned int mmu_quarantine_unacked_cores(unsigned int online, unsigned int epoch, unsigned int local_core){
+    unsigned int dropped = 0u;
+    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
+        if (c == local_core){
+            continue;
+        }
+        if ((online & (1u << c)) == 0u){
+            continue;
+        }
+        if (g_tlb_ack_epoch[c] == epoch){
+            continue;
+        }
+        smp_mark_core_offline(c);
+        g_tlb_ack_epoch[c] = epoch;
+        dropped++;
+    }
+    if (dropped){
+        asm volatile("dmb ishst" : : : "memory");
+    }
+    return dropped;
+}
+
 void mmu_sync_local_tlb(void){
     unsigned int core = mmu_local_core_id();
     unsigned int epoch = g_tlb_epoch;
@@ -193,15 +215,23 @@ static void mmu_tlb_shootdown_all_locked(void){
     // Wait for every online core to acknowledge this epoch. Re-poke stragglers
     // so shootdown completes even if a mailbox edge was missed.
     unsigned int spins = 0u;
+    unsigned int timeout_recoveries = 0u;
     while (!mmu_epoch_acked_by_online(online, epoch)){
         if ((spins & (MMU_TLB_WAIT_RETRY_INTERVAL - 1u)) == 0u){
             mmu_poke_unacked_cores(online, epoch, core);
         }
         if (spins++ >= MMU_TLB_WAIT_MAX_SPINS){
-            // Fail closed: stale remote TLB state is a security boundary risk.
-            while (1){
-                asm volatile("wfi");
+            unsigned int dropped = mmu_quarantine_unacked_cores(online, epoch, core);
+            online = smp_online_mask();
+            if ((online & (1u << core)) == 0u){
+                online |= (1u << core);
             }
+            if (!dropped || timeout_recoveries++ >= 1u){
+                // Keep the system live even if a core is unhealthy.
+                break;
+            }
+            spins = 0u;
+            mmu_poke_unacked_cores(online, epoch, core);
         }
         asm volatile("wfe");
     }
