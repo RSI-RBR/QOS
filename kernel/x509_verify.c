@@ -2460,8 +2460,13 @@ int x509_verify_tls13_certificate(const char* host,
     if (ensure_ca_anchors_loaded() != 0){
         return -1;
     }
-    if (ensure_revocation_loaded() != 0){
-        return -1;
+    // Optional revocation list lookup can be expensive and may touch FAT
+    // even when the list is not deployed. Only require loading when policy
+    // explicitly enforces revocation presence.
+    if (g_require_revocation_list){
+        if (ensure_revocation_loaded() != 0){
+            return -1;
+        }
     }
 
     ctx_len = cert_body[off++];
