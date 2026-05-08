@@ -154,6 +154,14 @@ static void sha384_digest(const unsigned char* msg, unsigned int msg_len, unsign
     sha512_context ctx;
     unsigned char full[64];
     sha512_init(&ctx);
+    ctx.state[0] = UINT64_C(0xcbbb9d5dc1059ed8);
+    ctx.state[1] = UINT64_C(0x629a292a367cd507);
+    ctx.state[2] = UINT64_C(0x9159015a3070dd17);
+    ctx.state[3] = UINT64_C(0x152fecd8f70e5939);
+    ctx.state[4] = UINT64_C(0x67332667ffc00b31);
+    ctx.state[5] = UINT64_C(0x8eb44a8768581511);
+    ctx.state[6] = UINT64_C(0xdb0c2e0d64f98fa7);
+    ctx.state[7] = UINT64_C(0x47b5481dbefa4fa4);
     sha512_update(&ctx, msg, (size_t)msg_len);
     sha512_final(&ctx, full);
     for (unsigned int i = 0; i < 48u; i++){
