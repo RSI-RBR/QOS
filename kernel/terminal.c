@@ -5,8 +5,8 @@
 #include "remote_login.h"
 #include "spinlock.h"
 
-#define TERM_FLAG_UART 1u
-#define TERM_FLAG_FB   2u
+#define TERM_FLAG_UART QOS_TERM_OUTPUT_UART
+#define TERM_FLAG_FB   QOS_TERM_OUTPUT_FB
 #define TERM_PID_MAP_MAX 64
 #define TERM_MAX_COLS 240u
 #define TERM_MAX_ROWS 67u
@@ -354,6 +354,7 @@ void terminal_putc(int term_id, int pid, char c){
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
+    int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
     int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) && (pid < 0 || owner == pid);
     int mirror_remote = (pid >= 0 && owner == pid);
 
@@ -363,10 +364,12 @@ void terminal_putc(int term_id, int pid, char c){
     if (mirror_remote){
         remote_login_on_tty_output_char(c);
     }
-    if (c == '\n'){
-        uart_send('\r');
+    if (mirror_uart){
+        if (c == '\n'){
+            uart_send('\r');
+        }
+        uart_send(c);
     }
-    uart_send(c);
     if (mirror_fb){
         fb_console_putc(c);
     }
@@ -383,6 +386,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
+    int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
     int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) && (pid < 0 || owner == pid);
     int mirror_remote = (pid >= 0 && owner == pid);
     unsigned int dirty_start = term ? term->cursor_row : 0u;
@@ -408,10 +412,12 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
         if (mirror_remote){
             remote_login_on_tty_output_char(c);
         }
-        if (c == '\n'){
-            uart_send('\r');
+        if (mirror_uart){
+            if (c == '\n'){
+                uart_send('\r');
+            }
+            uart_send(c);
         }
-        uart_send(c);
     }
     if (mirror_fb){
         terminal_render_rows_locked(term, dirty_start, dirty_end);
@@ -500,6 +506,34 @@ int terminal_set_active(int id){
     g_active_term = id;
     g_terms[g_active_term].flags |= TERM_FLAG_FB;
     terminal_render_locked(&g_terms[g_active_term]);
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    return 0;
+}
+
+unsigned int terminal_get_active_output(void){
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    terminal_t* term = terminal_get_locked(g_active_term);
+    unsigned int flags = term ? term->flags : 0u;
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    return flags & (TERM_FLAG_UART | TERM_FLAG_FB);
+}
+
+int terminal_set_active_output(unsigned int flags){
+    flags &= (TERM_FLAG_UART | TERM_FLAG_FB);
+    if (flags == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    terminal_t* term = terminal_get_locked(g_active_term);
+    if (!term){
+        spin_unlock_irqrestore(&g_terminal_lock, irq);
+        return -1;
+    }
+    term->flags = flags;
+    if (term->flags & TERM_FLAG_FB){
+        terminal_render_locked(term);
+    }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
     return 0;
 }

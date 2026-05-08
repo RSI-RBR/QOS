@@ -288,6 +288,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TERM_GET_ACTIVE:
         case SYS_TERM_SWITCH:
         case SYS_TERM_CLEAR:
+        case SYS_TERM_GET_OUTPUT:
+        case SYS_TERM_SET_OUTPUT:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
         case SYS_NET_SET_LOCAL_IP:
@@ -768,6 +770,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_TERM_CLEAR:
             terminal_clear_active();
             frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_TERM_GET_OUTPUT:
+            frame[TF_X0] = (unsigned long)terminal_get_active_output();
+            return frame_sp;
+
+        case SYS_TERM_SET_OUTPUT:
+            frame[TF_X0] = (unsigned long)terminal_set_active_output((unsigned int)frame[TF_X0]);
             return frame_sp;
 
         case SYS_PROCESS_DUMP:

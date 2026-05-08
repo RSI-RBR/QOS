@@ -58,6 +58,7 @@ kernel/emmc.c \
 kernel/sdhost.c \
 kernel/debug.c \
 kernel/cache.c \
+kernel/dma.c \
 kernel/crypto.c \
 kernel/auth.c \
 kernel/aes_gcm.c \

@@ -10,6 +10,7 @@
 #define PATH_CAP 256
 #define URL_CAP 384
 #define MAX_REDIRECTS 4
+#define HTML_OUT_CAP 512
 
 static char g_input[INPUT_CAP];
 static int g_input_len = 0;
@@ -1126,6 +1127,30 @@ static int tag_name_is(const unsigned char* s, int len, const char* name){
     return 1;
 }
 
+typedef struct {
+    char data[HTML_OUT_CAP + 1];
+    int len;
+} html_out_t;
+
+static void html_out_flush(html_out_t* out){
+    if (!out || out->len <= 0){
+        return;
+    }
+    out->data[out->len] = 0;
+    qos_puts(out->data);
+    out->len = 0;
+}
+
+static void html_out_putc(html_out_t* out, char c){
+    if (!out){
+        return;
+    }
+    if (out->len >= HTML_OUT_CAP){
+        html_out_flush(out);
+    }
+    out->data[out->len++] = c;
+}
+
 static int print_html_text(const unsigned char* html, int len){
     int in_tag = 0;
     int last_space = 1;
@@ -1134,6 +1159,9 @@ static int print_html_text(const unsigned char* html, int len){
     int suppress_head = 0;
     int tag_start = -1;
     int visible = 0;
+    html_out_t out;
+
+    out.len = 0;
 
     for (int i = 0; i < len; i++){
         unsigned char c = html[i];
@@ -1166,7 +1194,7 @@ static int print_html_text(const unsigned char* html, int len){
                 in_tag = 0;
                 tag_start = -1;
                 if (!last_space){
-                    qos_putc(' ');
+                    html_out_putc(&out, ' ');
                     last_space = 1;
                 }
             }
@@ -1214,7 +1242,7 @@ static int print_html_text(const unsigned char* html, int len){
 
         if (c == '\n' || c == '\t' || c == ' '){
             if (!last_space){
-                qos_putc(' ');
+                html_out_putc(&out, ' ');
                 last_space = 1;
             }
             continue;
@@ -1224,10 +1252,11 @@ static int print_html_text(const unsigned char* html, int len){
             continue;
         }
 
-        qos_putc((char)c);
+        html_out_putc(&out, (char)c);
         visible++;
         last_space = 0;
     }
+    html_out_flush(&out);
     qos_puts("\n");
     return visible;
 }

@@ -6,6 +6,13 @@
 #include "tls_session.h"
 #include "cyw43.h"
 
+#ifndef QOS_TERM_OUTPUT_UART
+#define QOS_TERM_OUTPUT_UART 1u
+#endif
+#ifndef QOS_TERM_OUTPUT_FB
+#define QOS_TERM_OUTPUT_FB   2u
+#endif
+
 enum {
     SYS_PUTC = 0,
     SYS_PUTS = 1,
@@ -75,7 +82,9 @@ enum {
     SYS_TRY_GETC_EX = 65,
     SYS_TERM_GET_ACTIVE = 66,
     SYS_TERM_SWITCH = 67,
-    SYS_TERM_CLEAR = 68
+    SYS_TERM_CLEAR = 68,
+    SYS_TERM_GET_OUTPUT = 69,
+    SYS_TERM_SET_OUTPUT = 70
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -250,6 +259,14 @@ static inline int qos_term_switch(int id){
 
 static inline void qos_term_clear(void){
     (void)qos_syscall0(SYS_TERM_CLEAR);
+}
+
+static inline unsigned int qos_term_get_output(void){
+    return (unsigned int)qos_syscall0(SYS_TERM_GET_OUTPUT);
+}
+
+static inline int qos_term_set_output(unsigned int flags){
+    return (int)qos_syscall1(SYS_TERM_SET_OUTPUT, (unsigned long)flags);
 }
 
 static inline void qos_process_dump(void){

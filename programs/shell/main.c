@@ -393,6 +393,7 @@ static void cmd_help(void){
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
+    qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
     qos_puts(" clear\n");
@@ -561,6 +562,42 @@ static void cmd_chvt(unsigned int id){
     qos_puts("Switched to tty");
     print_uint(id);
     qos_puts(".\n");
+}
+
+static void cmd_termout(const char* mode){
+    unsigned int flags;
+    if (!mode || !*mode || str_eq(mode, "status")){
+        flags = qos_term_get_output();
+        qos_puts("terminal output=");
+        if ((flags & QOS_TERM_OUTPUT_UART) && (flags & QOS_TERM_OUTPUT_FB)){
+            qos_puts("both");
+        } else if (flags & QOS_TERM_OUTPUT_UART){
+            qos_puts("uart");
+        } else if (flags & QOS_TERM_OUTPUT_FB){
+            qos_puts("hdmi");
+        } else{
+            qos_puts("none");
+        }
+        qos_puts("\n");
+        return;
+    }
+
+    if (str_eq(mode, "both")){
+        flags = QOS_TERM_OUTPUT_UART | QOS_TERM_OUTPUT_FB;
+    } else if (str_eq(mode, "uart")){
+        flags = QOS_TERM_OUTPUT_UART;
+    } else if (str_eq(mode, "hdmi") || str_eq(mode, "fb")){
+        flags = QOS_TERM_OUTPUT_FB;
+    } else{
+        qos_puts("Usage: termout both|uart|hdmi|status\n");
+        return;
+    }
+
+    if (qos_term_set_output(flags) != 0){
+        qos_puts("termout failed.\n");
+        return;
+    }
+    qos_puts("terminal output set.\n");
 }
 
 static void cmd_ping(void){
@@ -997,6 +1034,14 @@ static void execute_line(void){
         }
     } else if (str_eq(g_buf, "chvt")){
         qos_puts("Usage: chvt <0-3>\n");
+    } else if (str_starts_with(g_buf, "termout ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_termout(p);
+    } else if (str_eq(g_buf, "termout")){
+        cmd_termout("status");
     } else if (str_eq(g_buf, "clear")){
         qos_term_clear();
     } else if (str_eq(g_buf, "fbinfo")){

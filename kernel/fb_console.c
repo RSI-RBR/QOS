@@ -1,4 +1,5 @@
 #include "fb_console.h"
+#include "dma.h"
 #include "framebuffer.h"
 #include "spinlock.h"
 
@@ -91,6 +92,17 @@ static void present_pixel_rows_locked(unsigned int start_y, unsigned int height)
     }
     if (start_y + height < start_y || start_y + height > max_h){
         height = max_h - start_y;
+    }
+
+    unsigned int row_bytes = width * sizeof(unsigned int);
+    unsigned int src_stride = (FB_CONSOLE_MAX_PIXEL_W * sizeof(unsigned int)) - row_bytes;
+    unsigned int dst_stride = pitch - row_bytes;
+    unsigned int* dst0 = (unsigned int*)((unsigned char*)base + ((unsigned long)start_y * pitch));
+    unsigned int* src0 = &g_pixels[start_y][0];
+
+    if (pitch >= row_bytes &&
+        dma_memcpy_2d(dst0, dst_stride, src0, src_stride, row_bytes, height) == 0){
+        return;
     }
 
     for (unsigned int y = 0; y < height; y++){

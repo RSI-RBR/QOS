@@ -2,6 +2,12 @@
 #define TERMINAL_H
 
 #define QOS_TERMINAL_MAX 4
+#ifndef QOS_TERM_OUTPUT_UART
+#define QOS_TERM_OUTPUT_UART 1u
+#endif
+#ifndef QOS_TERM_OUTPUT_FB
+#define QOS_TERM_OUTPUT_FB   2u
+#endif
 
 void terminal_init(void);
 void terminal_clear_active(void);
@@ -20,5 +26,7 @@ int terminal_try_getc_for_pid(int pid, char* out);
 int terminal_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source);
 int terminal_get_active(void);
 int terminal_set_active(int id);
+unsigned int terminal_get_active_output(void);
+int terminal_set_active_output(unsigned int flags);
 
 #endif
