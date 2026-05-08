@@ -1189,6 +1189,61 @@ void process_sleep(unsigned int ms){
     asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
 }
 
+void* process_sleep_on_frame(unsigned int ms, void* frame_sp){
+    unsigned int core = scheduler_core_id();
+    int pid = -1;
+    unsigned long target_tick = 0;
+    unsigned long irq = spin_lock_irqsave(&g_process_lock);
+    pid = current_pid[core];
+    if (pid < 0 || pid >= MAX_PROCESSES || !frame_sp){
+        spin_unlock_irqrestore(&g_process_lock, irq);
+        return frame_sp;
+    }
+
+    target_tick = system_ticks + ms;
+    sleepq_insert_locked(pid, target_tick);
+    processes[pid].state = PROC_SLEEPING;
+    processes[pid].sp = frame_sp;
+    spin_unlock_irqrestore(&g_process_lock, irq);
+
+    void* next_sp = scheduler_on_irq(frame_sp);
+    if (next_sp != frame_sp){
+        return next_sp;
+    }
+
+    // No alternate task was ready on this core. Wait locally, but keep IRQs on
+    // so the timer can advance system_ticks and wake the sleep queue.
+    unsigned long daif_prev;
+    asm volatile("mrs %0, daif" : "=r"(daif_prev));
+    asm volatile("msr daifclr, #2" : : : "memory");
+
+    while (1){
+        irq = spin_lock_irqsave(&g_process_lock);
+        process_state_t st = processes[pid].state;
+        if (st != PROC_SLEEPING){
+            if (st == PROC_READY &&
+                core < MAX_CPU_CORES &&
+                current_pid[core] == pid){
+                processes[pid].state = PROC_RUNNING;
+            }
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            break;
+        }
+        if (tick_reached(system_ticks, target_tick)){
+            sleepq_remove_locked(pid);
+            processes[pid].wake_tick = 0;
+            processes[pid].state = PROC_RUNNING;
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            break;
+        }
+        spin_unlock_irqrestore(&g_process_lock, irq);
+        asm volatile("wfi");
+    }
+
+    asm volatile("msr daif, %0" : : "r"(daif_prev) : "memory");
+    return frame_sp;
+}
+
 void process_dump(void){
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     uart_puts("PID STATE CORE WAKE\n");

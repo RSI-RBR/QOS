@@ -178,9 +178,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_SLEEP: {
             unsigned int ms = (unsigned int)frame[TF_X0];
-            process_sleep(ms);
             frame[TF_X0] = 0;
-            return frame_sp;
+            return process_sleep_on_frame(ms, frame_sp);
         }
 
         case SYS_EXIT:

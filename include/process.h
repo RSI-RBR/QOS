@@ -65,6 +65,7 @@ void process_yield(void);
 int scheduler_has_runnable(void);
 void* scheduler_on_irq(void* irq_frame_sp);
 void process_sleep(unsigned int ms);
+void* process_sleep_on_frame(unsigned int ms, void* frame_sp);
 void process_dump(void);
 __attribute__((noreturn)) void process_enter_idle_loop(void);
 
