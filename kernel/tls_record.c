@@ -192,8 +192,20 @@ int tls13_record_decrypt(tls13_record_ctx_t* ctx,
         spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
         return -1;
     }
-    unsigned char inner_type = inner[inner_len - 1u];
-    unsigned int plain_len = inner_len - 1u;
+    unsigned int type_pos = inner_len;
+    while (type_pos > 0u && inner[type_pos - 1u] == 0u){
+        type_pos--;
+    }
+    if (type_pos == 0u){
+        crypto_memzero(nonce, sizeof(nonce));
+        crypto_memzero(inner, ct_len);
+        spin_unlock_irqrestore(&g_tls_record_scratch_lock, scratch_irq);
+        return -1;
+    }
+    type_pos--;
+
+    unsigned char inner_type = inner[type_pos];
+    unsigned int plain_len = type_pos;
     if (plain_len > out_cap){
         crypto_memzero(nonce, sizeof(nonce));
         crypto_memzero(inner, ct_len);

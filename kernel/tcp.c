@@ -149,10 +149,10 @@ static int tcp_send_segment(unsigned char flags,
                             const unsigned char* payload,
                             unsigned int payload_len){
     unsigned char local_ip[4];
-    unsigned char buf[20 + 1024];
+    unsigned char buf[20 + 1460];
     unsigned int tcp_len = 20u + payload_len;
 
-    if (!g_conn.active || payload_len > 1024u){
+    if (!g_conn.active || payload_len > 1460u){
         g_tcp_stats.tx_fail++;
         return -1;
     }
@@ -748,7 +748,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
                   unsigned char* out,
                   unsigned int out_cap){
     const char* req_path = (path && *path) ? path : "/";
-    char req[512];
+    char req[1024];
     int rq = 0;
     unsigned int consumed = 0;
     unsigned int hs_used = 0;
@@ -794,13 +794,13 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -100;
         g_tcp_https_fail_count++;
-        return -1;
+        return g_tcp_https_last_error;
     }
     if (!net_ready() || !net_link_up()){
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -101;
         g_tcp_https_fail_count++;
-        return -1;
+        return g_tcp_https_last_error;
     }
 
     if (g_conn.active){
@@ -833,7 +833,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -102;
         g_tcp_https_fail_count++;
-        return -1;
+        return g_tcp_https_last_error;
     }
     g_tcp_stats.syn_sent++;
 
@@ -843,7 +843,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -103;
         g_tcp_https_fail_count++;
-        return -1;
+        return g_tcp_https_last_error;
     }
 
     if (x25519_generate_keypair(client_priv, client_pub) != 0){
@@ -852,7 +852,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -104;
         g_tcp_https_fail_count++;
-        return -1;
+        return g_tcp_https_last_error;
     }
 
     if (tls13_build_client_hello_sni_x25519(host, client_pub, ch_msg, sizeof(ch_msg), &ch_len) != 0){
@@ -1163,7 +1163,11 @@ int tcp_https_get(const unsigned char dst_ip[4],
         append_str(req, (int)sizeof(req), &rq, req_path) != 0 ||
         append_str(req, (int)sizeof(req), &rq, " HTTP/1.1\r\nHost: ") != 0 ||
         append_str(req, (int)sizeof(req), &rq, host) != 0 ||
-        append_str(req, (int)sizeof(req), &rq, "\r\nUser-Agent: QOS/0.1\r\nConnection: close\r\n\r\n") != 0){
+        append_str(req, (int)sizeof(req), &rq,
+                   "\r\nUser-Agent: Mozilla/5.0 (compatible; QOS/0.1)\r\n"
+                   "Accept: text/html,text/plain,*/*;q=0.8\r\n"
+                   "Accept-Encoding: identity\r\n"
+                   "Connection: close\r\n\r\n") != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
@@ -1293,7 +1297,7 @@ https_fail_secure:
 
 #undef HTTPS_FAIL
 
-    return result;
+    return (result < 0) ? fail_code : result;
 }
 
 int tcp_http_get(const unsigned char dst_ip[4],
@@ -1301,7 +1305,7 @@ int tcp_http_get(const unsigned char dst_ip[4],
                  const char* path,
                  unsigned char* out,
                  unsigned int out_cap){
-    char req[512];
+    char req[1024];
     int rq = 0;
     unsigned long start_tick;
     unsigned long last_progress;
@@ -1401,7 +1405,11 @@ int tcp_http_get(const unsigned char dst_ip[4],
         append_str(req, (int)sizeof(req), &rq, req_path) != 0 ||
         append_str(req, (int)sizeof(req), &rq, " HTTP/1.1\r\nHost: ") != 0 ||
         append_str(req, (int)sizeof(req), &rq, host) != 0 ||
-        append_str(req, (int)sizeof(req), &rq, "\r\nUser-Agent: QOS/0.1\r\nConnection: close\r\n\r\n") != 0){
+        append_str(req, (int)sizeof(req), &rq,
+                   "\r\nUser-Agent: Mozilla/5.0 (compatible; QOS/0.1)\r\n"
+                   "Accept: text/html,text/plain,*/*;q=0.8\r\n"
+                   "Accept-Encoding: identity\r\n"
+                   "Connection: close\r\n\r\n") != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
