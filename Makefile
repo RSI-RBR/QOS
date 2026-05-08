@@ -27,7 +27,7 @@ ifneq ($(strip $(DEV_LAMPORT_SIGN_KEY)),)
 DEV_PQ_SIGN_KEY := $(DEV_LAMPORT_SIGN_KEY)
 endif
 
-CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean
+CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
 LDFLAGS = -T linker.ld
 
 # ---------------------------
@@ -69,6 +69,7 @@ kernel/ed25519_verify.c \
 kernel/pq_sig.c \
 kernel/pqclean_randombytes.c \
 kernel/pqclean_alloc.c \
+kernel/argon2_kdf.c \
 kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \
@@ -91,6 +92,9 @@ kernel/nic_stub.c \
 kernel/nic_smsc95xx.c \
 kernel/usb_host.c \
 kernel/x25519.c \
+third_party/argon2_ref/src/core.c \
+third_party/argon2_ref/src/ref.c \
+third_party/argon2_ref/src/blake2/blake2b.c \
 third_party/pqclean/common/fips202.c \
 third_party/pqclean/crypto_sign/ml-dsa-65/clean/ntt.c \
 third_party/pqclean/crypto_sign/ml-dsa-65/clean/packing.c \

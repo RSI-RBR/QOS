@@ -1,4 +1,5 @@
 #include "auth.h"
+#include "argon2_kdf.h"
 #include "fat32.h"
 #include "sha256.h"
 #include "crypto.h"
@@ -7,29 +8,51 @@
 #define AUTH_FILE_83 "AUTH    BIN"
 
 #define AUTH_MAGIC_BYTES 8u
-#define AUTH_VERSION 1u
-#define AUTH_FILE_MIN_BYTES (AUTH_MAGIC_BYTES + 1u + 1u + (AUTH_USERNAME_MAX + 1u) + AUTH_SALT_BYTES + AUTH_HASH_BYTES)
+#define AUTH_VERSION_V1 1u
+#define AUTH_VERSION_V2 2u
+
+#define AUTH_V1_FILE_MIN_BYTES (AUTH_MAGIC_BYTES + 1u + 1u + (AUTH_USERNAME_MAX + 1u) + AUTH_SALT_BYTES + AUTH_HASH_BYTES)
+#define AUTH_V2_FILE_MIN_BYTES (AUTH_MAGIC_BYTES + 1u + 1u + (AUTH_USERNAME_MAX + 1u) + 1u + 1u + 4u + 4u + 4u + 4u + AUTH_SALT_BYTES + AUTH_HASH_BYTES)
+
+#define AUTH_ARGON2_MAX_T_COST 10u
+#define AUTH_ARGON2_MAX_M_COST_KIB (256u * 1024u)
+#define AUTH_ARGON2_MAX_PARALLELISM 4u
 
 typedef struct {
     int ready;
+    unsigned char file_version;
     unsigned int username_len;
     char username[AUTH_USERNAME_MAX + 1u];
+    unsigned char kdf_id;
+    unsigned int argon2_t_cost;
+    unsigned int argon2_m_cost_kib;
+    unsigned int argon2_parallelism;
+    unsigned int argon2_version;
     unsigned char salt[AUTH_SALT_BYTES];
     unsigned char stored_hash[AUTH_HASH_BYTES];
 } auth_state_t;
 
 static auth_state_t g_auth;
 
-static const unsigned char k_auth_magic[AUTH_MAGIC_BYTES] = {
+static const unsigned char k_auth_magic_v1[AUTH_MAGIC_BYTES] = {
     'Q','A','U','T','H','V','1','\0'
+};
+static const unsigned char k_auth_magic_v2[AUTH_MAGIC_BYTES] = {
+    'Q','A','U','T','H','V','2','\0'
 };
 
 static void auth_zero_state(void){
     g_auth.ready = 0;
+    g_auth.file_version = 0;
     g_auth.username_len = 0;
     for (unsigned int i = 0; i < sizeof(g_auth.username); i++){
         g_auth.username[i] = 0;
     }
+    g_auth.kdf_id = AUTH_KDF_SHA256;
+    g_auth.argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST;
+    g_auth.argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB;
+    g_auth.argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM;
+    g_auth.argon2_version = AUTH_ARGON2_DEFAULT_VERSION;
     crypto_memzero(g_auth.salt, sizeof(g_auth.salt));
     crypto_memzero(g_auth.stored_hash, sizeof(g_auth.stored_hash));
 }
@@ -53,9 +76,16 @@ static int bytes_eq(const unsigned char* a, const unsigned char* b, unsigned int
     return d == 0;
 }
 
-void create_password_hash(const char* password,
-                          const unsigned char salt[AUTH_SALT_BYTES],
-                          unsigned char out_hash[AUTH_HASH_BYTES]){
+static unsigned int read_le32(const unsigned char* p){
+    return ((unsigned int)p[0]) |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
+}
+
+static void create_password_hash_sha256(const char* password,
+                                        const unsigned char salt[AUTH_SALT_BYTES],
+                                        unsigned char out_hash[AUTH_HASH_BYTES]){
     sha256_ctx_t ctx;
     unsigned int pw_len = cstr_len_bounded(password, 1024u);
     sha256_init(&ctx);
@@ -66,6 +96,57 @@ void create_password_hash(const char* password,
         sha256_update(&ctx, salt, AUTH_SALT_BYTES);
     }
     sha256_final(&ctx, out_hash);
+}
+
+void create_password_hash(const char* password,
+                          const unsigned char salt[AUTH_SALT_BYTES],
+                          unsigned char out_hash[AUTH_HASH_BYTES]){
+    create_password_hash_sha256(password, salt, out_hash);
+}
+
+static int auth_argon2_params_valid(unsigned int t_cost,
+                                    unsigned int m_cost_kib,
+                                    unsigned int parallelism){
+    if (t_cost == 0u || t_cost > AUTH_ARGON2_MAX_T_COST){
+        return 0;
+    }
+    if (m_cost_kib < 8u || m_cost_kib > AUTH_ARGON2_MAX_M_COST_KIB){
+        return 0;
+    }
+    if (parallelism == 0u || parallelism > AUTH_ARGON2_MAX_PARALLELISM){
+        return 0;
+    }
+    return 1;
+}
+
+static int create_password_hash_kdf(const char* password,
+                                    const unsigned char salt[AUTH_SALT_BYTES],
+                                    unsigned char out_hash[AUTH_HASH_BYTES]){
+    if (!out_hash || !salt){
+        return -1;
+    }
+
+    if (g_auth.kdf_id == AUTH_KDF_SHA256){
+        create_password_hash_sha256(password, salt, out_hash);
+        return 0;
+    }
+
+    if (g_auth.kdf_id == AUTH_KDF_ARGON2ID){
+        unsigned int pw_len = cstr_len_bounded(password, 1024u);
+        int rc = argon2id_hash_raw_qos(g_auth.argon2_t_cost,
+                                       g_auth.argon2_m_cost_kib,
+                                       g_auth.argon2_parallelism,
+                                       password ? (const void*)password : (const void*)"",
+                                       pw_len,
+                                       salt,
+                                       AUTH_SALT_BYTES,
+                                       out_hash,
+                                       AUTH_HASH_BYTES,
+                                       g_auth.argon2_version);
+        return rc == 0 ? 0 : -1;
+    }
+
+    return -1;
 }
 
 static void compute_expected_response(const unsigned char client_nonce[AUTH_NONCE_BYTES],
@@ -79,35 +160,24 @@ static void compute_expected_response(const unsigned char client_nonce[AUTH_NONC
     sha256_final(&ctx, out_hash);
 }
 
-int auth_init(void){
-    static unsigned char buf[256];
-    int n;
-    unsigned int off;
+static int parse_auth_v1(const unsigned char* buf, int n){
+    unsigned int off = AUTH_MAGIC_BYTES;
 
-    auth_zero_state();
-
-    if (fat32_init() != 0){
-        uart_puts("AUTH: FAT init failed\n");
-        return -1;
-    }
-
-    n = fat32_read_file(AUTH_FILE_83, buf, sizeof(buf));
-    if (n < (int)AUTH_FILE_MIN_BYTES){
+    if (n < (int)AUTH_V1_FILE_MIN_BYTES){
         uart_puts("AUTH: file missing or too small\n");
         return -1;
     }
-
-    off = 0u;
-    if (!bytes_eq(&buf[off], k_auth_magic, AUTH_MAGIC_BYTES)){
-        uart_puts("AUTH: bad magic\n");
-        return -1;
-    }
-    off += AUTH_MAGIC_BYTES;
-
-    if (buf[off++] != AUTH_VERSION){
+    if (buf[off++] != AUTH_VERSION_V1){
         uart_puts("AUTH: bad version\n");
         return -1;
     }
+
+    g_auth.file_version = AUTH_VERSION_V1;
+    g_auth.kdf_id = AUTH_KDF_SHA256;
+    g_auth.argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST;
+    g_auth.argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB;
+    g_auth.argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM;
+    g_auth.argon2_version = AUTH_ARGON2_DEFAULT_VERSION;
 
     g_auth.username_len = (unsigned int)buf[off++];
     if (g_auth.username_len == 0u || g_auth.username_len > AUTH_USERNAME_MAX){
@@ -130,10 +200,121 @@ int auth_init(void){
     for (unsigned int i = 0; i < AUTH_HASH_BYTES; i++){
         g_auth.stored_hash[i] = buf[off + i];
     }
+    return 0;
+}
+
+static int parse_auth_v2(const unsigned char* buf, int n){
+    unsigned int off = AUTH_MAGIC_BYTES;
+    unsigned int t_cost;
+    unsigned int m_cost_kib;
+    unsigned int parallelism;
+    unsigned int version;
+
+    if (n < (int)AUTH_V2_FILE_MIN_BYTES){
+        uart_puts("AUTH: v2 file too small\n");
+        return -1;
+    }
+    if (buf[off++] != AUTH_VERSION_V2){
+        uart_puts("AUTH: bad v2 version\n");
+        return -1;
+    }
+
+    g_auth.file_version = AUTH_VERSION_V2;
+    g_auth.username_len = (unsigned int)buf[off++];
+    if (g_auth.username_len == 0u || g_auth.username_len > AUTH_USERNAME_MAX){
+        uart_puts("AUTH: bad username length\n");
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < AUTH_USERNAME_MAX + 1u; i++){
+        unsigned char ch = buf[off + i];
+        g_auth.username[i] = (i < g_auth.username_len) ? (char)ch : 0;
+    }
+    g_auth.username[g_auth.username_len] = 0;
+    off += (AUTH_USERNAME_MAX + 1u);
+
+    g_auth.kdf_id = buf[off++];
+    off += 1u; /* reserved byte */
+
+    t_cost = read_le32(&buf[off]);
+    off += 4u;
+    m_cost_kib = read_le32(&buf[off]);
+    off += 4u;
+    parallelism = read_le32(&buf[off]);
+    off += 4u;
+    version = read_le32(&buf[off]);
+    off += 4u;
+
+    if (g_auth.kdf_id == AUTH_KDF_SHA256){
+        g_auth.argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST;
+        g_auth.argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB;
+        g_auth.argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM;
+        g_auth.argon2_version = AUTH_ARGON2_DEFAULT_VERSION;
+    } else if (g_auth.kdf_id == AUTH_KDF_ARGON2ID){
+        if (!auth_argon2_params_valid(t_cost, m_cost_kib, parallelism)){
+            uart_puts("AUTH: invalid argon2 params\n");
+            return -1;
+        }
+        g_auth.argon2_t_cost = t_cost;
+        g_auth.argon2_m_cost_kib = m_cost_kib;
+        g_auth.argon2_parallelism = parallelism;
+        g_auth.argon2_version = version ? version : AUTH_ARGON2_DEFAULT_VERSION;
+    } else{
+        uart_puts("AUTH: unsupported kdf\n");
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < AUTH_SALT_BYTES; i++){
+        g_auth.salt[i] = buf[off + i];
+    }
+    off += AUTH_SALT_BYTES;
+
+    for (unsigned int i = 0; i < AUTH_HASH_BYTES; i++){
+        g_auth.stored_hash[i] = buf[off + i];
+    }
+    return 0;
+}
+
+int auth_init(void){
+    static unsigned char buf[256];
+    int n;
+
+    auth_zero_state();
+
+    if (fat32_init() != 0){
+        uart_puts("AUTH: FAT init failed\n");
+        return -1;
+    }
+
+    n = fat32_read_file(AUTH_FILE_83, buf, sizeof(buf));
+    if (n < (int)AUTH_V1_FILE_MIN_BYTES){
+        uart_puts("AUTH: file missing or too small\n");
+        return -1;
+    }
+
+    if (bytes_eq(buf, k_auth_magic_v2, AUTH_MAGIC_BYTES)){
+        if (parse_auth_v2(buf, n) != 0){
+            return -1;
+        }
+    } else if (bytes_eq(buf, k_auth_magic_v1, AUTH_MAGIC_BYTES)){
+        if (parse_auth_v1(buf, n) != 0){
+            return -1;
+        }
+    } else{
+        uart_puts("AUTH: bad magic\n");
+        return -1;
+    }
 
     g_auth.ready = 1;
     uart_puts("AUTH: loaded user ");
     uart_puts(g_auth.username);
+    uart_puts(" (kdf=");
+    if (g_auth.kdf_id == AUTH_KDF_ARGON2ID){
+        uart_puts("argon2id");
+    } else{
+        uart_puts("sha256");
+    }
+    uart_puts(")");
     uart_puts("\n");
     return 0;
 }
@@ -169,6 +350,18 @@ int auth_issue_nonce(unsigned char out_nonce[AUTH_NONCE_BYTES]){
     return 0;
 }
 
+int auth_get_kdf_info(auth_kdf_info_t* out_info){
+    if (!out_info || !g_auth.ready){
+        return -1;
+    }
+    out_info->kdf_id = g_auth.kdf_id;
+    out_info->argon2_t_cost = g_auth.argon2_t_cost;
+    out_info->argon2_m_cost_kib = g_auth.argon2_m_cost_kib;
+    out_info->argon2_parallelism = g_auth.argon2_parallelism;
+    out_info->argon2_version = g_auth.argon2_version;
+    return 0;
+}
+
 int auth_verify_password(const char* username, const char* password){
     unsigned int name_len;
     unsigned char calc_hash[AUTH_HASH_BYTES];
@@ -188,7 +381,10 @@ int auth_verify_password(const char* username, const char* password){
         }
     }
 
-    create_password_hash(password, g_auth.salt, calc_hash);
+    if (create_password_hash_kdf(password, g_auth.salt, calc_hash) != 0){
+        crypto_memzero(calc_hash, sizeof(calc_hash));
+        return -1;
+    }
     ok = crypto_consttime_equal(calc_hash, g_auth.stored_hash, AUTH_HASH_BYTES);
     crypto_memzero(calc_hash, sizeof(calc_hash));
     return ok ? 0 : -1;

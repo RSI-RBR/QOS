@@ -14,6 +14,13 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+try:
+    from argon2.low_level import Type as Argon2Type
+    from argon2.low_level import hash_secret_raw as argon2_hash_secret_raw
+except Exception:
+    Argon2Type = None
+    argon2_hash_secret_raw = None
+
 RLOGIN_MAGIC = 0x51524C47
 RLOGIN_VER = 1
 
@@ -27,6 +34,14 @@ TYPE_TTY_INPUT = 7
 TYPE_TTY_OUTPUT = 8
 
 TAG_LEN = 16
+AUTH_SALT_BYTES = 16
+AUTH_HASH_BYTES = 32
+AUTH_KDF_SHA256 = 1
+AUTH_KDF_ARGON2ID = 2
+AUTH_ARGON2_DEFAULT_T_COST = 3
+AUTH_ARGON2_DEFAULT_M_COST_KIB = 4096
+AUTH_ARGON2_DEFAULT_PARALLELISM = 1
+AUTH_ARGON2_DEFAULT_VERSION = 0x13
 
 
 def be16(v: int) -> bytes:
@@ -73,6 +88,33 @@ def parse_header(pkt: bytes):
 
 def sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
+
+
+def derive_password_hash(password: str,
+                         salt: bytes,
+                         kdf_id: int,
+                         argon2_t_cost: int,
+                         argon2_m_cost_kib: int,
+                         argon2_parallelism: int,
+                         argon2_version: int) -> bytes:
+    if kdf_id == AUTH_KDF_SHA256:
+        return sha256(password.encode("utf-8") + salt)
+    if kdf_id == AUTH_KDF_ARGON2ID:
+        if argon2_hash_secret_raw is None or Argon2Type is None:
+            raise RuntimeError(
+                "argon2-cffi is required for Argon2id auth (pip install argon2-cffi)"
+            )
+        return argon2_hash_secret_raw(
+            secret=password.encode("utf-8"),
+            salt=salt,
+            time_cost=argon2_t_cost,
+            memory_cost=argon2_m_cost_kib,
+            parallelism=argon2_parallelism,
+            hash_len=AUTH_HASH_BYTES,
+            type=Argon2Type.ID,
+            version=argon2_version,
+        )
+    raise RuntimeError(f"Unsupported server KDF id: {kdf_id}")
 
 
 @dataclass
@@ -191,14 +233,41 @@ def main():
     server_nonce = payload[32:64]
     salt = payload[64:80]
     status = payload[80]
+    kdf_id = AUTH_KDF_SHA256
+    argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST
+    argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB
+    argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM
+    argon2_version = AUTH_ARGON2_DEFAULT_VERSION
+    if len(payload) >= 98:
+        kdf_id = payload[81]
+        argon2_t_cost = read_be32(payload[82:86])
+        argon2_m_cost_kib = read_be32(payload[86:90])
+        argon2_parallelism = read_be32(payload[90:94])
+        argon2_version = read_be32(payload[94:98])
     if status != 0:
         raise SystemExit("server auth store unavailable")
+    if kdf_id == AUTH_KDF_ARGON2ID:
+        print(
+            "Server auth KDF: argon2id "
+            f"(t={argon2_t_cost} m_kib={argon2_m_cost_kib} "
+            f"p={argon2_parallelism} v=0x{argon2_version:02x})"
+        )
+    else:
+        print("Server auth KDF: sha256")
 
     shared = sk.exchange(x25519.X25519PublicKey.from_public_bytes(server_pub))
     key, nonce_base = derive_key_material(shared, client_nonce, server_nonce)
     cs = CryptoState(key=key, nonce_base=nonce_base)
 
-    pw_hash = sha256(args.password.encode("utf-8") + salt)
+    pw_hash = derive_password_hash(
+        args.password,
+        salt,
+        kdf_id,
+        argon2_t_cost,
+        argon2_m_cost_kib,
+        argon2_parallelism,
+        argon2_version,
+    )
     auth_resp = sha256(pw_hash + client_nonce + server_nonce)
     sock.send(cs.encrypt(TYPE_AUTH_PROOF, session_id, auth_resp))
 

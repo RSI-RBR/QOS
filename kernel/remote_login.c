@@ -21,6 +21,8 @@
 
 #define RLOGIN_PAYLOAD_MAX 512u
 #define RLOGIN_TAG_LEN 16u
+#define RLOGIN_SERVER_HELLO_BASE_LEN (32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES + 1u)
+#define RLOGIN_SERVER_HELLO_KDF_EXT_LEN (1u + 4u + 4u + 4u + 4u)
 #define RLOGIN_TTY_IN_CAP 512u
 #define RLOGIN_TTY_OUT_CAP 2048u
 #define RLOGIN_TTY_OUT_CHUNK 220u
@@ -358,9 +360,11 @@ static int tty_out_enqueue_char(unsigned char c){
 }
 
 static void handle_client_hello(const unsigned char* payload, unsigned short payload_len, const udp_meta_t* meta){
-    unsigned char resp[32 + AUTH_NONCE_BYTES + AUTH_SALT_BYTES + 1u];
+    unsigned char resp[RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN];
     unsigned char rnd[8];
+    auth_kdf_info_t kdf_info;
     unsigned int off = 0;
+    unsigned int resp_len = RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN;
     unsigned int username_len;
     unsigned char salt[AUTH_SALT_BYTES];
     int status = 0;
@@ -378,8 +382,9 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
             resp[i] = 0;
         }
         resp[32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES] = 1u; /* auth unavailable */
+        resp[RLOGIN_SERVER_HELLO_BASE_LEN] = AUTH_KDF_SHA256;
         g_sess.session_id = 1u;
-        (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, sizeof(resp));
+        (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
         return;
     }
 
@@ -431,6 +436,14 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
             salt[i] = 0;
         }
     }
+    if (auth_get_kdf_info(&kdf_info) != 0){
+        status = 1;
+        kdf_info.kdf_id = AUTH_KDF_SHA256;
+        kdf_info.argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST;
+        kdf_info.argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB;
+        kdf_info.argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM;
+        kdf_info.argon2_version = AUTH_ARGON2_DEFAULT_VERSION;
+    }
 
     for (unsigned int i = 0; i < 32u; i++){
         resp[i] = g_sess.server_pub[i];
@@ -442,13 +455,24 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
         resp[32u + AUTH_NONCE_BYTES + i] = salt[i];
     }
     resp[32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES] = (unsigned char)status;
+    off = RLOGIN_SERVER_HELLO_BASE_LEN;
+    resp[off++] = kdf_info.kdf_id;
+    write_be32(&resp[off], kdf_info.argon2_t_cost);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_m_cost_kib);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_parallelism);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_version);
+    off += 4u;
+    resp_len = off;
 
     g_sess.active = 1;
     g_sess.authed = 0;
     g_sess.tty_attached = 0;
     g_sess.client_last_seq = 0;
     g_sess.server_next_seq = 0;
-    (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, sizeof(resp));
+    (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
 }
 
 static void handle_auth_proof(const unsigned char* frame,
