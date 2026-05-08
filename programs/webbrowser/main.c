@@ -5,7 +5,7 @@
 #define REQ_CAP 1024
 #define RESP_CAP 524288
 #define DNS_TIMEOUT_MS 3000u
-#define RECV_TIMEOUT_MS 6000u
+#define RECV_TIMEOUT_MS 3000u
 #define HOST_CAP 128
 #define PATH_CAP 256
 #define URL_CAP 384
@@ -13,6 +13,7 @@
 
 static char g_input[INPUT_CAP];
 static int g_input_len = 0;
+static int g_accept_gzip = 0;
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
@@ -1295,9 +1296,11 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         append_str(req, REQ_CAP, &rq, host) != 0 ||
         append_str(req, REQ_CAP, &rq,
                    "\r\nUser-Agent: QOS-WebBrowser/0.1"
-                   "\r\nAccept: text/html,text/plain,*/*;q=0.8"
-                   "\r\nAccept-Encoding: gzip, identity"
-                   "\r\nConnection: close\r\n\r\n") != 0){
+                   "\r\nAccept: text/html,text/plain,*/*;q=0.8") != 0 ||
+        append_str(req, REQ_CAP, &rq,
+                   g_accept_gzip ? "\r\nAccept-Encoding: gzip, identity" :
+                                   "\r\nAccept-Encoding: identity") != 0 ||
+        append_str(req, REQ_CAP, &rq, "\r\nConnection: close\r\n\r\n") != 0){
         qos_puts("Request build failed.\n");
         (void)qos_close(fd);
         return -1;
@@ -1325,7 +1328,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         }
         if (n <= 0){
             int completion = http_response_completion_state_local(resp, total);
-            if (n == 0 && completion == 0 && stall_rounds < 3u){
+            if (n == 0 && completion == 0 && stall_rounds < 1u){
                 stall_rounds++;
                 continue;
             }
@@ -1337,8 +1340,10 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         }
         recv_chunks++;
         total += n;
-        if (http_response_completion_state_local(resp, total) == 1){
-            break;
+        if (recv_chunks <= 2u || (recv_chunks & 7u) == 0u || total >= (resp_cap - 2048)){
+            if (http_response_completion_state_local(resp, total) == 1){
+                break;
+            }
         }
     }
     recv_ms = qos_get_ticks() - t_stage_start;
@@ -1400,7 +1405,31 @@ static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
     qos_puts(" open <url|host> [path]\n");
+    qos_puts(" gzip on|off|status\n");
     qos_puts(" exit\n");
+}
+
+static void cmd_gzip(const char* arg){
+    while (arg && *arg == ' '){
+        arg++;
+    }
+    if (!arg || !*arg || str_eq(arg, "status")){
+        qos_puts("gzip accept=");
+        qos_puts(g_accept_gzip ? "on" : "off");
+        qos_puts("\n");
+        return;
+    }
+    if (str_eq(arg, "on")){
+        g_accept_gzip = 1;
+        qos_puts("gzip accept=on\n");
+        return;
+    }
+    if (str_eq(arg, "off")){
+        g_accept_gzip = 0;
+        qos_puts("gzip accept=off\n");
+        return;
+    }
+    qos_puts("Usage: gzip on|off|status\n");
 }
 
 static void cmd_open(char* host, const char* path){
@@ -1412,6 +1441,9 @@ static void cmd_open(char* host, const char* path){
     char header_value[64];
     int use_https = 0;
     int n;
+    unsigned long decode_chunked_ms = 0;
+    unsigned long decode_gzip_ms = 0;
+    unsigned long render_ms = 0;
 
     if (!host || !*host){
         qos_puts("Usage: open <url|host> [path]\n");
@@ -1480,7 +1512,9 @@ static void cmd_open(char* host, const char* path){
     int body_len = n - body;
     if (extract_header_value(resp, n, "Transfer-Encoding", header_value, sizeof(header_value)) == 0 &&
         str_contains_ci(header_value, "chunked")){
+        unsigned long t_decode = qos_get_ticks();
         int decoded = decode_chunked_body(body_ptr, body_len, work, (int)sizeof(work));
+        decode_chunked_ms = qos_get_ticks() - t_decode;
         if (decoded > 0){
             body_ptr = work;
             body_len = decoded;
@@ -1492,7 +1526,9 @@ static void cmd_open(char* host, const char* path){
     if (extract_header_value(resp, n, "Content-Encoding", header_value, sizeof(header_value)) == 0){
         if (str_contains_ci(header_value, "gzip")){
             unsigned char* out_buf = (body_ptr == work) ? resp : work;
+            unsigned long t_decode = qos_get_ticks();
             int decoded = gzip_decompress_local(body_ptr, body_len, out_buf, RESP_CAP);
+            decode_gzip_ms = qos_get_ticks() - t_decode;
             if (decoded > 0){
                 body_ptr = out_buf;
                 body_len = decoded;
@@ -1507,7 +1543,16 @@ static void cmd_open(char* host, const char* path){
     }
 
     qos_puts("\n");
+    unsigned long t_render = qos_get_ticks();
     int visible = print_html_text(body_ptr, body_len);
+    render_ms = qos_get_ticks() - t_render;
+    qos_puts("Decode/render timing ms: chunked=");
+    print_uint((unsigned int)decode_chunked_ms);
+    qos_puts(" gzip=");
+    print_uint((unsigned int)decode_gzip_ms);
+    qos_puts(" render=");
+    print_uint((unsigned int)render_ms);
+    qos_puts("\n");
     if (visible == 0){
         qos_puts("No visible text in received body. It may be mostly head/script/style content or unsupported markup.\n");
     }
@@ -1530,6 +1575,12 @@ static void execute_line(void){
     if (str_eq(g_input, "exit")){
         (void)qos_tty_release();
         qos_exit(0);
+    }
+
+    if (str_starts_with(g_input, "gzip")){
+        char* p = g_input + 4;
+        cmd_gzip(p);
+        return;
     }
 
     if (str_starts_with(g_input, "open ")){

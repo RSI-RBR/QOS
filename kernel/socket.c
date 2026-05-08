@@ -32,6 +32,7 @@ typedef struct {
     int stream_req_pending;
     unsigned short stream_req_port;
     unsigned char stream_req_ip[4];
+    int stream_req_accept_gzip;
     char stream_req_host[128];
     char stream_req_path[256];
 } kernel_socket_t;
@@ -52,18 +53,43 @@ static unsigned char ascii_lower(unsigned char c){
     return c;
 }
 
+static int header_value_has_token(const unsigned char* p, unsigned int len, const char* token){
+    unsigned int tlen = 0u;
+    if (!p || !token){
+        return 0;
+    }
+    while (token[tlen]){
+        tlen++;
+    }
+    if (tlen == 0u || len < tlen){
+        return 0;
+    }
+    for (unsigned int i = 0; i + tlen <= len; i++){
+        unsigned int j = 0u;
+        while (j < tlen && ascii_lower(p[i + j]) == ascii_lower((unsigned char)token[j])){
+            j++;
+        }
+        if (j == tlen){
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int parse_http_get_request(const unsigned char* data,
                                   unsigned int len,
                                   char* host,
                                   unsigned int host_cap,
                                   char* path,
-                                  unsigned int path_cap){
-    if (!data || len == 0 || !host || host_cap < 2u || !path || path_cap < 2u){
+                                  unsigned int path_cap,
+                                  int* accept_gzip){
+    if (!data || len == 0 || !host || host_cap < 2u || !path || path_cap < 2u || !accept_gzip){
         return -1;
     }
     host[0] = 0;
     path[0] = '/';
     path[1] = 0;
+    *accept_gzip = 0;
 
     unsigned int line0_end = 0;
     while (line0_end < len && data[line0_end] != '\r' && data[line0_end] != '\n'){
@@ -125,7 +151,30 @@ static int parse_http_get_request(const unsigned char* data,
                 host[k] = (char)data[vs + k];
             }
             host[n] = 0;
-            break;
+        } else if ((le - ls) >= 16u &&
+                   ascii_lower(data[ls + 0]) == 'a' &&
+                   ascii_lower(data[ls + 1]) == 'c' &&
+                   ascii_lower(data[ls + 2]) == 'c' &&
+                   ascii_lower(data[ls + 3]) == 'e' &&
+                   ascii_lower(data[ls + 4]) == 'p' &&
+                   ascii_lower(data[ls + 5]) == 't' &&
+                   data[ls + 6] == '-' &&
+                   ascii_lower(data[ls + 7]) == 'e' &&
+                   ascii_lower(data[ls + 8]) == 'n' &&
+                   ascii_lower(data[ls + 9]) == 'c' &&
+                   ascii_lower(data[ls + 10]) == 'o' &&
+                   ascii_lower(data[ls + 11]) == 'd' &&
+                   ascii_lower(data[ls + 12]) == 'i' &&
+                   ascii_lower(data[ls + 13]) == 'n' &&
+                   ascii_lower(data[ls + 14]) == 'g' &&
+                   data[ls + 15] == ':'){
+            unsigned int vs = ls + 16u;
+            while (vs < le && (data[vs] == ' ' || data[vs] == '\t')){
+                vs++;
+            }
+            if (header_value_has_token(&data[vs], le - vs, "gzip")){
+                *accept_gzip = 1;
+            }
         }
 
         i = le;
@@ -197,6 +246,7 @@ static void clear_socket(kernel_socket_t* s){
     s->stream_req_ip[1] = 0;
     s->stream_req_ip[2] = 0;
     s->stream_req_ip[3] = 0;
+    s->stream_req_accept_gzip = 0;
     s->stream_req_host[0] = 0;
     s->stream_req_path[0] = 0;
 }
@@ -390,6 +440,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     int type = 0;
     char stream_host[128];
     char stream_path[256];
+    int stream_accept_gzip = 0;
 
     unsigned long irq = spin_lock_irqsave(&g_socket_lock);
     int si = lookup_socket_index(pid, fd);
@@ -423,7 +474,8 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
     }
 
     if (type == QOS_SOCK_STREAM){
-        int rc = parse_http_get_request(data, len, stream_host, sizeof(stream_host), stream_path, sizeof(stream_path));
+        int rc = parse_http_get_request(data, len, stream_host, sizeof(stream_host),
+                                        stream_path, sizeof(stream_path), &stream_accept_gzip);
         if (rc != 0){
             spin_unlock_irqrestore(&g_socket_lock, irq);
             return -1;
@@ -437,6 +489,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         s->stream_req_ip[1] = s->remote_ip[1];
         s->stream_req_ip[2] = s->remote_ip[2];
         s->stream_req_ip[3] = s->remote_ip[3];
+        s->stream_req_accept_gzip = stream_accept_gzip;
         {
             unsigned int i = 0;
             while (i + 1u < (unsigned int)sizeof(s->stream_req_host) && stream_host[i]){
@@ -479,6 +532,7 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
         unsigned int stream_out_cap = SOCKET_STREAM_RX_CAP - 1u;
         unsigned short stream_remote_port = 0;
         unsigned char stream_remote_ip[4] = {0, 0, 0, 0};
+        int stream_accept_gzip = 0;
         char stream_host[128];
         char stream_path[256];
 
@@ -513,6 +567,7 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                     stream_remote_ip[1] = s->stream_req_ip[1];
                     stream_remote_ip[2] = s->stream_req_ip[2];
                     stream_remote_ip[3] = s->stream_req_ip[3];
+                    stream_accept_gzip = s->stream_req_accept_gzip;
                     {
                         unsigned int i = 0;
                         while (i + 1u < (unsigned int)sizeof(stream_host) && s->stream_req_host[i]){
@@ -543,8 +598,9 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                         uart_puts(", sig_advertised=");
                         uart_puts(tcp_tls13_pq_sig_offered() ? "ML-DSA-first+fallback" : "classic-only");
                         uart_puts(", x509_hostname=on, x509_chain_sig=RSA+ECDSA, certverify=RSA+ECDSA\n");
-                        n = tcp_https_stream_start(stream_remote_ip, stream_host, stream_path,
-                                                   g_stream_http_tmp, stream_out_cap);
+                        n = tcp_https_stream_start_ex(stream_remote_ip, stream_host, stream_path,
+                                                      g_stream_http_tmp, stream_out_cap,
+                                                      stream_accept_gzip);
                         if (n >= 0){
                             uart_puts("HTTPS negotiated kex=");
                             uart_puts(tcp_tls13_pq_kex_active() ? "X25519+ML-KEM-768" : "X25519");
@@ -552,7 +608,9 @@ int ksocket_recv(int pid, int fd, unsigned char* out, unsigned int out_cap, unsi
                         }
                     } else if (stream_fetch_needed){
                         tcp_https_stream_close();
-                        n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+                        n = tcp_http_get_ex(stream_remote_ip, stream_host, stream_path,
+                                            g_stream_http_tmp, stream_out_cap,
+                                            stream_accept_gzip);
                     } else{
                         n = tcp_https_stream_read(g_stream_http_tmp, SOCKET_STREAM_RX_CAP - 1u, effective_timeout);
                     }

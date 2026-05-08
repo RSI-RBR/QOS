@@ -1022,6 +1022,7 @@ static int tls13_wait_for_established(void){
 }
 
 static int tls13_compact_rx(unsigned int* consumed){
+    unsigned int before_len;
     if (!consumed){
         return -1;
     }
@@ -1031,12 +1032,16 @@ static int tls13_compact_rx(unsigned int* consumed){
     if (*consumed > g_conn.out_len){
         return -1;
     }
+    before_len = g_conn.out_len;
     unsigned int rem = g_conn.out_len - *consumed;
     for (unsigned int i = 0; i < rem; i++){
         g_conn.out[i] = g_conn.out[*consumed + i];
     }
     g_conn.out_len = rem;
     *consumed = 0u;
+    if (g_conn.active && g_conn.state == TCP_ST_ESTABLISHED && rem < before_len){
+        (void)tcp_send_segment(TCP_FLAG_ACK, 0, 0);
+    }
     return 0;
 }
 
@@ -1400,7 +1405,8 @@ static int tcp_https_get_internal(const unsigned char dst_ip[4],
                                   const char* path,
                                   unsigned char* out,
                                   unsigned int out_cap,
-                                  int stream_mode){
+                                  int stream_mode,
+                                  int accept_gzip){
     const char* req_path = (path && *path) ? path : "/";
     char req[1024];
     int rq = 0;
@@ -2094,9 +2100,11 @@ https_retry_connect:
         append_str(req, (int)sizeof(req), &rq, host) != 0 ||
         append_str(req, (int)sizeof(req), &rq,
                    "\r\nUser-Agent: Mozilla/5.0 (compatible; QOS/0.1)\r\n"
-                   "Accept: text/html,text/plain,*/*;q=0.8\r\n"
-                   "Accept-Encoding: identity\r\n"
-                   "Connection: close\r\n\r\n") != 0){
+                   "Accept: text/html,text/plain,*/*;q=0.8\r\n") != 0 ||
+        append_str(req, (int)sizeof(req), &rq,
+                   accept_gzip ? "Accept-Encoding: gzip, identity\r\n" :
+                                 "Accept-Encoding: identity\r\n") != 0 ||
+        append_str(req, (int)sizeof(req), &rq, "Connection: close\r\n\r\n") != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
@@ -2347,7 +2355,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
                   const char* path,
                   unsigned char* out,
                   unsigned int out_cap){
-    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 0);
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 0, 0);
 }
 
 int tcp_https_stream_start(const unsigned char dst_ip[4],
@@ -2355,7 +2363,16 @@ int tcp_https_stream_start(const unsigned char dst_ip[4],
                            const char* path,
                            unsigned char* out,
                            unsigned int out_cap){
-    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1);
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1, 0);
+}
+
+int tcp_https_stream_start_ex(const unsigned char dst_ip[4],
+                              const char* host,
+                              const char* path,
+                              unsigned char* out,
+                              unsigned int out_cap,
+                              int accept_gzip){
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1, accept_gzip ? 1 : 0);
 }
 
 int tcp_https_stream_read(unsigned char* out,
@@ -2368,11 +2385,12 @@ int tcp_https_stream_read(unsigned char* out,
     return n;
 }
 
-int tcp_http_get(const unsigned char dst_ip[4],
-                 const char* host,
-                 const char* path,
-                 unsigned char* out,
-                 unsigned int out_cap){
+int tcp_http_get_ex(const unsigned char dst_ip[4],
+                    const char* host,
+                    const char* path,
+                    unsigned char* out,
+                    unsigned int out_cap,
+                    int accept_gzip){
     char req[1024];
     int rq = 0;
     unsigned long start_tick;
@@ -2487,9 +2505,11 @@ int tcp_http_get(const unsigned char dst_ip[4],
         append_str(req, (int)sizeof(req), &rq, host) != 0 ||
         append_str(req, (int)sizeof(req), &rq,
                    "\r\nUser-Agent: Mozilla/5.0 (compatible; QOS/0.1)\r\n"
-                   "Accept: text/html,text/plain,*/*;q=0.8\r\n"
-                   "Accept-Encoding: identity\r\n"
-                   "Connection: close\r\n\r\n") != 0){
+                   "Accept: text/html,text/plain,*/*;q=0.8\r\n") != 0 ||
+        append_str(req, (int)sizeof(req), &rq,
+                   accept_gzip ? "Accept-Encoding: gzip, identity\r\n" :
+                                 "Accept-Encoding: identity\r\n") != 0 ||
+        append_str(req, (int)sizeof(req), &rq, "Connection: close\r\n\r\n") != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
@@ -2548,6 +2568,14 @@ int tcp_http_get(const unsigned char dst_ip[4],
     }
     g_tcp_stats.http_fail++;
     return -1;
+}
+
+int tcp_http_get(const unsigned char dst_ip[4],
+                 const char* host,
+                 const char* path,
+                 unsigned char* out,
+                 unsigned int out_cap){
+    return tcp_http_get_ex(dst_ip, host, path, out, out_cap, 0);
 }
 
 void tcp_dump_stats(void){

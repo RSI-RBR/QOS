@@ -11,6 +11,12 @@ int tcp_http_get(const unsigned char dst_ip[4],
                  const char* path,
                  unsigned char* out,
                  unsigned int out_cap);
+int tcp_http_get_ex(const unsigned char dst_ip[4],
+                    const char* host,
+                    const char* path,
+                    unsigned char* out,
+                    unsigned int out_cap,
+                    int accept_gzip);
 int tcp_https_get(const unsigned char dst_ip[4],
                   const char* host,
                   const char* path,
@@ -21,6 +27,12 @@ int tcp_https_stream_start(const unsigned char dst_ip[4],
                            const char* path,
                            unsigned char* out,
                            unsigned int out_cap);
+int tcp_https_stream_start_ex(const unsigned char dst_ip[4],
+                              const char* host,
+                              const char* path,
+                              unsigned char* out,
+                              unsigned int out_cap,
+                              int accept_gzip);
 int tcp_https_stream_read(unsigned char* out,
                           unsigned int out_cap,
                           unsigned int timeout_ms);
