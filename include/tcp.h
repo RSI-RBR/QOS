@@ -17,5 +17,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
                   unsigned char* out,
                   unsigned int out_cap);
 void tcp_dump_stats(void);
+int tcp_tls13_pq_sig_offered(void);
+int tcp_tls13_pq_kex_offered(void);
+int tcp_tls13_pq_kex_active(void);
 
 #endif

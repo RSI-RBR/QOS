@@ -479,14 +479,66 @@ static unsigned char g_tls_record_wire[TCP_TLS_APP_IO_CAP];
 static unsigned char g_tls_record_plain[TCP_TLS_REC_MAX];
 static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
 
-// Experimental PQ advertisement scaffolding:
-// - Group 0x6399: ecosystem draft ID for X25519+Kyber768 style KEM hybrids.
-// - Signature scheme 0x0905: draft allocation for ML-DSA-65 (Dilithium level 3).
-// TLS key exchange remains X25519-only until a KEM backend is integrated.
-// Keep this OFF by default for broad compatibility with strict servers.
+// PQ TLS negotiation policy:
+// - Prefer ML-DSA signatures in ClientHello when available.
+// - Keep key exchange on X25519 until ML-KEM encapsulation/decapsulation is wired.
+// - Do not advertise PQ KEM groups unless the backend is actually ready.
+#define TLS13_GROUP_X25519_MLKEM768 0x11ECu
 #define TLS13_GROUP_X25519_KYBER768_DRAFT00 0x6399u
 #define TLS13_SIGALG_MLDSA65 0x0905u
-static const int g_tls13_advertise_pq = 0;
+static const int g_tls13_advertise_pq_sig = 1;
+static const int g_tls13_prioritize_pq_sig = 1;
+static const int g_tls13_advertise_pq_kem = 0;
+
+static int tls13_pq_kem_backend_ready(void){
+    // TODO(ml-kem): flip to 1 once ML-KEM-768 keygen/encap/decap is integrated.
+    return 0;
+}
+
+int tcp_tls13_pq_sig_offered(void){
+    return g_tls13_advertise_pq_sig ? 1 : 0;
+}
+
+int tcp_tls13_pq_kex_offered(void){
+    return (g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()) ? 1 : 0;
+}
+
+int tcp_tls13_pq_kex_active(void){
+    // Current handshake path derives shared secrets with X25519 only.
+    return 0;
+}
+
+static unsigned int tls13_fill_signature_schemes(unsigned short* sigs, unsigned int cap){
+    unsigned int scount = 0;
+    if (!sigs || cap == 0u){
+        return 0u;
+    }
+
+    if (g_tls13_advertise_pq_sig && g_tls13_prioritize_pq_sig && scount < cap){
+        sigs[scount++] = TLS13_SIGALG_MLDSA65;
+    }
+
+    if (scount < cap) sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
+    if (scount < cap) sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
+    if (scount < cap) sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
+    if (scount < cap) sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
+    if (scount < cap) sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
+    if (scount < cap) sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
+    // Keep broad compatibility for endpoints and certificate chain selection.
+    if (scount < cap) sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+    if (scount < cap) sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
+    if (scount < cap) sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
+    if (scount < cap) sigs[scount++] = 0x0807u; // ed25519
+    if (scount < cap) sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
+    if (scount < cap) sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
+    if (scount < cap) sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
+
+    if (g_tls13_advertise_pq_sig && !g_tls13_prioritize_pq_sig && scount < cap){
+        sigs[scount++] = TLS13_SIGALG_MLDSA65;
+    }
+
+    return scount;
+}
 
 static void be24_write(unsigned char* p, unsigned int v){
     p[0] = (unsigned char)((v >> 16) & 0xFFu);
@@ -579,12 +631,15 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // supported_groups
     {
-        unsigned short groups[2];
+        unsigned short groups[3];
         unsigned int gcount = 0;
-        groups[gcount++] = TLS13_GROUP_X25519;
-        if (g_tls13_advertise_pq){
+        if (g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
+            // Offer modern and legacy hybrid IDs only when we can actually
+            // construct matching key_share payloads.
+            groups[gcount++] = TLS13_GROUP_X25519_MLKEM768;
             groups[gcount++] = TLS13_GROUP_X25519_KYBER768_DRAFT00;
         }
+        groups[gcount++] = TLS13_GROUP_X25519;
         unsigned int groups_bytes = gcount * 2u;
         unsigned int ext_len = 2u + groups_bytes;
         if (i + 4u + ext_len > out_cap){
@@ -601,24 +656,9 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     // signature_algorithms
     {
         unsigned short sigs[16];
-        unsigned int scount = 0;
-        sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
-        sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
-        sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
-        sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
-        sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
-        sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
-        // Keep broader compatibility for CertificateVerify negotiation.
-        // Chain verification remains enforced in x509_verify.
-        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
-        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
-        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
-        sigs[scount++] = 0x0807u; // ed25519
-        sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
-        sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
-        sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
-        if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65;
+        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u);
+        if (scount == 0u){
+            return -1;
         }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
@@ -636,24 +676,9 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     // signature_algorithms_cert
     {
         unsigned short sigs[16];
-        unsigned int scount = 0;
-        sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
-        sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
-        sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
-        sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
-        sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
-        sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
-        // Keep this broad for compatibility: some endpoints abort the
-        // handshake if their cert algorithm is not offered here.
-        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
-        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
-        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
-        sigs[scount++] = 0x0807u; // ed25519
-        sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
-        sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
-        sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
-        if (g_tls13_advertise_pq){
-            sigs[scount++] = TLS13_SIGALG_MLDSA65;
+        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u);
+        if (scount == 0u){
+            return -1;
         }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
@@ -973,7 +998,7 @@ static int tls13_sigalg_is_supported(unsigned short alg){
         case 0x0601u: // rsa_pkcs1_sha512
             return 1;
         case TLS13_SIGALG_MLDSA65:
-            return g_tls13_advertise_pq ? 1 : 0;
+            return g_tls13_advertise_pq_sig ? 1 : 0;
         default:
             return 0;
     }
