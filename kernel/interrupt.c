@@ -155,18 +155,17 @@ void* irq_handler(void* irq_frame_sp){
         } else{
             scheduler_tick();
         }
-        // Only context-switch from EL0 frames or from the kernel idle loop.
-        // EL1 syscall frames live on a shared per-core kernel stack; switching
-        // away from them is unsafe until we add per-process kernel syscall
-        // stacks. Long syscalls may still unmask IRQs so timers/devices run,
-        // but the IRQ path must not schedule away from that EL1 frame.
+        // Context-switch from EL0, from idle, or from a process that is
+        // deliberately blocked in sleep(). General long syscalls still keep
+        // running on their current core.
         unsigned long* frame = (unsigned long*)irq_frame_sp;
         unsigned long spsr = frame ? frame[IRQ_FRAME_SPSR_IDX] : 0;
         int need_resched = scheduler_consume_need_resched();
         int in_el0 = ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T);
         process_t* cur = get_current_process();
+        int sleeping_syscall = (cur && cur->state == PROC_SLEEPING);
         int idle_kernel = (cur == 0);
-        if (need_resched && (in_el0 || idle_kernel)){
+        if (need_resched && (in_el0 || idle_kernel || sleeping_syscall)){
             return scheduler_on_irq(irq_frame_sp);
         }
         ensure_return_ttbr_for_frame(irq_frame_sp);
@@ -181,8 +180,9 @@ void* irq_handler(void* irq_frame_sp){
         int need_resched = scheduler_consume_need_resched();
         int in_el0 = ((spsr & SPSR_MODE_MASK) == SPSR_MODE_EL0T);
         process_t* cur = get_current_process();
+        int sleeping_syscall = (cur && cur->state == PROC_SLEEPING);
         int idle_kernel = (cur == 0);
-        if (need_resched && (in_el0 || idle_kernel)){
+        if (need_resched && (in_el0 || idle_kernel || sleeping_syscall)){
             return scheduler_on_irq(irq_frame_sp);
         }
         ensure_return_ttbr_for_frame(irq_frame_sp);
