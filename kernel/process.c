@@ -56,6 +56,7 @@ static void mark_need_resched_locked(unsigned int core_id);
 static int is_pid_pending_zombie(int pid);
 static int pid_running_on_other_core_locked(int pid, unsigned int core);
 static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable);
+static int core_is_schedulable(unsigned int core, unsigned int online_mask);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -63,6 +64,16 @@ static unsigned int scheduler_core_id(void){
         return 0;
     }
     return core;
+}
+
+static int core_is_schedulable(unsigned int core, unsigned int online_mask){
+    if (core >= MAX_CPU_CORES){
+        return 0;
+    }
+    if (core == 0u){
+        return 1;
+    }
+    return (online_mask & (1u << core)) ? 1 : 0;
 }
 
 static int tick_reached(unsigned long now, unsigned long target){
@@ -162,6 +173,7 @@ static int sleepq_pop_due_locked(unsigned long now_ticks){
 }
 
 static void wake_due_sleepers_locked(unsigned int local_core){
+    unsigned int online = smp_online_mask();
     while (1){
         int wake_pid = sleepq_pop_due_locked(system_ticks);
         if (wake_pid < 0){
@@ -176,7 +188,7 @@ static void wake_due_sleepers_locked(unsigned int local_core){
         processes[wake_pid].state = PROC_READY;
         processes[wake_pid].wake_tick = 0;
         unsigned int owner_core = processes[wake_pid].owner_core;
-        if (owner_core >= MAX_CPU_CORES){
+        if (!core_is_schedulable(owner_core, online)){
             owner_core = local_core;
             processes[wake_pid].owner_core = owner_core;
         }
@@ -259,12 +271,21 @@ static unsigned int core_load_locked(unsigned int core){
 }
 
 static unsigned int choose_least_loaded_core_locked(unsigned int preferred_core){
-    if (preferred_core >= MAX_CPU_CORES){
+    unsigned int online = smp_online_mask();
+    if ((online & 0x1u) == 0u){
+        online |= 0x1u;
+    }
+
+    if (!core_is_schedulable(preferred_core, online)){
         preferred_core = 0;
     }
+
     unsigned int best_core = preferred_core;
     unsigned int best_load = core_load_locked(preferred_core);
     for (unsigned int core = 0; core < MAX_CPU_CORES; core++){
+        if (!core_is_schedulable(core, online)){
+            continue;
+        }
         unsigned int load = core_load_locked(core);
         if (load < best_load){
             best_load = load;
