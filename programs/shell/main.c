@@ -391,6 +391,8 @@ static void cmd_help(void){
     qos_puts(" run\n");
     qos_puts(" game\n");
     qos_puts(" web\n");
+    qos_puts(" tty\n");
+    qos_puts(" chvt <0-3>\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
     qos_puts(" clear\n");
@@ -535,6 +537,30 @@ static void cmd_setgw(const char* s){
 
 static void cmd_ps(void){
     qos_process_dump();
+}
+
+static void cmd_tty(void){
+    int active = qos_term_get_active();
+    int owner = qos_tty_get_owner();
+    qos_puts("active tty");
+    print_int(active);
+    qos_puts(" owner pid=");
+    print_int(owner);
+    qos_puts("\n");
+}
+
+static void cmd_chvt(unsigned int id){
+    if (id >= 4u){
+        qos_puts("Usage: chvt <0-3>\n");
+        return;
+    }
+    if (qos_term_switch((int)id) != 0){
+        qos_puts("chvt failed.\n");
+        return;
+    }
+    qos_puts("Switched to tty");
+    print_uint(id);
+    qos_puts(".\n");
 }
 
 static void cmd_ping(void){
@@ -956,8 +982,23 @@ static void execute_line(void){
         cmd_game();
     } else if (str_eq(g_buf, "web")){
         cmd_web();
+    } else if (str_eq(g_buf, "tty")){
+        cmd_tty();
+    } else if (str_starts_with(g_buf, "chvt ")){
+        const char* p = g_buf + 5;
+        unsigned int id = 0;
+        while (*p == ' '){
+            p++;
+        }
+        if (parse_uint(p, &id) != 0){
+            qos_puts("Usage: chvt <0-3>\n");
+        } else{
+            cmd_chvt(id);
+        }
+    } else if (str_eq(g_buf, "chvt")){
+        qos_puts("Usage: chvt <0-3>\n");
     } else if (str_eq(g_buf, "clear")){
-        qos_fb_clear(0x00000000);
+        qos_term_clear();
     } else if (str_eq(g_buf, "fbinfo")){
         cmd_fbinfo();
     } else if (str_eq(g_buf, "usbstat")){

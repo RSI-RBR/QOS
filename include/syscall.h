@@ -72,7 +72,10 @@ enum {
     SYS_AUTH_GET_USERNAME = 62,
     SYS_AUTH_VERIFY_PASSWORD = 63,
     SYS_REMOTE_LOGIN_STATE = 64,
-    SYS_TRY_GETC_EX = 65
+    SYS_TRY_GETC_EX = 65,
+    SYS_TERM_GET_ACTIVE = 66,
+    SYS_TERM_SWITCH = 67,
+    SYS_TERM_CLEAR = 68
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -235,6 +238,18 @@ static inline int qos_tty_get_owner(void){
 
 static inline int qos_tty_claim_self(void){
     return (int)qos_syscall0(SYS_TTY_CLAIM_SELF);
+}
+
+static inline int qos_term_get_active(void){
+    return (int)qos_syscall0(SYS_TERM_GET_ACTIVE);
+}
+
+static inline int qos_term_switch(int id){
+    return (int)qos_syscall1(SYS_TERM_SWITCH, (unsigned long)id);
+}
+
+static inline void qos_term_clear(void){
+    (void)qos_syscall0(SYS_TERM_CLEAR);
 }
 
 static inline void qos_process_dump(void){

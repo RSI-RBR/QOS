@@ -273,6 +273,40 @@ void fb_console_write(const char* s, unsigned long len){
     spin_unlock_irqrestore(&g_fb_console_lock, irq);
 }
 
+void fb_console_load_screen(const unsigned char* cells,
+                            unsigned int src_cols,
+                            unsigned int src_rows,
+                            unsigned int cursor_col,
+                            unsigned int cursor_row){
+    if (!cells || src_cols == 0u || src_rows == 0u){
+        return;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_fb_console_lock);
+    for (unsigned int row = 0; row < FB_CONSOLE_MAX_ROWS; row++){
+        for (unsigned int col = 0; col < FB_CONSOLE_MAX_COLS; col++){
+            unsigned char ch = ' ';
+            if (row < g_rows && col < g_cols && row < src_rows && col < src_cols){
+                ch = cells[(row * src_cols) + col];
+                if (ch < 0x20u || ch > 0x7Eu){
+                    ch = '?';
+                }
+            }
+            g_cells[row][col] = ch;
+        }
+    }
+    g_cursor_col = cursor_col;
+    g_cursor_row = cursor_row;
+    if (g_cursor_col >= g_cols){
+        g_cursor_col = (g_cols > 0u) ? (g_cols - 1u) : 0u;
+    }
+    if (g_cursor_row >= g_rows){
+        g_cursor_row = (g_rows > 0u) ? (g_rows - 1u) : 0u;
+    }
+    redraw_all_locked();
+    spin_unlock_irqrestore(&g_fb_console_lock, irq);
+}
+
 void fb_console_set_colors(unsigned int fg, unsigned int bg, unsigned int cursor){
     unsigned long irq = spin_lock_irqsave(&g_fb_console_lock);
     g_fg = fg;

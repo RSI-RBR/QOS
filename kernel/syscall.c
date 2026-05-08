@@ -82,6 +82,8 @@ static void syscall_poll_background_io(void){
     static unsigned long next_remote_poll_tick = 0;
     unsigned long now = system_ticks;
 
+    terminal_poll_inputs();
+
     if ((long)(now - next_net_poll_tick) >= 0){
         // The default NIC path is USB-backed on Pi 3, so background polling is
         // intentionally modest. Explicit network syscalls still poll directly.
@@ -283,6 +285,9 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TTY_RELEASE:
         case SYS_TTY_GET_OWNER:
         case SYS_TTY_CLAIM_SELF:
+        case SYS_TERM_GET_ACTIVE:
+        case SYS_TERM_SWITCH:
+        case SYS_TERM_CLEAR:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
         case SYS_NET_SET_LOCAL_IP:
@@ -714,7 +719,12 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TTY_SET_OWNER: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)console_set_owner(pid, (int)frame[TF_X0]);
+            int target = (int)frame[TF_X0];
+            int rc = console_set_owner(pid, target);
+            if (rc == 0){
+                (void)terminal_set_foreground_pid(terminal_get_for_pid(target), target);
+            }
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
@@ -730,9 +740,35 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TTY_CLAIM_SELF: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)console_set_owner(pid, pid);
+            int rc = console_set_owner(pid, pid);
+            if (rc == 0){
+                (void)terminal_set_foreground_pid(terminal_get_for_pid(pid), pid);
+            }
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
+
+        case SYS_TERM_GET_ACTIVE:
+            frame[TF_X0] = (unsigned long)terminal_get_active();
+            return frame_sp;
+
+        case SYS_TERM_SWITCH: {
+            int pid = process_current_pid();
+            int term_id = (int)frame[TF_X0];
+            int rc = terminal_set_active(term_id);
+            if (rc == 0 && pid >= 0){
+                (void)terminal_attach_pid(pid, term_id);
+                (void)terminal_set_foreground_pid(term_id, pid);
+                (void)console_set_owner(pid, pid);
+            }
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_TERM_CLEAR:
+            terminal_clear_active();
+            frame[TF_X0] = 0;
+            return frame_sp;
 
         case SYS_PROCESS_DUMP:
             process_dump();
