@@ -187,7 +187,7 @@ static void local_login_init(void){
             g_local_locked = 1;
             qos_puts("Local login unavailable: username read failed.\n");
         } else{
-            qos_puts("Local console login required (UART input).\n");
+            qos_puts("Local console login required (UART/USB input).\n");
         }
     }
 }

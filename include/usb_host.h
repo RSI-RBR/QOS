@@ -62,6 +62,11 @@ typedef struct {
     unsigned short child_vid;
     unsigned short child_pid;
     unsigned short config_total_len;
+    unsigned int hid_poll_count;
+    unsigned int hid_report_count;
+    unsigned int hid_nodata_count;
+    unsigned int hid_error_count;
+    unsigned int hid_last_actual;
     unsigned char hub_ports;
     unsigned char hub_enum_attempts;
     unsigned char hub_enum_success;

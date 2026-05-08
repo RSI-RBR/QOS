@@ -23,6 +23,7 @@
 #define GNPTXSTS  (*(volatile unsigned int*)(USB_DWC2_BASE + 0x02C))
 #define GCCFG     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x038))
 #define GSNPSID   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x040))
+#define HPTXFSIZ  (*(volatile unsigned int*)(USB_DWC2_BASE + 0x100))
 #define HCFG      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x400))
 #define HFIR      (*(volatile unsigned int*)(USB_DWC2_BASE + 0x404))
 #define HFNUM     (*(volatile unsigned int*)(USB_DWC2_BASE + 0x408))
@@ -216,6 +217,7 @@ typedef struct {
     int use_split;
     int low_speed;
     int boot_kbd;
+    unsigned char in_toggle;
     unsigned char prev_report[USB_HID_REPORT_LEN];
     int have_prev_report;
     unsigned char q[USB_HID_CHAR_QUEUE_LEN];
@@ -279,6 +281,16 @@ static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char hub_addr,
                                       unsigned char hub_port);
 static int usb_hid_poll_once(void);
+static int hc_transfer_interrupt_in(unsigned char dev_addr,
+                                    unsigned char ep_addr,
+                                    unsigned int ep_mps,
+                                    unsigned char* data,
+                                    unsigned int len,
+                                    int use_split,
+                                    int low_speed,
+                                    unsigned char hub_addr,
+                                    unsigned char hub_port,
+                                    unsigned int* actual_out);
 static void usb_snapshot_hub_diag_to_root_info(void);
 
 static unsigned short le16(const unsigned char* p){
@@ -532,6 +544,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.use_split = use_split ? 1 : 0;
     g_kbd.low_speed = low_speed ? 1 : 0;
     g_kbd.boot_kbd = boot_kbd ? 1 : 0;
+    g_kbd.in_toggle = 0;
     g_kbd.have_prev_report = 0;
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         g_kbd.prev_report[i] = 0;
@@ -559,38 +572,29 @@ static int usb_hid_poll_once(void){
         report[i] = 0;
     }
 
-    if (g_kbd.use_split){
-        usb_set_split_context(g_kbd.hub_addr, g_kbd.hub_port, 1, g_kbd.low_speed);
-    }
-
-    unsigned short wValue = (unsigned short)(1u << 8); // INPUT report, report-id 0
-    int rc = usb_std_request(g_kbd.addr,
-                             0xA1u,
-                             0x01u, // GET_REPORT
-                             wValue,
-                             g_kbd.iface,
-                             report,
-                             (unsigned short)report_cap);
+    unsigned int actual = 0;
+    g_root_info.hid_poll_count++;
+    int rc = hc_transfer_interrupt_in(g_kbd.addr,
+                                      g_kbd.in_ep,
+                                      g_kbd.in_mps,
+                                      report,
+                                      report_cap,
+                                      g_kbd.use_split,
+                                      g_kbd.low_speed,
+                                      g_kbd.hub_addr,
+                                      g_kbd.hub_port,
+                                      &actual);
     if (rc != 0){
-        // Some HID devices require a non-zero report ID.
-        wValue = (unsigned short)((1u << 8) | 1u);
-        rc = usb_std_request(g_kbd.addr,
-                             0xA1u,
-                             0x01u,
-                             wValue,
-                             g_kbd.iface,
-                             report,
-                             (unsigned short)report_cap);
-    }
-
-    if (g_kbd.use_split){
-        usb_clear_split_context();
-    }
-
-    if (rc != 0){
+        g_root_info.hid_error_count++;
         return -1;
     }
-    if (report_cap >= 9u && report[0] != 0u && report[1] == 0u){
+    g_root_info.hid_last_actual = actual;
+    if (actual < USB_HID_REPORT_LEN){
+        g_root_info.hid_nodata_count++;
+        return 0;
+    }
+    g_root_info.hid_report_count++;
+    if (actual >= 9u && report[0] != 0u && report[1] == 0u){
         // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
         usb_hid_process_report(&report[1]);
     } else{
@@ -1617,6 +1621,152 @@ static int hc_transfer_bulk(unsigned char dev_addr,
     return 0;
 }
 
+static int hc_transfer_split_in_packet(unsigned int ch,
+                                       unsigned char dev_addr,
+                                       unsigned int ep_num,
+                                       unsigned int ep_type,
+                                       unsigned int ep_mps,
+                                       unsigned int pid,
+                                       unsigned char* in_data,
+                                       unsigned int in_len,
+                                       unsigned char hub_addr,
+                                       unsigned char hub_port,
+                                       unsigned int* actual_out){
+    if (actual_out){
+        *actual_out = 0;
+    }
+    if (!in_data || in_len == 0u){
+        return -1;
+    }
+    if (ep_mps == 0u){
+        ep_mps = USB_CTRL_EP_MPS_DEFAULT;
+    }
+
+    unsigned int want = in_len;
+    if (want > ep_mps){
+        want = ep_mps;
+    }
+
+    unsigned int split_reg = HCSPLT_SPLTENA
+        | ((HCSPLT_XACTPOS_ALL & 0x3u) << HCSPLT_XACTPOS_SHIFT)
+        | (((unsigned int)hub_addr & 0x7Fu) << HCSPLT_HUBADDR_SHIFT)
+        | (((unsigned int)hub_port & 0x7Fu) << HCSPLT_PRTADDR_SHIFT);
+
+    usb_wait_microframes(1);
+    if (hc_transfer_reg(ch, dev_addr, ep_num, ep_type, 1, ep_mps, pid,
+                        0, 0, 0, want, split_reg, 1, 0) != 0){
+        HCSPLT(ch) = 0;
+        return -1;
+    }
+
+    usb_wait_microframes(2);
+    for (unsigned int tries = 0; tries < 8; tries++){
+        unsigned int actual = 0;
+        int rc = hc_transfer_reg(ch, dev_addr, ep_num, ep_type, 1, ep_mps, pid,
+                                 0, 0, in_data, want,
+                                 split_reg | HCSPLT_COMPSPLT,
+                                 1,
+                                 &actual);
+        if (rc == 0 && actual > 0u){
+            HCSPLT(ch) = 0;
+            if (actual_out){
+                *actual_out = actual;
+            }
+            return 0;
+        }
+        if (rc == -1){
+            HCSPLT(ch) = 0;
+            return -1;
+        }
+        usb_wait_microframes(5);
+    }
+
+    // Interrupt IN endpoints normally NAK when no key state changed.
+    HCSPLT(ch) = 0;
+    return 0;
+}
+
+static int hc_transfer_interrupt_in(unsigned char dev_addr,
+                                    unsigned char ep_addr,
+                                    unsigned int ep_mps,
+                                    unsigned char* data,
+                                    unsigned int len,
+                                    int use_split,
+                                    int low_speed,
+                                    unsigned char hub_addr,
+                                    unsigned char hub_port,
+                                    unsigned int* actual_out){
+    if (actual_out){
+        *actual_out = 0;
+    }
+    if (!data || len == 0u || !(ep_addr & 0x80u)){
+        return -1;
+    }
+
+    unsigned int ep_num = ep_addr & 0x0Fu;
+    if (ep_num == 0u){
+        return -1;
+    }
+    if (ep_mps == 0u){
+        ep_mps = USB_HID_REPORT_LEN;
+    }
+
+    unsigned int pid = g_kbd.in_toggle ? HCTSIZ_PID_DATA1 : HCTSIZ_PID_DATA0;
+    unsigned int actual = 0;
+    int rc;
+
+    if (use_split){
+        usb_set_split_context(hub_addr, hub_port, 1, low_speed);
+        rc = hc_transfer_split_in_packet(0,
+                                         dev_addr,
+                                         ep_num,
+                                         HC_EPTYPE_INTERRUPT,
+                                         ep_mps,
+                                         pid,
+                                         data,
+                                         len,
+                                         hub_addr,
+                                         hub_port,
+                                         &actual);
+        usb_clear_split_context();
+    } else{
+        rc = hc_transfer_reg(0,
+                             dev_addr,
+                             ep_num,
+                             HC_EPTYPE_INTERRUPT,
+                             1,
+                             ep_mps,
+                             pid,
+                             0, 0,
+                             data, len,
+                             0u,
+                             1,
+                             &actual);
+        if (rc == -2){
+            actual = 0;
+            rc = 0;
+        }
+    }
+
+    if (rc != 0){
+        return -1;
+    }
+
+    if (actual > len){
+        actual = len;
+    }
+    if (actual > 0u){
+        unsigned int packets = div_round_up(actual, ep_mps ? ep_mps : 1u);
+        if (packets & 1u){
+            g_kbd.in_toggle ^= 1u;
+        }
+    }
+    if (actual_out){
+        *actual_out = actual;
+    }
+    return 0;
+}
+
 static int hc_transfer_split(unsigned int ch,
                              unsigned char dev_addr,
                              int ep_in,
@@ -1868,6 +2018,7 @@ int usb_host_init(void){
     // Basic FIFO defaults suitable for initial control transfer work.
     GRXFSIZ = 512;
     GNPTXFSIZ = (256u << 16) | 512u; // depth | start addr
+    HPTXFSIZ = (256u << 16) | 768u;  // periodic depth | start addr
 
     // Clear and mask interrupts for phase 1 polling path.
     GINTSTS = 0xFFFFFFFFu;
