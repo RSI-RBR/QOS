@@ -1087,6 +1087,18 @@ static void usb_wait_microframes(unsigned int count){
     }
 }
 
+static unsigned int usb_microframe(void){
+    return HFNUM & 0x7u;
+}
+
+static void usb_wait_for_microframe(unsigned int target){
+    target &= 0x7u;
+    unsigned int guard = 1200000u;
+    while ((usb_microframe() != target) && guard--){
+        asm volatile("nop");
+    }
+}
+
 static unsigned int usb_next_data_pid(unsigned int pid){
     return (pid == HCTSIZ_PID_DATA1) ? HCTSIZ_PID_DATA0 : HCTSIZ_PID_DATA1;
 }
@@ -1664,14 +1676,22 @@ static int hc_transfer_split_in_packet(unsigned int ch,
         | (((unsigned int)hub_addr & 0x7Fu) << HCSPLT_HUBADDR_SHIFT)
         | (((unsigned int)hub_port & 0x7Fu) << HCSPLT_PRTADDR_SHIFT);
 
-    usb_wait_microframes(1);
+    // Periodic split schedule, following Circle's DWC2 pattern:
+    // SSPLIT in the next microframe (skip 6), CSPLIT two microframes later,
+    // then advance one microframe for each retry.
+    unsigned int start_mf = (usb_microframe() + 1u) & 0x7u;
+    if (start_mf == 6u){
+        start_mf = 7u;
+    }
+    usb_wait_for_microframe(start_mf);
     if (hc_transfer_reg(ch, dev_addr, ep_num, ep_type, 1, ep_mps, pid,
                         0, 0, 0, want, split_reg, 1, 0) != 0){
         HCSPLT(ch) = 0;
         return -1;
     }
 
-    usb_wait_microframes(2);
+    unsigned int complete_mf = (start_mf + 2u) & 0x7u;
+    usb_wait_for_microframe(complete_mf);
     for (unsigned int tries = 0; tries < 8; tries++){
         unsigned int actual = 0;
         int rc = hc_transfer_reg(ch, dev_addr, ep_num, ep_type, 1, ep_mps, pid,
@@ -1690,7 +1710,8 @@ static int hc_transfer_split_in_packet(unsigned int ch,
             HCSPLT(ch) = 0;
             return -1;
         }
-        usb_wait_microframes(5);
+        complete_mf = (complete_mf + 1u) & 0x7u;
+        usb_wait_for_microframe(complete_mf);
     }
 
     // Interrupt IN endpoints normally NAK when no key state changed.
