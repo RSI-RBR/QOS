@@ -612,13 +612,16 @@ int tcp_tls13_pq_kex_active(void){
     return g_tls13_last_kex_was_pq ? 1 : 0;
 }
 
-static unsigned int tls13_fill_signature_schemes(unsigned short* sigs, unsigned int cap){
+static unsigned int tls13_fill_signature_schemes(unsigned short* sigs,
+                                                 unsigned int cap,
+                                                 int advertise_pq_sig,
+                                                 int prioritize_pq_sig){
     unsigned int scount = 0;
     if (!sigs || cap == 0u){
         return 0u;
     }
 
-    if (g_tls13_advertise_pq_sig && g_tls13_prioritize_pq_sig && scount < cap){
+    if (advertise_pq_sig && prioritize_pq_sig && scount < cap){
         sigs[scount++] = TLS13_SIGALG_MLDSA65;
     }
 
@@ -637,7 +640,7 @@ static unsigned int tls13_fill_signature_schemes(unsigned short* sigs, unsigned 
     if (scount < cap) sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
     if (scount < cap) sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
 
-    if (g_tls13_advertise_pq_sig && !g_tls13_prioritize_pq_sig && scount < cap){
+    if (advertise_pq_sig && !prioritize_pq_sig && scount < cap){
         sigs[scount++] = TLS13_SIGALG_MLDSA65;
     }
 
@@ -728,6 +731,8 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
                                                 const unsigned char client_pub[TLS13_X25519_BYTES],
                                                 const unsigned char* mlkem_pk,
                                                 unsigned int mlkem_pk_len,
+                                                int advertise_pq_sig,
+                                                int prioritize_pq_sig,
                                                 unsigned char* out,
                                                 unsigned int out_cap,
                                                 unsigned int* out_len){
@@ -837,7 +842,9 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     // signature_algorithms
     {
         unsigned short sigs[16];
-        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u);
+        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u,
+                                                            advertise_pq_sig,
+                                                            prioritize_pq_sig);
         if (scount == 0u){
             return -1;
         }
@@ -859,7 +866,9 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     // transport fragility on constrained/quirky paths.
     if (!compact_pq_client_hello){
         unsigned short sigs[16];
-        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u);
+        unsigned int scount = tls13_fill_signature_schemes(sigs, 16u,
+                                                            advertise_pq_sig,
+                                                            prioritize_pq_sig);
         if (scount == 0u){
             return -1;
         }
@@ -1198,7 +1207,7 @@ static int tls13_build_finished_message(const unsigned char base_secret[32],
     return 0;
 }
 
-static int tls13_sigalg_is_supported(unsigned short alg){
+static int tls13_sigalg_is_supported(unsigned short alg, int advertise_pq_sig){
     switch (alg){
         case 0x0804u: // rsa_pss_rsae_sha256
         case 0x0805u: // rsa_pss_rsae_sha384
@@ -1215,7 +1224,7 @@ static int tls13_sigalg_is_supported(unsigned short alg){
         case 0x0601u: // rsa_pkcs1_sha512
             return 1;
         case TLS13_SIGALG_MLDSA65:
-            return g_tls13_advertise_pq_sig ? 1 : 0;
+            return advertise_pq_sig ? 1 : 0;
         default:
             return 0;
     }
@@ -1225,7 +1234,8 @@ static int tls13_verify_server_certificate_verify(const x509_verify_result_t* ce
                                                   unsigned short sig_alg,
                                                   const unsigned char transcript_hash[32],
                                                   const unsigned char* signature,
-                                                  unsigned int signature_len){
+                                                  unsigned int signature_len,
+                                                  int advertise_pq_sig){
     static const char context[] = "TLS 1.3, server CertificateVerify";
     unsigned char signed_msg[64u + sizeof(context) + 32u];
     unsigned int o = 0u;
@@ -1233,7 +1243,7 @@ static int tls13_verify_server_certificate_verify(const x509_verify_result_t* ce
     if (!cert || !transcript_hash || !signature || signature_len == 0u){
         return -1;
     }
-    if (!tls13_sigalg_is_supported(sig_alg)){
+    if (!tls13_sigalg_is_supported(sig_alg, advertise_pq_sig)){
         return -1;
     }
 
@@ -1401,7 +1411,8 @@ static int tcp_https_get_internal(const unsigned char dst_ip[4],
                                   unsigned char* out,
                                   unsigned int out_cap,
                                   int stream_mode,
-                                  int accept_gzip){
+                                  int accept_gzip,
+                                  int prefer_pq_sig_mldsa65){
     const char* req_path = (path && *path) ? path : "/";
     char req[1024];
     int rq = 0;
@@ -1462,6 +1473,8 @@ static int tcp_https_get_internal(const unsigned char dst_ip[4],
     sha256_ctx_t transcript;
     int force_x25519_only = 0;
     int retried_after_pq_timeout = 0;
+    int effective_advertise_pq_sig = g_tls13_advertise_pq_sig ? 1 : 0;
+    int effective_prioritize_pq_sig = g_tls13_prioritize_pq_sig ? 1 : 0;
     unsigned long perf_freq = read_cntfrq();
     unsigned long t_total_start = read_cntpct();
     unsigned long t_stage_start = t_total_start;
@@ -1498,6 +1511,10 @@ static int tcp_https_get_internal(const unsigned char dst_ip[4],
         g_tcp_https_last_error = -101;
         g_tcp_https_fail_count++;
         return g_tcp_https_last_error;
+    }
+    if (prefer_pq_sig_mldsa65){
+        effective_advertise_pq_sig = 1;
+        effective_prioritize_pq_sig = 1;
     }
     g_tls13_last_kex_was_pq = 0;
 
@@ -1616,6 +1633,8 @@ https_retry_connect:
                                             client_pub,
                                             client_hybrid_enabled ? mlkem_client_pk : 0,
                                             client_hybrid_enabled ? (unsigned int)sizeof(mlkem_client_pk) : 0u,
+                                            effective_advertise_pq_sig,
+                                            effective_prioritize_pq_sig,
                                             ch_msg, sizeof(ch_msg), &ch_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
@@ -1924,7 +1943,8 @@ https_retry_connect:
                 unsigned short sig_alg = be16_read(&hs_ptr[4]);
                 unsigned short sig_len = be16_read(&hs_ptr[6]);
                 unsigned int body_len = msg_tot - 4u;
-                if ((unsigned int)sig_len != (body_len - 4u) || !tls13_sigalg_is_supported(sig_alg)){
+                if ((unsigned int)sig_len != (body_len - 4u) ||
+                    !tls13_sigalg_is_supported(sig_alg, effective_advertise_pq_sig)){
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
@@ -1941,7 +1961,8 @@ https_retry_connect:
                                                            sig_alg,
                                                            thash,
                                                            &hs_ptr[8],
-                                                           (unsigned int)sig_len) != 0){
+                                                           (unsigned int)sig_len,
+                                                           effective_advertise_pq_sig) != 0){
                     uart_puts("HTTPS CertificateVerify failed alg=");
                     uart_puthex((unsigned int)sig_alg);
                     uart_puts("\n");
@@ -2350,7 +2371,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
                   const char* path,
                   unsigned char* out,
                   unsigned int out_cap){
-    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 0, 0);
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 0, 0, 0);
 }
 
 int tcp_https_stream_start(const unsigned char dst_ip[4],
@@ -2358,7 +2379,7 @@ int tcp_https_stream_start(const unsigned char dst_ip[4],
                            const char* path,
                            unsigned char* out,
                            unsigned int out_cap){
-    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1, 0);
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1, 0, 0);
 }
 
 int tcp_https_stream_start_ex(const unsigned char dst_ip[4],
@@ -2366,8 +2387,11 @@ int tcp_https_stream_start_ex(const unsigned char dst_ip[4],
                               const char* path,
                               unsigned char* out,
                               unsigned int out_cap,
-                              int accept_gzip){
-    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1, accept_gzip ? 1 : 0);
+                              int accept_gzip,
+                              int prefer_pq_sig_mldsa65){
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1,
+                                  accept_gzip ? 1 : 0,
+                                  prefer_pq_sig_mldsa65 ? 1 : 0);
 }
 
 int tcp_https_stream_read(unsigned char* out,

@@ -1300,6 +1300,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         append_str(req, REQ_CAP, &rq,
                    g_accept_gzip ? "\r\nAccept-Encoding: gzip, identity" :
                                    "\r\nAccept-Encoding: identity") != 0 ||
+        append_str(req, REQ_CAP, &rq, "\r\nX-QOS-PQ-SIG: mldsa65-first") != 0 ||
         append_str(req, REQ_CAP, &rq, "\r\nConnection: close\r\n\r\n") != 0){
         qos_puts("Request build failed.\n");
         (void)qos_close(fd);

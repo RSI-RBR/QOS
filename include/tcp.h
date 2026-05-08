@@ -32,7 +32,8 @@ int tcp_https_stream_start_ex(const unsigned char dst_ip[4],
                               const char* path,
                               unsigned char* out,
                               unsigned int out_cap,
-                              int accept_gzip);
+                              int accept_gzip,
+                              int prefer_pq_sig_mldsa65);
 int tcp_https_stream_read(unsigned char* out,
                           unsigned int out_cap,
                           unsigned int timeout_ms);
