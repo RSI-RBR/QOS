@@ -28,6 +28,12 @@ master:
     cmp x0, #0x8
     b.ne enter_kernel
 
+    // Enable cluster coherency in EL2 before enabling EL1 MMU/caches.
+    // Matches the common armstub flow on Cortex-A53.
+    mov x0, #(1 << 6)       // CPUECTLR_EL1.SMPEN
+    msr s3_1_c15_c2_1, x0
+    isb
+
     // Drop EL2 -> EL1
     mov x0, #(1 << 31)      // HCR_EL2.RW = 1 (EL1 AArch64)
     msr hcr_el2, x0
@@ -69,6 +75,11 @@ secondary_start:
     mrs x0, CurrentEL
     cmp x0, #0x8
     b.ne secondary_enter_kernel
+
+    // Enable cluster coherency in EL2 before enabling EL1 MMU/caches.
+    mov x0, #(1 << 6)       // CPUECTLR_EL1.SMPEN
+    msr s3_1_c15_c2_1, x0
+    isb
 
     // Drop EL2 -> EL1
     mov x0, #(1 << 31)      // HCR_EL2.RW = 1 (EL1 AArch64)
