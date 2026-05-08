@@ -442,11 +442,18 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms
     {
-        unsigned short sigs[4];
+        unsigned short sigs[12];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
+        sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
+        sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
         sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
+        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
         sigs[scount++] = 0x0807u; // ed25519
+        sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
+        sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
+        sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
         if (g_tls13_advertise_pq){
             sigs[scount++] = TLS13_SIGALG_MLDSA65;
         }
@@ -465,11 +472,18 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms_cert
     {
-        unsigned short sigs[4];
+        unsigned short sigs[12];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
+        sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
+        sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
         sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
+        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
         sigs[scount++] = 0x0807u; // ed25519
+        sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
+        sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
+        sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
         if (g_tls13_advertise_pq){
             sigs[scount++] = TLS13_SIGALG_MLDSA65;
         }
@@ -483,6 +497,24 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         be16_write(&out[i], (unsigned short)sig_bytes); i += 2u;
         for (unsigned int si = 0; si < scount; si++){
             be16_write(&out[i], sigs[si]); i += 2u;
+        }
+    }
+
+    // ALPN: request normal HTTP/1.1 service. Some large HTTPS frontends use
+    // ALPN policy to select the protocol stack behind the TLS terminator.
+    {
+        static const unsigned char alpn_http11[] = {
+            0x00u, 0x09u, 0x08u,
+            'h', 't', 't', 'p', '/', '1', '.', '1'
+        };
+        unsigned int ext_len = (unsigned int)sizeof(alpn_http11);
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+        be16_write(&out[i], 0x0010u); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        for (unsigned int a = 0; a < ext_len; a++){
+            out[i++] = alpn_http11[a];
         }
     }
 
@@ -890,7 +922,17 @@ int tcp_https_get(const unsigned char dst_ip[4],
         if (rec_type == 20u){
             continue; // compatibility CCS
         }
-        if (rec_type == 21u || rec_type == 23u){
+        if (rec_type == 21u){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            if (rec_len >= 2u){
+                unsigned int alert_desc = rec_payload[1];
+                HTTPS_FAIL(-200 - (int)alert_desc);
+            }
+            HTTPS_FAIL(-109);
+        }
+        if (rec_type == 23u){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
