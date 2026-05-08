@@ -131,6 +131,13 @@ void free_memory(const argon2_context *context, uint8_t *memory,
 #endif
 #endif
 
+/* Bare-metal/freestanding builds should not depend on libc-only bzero APIs. */
+#if !defined(__STDC_HOSTED__) || (__STDC_HOSTED__ == 0)
+#ifdef HAVE_EXPLICIT_BZERO
+#undef HAVE_EXPLICIT_BZERO
+#endif
+#endif
+
 void NOT_OPTIMIZED secure_wipe_memory(void *v, size_t n) {
 #if defined(_MSC_VER) && VC_GE_2005(_MSC_VER)
     SecureZeroMemory(v, n);
