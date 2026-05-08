@@ -394,6 +394,7 @@ static void cmd_help(void){
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
     qos_puts(" termout both|uart|hdmi|status\n");
+    qos_puts(" dma on|off|status\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
     qos_puts(" clear\n");
@@ -598,6 +599,30 @@ static void cmd_termout(const char* mode){
         return;
     }
     qos_puts("terminal output set.\n");
+}
+
+static void cmd_dma(const char* mode){
+    unsigned int st;
+    if (!mode || !*mode || str_eq(mode, "status")){
+        st = qos_dma_status();
+        qos_puts("dma=");
+        qos_puts((st & 1u) ? "on" : "off");
+        qos_puts(" failures=");
+        print_uint((st >> 16) & 0xFFFFu);
+        qos_puts("\n");
+        return;
+    }
+    if (str_eq(mode, "on")){
+        (void)qos_dma_set_enabled(1);
+        qos_puts("dma enabled for framebuffer console tests.\n");
+        return;
+    }
+    if (str_eq(mode, "off")){
+        (void)qos_dma_set_enabled(0);
+        qos_puts("dma disabled; framebuffer console uses CPU copy.\n");
+        return;
+    }
+    qos_puts("Usage: dma on|off|status\n");
 }
 
 static void cmd_ping(void){
@@ -1042,6 +1067,14 @@ static void execute_line(void){
         cmd_termout(p);
     } else if (str_eq(g_buf, "termout")){
         cmd_termout("status");
+    } else if (str_starts_with(g_buf, "dma ")){
+        const char* p = g_buf + 4;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_dma(p);
+    } else if (str_eq(g_buf, "dma")){
+        cmd_dma("status");
     } else if (str_eq(g_buf, "clear")){
         qos_term_clear();
     } else if (str_eq(g_buf, "fbinfo")){

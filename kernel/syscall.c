@@ -19,6 +19,7 @@
 #include "auth.h"
 #include "trust.h"
 #include "terminal.h"
+#include "dma.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -290,6 +291,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TERM_CLEAR:
         case SYS_TERM_GET_OUTPUT:
         case SYS_TERM_SET_OUTPUT:
+        case SYS_DMA_SET_ENABLED:
+        case SYS_DMA_STATUS:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
         case SYS_NET_SET_LOCAL_IP:
@@ -778,6 +781,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TERM_SET_OUTPUT:
             frame[TF_X0] = (unsigned long)terminal_set_active_output((unsigned int)frame[TF_X0]);
+            return frame_sp;
+
+        case SYS_DMA_SET_ENABLED:
+            dma_set_enabled(frame[TF_X0] ? 1 : 0);
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_DMA_STATUS:
+            frame[TF_X0] = ((unsigned long)(dma_failure_count() & 0xFFFFu) << 16) |
+                           (unsigned long)(dma_is_enabled() ? 1u : 0u);
             return frame_sp;
 
         case SYS_PROCESS_DUMP:

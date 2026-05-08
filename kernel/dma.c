@@ -47,7 +47,9 @@ typedef struct {
 static dma_cb_t g_dma_cb __attribute__((aligned(32)));
 static spinlock_t g_dma_lock;
 static int g_dma_ready = 0;
+static int g_dma_enabled = 0;
 static int g_dma_disabled = 0;
+static unsigned int g_dma_failures = 0;
 
 static void dma_barrier(void){
     asm volatile("dsb sy" : : : "memory");
@@ -93,6 +95,27 @@ void dma_init(void){
     g_dma_ready = 1;
 }
 
+void dma_set_enabled(int enabled){
+    dma_init();
+    unsigned long irq = spin_lock_irqsave(&g_dma_lock);
+    if (enabled){
+        g_dma_disabled = 0;
+        g_dma_enabled = 1;
+    } else{
+        g_dma_enabled = 0;
+        dma_reset_channel();
+    }
+    spin_unlock_irqrestore(&g_dma_lock, irq);
+}
+
+int dma_is_enabled(void){
+    return g_dma_enabled && !g_dma_disabled;
+}
+
+unsigned int dma_failure_count(void){
+    return g_dma_failures;
+}
+
 int dma_memcpy_2d(void* dst,
                   unsigned int dst_stride,
                   const void* src,
@@ -102,7 +125,7 @@ int dma_memcpy_2d(void* dst,
     if (!dst || !src || row_bytes == 0u || rows == 0u){
         return -1;
     }
-    if (g_dma_disabled){
+    if (!g_dma_enabled || g_dma_disabled){
         return -1;
     }
     if (row_bytes > 0xFFFFu || rows > 0x3FFFu){
@@ -158,6 +181,7 @@ int dma_memcpy_2d(void* dst,
     }
 
     if (rc != 0){
+        g_dma_failures++;
         g_dma_disabled = 1;
         dma_reset_channel();
     } else{

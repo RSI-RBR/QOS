@@ -84,7 +84,9 @@ enum {
     SYS_TERM_SWITCH = 67,
     SYS_TERM_CLEAR = 68,
     SYS_TERM_GET_OUTPUT = 69,
-    SYS_TERM_SET_OUTPUT = 70
+    SYS_TERM_SET_OUTPUT = 70,
+    SYS_DMA_SET_ENABLED = 71,
+    SYS_DMA_STATUS = 72
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -267,6 +269,14 @@ static inline unsigned int qos_term_get_output(void){
 
 static inline int qos_term_set_output(unsigned int flags){
     return (int)qos_syscall1(SYS_TERM_SET_OUTPUT, (unsigned long)flags);
+}
+
+static inline int qos_dma_set_enabled(int enabled){
+    return (int)qos_syscall1(SYS_DMA_SET_ENABLED, (unsigned long)(enabled ? 1u : 0u));
+}
+
+static inline unsigned int qos_dma_status(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_STATUS);
 }
 
 static inline void qos_process_dump(void){
