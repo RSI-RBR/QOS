@@ -9,6 +9,9 @@ ADMIN_PQ_SIGN_KEY="${ADMIN_PQ_SIGN_KEY:-${ADMIN_LAMPORT_PRIV:-keys/admin_mldsa65
 DEV_PQ_SIGN_KEY="${DEV_PQ_SIGN_KEY:-${DEV_LAMPORT_PRIV:-keys/dev_mldsa65_sk.bin}}"
 ADMIN_PQ_PUB="${ADMIN_PQ_PUB:-${ADMIN_LAMPORT_PUB:-keys/admin_mldsa65_pk.bin}}"
 DEV_PQ_PUB="${DEV_PQ_PUB:-${DEV_LAMPORT_PUB:-keys/dev_mldsa65_pk.bin}}"
+CA_BUNDLE_SRC="${CA_BUNDLE_SRC:-build/ca/ca_roots_consensus.pem}"
+CA_REPORT_SRC="${CA_REPORT_SRC:-build/ca/ca_roots_consensus_report.json}"
+CA_SIGNER_KEY_ID="${CA_SIGNER_KEY_ID:-0x1}"
 
 if [[ ! -d "$SD_MOUNT" ]]; then
   echo "SD mount path not found: $SD_MOUNT"
@@ -50,20 +53,47 @@ if [[ -n "$DEV_PQ_SIGN_KEY" ]]; then DEV_PQ_SIGN_KEY_ABS="$(realpath "$DEV_PQ_SI
 if [[ -n "$ADMIN_PQ_PUB" ]]; then ADMIN_PQ_PUB_ABS="$(realpath "$ADMIN_PQ_PUB")"; fi
 if [[ -n "$DEV_PQ_PUB" ]]; then DEV_PQ_PUB_ABS="$(realpath "$DEV_PQ_PUB")"; fi
 
-echo "[1/4] Building signed kernel..."
+echo "[1/5] Building signed kernel..."
 make clean
 make OPENSSL_BIN="$OPENSSL_BIN" \
   ADMIN_SIGN_KEY="$ADMIN_KEY_ABS" DEV_SIGN_KEY="$DEV_KEY_ABS" \
   ADMIN_PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS" DEV_PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS" \
   ADMIN_PQ_PUB="$ADMIN_PQ_PUB_ABS" DEV_PQ_PUB="$DEV_PQ_PUB_ABS"
 
-echo "[2/4] Building signed programs..."
+echo "[2/5] Building signed programs..."
 make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 
-echo "[3/4] Copying artifacts to $SD_MOUNT ..."
+echo "[3/5] Signing CA bundle artifacts (if present)..."
+CA_BUNDLE_SIG=""
+CA_BUNDLE_PQS=""
+CA_REPORT_SIG=""
+CA_REPORT_PQS=""
+if [[ -f "$CA_BUNDLE_SRC" ]]; then
+  CA_BUNDLE_SIG="${CA_BUNDLE_SRC}.sig"
+  CA_BUNDLE_PQS="${CA_BUNDLE_SRC}.pqs"
+  python3 tools/sign_detached_artifact.py \
+    "$CA_BUNDLE_SRC" "$CA_BUNDLE_SIG" \
+    "$CA_SIGNER_KEY_ID" "$ADMIN_KEY_ABS" "$OPENSSL_BIN" \
+    "$ADMIN_PQ_SIGN_KEY_ABS" "$CA_BUNDLE_PQS" "CA_ROOTS_PEM"
+
+  if [[ -f "$CA_REPORT_SRC" ]]; then
+    CA_REPORT_SIG="${CA_REPORT_SRC}.sig"
+    CA_REPORT_PQS="${CA_REPORT_SRC}.pqs"
+    python3 tools/sign_detached_artifact.py \
+      "$CA_REPORT_SRC" "$CA_REPORT_SIG" \
+      "$CA_SIGNER_KEY_ID" "$ADMIN_KEY_ABS" "$OPENSSL_BIN" \
+      "$ADMIN_PQ_SIGN_KEY_ABS" "$CA_REPORT_PQS" "CA_ROOTS_REPORT"
+  else
+    echo "CA report not found; skipping report signing: $CA_REPORT_SRC"
+  fi
+else
+  echo "CA bundle not found; skipping CA signing/copy: $CA_BUNDLE_SRC"
+fi
+
+echo "[4/5] Copying artifacts to $SD_MOUNT ..."
 cp -f kernel8.img "$SD_MOUNT/KERNEL8.IMG"
 if [[ -f kernel8.pqs ]]; then cp -f kernel8.pqs "$SD_MOUNT/KERNEL8.PQS"; fi
 cp -f programs/shell/shell.bin "$SD_MOUNT/SHELL.BIN"
@@ -74,8 +104,22 @@ cp -f programs/hello/program.bin "$SD_MOUNT/PROGRAM.BIN"
 if [[ -f programs/hello/program.pqs ]]; then cp -f programs/hello/program.pqs "$SD_MOUNT/PROGRAM.PQS"; fi
 cp -f programs/game/game.bin "$SD_MOUNT/GAME.BIN"
 if [[ -f programs/game/game.pqs ]]; then cp -f programs/game/game.pqs "$SD_MOUNT/GAME.PQS"; fi
+if [[ -f "$CA_BUNDLE_SRC" && -n "$CA_BUNDLE_SIG" && -f "$CA_BUNDLE_SIG" ]]; then
+  cp -f "$CA_BUNDLE_SRC" "$SD_MOUNT/CA_ROOTS.PEM"
+  cp -f "$CA_BUNDLE_SIG" "$SD_MOUNT/CA_ROOTS.SIG"
+  if [[ -n "$CA_BUNDLE_PQS" && -f "$CA_BUNDLE_PQS" ]]; then cp -f "$CA_BUNDLE_PQS" "$SD_MOUNT/CA_ROOTS.PQS"; fi
+elif [[ -f "$CA_BUNDLE_SRC" ]]; then
+  echo "CA bundle exists but is unsigned; not copying: $CA_BUNDLE_SRC"
+fi
+if [[ -f "$CA_REPORT_SRC" && -n "$CA_REPORT_SIG" && -f "$CA_REPORT_SIG" ]]; then
+  cp -f "$CA_REPORT_SRC" "$SD_MOUNT/CA_RPT.JSN"
+  cp -f "$CA_REPORT_SIG" "$SD_MOUNT/CA_RPT.SIG"
+  if [[ -n "$CA_REPORT_PQS" && -f "$CA_REPORT_PQS" ]]; then cp -f "$CA_REPORT_PQS" "$SD_MOUNT/CA_RPT.PQS"; fi
+elif [[ -f "$CA_REPORT_SRC" ]]; then
+  echo "CA report exists but is unsigned; not copying: $CA_REPORT_SRC"
+fi
 
-echo "[4/4] Sync..."
+echo "[5/5] Sync..."
 sync
 
 echo "Done."
@@ -90,3 +134,13 @@ echo "  $SD_MOUNT/PROGRAM.BIN"
 if [[ -f "$SD_MOUNT/PROGRAM.PQS" ]]; then echo "  $SD_MOUNT/PROGRAM.PQS"; fi
 echo "  $SD_MOUNT/GAME.BIN"
 if [[ -f "$SD_MOUNT/GAME.PQS" ]]; then echo "  $SD_MOUNT/GAME.PQS"; fi
+if [[ -f "$SD_MOUNT/CA_ROOTS.PEM" ]]; then
+  echo "  $SD_MOUNT/CA_ROOTS.PEM"
+  if [[ -f "$SD_MOUNT/CA_ROOTS.SIG" ]]; then echo "  $SD_MOUNT/CA_ROOTS.SIG"; fi
+  if [[ -f "$SD_MOUNT/CA_ROOTS.PQS" ]]; then echo "  $SD_MOUNT/CA_ROOTS.PQS"; fi
+fi
+if [[ -f "$SD_MOUNT/CA_RPT.JSN" ]]; then
+  echo "  $SD_MOUNT/CA_RPT.JSN"
+  if [[ -f "$SD_MOUNT/CA_RPT.SIG" ]]; then echo "  $SD_MOUNT/CA_RPT.SIG"; fi
+  if [[ -f "$SD_MOUNT/CA_RPT.PQS" ]]; then echo "  $SD_MOUNT/CA_RPT.PQS"; fi
+fi
