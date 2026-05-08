@@ -5,6 +5,7 @@
 #include "crypto.h"
 #include "aes_gcm.h"
 #include "uart.h"
+#include "timer.h"
 
 #define RLOGIN_PORT 2222u
 #define RLOGIN_MAGIC 0x51524C47u /* QRLG */
@@ -26,6 +27,16 @@
 #define RLOGIN_TTY_IN_CAP 512u
 #define RLOGIN_TTY_OUT_CAP 2048u
 #define RLOGIN_TTY_OUT_CHUNK 220u
+#define RLOGIN_REPLAY_WINDOW 32u
+
+#define RLOGIN_STATUS_OK 0u
+#define RLOGIN_STATUS_AUTH_UNAVAILABLE 1u
+#define RLOGIN_STATUS_RATE_LIMITED 2u
+#define RLOGIN_STATUS_LOCKED 3u
+
+#define RLOGIN_AUTH_BACKOFF_MS 5000u
+#define RLOGIN_AUTH_LOCKOUT_FAIL_THRESHOLD 5u
+#define RLOGIN_AUTH_LOCKOUT_MS 60000u
 
 typedef struct {
     unsigned long rx_total;
@@ -34,6 +45,9 @@ typedef struct {
     unsigned long bad_crypto;
     unsigned long auth_ok;
     unsigned long auth_fail;
+    unsigned long auth_rate_limited;
+    unsigned long auth_locked;
+    unsigned long replay_drop;
     unsigned long cmd_ok;
     unsigned long cmd_fail;
     unsigned long tty_in_bytes;
@@ -47,7 +61,8 @@ typedef struct {
     unsigned char src_ip[4];
     unsigned short src_port;
     unsigned int session_id;
-    unsigned int client_last_seq;
+    unsigned int client_seq_top;
+    unsigned int client_seq_seen_bitmap;
     unsigned int server_next_seq;
     char username[AUTH_USERNAME_MAX + 1u];
     unsigned char client_pub[32];
@@ -71,6 +86,9 @@ static unsigned char g_tty_out_q[RLOGIN_TTY_OUT_CAP];
 static unsigned int g_tty_out_head = 0;
 static unsigned int g_tty_out_tail = 0;
 static unsigned int g_tty_out_count = 0;
+static unsigned int g_auth_fail_streak = 0;
+static unsigned long g_auth_delay_until_tick = 0;
+static unsigned long g_auth_lockout_until_tick = 0;
 
 static unsigned short read_be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -99,6 +117,91 @@ static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
 
+static int tick_before(unsigned long a, unsigned long b){
+    return (long)(a - b) < 0;
+}
+
+static int tick_window_active(unsigned long now, unsigned long until){
+    if (until == 0u){
+        return 0;
+    }
+    return tick_before(now, until);
+}
+
+static unsigned char auth_gate_status(void){
+    unsigned long now = system_ticks;
+    if (tick_window_active(now, g_auth_lockout_until_tick)){
+        return RLOGIN_STATUS_LOCKED;
+    }
+    if (tick_window_active(now, g_auth_delay_until_tick)){
+        return RLOGIN_STATUS_RATE_LIMITED;
+    }
+    return RLOGIN_STATUS_OK;
+}
+
+static void auth_mark_failure(void){
+    unsigned long now = system_ticks;
+    g_auth_delay_until_tick = now + RLOGIN_AUTH_BACKOFF_MS;
+    if (g_auth_fail_streak < 0xFFFFFFFFu){
+        g_auth_fail_streak++;
+    }
+    if (g_auth_fail_streak >= RLOGIN_AUTH_LOCKOUT_FAIL_THRESHOLD){
+        g_auth_lockout_until_tick = now + RLOGIN_AUTH_LOCKOUT_MS;
+    }
+}
+
+static void auth_mark_success(void){
+    g_auth_fail_streak = 0;
+    g_auth_delay_until_tick = 0;
+    g_auth_lockout_until_tick = 0;
+}
+
+static int client_seq_is_fresh(unsigned int seq){
+    if (seq == 0u){
+        return 0;
+    }
+    if (g_sess.client_seq_top == 0u){
+        return 1;
+    }
+    if (seq > g_sess.client_seq_top){
+        return 1;
+    }
+    unsigned int back = g_sess.client_seq_top - seq;
+    if (back >= RLOGIN_REPLAY_WINDOW){
+        return 0;
+    }
+    if ((g_sess.client_seq_seen_bitmap & (1u << back)) != 0u){
+        return 0;
+    }
+    return 1;
+}
+
+static void client_seq_mark_seen(unsigned int seq){
+    if (seq == 0u){
+        return;
+    }
+    if (g_sess.client_seq_top == 0u){
+        g_sess.client_seq_top = seq;
+        g_sess.client_seq_seen_bitmap = 1u;
+        return;
+    }
+    if (seq > g_sess.client_seq_top){
+        unsigned int delta = seq - g_sess.client_seq_top;
+        if (delta >= RLOGIN_REPLAY_WINDOW){
+            g_sess.client_seq_seen_bitmap = 0u;
+        } else{
+            g_sess.client_seq_seen_bitmap <<= delta;
+        }
+        g_sess.client_seq_seen_bitmap |= 1u;
+        g_sess.client_seq_top = seq;
+        return;
+    }
+    unsigned int back = g_sess.client_seq_top - seq;
+    if (back < RLOGIN_REPLAY_WINDOW){
+        g_sess.client_seq_seen_bitmap |= (1u << back);
+    }
+}
+
 static void tty_queues_clear(void){
     g_tty_in_head = 0;
     g_tty_in_tail = 0;
@@ -118,7 +221,8 @@ static void session_clear(void){
     g_sess.src_ip[3] = 0;
     g_sess.src_port = 0;
     g_sess.session_id = 0;
-    g_sess.client_last_seq = 0;
+    g_sess.client_seq_top = 0;
+    g_sess.client_seq_seen_bitmap = 0;
     g_sess.server_next_seq = 0;
     for (unsigned int i = 0; i < sizeof(g_sess.username); i++){
         g_sess.username[i] = 0;
@@ -359,6 +463,50 @@ static int tty_out_enqueue_char(unsigned char c){
     return 0;
 }
 
+static void send_reject_server_hello(const udp_meta_t* meta, unsigned char status){
+    unsigned char resp[RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN];
+    auth_kdf_info_t kdf_info;
+    unsigned int off;
+    unsigned int resp_len = RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN;
+    unsigned char sid_src[4];
+
+    for (unsigned int i = 0; i < sizeof(resp); i++){
+        resp[i] = 0;
+    }
+    resp[32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES] = status;
+    if (auth_get_kdf_info(&kdf_info) != 0){
+        kdf_info.kdf_id = AUTH_KDF_SHA256;
+        kdf_info.argon2_t_cost = AUTH_ARGON2_DEFAULT_T_COST;
+        kdf_info.argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB;
+        kdf_info.argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM;
+        kdf_info.argon2_version = AUTH_ARGON2_DEFAULT_VERSION;
+    }
+    off = RLOGIN_SERVER_HELLO_BASE_LEN;
+    resp[off++] = kdf_info.kdf_id;
+    write_be32(&resp[off], kdf_info.argon2_t_cost);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_m_cost_kib);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_parallelism);
+    off += 4u;
+    write_be32(&resp[off], kdf_info.argon2_version);
+    off += 4u;
+    resp_len = off;
+
+    session_clear();
+    session_copy_peer(meta);
+    if (crypto_random_bytes(sid_src, sizeof(sid_src)) == 0){
+        g_sess.session_id = read_be32(sid_src);
+    } else{
+        g_sess.session_id = (unsigned int)system_ticks ^ ((unsigned int)meta->src_port << 16) ^ 0x51524C47u;
+    }
+    if (g_sess.session_id == 0u){
+        g_sess.session_id = 1u;
+    }
+    (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
+    session_clear();
+}
+
 static void handle_client_hello(const unsigned char* payload, unsigned short payload_len, const udp_meta_t* meta){
     unsigned char resp[RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN];
     unsigned char rnd[8];
@@ -374,19 +522,26 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
         return;
     }
 
-    session_clear();
-    session_copy_peer(meta);
-
     if (!g_auth_ready){
-        for (unsigned int i = 0; i < sizeof(resp); i++){
-            resp[i] = 0;
-        }
-        resp[32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES] = 1u; /* auth unavailable */
-        resp[RLOGIN_SERVER_HELLO_BASE_LEN] = AUTH_KDF_SHA256;
-        g_sess.session_id = 1u;
-        (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
+        send_reject_server_hello(meta, RLOGIN_STATUS_AUTH_UNAVAILABLE);
         return;
     }
+    {
+        unsigned char gate = auth_gate_status();
+        if (gate == RLOGIN_STATUS_LOCKED){
+            g_stats.auth_locked++;
+            send_reject_server_hello(meta, RLOGIN_STATUS_LOCKED);
+            return;
+        }
+        if (gate == RLOGIN_STATUS_RATE_LIMITED){
+            g_stats.auth_rate_limited++;
+            send_reject_server_hello(meta, RLOGIN_STATUS_RATE_LIMITED);
+            return;
+        }
+    }
+
+    session_clear();
+    session_copy_peer(meta);
 
     for (unsigned int i = 0; i < 32u; i++){
         g_sess.client_pub[i] = payload[off + i];
@@ -470,7 +625,8 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     g_sess.active = 1;
     g_sess.authed = 0;
     g_sess.tty_attached = 0;
-    g_sess.client_last_seq = 0;
+    g_sess.client_seq_top = 0;
+    g_sess.client_seq_seen_bitmap = 0;
     g_sess.server_next_seq = 0;
     (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
 }
@@ -487,8 +643,13 @@ static void handle_auth_proof(const unsigned char* frame,
     if (!g_sess.active || g_sess.authed){
         return;
     }
-    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
+    if (session_id != g_sess.session_id){
         g_stats.bad_header++;
+        return;
+    }
+    if (!client_seq_is_fresh(seq)){
+        g_stats.bad_header++;
+        g_stats.replay_drop++;
         return;
     }
     if (!ip4_eq(meta->src_ip, g_sess.src_ip) || meta->src_port != g_sess.src_port){
@@ -504,14 +665,16 @@ static void handle_auth_proof(const unsigned char* frame,
         return;
     }
 
-    g_sess.client_last_seq = seq;
+    client_seq_mark_seen(seq);
     if (auth_verify_response(g_sess.username, g_sess.client_nonce, g_sess.server_nonce, plain) == 0){
         g_sess.authed = 1;
         g_sess.tty_attached = 1;
         result = 1u;
         g_stats.auth_ok++;
+        auth_mark_success();
     } else{
         g_stats.auth_fail++;
+        auth_mark_failure();
     }
 
     (void)send_encrypted(RLOGIN_TYPE_AUTH_RESULT, g_sess.session_id, next_server_seq(), &result, 1u);
@@ -533,8 +696,13 @@ static void handle_command(const unsigned char* frame,
     if (!g_sess.active || !g_sess.authed){
         return;
     }
-    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
+    if (session_id != g_sess.session_id){
         g_stats.bad_header++;
+        return;
+    }
+    if (!client_seq_is_fresh(seq)){
+        g_stats.bad_header++;
+        g_stats.replay_drop++;
         return;
     }
     if (!ip4_eq(meta->src_ip, g_sess.src_ip) || meta->src_port != g_sess.src_port){
@@ -546,7 +714,7 @@ static void handle_command(const unsigned char* frame,
         return;
     }
 
-    g_sess.client_last_seq = seq;
+    client_seq_mark_seen(seq);
     if (plain_len == 4u &&
         plain[0] == 'p' && plain[1] == 'i' && plain[2] == 'n' && plain[3] == 'g'){
         resp[0] = 'p'; resp[1] = 'o'; resp[2] = 'n'; resp[3] = 'g'; resp[4] = '\n';
@@ -602,8 +770,13 @@ static void handle_tty_input(const unsigned char* frame,
     if (!g_sess.active || !g_sess.authed || !g_sess.tty_attached){
         return;
     }
-    if (session_id != g_sess.session_id || seq <= g_sess.client_last_seq){
+    if (session_id != g_sess.session_id){
         g_stats.bad_header++;
+        return;
+    }
+    if (!client_seq_is_fresh(seq)){
+        g_stats.bad_header++;
+        g_stats.replay_drop++;
         return;
     }
     if (!ip4_eq(meta->src_ip, g_sess.src_ip) || meta->src_port != g_sess.src_port){
@@ -614,7 +787,7 @@ static void handle_tty_input(const unsigned char* frame,
         g_stats.bad_crypto++;
         return;
     }
-    g_sess.client_last_seq = seq;
+    client_seq_mark_seen(seq);
     int pushed = tty_in_enqueue(plain, plain_len);
     if (pushed > 0){
         g_stats.tty_in_bytes += (unsigned long)pushed;
@@ -650,10 +823,16 @@ int remote_login_init(void){
     g_stats.bad_crypto = 0;
     g_stats.auth_ok = 0;
     g_stats.auth_fail = 0;
+    g_stats.auth_rate_limited = 0;
+    g_stats.auth_locked = 0;
+    g_stats.replay_drop = 0;
     g_stats.cmd_ok = 0;
     g_stats.cmd_fail = 0;
     g_stats.tty_in_bytes = 0;
     g_stats.tty_out_bytes = 0;
+    g_auth_fail_streak = 0;
+    g_auth_delay_until_tick = 0;
+    g_auth_lockout_until_tick = 0;
 
     g_enabled = 1;
     g_auth_ready = auth_is_ready() ? 1 : 0;
@@ -754,6 +933,12 @@ void remote_login_dump_stats(void){
     uart_putdec(g_stats.auth_ok);
     uart_puts(" auth_fail=");
     uart_putdec(g_stats.auth_fail);
+    uart_puts(" auth_rl=");
+    uart_putdec(g_stats.auth_rate_limited);
+    uart_puts(" auth_lock=");
+    uart_putdec(g_stats.auth_locked);
+    uart_puts(" replay_drop=");
+    uart_putdec(g_stats.replay_drop);
     uart_puts(" bad_hdr=");
     uart_putdec(g_stats.bad_header);
     uart_puts(" bad_crypto=");

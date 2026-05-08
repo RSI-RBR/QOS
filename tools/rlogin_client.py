@@ -42,6 +42,10 @@ AUTH_ARGON2_DEFAULT_T_COST = 3
 AUTH_ARGON2_DEFAULT_M_COST_KIB = 4096
 AUTH_ARGON2_DEFAULT_PARALLELISM = 1
 AUTH_ARGON2_DEFAULT_VERSION = 0x13
+RLOGIN_STATUS_OK = 0
+RLOGIN_STATUS_AUTH_UNAVAILABLE = 1
+RLOGIN_STATUS_RATE_LIMITED = 2
+RLOGIN_STATUS_LOCKED = 3
 
 
 def be16(v: int) -> bytes:
@@ -244,8 +248,14 @@ def main():
         argon2_m_cost_kib = read_be32(payload[86:90])
         argon2_parallelism = read_be32(payload[90:94])
         argon2_version = read_be32(payload[94:98])
-    if status != 0:
-        raise SystemExit("server auth store unavailable")
+    if status != RLOGIN_STATUS_OK:
+        if status == RLOGIN_STATUS_AUTH_UNAVAILABLE:
+            raise SystemExit("server auth store unavailable")
+        if status == RLOGIN_STATUS_RATE_LIMITED:
+            raise SystemExit("server rate-limited auth attempts; wait and retry")
+        if status == RLOGIN_STATUS_LOCKED:
+            raise SystemExit("server auth temporarily locked due to repeated failures")
+        raise SystemExit(f"server rejected auth start (status={status})")
     if kdf_id == AUTH_KDF_ARGON2ID:
         print(
             "Server auth KDF: argon2id "
