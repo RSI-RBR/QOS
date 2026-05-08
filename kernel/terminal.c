@@ -93,9 +93,7 @@ static void terminal_scroll_locked(terminal_t* term){
     for (unsigned int col = 0; col < term->cols; col++){
         term->cells[term->rows - 1u][col] = ' ';
     }
-    if (term->cursor_row > 0u){
-        term->cursor_row--;
-    }
+    term->cursor_row = term->rows - 1u;
 }
 
 static void terminal_newline_locked(terminal_t* term){
