@@ -11,6 +11,7 @@
 #define DESC_TABLE          (1UL << 1)
 #define DESC_BLOCK          (0UL << 1)
 #define DESC_PAGE           DESC_TABLE
+#define DESC_KIND_MASK      (DESC_VALID | DESC_TABLE)
 
 #define ATTRIDX_SHIFT       2
 #define SH_SHIFT            8
@@ -31,6 +32,7 @@
 #define AP_EL1_RW_EL0_NONE  (0UL << AP_SHIFT)
 #define AP_EL1_RW_EL0_RW    (1UL << AP_SHIFT)
 #define AP_EL1_RO_EL0_RO    (3UL << AP_SHIFT)
+#define AP_MASK             (3UL << AP_SHIFT)
 #define MMU_MAX_CORES       4U
 #define MMU_MAX_PROCESS_SPACES 8U
 #define MMU_PAGE_SIZE       4096UL
@@ -344,6 +346,29 @@ static void l3_unmap_range(unsigned long* l3,
     }
 }
 
+static int l3_slot_is_wx_safe(const unsigned long* l3){
+    if (!l3){
+        return 0;
+    }
+    for (unsigned int i = 0; i < L3_ENTRIES; i++){
+        unsigned long desc = l3[i];
+        if ((desc & DESC_VALID) == 0UL){
+            continue;
+        }
+        if ((desc & DESC_KIND_MASK) != (DESC_VALID | DESC_PAGE)){
+            continue;
+        }
+
+        unsigned long ap = (desc & AP_MASK) >> AP_SHIFT;
+        int writable = (ap == 0UL || ap == 1UL) ? 1 : 0;
+        int executable = ((desc & (PXN_BIT | UXN_BIT)) != (PXN_BIT | UXN_BIT)) ? 1 : 0;
+        if (writable && executable){
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void mmu_init(void){
     spinlock_init(&g_mmu_lock);
     zero_tables();
@@ -506,6 +531,10 @@ int mmu_process_space_create(int pid,
     // Leave one unmapped guard page between heap and stack.
     l3_unmap_range(proc_l3_user_slot[pid], guard_off, guard_bytes);
     l3_map_range(proc_l3_user_slot[pid], slot_base, stack_off, stack_bytes, &user_data_rw_nx);
+    if (!l3_slot_is_wx_safe(proc_l3_user_slot[pid])){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
     proc_space_active[pid] = 1;
 
     mmu_tlb_shootdown_all_locked();
@@ -566,7 +595,7 @@ void mmu_map_user_code_region(unsigned long pa_start, unsigned long size){
     static const mmu_block_attrs_t user_code = {
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
-        .ap = AP_EL1_RW_EL0_RW,
+        .ap = AP_EL1_RO_EL0_RO,
         .xn = PXN_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);

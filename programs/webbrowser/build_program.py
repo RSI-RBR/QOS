@@ -107,6 +107,9 @@ if user_rw_offset >= PROGRAM_SLOT_SIZE:
 if (user_rw_offset & (PAGE_SIZE - 1)) != 0:
     print("Invalid layout: __qos_data_start must be page-aligned")
     sys.exit(1)
+if entry_offset >= user_rw_offset:
+    print("Invalid layout: entry_offset must be inside RX region")
+    sys.exit(1)
 user_rw_size = PROGRAM_SLOT_SIZE - user_rw_offset
 
 header = struct.pack("<III", QOS_MAGIC, size, entry_offset)

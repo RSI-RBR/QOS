@@ -321,6 +321,11 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         uart_puts("Bad entry offset.\n");
         return prog;
     }
+    if (entry_offset >= user_rw_offset){
+        loader_unlock();
+        uart_puts("Bad layout: entry in writable region.\n");
+        return prog;
+    }
 
     unsigned char *src = buffer + code_off;
     uart_puts("Program trust verification start.\n");
@@ -349,6 +354,9 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         d[i] = src[i];
     }
 
+    // W^X policy: code is copied while this slot is kernel-private RW+XN.
+    // EL0 execute permissions are granted later when process tables map
+    // [0, user_rw_offset) as RX and data/stack pages as RW+NX.
     clean_data_cache();
     invalidate_instruction_cache();
 
