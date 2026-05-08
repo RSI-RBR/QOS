@@ -34,6 +34,7 @@
 #include "auth.h"
 #include "remote_login.h"
 #include "panic.h"
+#include "terminal.h"
 
 
 //extern kernel_api_t kapi;
@@ -214,6 +215,7 @@ void kernel_main(void){
 
 //    kapi.clear(0x00000000);
     fb_clear(0x00000000);
+    terminal_init();
 //    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);
 
     uart_puts("Kernel booted successfully!\n");

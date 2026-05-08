@@ -18,6 +18,7 @@
 #include "cyw43.h"
 #include "auth.h"
 #include "trust.h"
+#include "terminal.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -98,15 +99,7 @@ static void syscall_write_puts(int pid, const char* s){
         return;
     }
     unsigned long n = clamp_puts_len(s);
-    for (unsigned long i = 0; i < n; i++){
-        if (pid >= 0 && console_get_owner() == pid){
-            remote_login_on_tty_output_char(s[i]);
-        }
-        if (s[i] == '\n'){
-            uart_send('\r');
-        }
-        uart_send(s[i]);
-    }
+    terminal_write_for_pid(pid, s, n);
 }
 
 static void syscall_dump_usb_info(void){
@@ -341,10 +334,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
     switch (nr){
         case SYS_PUTC:
-            if (console_get_owner() == process_current_pid()){
-                remote_login_on_tty_output_char((char)frame[TF_X0]);
-            }
-            uart_send((char)frame[TF_X0]);
+            terminal_putc_for_pid(process_current_pid(), (char)frame[TF_X0]);
             frame[TF_X0] = 0;
             return frame_sp;
 
@@ -400,7 +390,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_TRY_GETC: {
             char c = 0;
             syscall_poll_background_io();
-            if (console_try_getc_for_pid(process_current_pid(), &c)){
+            if (terminal_try_getc_for_pid(process_current_pid(), &c)){
                 frame[TF_X0] = (unsigned long)(unsigned char)c;
             } else{
                 frame[TF_X0] = (unsigned long)-1;
@@ -412,7 +402,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             char c = 0;
             unsigned int src = 0u;
             syscall_poll_background_io();
-            if (console_try_getc_for_pid_ex(process_current_pid(), &c, &src)){
+            if (terminal_try_getc_for_pid_ex(process_current_pid(), &c, &src)){
                 frame[TF_X0] = ((unsigned long)(src & 0xFFu) << 8) |
                                (unsigned long)((unsigned char)c);
             } else{
