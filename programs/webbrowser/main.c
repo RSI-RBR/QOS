@@ -19,6 +19,7 @@ static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 // Forward declarations for helpers used before their definitions.
 static unsigned char ascii_lower(unsigned char c);
 static int append_str(char* dst, int cap, int* idx, const char* s);
+static int hex_value(unsigned char c);
 
 static void print_uint(unsigned int v){
     char tmp[16];
@@ -429,6 +430,87 @@ static int http_value_has_token_local(const unsigned char* p, int len, const cha
     return 0;
 }
 
+static int http_chunked_complete_local(const unsigned char* body, int len){
+    int i = 0;
+    if (!body || len < 0){
+        return 0;
+    }
+
+    while (i < len){
+        unsigned int chunk_len = 0u;
+        int have_hex = 0;
+
+        while (i < len && (body[i] == '\r' || body[i] == '\n')){
+            i++;
+        }
+        if (i >= len){
+            return 0;
+        }
+
+        while (i < len){
+            int hv = hex_value(body[i]);
+            if (hv >= 0){
+                if (chunk_len > 0x0FFFFFFFu){
+                    return -1;
+                }
+                chunk_len = (chunk_len << 4) | (unsigned int)hv;
+                have_hex = 1;
+                i++;
+                continue;
+            }
+            if (body[i] == ';'){
+                while (i < len && body[i] != '\n'){
+                    i++;
+                }
+                break;
+            }
+            if (body[i] == '\r' || body[i] == '\n'){
+                break;
+            }
+            return -1;
+        }
+        if (!have_hex){
+            return -1;
+        }
+
+        while (i < len && body[i] != '\n'){
+            i++;
+        }
+        if (i >= len){
+            return 0;
+        }
+        i++; // consume '\n'
+
+        if (chunk_len == 0u){
+            // Trailer section ends with an empty line.
+            while (1){
+                int line_start = i;
+                while (i < len && body[i] != '\n'){
+                    i++;
+                }
+                if (i >= len){
+                    return 0;
+                }
+                i++; // consume '\n'
+                if (i - line_start <= 2){
+                    return 1;
+                }
+            }
+        }
+
+        if ((unsigned int)(len - i) < chunk_len + 2u){
+            return 0;
+        }
+        i += (int)chunk_len;
+        if (body[i] != '\r' || body[i + 1] != '\n'){
+            return -1;
+        }
+        i += 2;
+    }
+
+    return 0;
+}
+
 static int http_response_completion_state_local(const unsigned char* buf, int len){
     int body = 0;
     int i = 0;
@@ -506,12 +588,9 @@ static int http_response_completion_state_local(const unsigned char* buf, int le
         return ((unsigned int)(len - body) >= content_len) ? 1 : 0;
     }
     if (chunked){
-        for (int k = body; k + 4 < len; k++){
-            if (buf[k] == '\r' && buf[k + 1] == '\n' &&
-                buf[k + 2] == '0' &&
-                (buf[k + 3] == '\r' || buf[k + 3] == ';')){
-                return 1;
-            }
+        int c = http_chunked_complete_local(&buf[body], len - body);
+        if (c == 1){
+            return 1;
         }
         return 0;
     }
@@ -848,6 +927,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
     }
 
     int total = 0;
+    unsigned int stall_rounds = 0u;
     t_stage_start = qos_get_ticks();
     while (total < resp_cap){
         int n = qos_recv(fd, &resp[total], (unsigned int)(resp_cap - total), QOS_SOCK_TIMEOUT_USE_SOCKET);
@@ -855,8 +935,14 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
             continue;
         }
         if (n <= 0){
+            int completion = http_response_completion_state_local(resp, total);
+            if (n == 0 && completion == 0 && stall_rounds < 3u){
+                stall_rounds++;
+                continue;
+            }
             break;
         }
+        stall_rounds = 0u;
         if (recv_chunks == 0u){
             first_chunk_ms = qos_get_ticks() - t_stage_start;
         }
