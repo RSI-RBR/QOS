@@ -97,7 +97,6 @@ static void present_pixel_rows_locked(unsigned int start_y, unsigned int height)
     unsigned int row_bytes = width * sizeof(unsigned int);
     unsigned int src_stride = (FB_CONSOLE_MAX_PIXEL_W * sizeof(unsigned int)) - row_bytes;
     unsigned int dst_stride = pitch - row_bytes;
-    unsigned int* dst0 = (unsigned int*)((unsigned char*)base + ((unsigned long)start_y * pitch));
     unsigned int* src0 = &g_pixels[start_y][0];
     unsigned long fb_bus = fb_get_bus_base();
 

@@ -18,14 +18,13 @@
 #define DMA_CS_END            (1u << 1)
 #define DMA_CS_INT            (1u << 2)
 #define DMA_CS_ERROR          (1u << 8)
-#define DMA_CS_WAIT_FOR_WRITES (1u << 28)
 #define DMA_CS_PANIC_PRIORITY_SHIFT 20
 #define DMA_CS_PRIORITY_SHIFT 16
+#define DMA_CS_DISDEBUG       (1u << 29)
 #define DMA_CS_ABORT          (1u << 30)
 #define DMA_CS_RESET          (1u << 31)
 
 #define DMA_TI_TDMODE         (1u << 1)
-#define DMA_TI_WAIT_RESP      (1u << 3)
 #define DMA_TI_DEST_INC       (1u << 4)
 #define DMA_TI_SRC_INC        (1u << 8)
 #define DMA_TI_NO_WIDE_BURSTS (1u << 26)
@@ -134,8 +133,7 @@ static int dma_start_memcopy(unsigned int src_bus,
     unsigned long irq = spin_lock_irqsave(&g_dma_lock);
     dma_reset_channel();
 
-    g_dma_cb.ti = DMA_TI_WAIT_RESP |
-                  DMA_TI_DEST_INC |
+    g_dma_cb.ti = DMA_TI_DEST_INC |
                   DMA_TI_SRC_INC |
                   DMA_TI_NO_WIDE_BURSTS |
                   ti_extra;
@@ -155,7 +153,7 @@ static int dma_start_memcopy(unsigned int src_bus,
     DMA_DEBUG = 0x7u;
     dma_barrier();
     DMA_CS = DMA_CS_ACTIVE |
-             DMA_CS_WAIT_FOR_WRITES |
+             DMA_CS_DISDEBUG |
              (8u << DMA_CS_PRIORITY_SHIFT) |
              (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
 

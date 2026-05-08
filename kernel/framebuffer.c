@@ -62,7 +62,7 @@ void fb_init(){
     mbox[25] = 0;
 
     if (mailbox_call(8)){
-        fb_bus = (unsigned long)mbox[23];
+        fb_bus = ((unsigned long)mbox[23] & ~0xC0000000UL) | 0xC0000000UL;
         fb = (unsigned int*)((unsigned long)(fb_bus & 0x3FFFFFFF));
         pitch = mbox[19];
         // Use actual dimensions returned by firmware, not only requested values.
