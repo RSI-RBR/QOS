@@ -80,6 +80,56 @@ static void terminal_render_locked(const terminal_t* term){
                            term->cursor_row);
 }
 
+static void terminal_render_rows_locked(const terminal_t* term,
+                                        unsigned int start_row,
+                                        unsigned int end_row){
+    if (!term || term->cols == 0u || term->rows == 0u || start_row >= term->rows){
+        return;
+    }
+    if (end_row >= term->rows){
+        end_row = term->rows - 1u;
+    }
+    if (end_row < start_row){
+        return;
+    }
+    fb_console_render_rows(&term->cells[0][0],
+                           TERM_MAX_COLS,
+                           TERM_MAX_ROWS,
+                           start_row,
+                           (end_row - start_row) + 1u,
+                           term->cursor_col,
+                           term->cursor_row);
+}
+
+static void terminal_dirty_note(unsigned int* start_row, unsigned int* end_row, unsigned int row){
+    if (!start_row || !end_row){
+        return;
+    }
+    if (row < *start_row){
+        *start_row = row;
+    }
+    if (row > *end_row){
+        *end_row = row;
+    }
+}
+
+static int terminal_char_will_scroll(const terminal_t* term, char c){
+    if (!term || term->rows == 0u || term->cols == 0u || term->cursor_row + 1u < term->rows){
+        return 0;
+    }
+    if (c == '\n'){
+        return 1;
+    }
+    if (c == '\t'){
+        unsigned int spaces = 4u - (term->cursor_col & 3u);
+        return (term->cursor_col + spaces >= term->cols) ? 1 : 0;
+    }
+    if ((unsigned char)c >= 0x20u && (unsigned char)c <= 0x7Eu && term->cursor_col + 1u >= term->cols){
+        return 1;
+    }
+    return 0;
+}
+
 static void terminal_scroll_locked(terminal_t* term){
     if (!term || term->cols == 0u || term->rows == 0u){
         return;
@@ -335,11 +385,25 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     int active = (term_id == g_active_term);
     int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) && (pid < 0 || owner == pid);
     int mirror_remote = (pid >= 0 && owner == pid);
+    unsigned int dirty_start = term ? term->cursor_row : 0u;
+    unsigned int dirty_end = dirty_start;
+    int dirty_all = 0;
 
     for (unsigned long i = 0; i < len; i++){
         char c = s[i];
         if (term){
+            unsigned int old_row = term->cursor_row;
+            if (terminal_char_will_scroll(term, c)){
+                dirty_all = 1;
+            }
             terminal_buffer_putc_locked(term, c);
+            if (dirty_all){
+                dirty_start = 0;
+                dirty_end = (term->rows > 0u) ? (term->rows - 1u) : 0u;
+            } else{
+                terminal_dirty_note(&dirty_start, &dirty_end, old_row);
+                terminal_dirty_note(&dirty_start, &dirty_end, term->cursor_row);
+            }
         }
         if (mirror_remote){
             remote_login_on_tty_output_char(c);
@@ -350,7 +414,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
         uart_send(c);
     }
     if (mirror_fb){
-        terminal_render_locked(term);
+        terminal_render_rows_locked(term, dirty_start, dirty_end);
     }
 
     spin_unlock_irqrestore(&g_terminal_lock, irq);

@@ -305,6 +305,58 @@ void fb_console_load_screen(const unsigned char* cells,
     spin_unlock_irqrestore(&g_fb_console_lock, irq);
 }
 
+void fb_console_render_rows(const unsigned char* cells,
+                            unsigned int src_cols,
+                            unsigned int src_rows,
+                            unsigned int start_row,
+                            unsigned int row_count,
+                            unsigned int cursor_col,
+                            unsigned int cursor_row){
+    if (!cells || src_cols == 0u || src_rows == 0u || row_count == 0u){
+        return;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_fb_console_lock);
+    if (!g_ready || start_row >= g_rows){
+        spin_unlock_irqrestore(&g_fb_console_lock, irq);
+        return;
+    }
+
+    unsigned int end_row = start_row + row_count;
+    if (end_row < start_row || end_row > g_rows){
+        end_row = g_rows;
+    }
+
+    g_cursor_col = cursor_col;
+    g_cursor_row = cursor_row;
+    if (g_cursor_col >= g_cols){
+        g_cursor_col = (g_cols > 0u) ? (g_cols - 1u) : 0u;
+    }
+    if (g_cursor_row >= g_rows){
+        g_cursor_row = (g_rows > 0u) ? (g_rows - 1u) : 0u;
+    }
+
+    for (unsigned int row = start_row; row < end_row; row++){
+        for (unsigned int col = 0; col < g_cols; col++){
+            unsigned char ch = ' ';
+            if (row < src_rows && col < src_cols){
+                ch = cells[(row * src_cols) + col];
+                if (ch < 0x20u || ch > 0x7Eu){
+                    ch = '?';
+                }
+            }
+            g_cells[row][col] = ch;
+        }
+    }
+
+    for (unsigned int row = start_row; row < end_row; row++){
+        for (unsigned int col = 0; col < g_cols; col++){
+            draw_cell_locked(row, col, row == g_cursor_row && col == g_cursor_col);
+        }
+    }
+    spin_unlock_irqrestore(&g_fb_console_lock, irq);
+}
+
 void fb_console_set_colors(unsigned int fg, unsigned int bg, unsigned int cursor){
     unsigned long irq = spin_lock_irqsave(&g_fb_console_lock);
     g_fg = fg;
