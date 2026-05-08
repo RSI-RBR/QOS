@@ -469,7 +469,7 @@ static int http_response_completion_state(const unsigned char* buf, unsigned int
 }
 
 #define TCP_TLS_REC_MAX (16384u + 256u)
-#define TCP_TLS_RX_CAP 262144u
+#define TCP_TLS_RX_CAP 524288u
 #define TCP_TLS_HS_BUF_CAP 32768u
 #define TCP_TLS_APP_IO_CAP (TCP_TLS_REC_MAX + 5u)
 
@@ -550,6 +550,66 @@ static unsigned int be24_read(const unsigned char* p){
     return ((unsigned int)p[0] << 16) |
            ((unsigned int)p[1] << 8) |
            (unsigned int)p[2];
+}
+
+static int tls13_server_hello_keyshare_group(const unsigned char* sh,
+                                             unsigned int sh_len,
+                                             unsigned short* out_group){
+    unsigned int body_len;
+    unsigned int i;
+    unsigned int sid_len;
+    unsigned int ext_total;
+    unsigned int ext_end;
+
+    if (!sh || !out_group || sh_len < 4u || sh[0] != 2u){
+        return -1;
+    }
+    body_len = be24_read(&sh[1]);
+    if ((4u + body_len) > sh_len || body_len < (2u + 32u + 1u + 2u + 1u + 2u)){
+        return -1;
+    }
+
+    i = 4u; // start of ServerHello body
+    i += 2u; // legacy_version
+    i += 32u; // random
+    if (i >= sh_len){
+        return -1;
+    }
+    sid_len = (unsigned int)sh[i++];
+    if (sid_len > 32u || (i + sid_len + 2u + 1u + 2u) > sh_len){
+        return -1;
+    }
+    i += sid_len;
+    i += 2u; // cipher_suite
+    i += 1u; // legacy_compression_method
+
+    if ((i + 2u) > sh_len){
+        return -1;
+    }
+    ext_total = ((unsigned int)sh[i] << 8) | (unsigned int)sh[i + 1u];
+    i += 2u;
+    ext_end = i + ext_total;
+    if (ext_end > sh_len){
+        return -1;
+    }
+
+    while ((i + 4u) <= ext_end){
+        unsigned short ext_type = (unsigned short)(((unsigned int)sh[i] << 8) | (unsigned int)sh[i + 1u]);
+        unsigned int ext_len = ((unsigned int)sh[i + 2u] << 8) | (unsigned int)sh[i + 3u];
+        i += 4u;
+        if ((i + ext_len) > ext_end){
+            return -1;
+        }
+        if (ext_type == 0x0033u){
+            if (ext_len < 4u){
+                return -1;
+            }
+            *out_group = (unsigned short)(((unsigned int)sh[i] << 8) | (unsigned int)sh[i + 1u]);
+            return 0;
+        }
+        i += ext_len;
+    }
+    return -1;
 }
 
 static int tls13_build_client_hello_sni_x25519(const char* host,
@@ -1081,6 +1141,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     const unsigned char* rec_payload = 0;
     unsigned int ch_len = 0;
     unsigned int sh_len = 0;
+    unsigned short sh_kex_group = 0u;
     unsigned char client_priv[32];
     unsigned char client_pub[32];
     unsigned char server_pub[32];
@@ -1282,6 +1343,28 @@ int tcp_https_get(const unsigned char dst_ip[4],
         }
     }
 
+    if (tls13_server_hello_keyshare_group(sh_msg, sh_len, &sh_kex_group) != 0){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        HTTPS_FAIL(-112);
+    }
+    if (sh_kex_group != TLS13_GROUP_X25519){
+        g_conn.active = 0;
+        g_conn.state = TCP_ST_CLOSED;
+        g_tcp_stats.http_fail++;
+        if (sh_kex_group == TLS13_GROUP_X25519_MLKEM768 ||
+            sh_kex_group == TLS13_GROUP_X25519_KYBER768_DRAFT00){
+            uart_puts("HTTPS: server selected PQ KEX group ");
+            uart_puthex((unsigned int)sh_kex_group);
+            uart_puts(" but ML-KEM backend is not integrated yet.\n");
+            HTTPS_FAIL(-210);
+        }
+        uart_puts("HTTPS: unsupported key share group ");
+        uart_puthex((unsigned int)sh_kex_group);
+        uart_puts("\n");
+        HTTPS_FAIL(-211);
+    }
     if (tls13_process_server_hello_x25519(sh_msg, sh_len, server_pub) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
