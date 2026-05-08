@@ -15,6 +15,13 @@ if [ ! -d "$SRC_ROOT" ]; then
 fi
 
 mkdir -p "$DST_ROOT/crypto_kem"
+mkdir -p "$DST_ROOT/common"
+
+# Some upstream KEM snapshots expect common/compat.h. If present in the
+# source tree, bring it over so clean verify/poly helpers compile.
+if [ -f "$SRC_ROOT/common/compat.h" ]; then
+  cp "$SRC_ROOT/common/compat.h" "$DST_ROOT/common/compat.h"
+fi
 
 if [ -d "$SRC_ROOT/crypto_kem/ml-kem-768" ]; then
   echo "Importing ml-kem-768..."
