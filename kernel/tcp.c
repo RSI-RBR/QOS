@@ -311,7 +311,7 @@ static int append_str(char* dst, int cap, int* idx, const char* s){
 }
 
 #define TCP_TLS_REC_MAX (16384u + 256u)
-#define TCP_TLS_RX_CAP 32768u
+#define TCP_TLS_RX_CAP 65536u
 #define TCP_TLS_HS_BUF_CAP 32768u
 #define TCP_TLS_APP_IO_CAP (TCP_TLS_REC_MAX + 5u)
 

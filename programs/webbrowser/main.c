@@ -2,8 +2,8 @@
 #include "user_net.h"
 
 #define INPUT_CAP 192
-#define REQ_CAP 512
-#define RESP_CAP 16384
+#define REQ_CAP 1024
+#define RESP_CAP 65536
 #define DNS_TIMEOUT_MS 3000u
 #define RECV_TIMEOUT_MS 6000u
 #define HOST_CAP 128
@@ -151,6 +151,7 @@ static int extract_header_value(const unsigned char* resp, int len, const char* 
     while (i < len){
         int ls = i;
         int le = ls;
+        int next;
         int colon = -1;
         int vs, ve, n, w;
 
@@ -160,6 +161,7 @@ static int extract_header_value(const unsigned char* resp, int len, const char* 
             }
             le++;
         }
+        next = (le < len) ? (le + 1) : le;
 
         while (le > ls && (resp[le - 1] == '\r' || resp[le - 1] == '\n')){
             le--;
@@ -191,7 +193,7 @@ static int extract_header_value(const unsigned char* resp, int len, const char* 
             return 0;
         }
 
-        i = (le < len) ? (le + 1) : le;
+        i = next;
     }
     return -1;
 }
@@ -361,6 +363,107 @@ static int find_http_body(const unsigned char* resp, int len){
     return 0;
 }
 
+static int str_contains_ci(const char* haystack, const char* needle){
+    int needle_len = 0;
+    if (!haystack || !needle || !*needle){
+        return 0;
+    }
+    while (needle[needle_len]){
+        needle_len++;
+    }
+    for (int i = 0; haystack[i]; i++){
+        int j = 0;
+        while (j < needle_len && haystack[i + j] &&
+               ascii_lower((unsigned char)haystack[i + j]) == ascii_lower((unsigned char)needle[j])){
+            j++;
+        }
+        if (j == needle_len){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int hex_value(unsigned char c){
+    if (c >= '0' && c <= '9'){
+        return (int)(c - '0');
+    }
+    c = ascii_lower(c);
+    if (c >= 'a' && c <= 'f'){
+        return (int)(10 + c - 'a');
+    }
+    return -1;
+}
+
+static int decode_chunked_body(const unsigned char* in, int len, unsigned char* out, int out_cap){
+    int i = 0;
+    int o = 0;
+    if (!in || len < 0 || !out || out_cap <= 0){
+        return -1;
+    }
+
+    while (i < len){
+        unsigned int chunk_len = 0;
+        int have_hex = 0;
+
+        while (i < len && (in[i] == '\r' || in[i] == '\n')){
+            i++;
+        }
+
+        while (i < len){
+            int hv = hex_value(in[i]);
+            if (hv >= 0){
+                if (chunk_len > 0x0FFFFFFFu){
+                    return -1;
+                }
+                chunk_len = (chunk_len << 4) | (unsigned int)hv;
+                have_hex = 1;
+                i++;
+                continue;
+            }
+            if (in[i] == ';'){
+                while (i < len && in[i] != '\n'){
+                    i++;
+                }
+                break;
+            }
+            if (in[i] == '\r' || in[i] == '\n'){
+                break;
+            }
+            return -1;
+        }
+
+        if (!have_hex){
+            return -1;
+        }
+        while (i < len && in[i] != '\n'){
+            i++;
+        }
+        if (i < len && in[i] == '\n'){
+            i++;
+        }
+
+        if (chunk_len == 0){
+            return o;
+        }
+        if (chunk_len > (unsigned int)(len - i) || chunk_len > (unsigned int)(out_cap - o)){
+            return -1;
+        }
+        for (unsigned int c = 0; c < chunk_len; c++){
+            out[o++] = in[i + (int)c];
+        }
+        i += (int)chunk_len;
+        if (i < len && in[i] == '\r'){
+            i++;
+        }
+        if (i < len && in[i] == '\n'){
+            i++;
+        }
+    }
+
+    return o;
+}
+
 static int match_entity(const unsigned char* p, int rem, const char* ent){
     int i = 0;
     while (ent[i]){
@@ -399,13 +502,14 @@ static int tag_name_is(const unsigned char* s, int len, const char* name){
     return 1;
 }
 
-static void print_html_text(const unsigned char* html, int len){
+static int print_html_text(const unsigned char* html, int len){
     int in_tag = 0;
     int last_space = 1;
     int suppress_style = 0;
     int suppress_script = 0;
     int suppress_head = 0;
     int tag_start = -1;
+    int visible = 0;
 
     for (int i = 0; i < len; i++){
         unsigned char c = html[i];
@@ -497,9 +601,11 @@ static void print_html_text(const unsigned char* html, int len){
         }
 
         qos_putc((char)c);
+        visible++;
         last_space = 0;
     }
     qos_puts("\n");
+    return visible;
 }
 
 static int http_fetch_raw(const char* host, const char* path, unsigned short port, unsigned char* resp, int resp_cap){
@@ -549,7 +655,11 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         append_str(req, REQ_CAP, &rq, (path && *path) ? path : "/") != 0 ||
         append_str(req, REQ_CAP, &rq, " HTTP/1.1\r\nHost: ") != 0 ||
         append_str(req, REQ_CAP, &rq, host) != 0 ||
-        append_str(req, REQ_CAP, &rq, "\r\nUser-Agent: QOS-WebBrowser/0.1\r\nConnection: close\r\n\r\n") != 0){
+        append_str(req, REQ_CAP, &rq,
+                   "\r\nUser-Agent: QOS-WebBrowser/0.1"
+                   "\r\nAccept: text/html,text/plain,*/*;q=0.8"
+                   "\r\nAccept-Encoding: identity"
+                   "\r\nConnection: close\r\n\r\n") != 0){
         qos_puts("Request build failed.\n");
         (void)qos_close(fd);
         return -1;
@@ -637,9 +747,11 @@ static void cmd_help(void){
 
 static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
+    static unsigned char render[RESP_CAP];
     char req_host[HOST_CAP];
     char req_path[PATH_CAP];
     char target[URL_CAP];
+    char header_value[64];
     int use_https = 0;
     int n;
 
@@ -688,10 +800,50 @@ static void cmd_open(char* host, const char* path){
 
     qos_puts("Received bytes=");
     print_uint((unsigned int)n);
-    qos_puts("\n\n");
+    qos_puts("\n");
+
+    int status = parse_http_status_code(resp, n);
+    if (status > 0){
+        qos_puts("HTTP status=");
+        print_uint((unsigned int)status);
+        qos_puts("\n");
+    }
+    if (n >= ((int)sizeof(resp) - 2)){
+        qos_puts("Response reached browser buffer limit; output may be truncated.\n");
+    }
 
     int body = find_http_body(resp, n);
-    print_html_text(&resp[body], n - body);
+    if (body <= 0 || body >= n){
+        qos_puts("No HTTP body found in response.\n");
+        return;
+    }
+
+    if (extract_header_value(resp, n, "Content-Encoding", header_value, sizeof(header_value)) == 0 &&
+        !str_contains_ci(header_value, "identity")){
+        qos_puts("Cannot display compressed response. Content-Encoding=");
+        qos_puts(header_value);
+        qos_puts("\n");
+        return;
+    }
+
+    const unsigned char* body_ptr = &resp[body];
+    int body_len = n - body;
+    if (extract_header_value(resp, n, "Transfer-Encoding", header_value, sizeof(header_value)) == 0 &&
+        str_contains_ci(header_value, "chunked")){
+        int decoded = decode_chunked_body(body_ptr, body_len, render, (int)sizeof(render));
+        if (decoded > 0){
+            body_ptr = render;
+            body_len = decoded;
+        } else{
+            qos_puts("Chunked response decode failed; showing raw body.\n");
+        }
+    }
+
+    qos_puts("\n");
+    int visible = print_html_text(body_ptr, body_len);
+    if (visible == 0){
+        qos_puts("No visible text in received body. It may be mostly head/script/style content or unsupported markup.\n");
+    }
 }
 
 static void print_prompt(void){
