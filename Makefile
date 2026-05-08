@@ -27,7 +27,7 @@ ifneq ($(strip $(DEV_LAMPORT_SIGN_KEY)),)
 DEV_PQ_SIGN_KEY := $(DEV_LAMPORT_SIGN_KEY)
 endif
 
-CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/pqclean/crypto_kem/ml-kem-768/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
+CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/pqclean/crypto_kem/ml-kem-768/clean -Ithird_party/pqclean/crypto_kem/kyber768/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
 LDFLAGS = -T linker.ld
 
 # ---------------------------
@@ -117,8 +117,14 @@ third_party/ed25519/src/fe.c \
 third_party/ed25519/src/sha512.c
 
 MLKEM768_CLEAN_SOURCES := $(wildcard third_party/pqclean/crypto_kem/ml-kem-768/clean/*.c)
+KYBER768_CLEAN_SOURCES := $(wildcard third_party/pqclean/crypto_kem/kyber768/clean/*.c)
 ifneq ($(strip $(MLKEM768_CLEAN_SOURCES)),)
 C_SOURCES += $(MLKEM768_CLEAN_SOURCES)
+CFLAGS += -DQOS_HAVE_PQCLEAN_MLKEM768
+endif
+ifneq ($(strip $(KYBER768_CLEAN_SOURCES)),)
+C_SOURCES += $(KYBER768_CLEAN_SOURCES)
+CFLAGS += -DQOS_HAVE_PQCLEAN_KYBER768
 endif
 
 
@@ -142,6 +148,13 @@ all: provisioned-kernel
 
 ca-roots-sync:
 	python3 tools/sync_ca_roots.py
+
+pq-kem-status:
+	@echo "ML-KEM clean sources: $(words $(MLKEM768_CLEAN_SOURCES))"
+	@echo "Kyber768 clean sources: $(words $(KYBER768_CLEAN_SOURCES))"
+	@if [ "$(words $(MLKEM768_CLEAN_SOURCES))" -gt 0 ]; then echo "PQ KEM backend: ML-KEM-768"; \
+	elif [ "$(words $(KYBER768_CLEAN_SOURCES))" -gt 0 ]; then echo "PQ KEM backend: Kyber768 (compat)"; \
+	else echo "PQ KEM backend: unavailable"; fi
 
 check-signing-inputs:
 	@if [ -z "$(ADMIN_SIGN_KEY)" ]; then echo "ADMIN_SIGN_KEY is required (Ed25519 private key path)"; exit 1; fi
