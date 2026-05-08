@@ -2,9 +2,11 @@
 #define X509_VERIFY_H
 
 #include "rsa_verify.h"
+#include "ecdsa_verify.h"
 
 #define X509_VERIFY_KEY_NONE 0u
 #define X509_VERIFY_KEY_RSA 1u
+#define X509_VERIFY_KEY_EC 2u
 
 typedef struct {
     unsigned int chain_certs;
@@ -15,6 +17,10 @@ typedef struct {
     unsigned int leaf_rsa_n_len;
     unsigned char leaf_rsa_e[RSA_VERIFY_MAX_EXP_BYTES];
     unsigned int leaf_rsa_e_len;
+    unsigned int leaf_ec_curve;
+    unsigned char leaf_ec_qx[48];
+    unsigned char leaf_ec_qy[48];
+    unsigned int leaf_ec_q_len;
     int hostname_ok;
     int chain_anchor_ok;
 } x509_verify_result_t;

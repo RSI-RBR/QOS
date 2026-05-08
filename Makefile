@@ -74,6 +74,9 @@ kernel/net.c \
 kernel/net_proto.c \
 kernel/sha256.c \
 kernel/rsa_verify.c \
+kernel/ecdsa_verify.c \
+kernel/ecc_curve_p256.c \
+kernel/ecc_curve_p384.c \
 kernel/arp.c \
 kernel/ipv4.c \
 kernel/icmp.c \

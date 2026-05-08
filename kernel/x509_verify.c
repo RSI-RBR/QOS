@@ -24,6 +24,8 @@
 #define X509_CA_PQS_FAT "CA_ROOTSPQS"
 #define X509_KEY_ALG_NONE 0u
 #define X509_KEY_ALG_RSA 1u
+#define X509_KEY_ALG_EC 2u
+#define X509_EC_COORD_MAX 48u
 
 typedef struct {
     unsigned char tag;
@@ -51,6 +53,10 @@ typedef struct {
     unsigned int rsa_n_len;
     unsigned char rsa_e[RSA_VERIFY_MAX_EXP_BYTES];
     unsigned int rsa_e_len;
+    unsigned int ec_curve;
+    unsigned char ec_qx[X509_EC_COORD_MAX];
+    unsigned char ec_qy[X509_EC_COORD_MAX];
+    unsigned int ec_q_len;
     int san_present;
     int hostname_match;
 } parsed_cert_t;
@@ -63,6 +69,10 @@ typedef struct {
     unsigned int rsa_n_len;
     unsigned char rsa_e[RSA_VERIFY_MAX_EXP_BYTES];
     unsigned int rsa_e_len;
+    unsigned int ec_curve;
+    unsigned char ec_qx[X509_EC_COORD_MAX];
+    unsigned char ec_qy[X509_EC_COORD_MAX];
+    unsigned int ec_q_len;
 } ca_anchor_t;
 
 static unsigned char g_ca_pem_buf[X509_CA_PEM_MAX + 1u];
@@ -327,6 +337,80 @@ static int parse_rsa_spki(const unsigned char* spki_tlv,
         copy_bytes_bounded(out_e, RSA_VERIFY_MAX_EXP_BYTES, out_e_len, e_ptr, e_len) != 0){
         return -1;
     }
+    return 0;
+}
+
+static int parse_ec_spki(const unsigned char* spki_tlv,
+                         unsigned int spki_tlv_len,
+                         unsigned int* out_curve,
+                         unsigned char* out_qx,
+                         unsigned char* out_qy,
+                         unsigned int* out_q_len){
+    static const unsigned char OID_ID_EC_PUBLIC_KEY[] = { 0x2A,0x86,0x48,0xCE,0x3D,0x02,0x01 };
+    static const unsigned char OID_PRIME256V1[] = { 0x2A,0x86,0x48,0xCE,0x3D,0x03,0x01,0x07 };
+    static const unsigned char OID_SECP384R1[] = { 0x2B,0x81,0x04,0x00,0x22 };
+    asn1_tlv_t spki;
+    asn1_tlv_t algid;
+    asn1_tlv_t alg_oid;
+    asn1_tlv_t curve_oid;
+    asn1_tlv_t pubbits;
+    unsigned int off = 0u;
+    unsigned int q_len = 0u;
+    unsigned int curve = ECDSA_VERIFY_CURVE_NONE;
+
+    if (!spki_tlv || spki_tlv_len == 0u || !out_curve || !out_qx || !out_qy || !out_q_len){
+        return -1;
+    }
+    *out_curve = ECDSA_VERIFY_CURVE_NONE;
+    *out_q_len = 0u;
+
+    if (asn1_parse_tlv(spki_tlv, spki_tlv_len, &spki) != 0 || spki.tag != 0x30u){
+        return -1;
+    }
+    if (asn1_parse_tlv(spki.val + off, spki.val_len - off, &algid) != 0 || algid.tag != 0x30u){
+        return -1;
+    }
+    off += algid.total_len;
+    if (asn1_parse_tlv(algid.val, algid.val_len, &alg_oid) != 0 || alg_oid.tag != 0x06u){
+        return -1;
+    }
+    if (!oid_equal(&alg_oid, OID_ID_EC_PUBLIC_KEY, sizeof(OID_ID_EC_PUBLIC_KEY))){
+        return -1;
+    }
+    if (alg_oid.total_len >= algid.val_len){
+        return -1;
+    }
+    if (asn1_parse_tlv(algid.val + alg_oid.total_len,
+                       algid.val_len - alg_oid.total_len,
+                       &curve_oid) != 0 || curve_oid.tag != 0x06u){
+        return -1;
+    }
+    if (oid_equal(&curve_oid, OID_PRIME256V1, sizeof(OID_PRIME256V1))){
+        curve = ECDSA_VERIFY_CURVE_P256;
+        q_len = 32u;
+    } else if (oid_equal(&curve_oid, OID_SECP384R1, sizeof(OID_SECP384R1))){
+        curve = ECDSA_VERIFY_CURVE_P384;
+        q_len = 48u;
+    } else{
+        return -1;
+    }
+
+    if (asn1_parse_tlv(spki.val + off, spki.val_len - off, &pubbits) != 0 ||
+        pubbits.tag != 0x03u || pubbits.val_len < 2u || pubbits.val[0] != 0u){
+        return -1;
+    }
+    if (pubbits.val[1] != 0x04u){
+        return -1;
+    }
+    if (pubbits.val_len != (2u + (2u * q_len))){
+        return -1;
+    }
+    for (unsigned int i = 0; i < q_len; i++){
+        out_qx[i] = pubbits.val[2u + i];
+        out_qy[i] = pubbits.val[2u + q_len + i];
+    }
+    *out_curve = curve;
+    *out_q_len = q_len;
     return 0;
 }
 
@@ -726,6 +810,8 @@ static int parse_cert_identity(const unsigned char* der,
     out->key_alg = X509_KEY_ALG_NONE;
     out->rsa_n_len = 0u;
     out->rsa_e_len = 0u;
+    out->ec_curve = ECDSA_VERIFY_CURVE_NONE;
+    out->ec_q_len = 0u;
     out->san_present = 0;
     out->hostname_match = 0;
 
@@ -786,6 +872,11 @@ static int parse_cert_identity(const unsigned char* der,
                        out->rsa_n, &out->rsa_n_len,
                        out->rsa_e, &out->rsa_e_len) == 0){
         out->key_alg = X509_KEY_ALG_RSA;
+    } else if (parse_ec_spki(out->spki_tlv, out->spki_tlv_len,
+                             &out->ec_curve,
+                             out->ec_qx, out->ec_qy,
+                             &out->ec_q_len) == 0){
+        out->key_alg = X509_KEY_ALG_EC;
     }
 
     return 0;
@@ -945,11 +1036,17 @@ static int parse_ca_bundle_anchors(const unsigned char* pem,
                     g_ca_anchors[anchors].key_alg = ci.key_alg;
                     g_ca_anchors[anchors].rsa_n_len = ci.rsa_n_len;
                     g_ca_anchors[anchors].rsa_e_len = ci.rsa_e_len;
+                    g_ca_anchors[anchors].ec_curve = ci.ec_curve;
+                    g_ca_anchors[anchors].ec_q_len = ci.ec_q_len;
                     for (unsigned int k = 0; k < ci.rsa_n_len; k++){
                         g_ca_anchors[anchors].rsa_n[k] = ci.rsa_n[k];
                     }
                     for (unsigned int k = 0; k < ci.rsa_e_len; k++){
                         g_ca_anchors[anchors].rsa_e[k] = ci.rsa_e[k];
+                    }
+                    for (unsigned int k = 0; k < ci.ec_q_len; k++){
+                        g_ca_anchors[anchors].ec_qx[k] = ci.ec_qx[k];
+                        g_ca_anchors[anchors].ec_qy[k] = ci.ec_qy[k];
                     }
                     anchors++;
                 }
@@ -1158,24 +1255,60 @@ static int verify_cert_with_rsa_key(const parsed_cert_t* child,
                                      child->sig_bits_len);
 }
 
-static int verify_cert_signed_by_cert(const parsed_cert_t* child,
-                                      const parsed_cert_t* issuer){
-    if (!child || !issuer || issuer->key_alg != X509_KEY_ALG_RSA){
+static int verify_cert_with_ec_key(const parsed_cert_t* child,
+                                   unsigned int ec_curve,
+                                   const unsigned char* ec_qx,
+                                   const unsigned char* ec_qy,
+                                   unsigned int ec_q_len){
+    if (!child || !ec_qx || !ec_qy ||
+        !child->tbs_tlv || child->tbs_tlv_len == 0u ||
+        !child->sig_bits || child->sig_bits_len == 0u ||
+        child->cert_sig_alg == 0u){
         return -1;
     }
-    return verify_cert_with_rsa_key(child,
-                                    issuer->rsa_n, issuer->rsa_n_len,
-                                    issuer->rsa_e, issuer->rsa_e_len);
+    return ecdsa_verify_signature(ec_curve,
+                                  ec_qx, ec_qy, ec_q_len,
+                                  child->cert_sig_alg,
+                                  child->tbs_tlv, child->tbs_tlv_len,
+                                  child->sig_bits, child->sig_bits_len);
+}
+
+static int verify_cert_signed_by_cert(const parsed_cert_t* child,
+                                      const parsed_cert_t* issuer){
+    if (!child || !issuer){
+        return -1;
+    }
+    if (issuer->key_alg == X509_KEY_ALG_RSA){
+        return verify_cert_with_rsa_key(child,
+                                        issuer->rsa_n, issuer->rsa_n_len,
+                                        issuer->rsa_e, issuer->rsa_e_len);
+    }
+    if (issuer->key_alg == X509_KEY_ALG_EC){
+        return verify_cert_with_ec_key(child,
+                                       issuer->ec_curve,
+                                       issuer->ec_qx, issuer->ec_qy,
+                                       issuer->ec_q_len);
+    }
+    return -1;
 }
 
 static int verify_cert_signed_by_anchor(const parsed_cert_t* child,
                                         const ca_anchor_t* anchor){
-    if (!child || !anchor || anchor->key_alg != X509_KEY_ALG_RSA){
+    if (!child || !anchor){
         return -1;
     }
-    return verify_cert_with_rsa_key(child,
-                                    anchor->rsa_n, anchor->rsa_n_len,
-                                    anchor->rsa_e, anchor->rsa_e_len);
+    if (anchor->key_alg == X509_KEY_ALG_RSA){
+        return verify_cert_with_rsa_key(child,
+                                        anchor->rsa_n, anchor->rsa_n_len,
+                                        anchor->rsa_e, anchor->rsa_e_len);
+    }
+    if (anchor->key_alg == X509_KEY_ALG_EC){
+        return verify_cert_with_ec_key(child,
+                                       anchor->ec_curve,
+                                       anchor->ec_qx, anchor->ec_qy,
+                                       anchor->ec_q_len);
+    }
+    return -1;
 }
 
 void x509_verify_reset_cache(void){
@@ -1214,6 +1347,8 @@ int x509_verify_tls13_certificate(const char* host,
         out_result->leaf_key_alg = X509_VERIFY_KEY_NONE;
         out_result->leaf_rsa_n_len = 0u;
         out_result->leaf_rsa_e_len = 0u;
+        out_result->leaf_ec_curve = ECDSA_VERIFY_CURVE_NONE;
+        out_result->leaf_ec_q_len = 0u;
         out_result->hostname_ok = 0;
         out_result->chain_anchor_ok = 0;
     }
@@ -1352,14 +1487,25 @@ int x509_verify_tls13_certificate(const char* host,
         out_result->chain_certs = path_len;
         out_result->anchor_count = g_ca_anchor_count;
         out_result->leaf_cert_sig_alg = certs[0].cert_sig_alg;
-        out_result->leaf_key_alg = (certs[0].key_alg == X509_KEY_ALG_RSA) ? X509_VERIFY_KEY_RSA : X509_VERIFY_KEY_NONE;
+        out_result->leaf_key_alg = X509_VERIFY_KEY_NONE;
         out_result->leaf_rsa_n_len = certs[0].rsa_n_len;
         out_result->leaf_rsa_e_len = certs[0].rsa_e_len;
+        out_result->leaf_ec_curve = certs[0].ec_curve;
+        out_result->leaf_ec_q_len = certs[0].ec_q_len;
+        if (certs[0].key_alg == X509_KEY_ALG_RSA){
+            out_result->leaf_key_alg = X509_VERIFY_KEY_RSA;
+        } else if (certs[0].key_alg == X509_KEY_ALG_EC){
+            out_result->leaf_key_alg = X509_VERIFY_KEY_EC;
+        }
         for (unsigned int i = 0; i < certs[0].rsa_n_len; i++){
             out_result->leaf_rsa_n[i] = certs[0].rsa_n[i];
         }
         for (unsigned int i = 0; i < certs[0].rsa_e_len; i++){
             out_result->leaf_rsa_e[i] = certs[0].rsa_e[i];
+        }
+        for (unsigned int i = 0; i < certs[0].ec_q_len; i++){
+            out_result->leaf_ec_qx[i] = certs[0].ec_qx[i];
+            out_result->leaf_ec_qy[i] = certs[0].ec_qy[i];
         }
         out_result->hostname_ok = certs[0].hostname_match ? 1 : 0;
         out_result->chain_anchor_ok = anchor_ok ? 1 : 0;

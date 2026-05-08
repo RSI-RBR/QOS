@@ -980,10 +980,6 @@ static int tls13_verify_server_certificate_verify(const x509_verify_result_t* ce
     if (!tls13_sigalg_is_supported(sig_alg)){
         return -1;
     }
-    if (cert->leaf_key_alg != X509_VERIFY_KEY_RSA ||
-        cert->leaf_rsa_n_len == 0u || cert->leaf_rsa_e_len == 0u){
-        return -1;
-    }
 
     for (unsigned int i = 0; i < 64u; i++){
         signed_msg[o++] = 0x20u;
@@ -996,11 +992,27 @@ static int tls13_verify_server_certificate_verify(const x509_verify_result_t* ce
         signed_msg[o++] = transcript_hash[i];
     }
 
-    return rsa_verify_x509_signature(cert->leaf_rsa_n, cert->leaf_rsa_n_len,
-                                     cert->leaf_rsa_e, cert->leaf_rsa_e_len,
-                                     sig_alg,
-                                     signed_msg, o,
-                                     signature, signature_len);
+    if (cert->leaf_key_alg == X509_VERIFY_KEY_RSA){
+        if (cert->leaf_rsa_n_len == 0u || cert->leaf_rsa_e_len == 0u){
+            return -1;
+        }
+        return rsa_verify_x509_signature(cert->leaf_rsa_n, cert->leaf_rsa_n_len,
+                                         cert->leaf_rsa_e, cert->leaf_rsa_e_len,
+                                         sig_alg,
+                                         signed_msg, o,
+                                         signature, signature_len);
+    }
+    if (cert->leaf_key_alg == X509_VERIFY_KEY_EC){
+        if (cert->leaf_ec_q_len == 0u || cert->leaf_ec_curve == ECDSA_VERIFY_CURVE_NONE){
+            return -1;
+        }
+        return ecdsa_verify_signature(cert->leaf_ec_curve,
+                                      cert->leaf_ec_qx, cert->leaf_ec_qy, cert->leaf_ec_q_len,
+                                      sig_alg,
+                                      signed_msg, o,
+                                      signature, signature_len);
+    }
+    return -1;
 }
 
 int tcp_https_get(const unsigned char dst_ip[4],
@@ -1096,6 +1108,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
     x509_res.leaf_key_alg = X509_VERIFY_KEY_NONE;
     x509_res.leaf_rsa_n_len = 0u;
     x509_res.leaf_rsa_e_len = 0u;
+    x509_res.leaf_ec_curve = ECDSA_VERIFY_CURVE_NONE;
+    x509_res.leaf_ec_q_len = 0u;
     x509_res.hostname_ok = 0;
     x509_res.chain_anchor_ok = 0;
     g_conn.state = TCP_ST_SYN_SENT;
