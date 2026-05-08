@@ -9,14 +9,11 @@
 #define TRUST_ART_SHELL    1u
 #define TRUST_ART_WEB      2u
 
-#define TRUST_KEY_ADMIN_MAIN 0x00000001u
-#define TRUST_KEY_DEV_MAIN   0x00010001u
-
 #define TRUST_PQ_SIDECAR_MAX QOS_PQ_SIG_MAX
 
 static const trust_key_t g_keys[] = {
     {
-        TRUST_KEY_ADMIN_MAIN,
+        TRUST_KEY_ID_ADMIN_MAIN,
         "admin-main",
         TRUST_ROLE_ADMIN,
         TRUST_SCOPE_KERNEL | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB | TRUST_SCOPE_USER_APP,
@@ -28,7 +25,7 @@ static const trust_key_t g_keys[] = {
         0
     },
     {
-        TRUST_KEY_DEV_MAIN,
+        TRUST_KEY_ID_DEV_MAIN,
         "dev-main",
         TRUST_ROLE_DEVELOPER,
         TRUST_SCOPE_USER_APP,

@@ -78,6 +78,7 @@ kernel/ipv4.c \
 kernel/icmp.c \
 kernel/udp.c \
 kernel/tcp.c \
+kernel/x509_verify.c \
 kernel/tls_record.c \
 kernel/tls_key_schedule.c \
 kernel/tls_handshake.c \

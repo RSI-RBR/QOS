@@ -11,6 +11,7 @@
 #include "tls_handshake.h"
 #include "tls_key_schedule.h"
 #include "tls_record.h"
+#include "x509_verify.h"
 
 typedef struct __attribute__((packed)) {
     unsigned short src_port_be;
@@ -808,7 +809,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
     int saw_server_finished = 0;
     int saw_server_certificate = 0;
     int saw_server_certificate_verify = 0;
+    int x509_cert_checked = 0;
     unsigned short server_cert_verify_alg = 0u;
+    x509_verify_result_t x509_res;
     int need_client_empty_cert = 0;
     int app_bytes = 0;
     int result = -1;
@@ -879,6 +882,11 @@ int tcp_https_get(const unsigned char dst_ip[4],
     g_conn.out_cap = TCP_TLS_RX_CAP;
     g_conn.out_len = 0u;
     g_conn.last_rx_tick = system_ticks;
+    x509_res.chain_certs = 0u;
+    x509_res.anchor_count = 0u;
+    x509_res.leaf_cert_sig_alg = 0u;
+    x509_res.hostname_ok = 0;
+    x509_res.chain_anchor_ok = 0;
     g_conn.state = TCP_ST_SYN_SENT;
     g_conn.active = 1;
 
@@ -1099,8 +1107,28 @@ int tcp_https_get(const unsigned char dst_ip[4],
             const unsigned char* hs_ptr = &g_tls_hs_buf[parsed];
 
             if (hs_type == 11u){
-                // TLS 1.3 Certificate
+                // TLS 1.3 Certificate + X.509 hostname/anchor validation
+                if (msg_tot <= 4u){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-140);
+                }
+                if (x509_verify_tls13_certificate(host,
+                                                  &hs_ptr[4],
+                                                  msg_tot - 4u,
+                                                  server_cert_verify_alg,
+                                                  &x509_res) != 0){
+                    uart_puts("HTTPS X509 verify failed for host ");
+                    uart_puts(host);
+                    uart_puts("\n");
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-141);
+                }
                 saw_server_certificate = 1;
+                x509_cert_checked = 1;
             }
 
             if (hs_type == 15u){
@@ -1129,7 +1157,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
             }
 
             if (hs_type == 20u){
-                if (!saw_server_certificate || !saw_server_certificate_verify){
+                if (!saw_server_certificate || !saw_server_certificate_verify || !x509_cert_checked){
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
                     g_tcp_stats.http_fail++;
@@ -1390,6 +1418,16 @@ https_fail_secure:
     if (result < 0){
         g_tcp_https_last_error = fail_code;
         g_tcp_https_fail_count++;
+    } else if (x509_res.hostname_ok && x509_res.chain_anchor_ok){
+        uart_puts("HTTPS X509: host+anchor OK chain=");
+        uart_putdec((unsigned long)x509_res.chain_certs);
+        uart_puts(" anchors=");
+        uart_putdec((unsigned long)x509_res.anchor_count);
+        uart_puts(" leaf_sig_alg=");
+        uart_puthex((unsigned int)x509_res.leaf_cert_sig_alg);
+        uart_puts(" cert_verify_alg=");
+        uart_puthex((unsigned int)server_cert_verify_alg);
+        uart_puts("\n");
     } else if (server_cert_verify_alg != 0u){
         uart_puts("HTTPS cert signature alg=");
         uart_puthex((unsigned int)server_cert_verify_alg);

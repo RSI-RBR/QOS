@@ -7,6 +7,9 @@
 #define TRUST_ROLE_ADMIN     (1u << 0)
 #define TRUST_ROLE_DEVELOPER (1u << 1)
 
+#define TRUST_KEY_ID_ADMIN_MAIN 0x00000001u
+#define TRUST_KEY_ID_DEV_MAIN   0x00010001u
+
 #define TRUST_SCOPE_KERNEL    (1u << 0)
 #define TRUST_SCOPE_SHELL     (1u << 1)
 #define TRUST_SCOPE_WEB       (1u << 2)
