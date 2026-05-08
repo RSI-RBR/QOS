@@ -161,6 +161,28 @@ static void syscall_dump_usb_info(void){
     syscall_write_puts(-1, " hid_mask=");
     uart_puthex(info.hub_hid_candidate_mask);
     syscall_write_puts(-1, "\n");
+    for (unsigned int port = 1; port < USB_HOST_MAX_TRACKED_PORTS; port++){
+        if (info.port_addr[port] == 0u){
+            continue;
+        }
+        syscall_write_puts(-1, "USB p");
+        uart_putdec(port);
+        syscall_write_puts(-1, " addr=");
+        uart_puthex(info.port_addr[port]);
+        syscall_write_puts(-1, " vid=");
+        uart_puthex(info.port_vid[port]);
+        syscall_write_puts(-1, " pid=");
+        uart_puthex(info.port_pid[port]);
+        syscall_write_puts(-1, " class=");
+        uart_puthex(info.port_class[port]);
+        syscall_write_puts(-1, " cfg=");
+        uart_puthex(info.port_config[port]);
+        syscall_write_puts(-1, " intr=");
+        uart_puthex(info.port_intr_in_ep[port]);
+        syscall_write_puts(-1, " mps=");
+        uart_puthex(info.port_intr_in_mps[port]);
+        syscall_write_puts(-1, "\n");
+    }
 
     if (info.child_hid_kbd_present){
         syscall_write_puts(-1, "USB HID kbd addr=");

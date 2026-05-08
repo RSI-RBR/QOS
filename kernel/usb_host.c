@@ -196,6 +196,13 @@ static unsigned int g_hub_enum_success = 0;
 static unsigned int g_hub_enum_success_mask = 0;
 static unsigned int g_hub_hid_candidates = 0;
 static unsigned int g_hub_hid_candidate_mask = 0;
+static unsigned char g_port_addr[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned char g_port_class[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned char g_port_config[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned char g_port_intr_in_ep[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned short g_port_vid[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned short g_port_pid[USB_HOST_MAX_TRACKED_PORTS];
+static unsigned short g_port_intr_in_mps[USB_HOST_MAX_TRACKED_PORTS];
 extern volatile unsigned long system_ticks;
 
 typedef struct {
@@ -244,6 +251,12 @@ static void usb_parse_bulk_endpoints_from_config(const unsigned char* cfg,
                                                  unsigned short* out_in_mps,
                                                  unsigned char* out_out_ep,
                                                  unsigned short* out_out_mps);
+static void usb_parse_interrupt_in_endpoint_from_config(const unsigned char* cfg,
+                                                       unsigned int len,
+                                                       unsigned char* out_iface,
+                                                       unsigned char* out_ep,
+                                                       unsigned short* out_mps);
+static void usb_reset_hub_diag(void);
 static void usb_hid_queue_reset(void);
 static int usb_hid_queue_push(unsigned char c);
 static int usb_hid_queue_pop(char* out);
@@ -276,6 +289,25 @@ static void usb_reset_bulk_toggles(void){
     for (unsigned int i = 0; i < sizeof(g_bulk_in_toggle); i++){
         g_bulk_in_toggle[i] = 0;
         g_bulk_out_toggle[i] = 0;
+    }
+}
+
+static void usb_reset_hub_diag(void){
+    g_hub_ports = 0;
+    g_hub_connected_mask = 0;
+    g_hub_enum_attempts = 0;
+    g_hub_enum_success = 0;
+    g_hub_enum_success_mask = 0;
+    g_hub_hid_candidates = 0;
+    g_hub_hid_candidate_mask = 0;
+    for (unsigned int i = 0; i < USB_HOST_MAX_TRACKED_PORTS; i++){
+        g_port_addr[i] = 0;
+        g_port_class[i] = 0;
+        g_port_config[i] = 0;
+        g_port_intr_in_ep[i] = 0;
+        g_port_vid[i] = 0;
+        g_port_pid[i] = 0;
+        g_port_intr_in_mps[i] = 0;
     }
 }
 
@@ -567,6 +599,55 @@ static int usb_hid_poll_once(void){
     return 0;
 }
 
+static void usb_parse_interrupt_in_endpoint_from_config(const unsigned char* cfg,
+                                                       unsigned int len,
+                                                       unsigned char* out_iface,
+                                                       unsigned char* out_ep,
+                                                       unsigned short* out_mps){
+    unsigned char cur_iface = 0u;
+    unsigned char ep = 0u;
+    unsigned short mps = 0u;
+
+    if (out_iface){ *out_iface = 0u; }
+    if (out_ep){ *out_ep = 0u; }
+    if (out_mps){ *out_mps = 0u; }
+    if (!cfg || len < 9u){
+        return;
+    }
+
+    unsigned int off = 0;
+    while (off + 2u <= len){
+        unsigned int desc_len = cfg[off];
+        unsigned int desc_type = cfg[off + 1u];
+        if (desc_len < 2u || off + desc_len > len){
+            break;
+        }
+
+        if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9u){
+            cur_iface = cfg[off + 2u];
+        } else if (desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
+            unsigned char ep_addr = cfg[off + 2u];
+            unsigned char attrs = cfg[off + 3u];
+            unsigned short this_mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
+            if ((attrs & 0x3u) == USB_ENDPOINT_XFER_INTERRUPT &&
+                (ep_addr & 0x80u) &&
+                this_mps >= 3u){
+                ep = ep_addr;
+                mps = this_mps;
+                break;
+            }
+        }
+
+        off += desc_len;
+    }
+
+    if (ep){
+        if (out_iface){ *out_iface = cur_iface; }
+        if (out_ep){ *out_ep = ep; }
+        if (out_mps){ *out_mps = mps; }
+    }
+}
+
 static void usb_parse_bulk_endpoints_from_config(const unsigned char* cfg,
                                                  unsigned int len,
                                                  unsigned char* out_in_ep,
@@ -751,6 +832,9 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char hid_ep = 0;
     unsigned short hid_mps = 0;
     int hid_boot = 0;
+    unsigned char intr_iface = 0;
+    unsigned char intr_ep = 0;
+    unsigned short intr_mps = 0;
     int hid_found = 0;
     int child_is_high_speed = 0;
     int child_is_low_speed = 0;
@@ -838,6 +922,11 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                              &bulk_in_mps,
                                              &bulk_out_ep,
                                              &bulk_out_mps);
+        usb_parse_interrupt_in_endpoint_from_config(cfg_desc,
+                                                    (unsigned int)cfg_read,
+                                                    &intr_iface,
+                                                    &intr_ep,
+                                                    &intr_mps);
         if (cfg_value != 0){
             if (usb_std_request(child_addr, 0x00, HUB_REQ_SET_CONFIGURATION, cfg_value, 0, 0, 0) == 0){
                 cfg_set = 1;
@@ -849,12 +938,31 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                         &hid_ep,
                                                         &hid_mps,
                                                         &hid_boot) == 0) ? 1 : 0;
+        if (!hid_found && intr_ep && dev_desc[4] != 0x09u && !(bulk_in_ep && bulk_out_ep)){
+            // Some low-cost keyboards report unusual interface metadata but still expose
+            // a single interrupt-IN report endpoint. Avoid hubs and bulk NICs here.
+            hid_found = 1;
+            hid_iface = intr_iface;
+            hid_ep = intr_ep;
+            hid_mps = intr_mps;
+            hid_boot = 0;
+        }
         if (hid_found){
             g_hub_hid_candidates++;
             if (port < 32u){
                 g_hub_hid_candidate_mask |= (1u << port);
             }
         }
+    }
+
+    if (port < USB_HOST_MAX_TRACKED_PORTS){
+        g_port_addr[port] = child_addr;
+        g_port_class[port] = dev_desc[4];
+        g_port_config[port] = cfg_value;
+        g_port_vid[port] = le16(&dev_desc[8]);
+        g_port_pid[port] = le16(&dev_desc[10]);
+        g_port_intr_in_ep[port] = intr_ep;
+        g_port_intr_in_mps[port] = intr_mps;
     }
 
     // Preserve first child as the primary USB downstream function (used by NIC path).
@@ -1606,13 +1714,7 @@ int usb_host_init(void){
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
-    g_hub_ports = 0;
-    g_hub_connected_mask = 0;
-    g_hub_enum_attempts = 0;
-    g_hub_enum_success = 0;
-    g_hub_enum_success_mask = 0;
-    g_hub_hid_candidates = 0;
-    g_hub_hid_candidate_mask = 0;
+    usb_reset_hub_diag();
     usb_reset_bulk_toggles();
 
     unsigned int id = GSNPSID;
@@ -1986,13 +2088,7 @@ int usb_host_enumerate_root_device(void){
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
-    g_hub_ports = 0;
-    g_hub_connected_mask = 0;
-    g_hub_enum_attempts = 0;
-    g_hub_enum_success = 0;
-    g_hub_enum_success_mask = 0;
-    g_hub_hid_candidates = 0;
-    g_hub_hid_candidate_mask = 0;
+    usb_reset_hub_diag();
 
     if (!g_usb_ready){
         return -1;
@@ -2172,4 +2268,13 @@ static void usb_snapshot_hub_diag_to_root_info(void){
     g_root_info.hub_connected_mask = g_hub_connected_mask;
     g_root_info.hub_enum_success_mask = g_hub_enum_success_mask;
     g_root_info.hub_hid_candidate_mask = g_hub_hid_candidate_mask;
+    for (unsigned int i = 0; i < USB_HOST_MAX_TRACKED_PORTS; i++){
+        g_root_info.port_addr[i] = g_port_addr[i];
+        g_root_info.port_class[i] = g_port_class[i];
+        g_root_info.port_config[i] = g_port_config[i];
+        g_root_info.port_intr_in_ep[i] = g_port_intr_in_ep[i];
+        g_root_info.port_vid[i] = g_port_vid[i];
+        g_root_info.port_pid[i] = g_port_pid[i];
+        g_root_info.port_intr_in_mps[i] = g_port_intr_in_mps[i];
+    }
 }

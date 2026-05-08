@@ -1,6 +1,8 @@
 #ifndef USB_HOST_H
 #define USB_HOST_H
 
+#define USB_HOST_MAX_TRACKED_PORTS 8u
+
 typedef struct {
     unsigned char bmRequestType;
     unsigned char bRequest;
@@ -67,6 +69,13 @@ typedef struct {
     unsigned int hub_connected_mask;
     unsigned int hub_enum_success_mask;
     unsigned int hub_hid_candidate_mask;
+    unsigned char port_addr[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned char port_class[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned char port_config[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned char port_intr_in_ep[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned short port_vid[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned short port_pid[USB_HOST_MAX_TRACKED_PORTS];
+    unsigned short port_intr_in_mps[USB_HOST_MAX_TRACKED_PORTS];
 } usb_root_device_info_t;
 
 // Enumerate the root-port attached device (Default->Address->Configured).
