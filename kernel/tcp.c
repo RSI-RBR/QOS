@@ -163,13 +163,40 @@ static unsigned short tcp_advertised_window(void){
 static int tcp_send_segment(unsigned char flags,
                             const unsigned char* payload,
                             unsigned int payload_len){
+    const unsigned int max_seg_payload = 1460u;
     unsigned char local_ip[4];
     unsigned char buf[20 + 1460];
     unsigned int tcp_len = 20u + payload_len;
 
-    if (!g_conn.active || payload_len > 1460u){
+    if (!g_conn.active){
         g_tcp_stats.tx_fail++;
         return -1;
+    }
+    if (!payload && payload_len > 0u){
+        g_tcp_stats.tx_fail++;
+        return -1;
+    }
+    if (payload_len > max_seg_payload){
+        // Split oversized sends (e.g. PQ ClientHello) across TCP segments.
+        // Keep PSH on the final segment only.
+        if ((flags & (TCP_FLAG_SYN | TCP_FLAG_FIN | TCP_FLAG_RST)) != 0u){
+            g_tcp_stats.tx_fail++;
+            return -1;
+        }
+        unsigned int off = 0u;
+        while (off < payload_len){
+            unsigned int chunk = payload_len - off;
+            unsigned char seg_flags = flags;
+            if (chunk > max_seg_payload){
+                chunk = max_seg_payload;
+                seg_flags = (unsigned char)(flags & (unsigned char)(~TCP_FLAG_PSH));
+            }
+            if (tcp_send_segment(seg_flags, payload + off, chunk) != 0){
+                return -1;
+            }
+            off += chunk;
+        }
+        return 0;
     }
 
     for (unsigned int i = 0; i < tcp_len; i++){
