@@ -6,6 +6,11 @@
 #include "tcp.h"
 #include "spinlock.h"
 #include "uart.h"
+#include "klog.h"
+
+#define uart_puts klog_puts
+#define uart_puthex klog_puthex
+#define uart_putdec klog_putdec
 
 #define SOCKET_MAX_GLOBAL 32
 #define SOCKET_MAX_PER_PROCESS 8

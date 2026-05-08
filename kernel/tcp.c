@@ -4,6 +4,7 @@
 #include "timer.h"
 #include "net.h"
 #include "uart.h"
+#include "klog.h"
 #include "memory.h"
 #include "crypto.h"
 #include "sha256.h"
@@ -13,6 +14,10 @@
 #include "tls_record.h"
 #include "x509_verify.h"
 #include "pq_kem.h"
+
+#define uart_puts klog_puts
+#define uart_puthex klog_puthex
+#define uart_putdec klog_putdec
 
 typedef struct __attribute__((packed)) {
     unsigned short src_port_be;

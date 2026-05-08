@@ -9,7 +9,12 @@
 #include "crypto.h"
 #include "string.h"
 #include "uart.h"
+#include "klog.h"
 #include "timer.h"
+
+#define uart_puts klog_puts
+#define uart_puthex klog_puthex
+#define uart_putdec klog_putdec
 
 #define X509_MAX_CHAIN_CERTS 8u
 #define X509_MAX_CA_ANCHORS 256u

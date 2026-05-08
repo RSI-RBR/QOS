@@ -36,6 +36,7 @@ LDFLAGS = -T linker.ld
 C_SOURCES = \
 kernel/kernel.c \
 kernel/uart.c \
+kernel/klog.c \
 kernel/shell.c \
 kernel/memory.c \
 kernel/panic.c \

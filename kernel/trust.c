@@ -1,9 +1,12 @@
 #include "trust.h"
 #include "sha256.h"
 #include "uart.h"
+#include "klog.h"
 #include "ed25519_verify.h"
 #include "trust_keys_autogen.h"
 #include "fat32.h"
+
+#define uart_puts klog_puts
 
 #define TRUST_ART_USER_APP 0u
 #define TRUST_ART_SHELL    1u

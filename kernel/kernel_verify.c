@@ -3,9 +3,15 @@
 #include "sha256.h"
 #include "trust.h"
 #include "uart.h"
+#include "klog.h"
 #include "kernel_manifest_autogen.h"
 #include "fat32.h"
 #include "ed25519_verify.h"
+
+#define uart_puts klog_puts
+#define uart_send klog_send
+#define uart_puthex klog_puthex
+#define uart_putdec klog_putdec
 
 extern unsigned char __kernel_text_start[];
 extern unsigned char __kernel_rodata_verify_end[];
@@ -63,15 +69,14 @@ static char nibble_hex(unsigned int v){
     return (v < 10u) ? (char)('0' + v) : (char)('A' + (v - 10u));
 }
 
-static void uart_puthex_byte(unsigned char b){
-    uart_send(nibble_hex((b >> 4) & 0xFu));
-    uart_send(nibble_hex(b & 0xFu));
-}
-
 static void uart_put_digest(const unsigned char d[32]){
+    char out[65];
     for (unsigned int i = 0; i < 32u; i++){
-        uart_puthex_byte(d[i]);
+        out[i * 2u] = nibble_hex((d[i] >> 4) & 0xFu);
+        out[(i * 2u) + 1u] = nibble_hex(d[i] & 0xFu);
     }
+    out[64] = 0;
+    uart_puts(out);
     uart_puts("\n");
 }
 

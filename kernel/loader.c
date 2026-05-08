@@ -2,6 +2,10 @@
 #include "blockdev.h"
 #include "mmu.h"
 #include "trust.h"
+#include "klog.h"
+
+#define uart_puts klog_puts
+#define uart_puthex klog_puthex
 
 
 #define PROGRAM_MAX (512 * 1024)

@@ -6,8 +6,12 @@
 #include "crypto.h"
 #include "aes_gcm.h"
 #include "uart.h"
+#include "klog.h"
 #include "timer.h"
 #include "panic.h"
+
+#define uart_puts klog_puts
+#define uart_putdec klog_putdec
 
 #define RLOGIN_PORT 2222u
 #define RLOGIN_MAGIC 0x51524C47u /* QRLG */
