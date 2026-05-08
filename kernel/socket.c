@@ -414,14 +414,19 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
         int n;
         if (stream_remote_port == 443u){
-            uart_puts("HTTPS profile: kex_used=X25519, kex_pq=");
-            uart_puts(tcp_tls13_pq_kex_active() ? "on" : "off");
+            uart_puts("HTTPS profile: kex_pref=");
+            uart_puts(tcp_tls13_pq_kex_offered() ? "X25519+ML-KEM-768->X25519" : "X25519");
             uart_puts(", kex_pq_advertised=");
             uart_puts(tcp_tls13_pq_kex_offered() ? "yes" : "no");
             uart_puts(", sig_advertised=");
             uart_puts(tcp_tls13_pq_sig_offered() ? "ML-DSA-first+fallback" : "classic-only");
             uart_puts(", x509_hostname=on, x509_chain_sig=RSA+ECDSA, certverify=RSA+ECDSA\n");
             n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
+            if (n >= 0){
+                uart_puts("HTTPS negotiated kex=");
+                uart_puts(tcp_tls13_pq_kex_active() ? "X25519+ML-KEM-768" : "X25519");
+                uart_puts("\n");
+            }
         } else{
             n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
         }

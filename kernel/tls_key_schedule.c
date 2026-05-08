@@ -53,10 +53,11 @@ int tls13_hkdf_expand_label_sha256(const unsigned char secret[TLS13_HASH_SHA256_
     return rc;
 }
 
-int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secret[32],
-                                          const unsigned char transcript_hash[TLS13_HASH_SHA256_BYTES],
-                                          tls13_hs_secrets_t* out){
-    if (!ecdhe_shared_secret || !transcript_hash || !out){
+int tls13_derive_handshake_secrets_sha256_kex(const unsigned char* kex_shared_secret,
+                                              unsigned int kex_shared_secret_len,
+                                              const unsigned char transcript_hash[TLS13_HASH_SHA256_BYTES],
+                                              tls13_hs_secrets_t* out){
+    if (!kex_shared_secret || kex_shared_secret_len == 0u || !transcript_hash || !out){
         return -1;
     }
 
@@ -86,7 +87,7 @@ int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secre
         return -1;
     }
     crypto_hkdf_sha256_extract(derived, sizeof(derived),
-                               ecdhe_shared_secret, 32u, hs_secret);
+                               kex_shared_secret, kex_shared_secret_len, hs_secret);
 
     if (tls13_hkdf_expand_label_sha256(hs_secret, "c hs traffic",
                                        transcript_hash, TLS13_HASH_SHA256_BYTES,
@@ -130,6 +131,12 @@ fail:
     crypto_memzero(hs_secret, sizeof(hs_secret));
     crypto_memzero(out, sizeof(*out));
     return -1;
+}
+
+int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secret[32],
+                                          const unsigned char transcript_hash[TLS13_HASH_SHA256_BYTES],
+                                          tls13_hs_secrets_t* out){
+    return tls13_derive_handshake_secrets_sha256_kex(ecdhe_shared_secret, 32u, transcript_hash, out);
 }
 
 int tls13_key_schedule_self_test(void){

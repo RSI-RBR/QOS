@@ -22,6 +22,10 @@ int tls13_hkdf_expand_label_sha256(const unsigned char secret[TLS13_HASH_SHA256_
 int tls13_derive_handshake_secrets_sha256(const unsigned char ecdhe_shared_secret[32],
                                           const unsigned char transcript_hash[TLS13_HASH_SHA256_BYTES],
                                           tls13_hs_secrets_t* out);
+int tls13_derive_handshake_secrets_sha256_kex(const unsigned char* kex_shared_secret,
+                                              unsigned int kex_shared_secret_len,
+                                              const unsigned char transcript_hash[TLS13_HASH_SHA256_BYTES],
+                                              tls13_hs_secrets_t* out);
 
 int tls13_key_schedule_self_test(void);
 

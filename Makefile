@@ -27,7 +27,7 @@ ifneq ($(strip $(DEV_LAMPORT_SIGN_KEY)),)
 DEV_PQ_SIGN_KEY := $(DEV_LAMPORT_SIGN_KEY)
 endif
 
-CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
+CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/pqclean/crypto_kem/ml-kem-768/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
 LDFLAGS = -T linker.ld
 
 # ---------------------------
@@ -67,6 +67,7 @@ kernel/syscall.c \
 kernel/kernel_verify.c \
 kernel/ed25519_verify.c \
 kernel/pq_sig.c \
+kernel/pq_kem.c \
 kernel/pqclean_randombytes.c \
 kernel/pqclean_alloc.c \
 kernel/argon2_kdf.c \
@@ -114,6 +115,11 @@ third_party/ed25519/src/ge.c \
 third_party/ed25519/src/sc.c \
 third_party/ed25519/src/fe.c \
 third_party/ed25519/src/sha512.c
+
+MLKEM768_CLEAN_SOURCES := $(wildcard third_party/pqclean/crypto_kem/ml-kem-768/clean/*.c)
+ifneq ($(strip $(MLKEM768_CLEAN_SOURCES)),)
+C_SOURCES += $(MLKEM768_CLEAN_SOURCES)
+endif
 
 
 ASM_SOURCES = \

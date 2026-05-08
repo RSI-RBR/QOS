@@ -12,6 +12,7 @@
 #include "tls_key_schedule.h"
 #include "tls_record.h"
 #include "x509_verify.h"
+#include "pq_kem.h"
 
 typedef struct __attribute__((packed)) {
     unsigned short src_port_be;
@@ -481,18 +482,22 @@ static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
 
 // PQ TLS negotiation policy:
 // - Prefer ML-DSA signatures in ClientHello when available.
-// - Keep key exchange on X25519 until ML-KEM encapsulation/decapsulation is wired.
-// - Do not advertise PQ KEM groups unless the backend is actually ready.
+// - Prefer X25519MLKEM768 key exchange when ML-KEM backend is available.
+// - Keep X25519 fallback for interoperability.
 #define TLS13_GROUP_X25519_MLKEM768 0x11ECu
 #define TLS13_GROUP_X25519_KYBER768_DRAFT00 0x6399u
 #define TLS13_SIGALG_MLDSA65 0x0905u
+#define TLS13_X25519_BYTES 32u
+#define TLS13_X25519MLKEM768_CLIENT_KX_BYTES (QOS_KEM_MLKEM768_PK_BYTES + TLS13_X25519_BYTES)
+#define TLS13_X25519MLKEM768_SERVER_KX_BYTES (QOS_KEM_MLKEM768_CT_BYTES + TLS13_X25519_BYTES)
 static const int g_tls13_advertise_pq_sig = 1;
 static const int g_tls13_prioritize_pq_sig = 1;
-static const int g_tls13_advertise_pq_kem = 0;
+static const int g_tls13_advertise_pq_kem = 1;
+static const int g_tls13_advertise_pq_legacy_draft_group = 0;
+static int g_tls13_last_kex_was_pq = 0;
 
 static int tls13_pq_kem_backend_ready(void){
-    // TODO(ml-kem): flip to 1 once ML-KEM-768 keygen/encap/decap is integrated.
-    return 0;
+    return pq_kem_mlkem768_available() ? 1 : 0;
 }
 
 int tcp_tls13_pq_sig_offered(void){
@@ -504,8 +509,7 @@ int tcp_tls13_pq_kex_offered(void){
 }
 
 int tcp_tls13_pq_kex_active(void){
-    // Current handshake path derives shared secrets with X25519 only.
-    return 0;
+    return g_tls13_last_kex_was_pq ? 1 : 0;
 }
 
 static unsigned int tls13_fill_signature_schemes(unsigned short* sigs, unsigned int cap){
@@ -552,16 +556,18 @@ static unsigned int be24_read(const unsigned char* p){
            (unsigned int)p[2];
 }
 
-static int tls13_server_hello_keyshare_group(const unsigned char* sh,
+static int tls13_server_hello_keyshare_entry(const unsigned char* sh,
                                              unsigned int sh_len,
-                                             unsigned short* out_group){
+                                             unsigned short* out_group,
+                                             const unsigned char** out_kx,
+                                             unsigned int* out_kx_len){
     unsigned int body_len;
     unsigned int i;
     unsigned int sid_len;
     unsigned int ext_total;
     unsigned int ext_end;
 
-    if (!sh || !out_group || sh_len < 4u || sh[0] != 2u){
+    if (!sh || !out_group || !out_kx || !out_kx_len || sh_len < 4u || sh[0] != 2u){
         return -1;
     }
     body_len = be24_read(&sh[1]);
@@ -605,6 +611,11 @@ static int tls13_server_hello_keyshare_group(const unsigned char* sh,
                 return -1;
             }
             *out_group = (unsigned short)(((unsigned int)sh[i] << 8) | (unsigned int)sh[i + 1u]);
+            *out_kx_len = ((unsigned int)sh[i + 2u] << 8) | (unsigned int)sh[i + 3u];
+            if (*out_kx_len + 4u > ext_len){
+                return -1;
+            }
+            *out_kx = &sh[i + 4u];
             return 0;
         }
         i += ext_len;
@@ -613,12 +624,20 @@ static int tls13_server_hello_keyshare_group(const unsigned char* sh,
 }
 
 static int tls13_build_client_hello_sni_x25519(const char* host,
-                                                const unsigned char client_pub[32],
+                                                unsigned short preferred_kex_group,
+                                                const unsigned char client_pub[TLS13_X25519_BYTES],
+                                                const unsigned char* mlkem_pk,
+                                                unsigned int mlkem_pk_len,
                                                 unsigned char* out,
                                                 unsigned int out_cap,
                                                 unsigned int* out_len){
     if (!host || !*host || !client_pub || !out || !out_len){
         return -1;
+    }
+    if (preferred_kex_group == TLS13_GROUP_X25519_MLKEM768){
+        if (!mlkem_pk || mlkem_pk_len != QOS_KEM_MLKEM768_PK_BYTES){
+            return -1;
+        }
     }
 
     unsigned int host_len = 0;
@@ -693,11 +712,12 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     {
         unsigned short groups[3];
         unsigned int gcount = 0;
-        if (g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
-            // Offer modern and legacy hybrid IDs only when we can actually
-            // construct matching key_share payloads.
+        if (preferred_kex_group == TLS13_GROUP_X25519_MLKEM768 &&
+            g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
             groups[gcount++] = TLS13_GROUP_X25519_MLKEM768;
-            groups[gcount++] = TLS13_GROUP_X25519_KYBER768_DRAFT00;
+            if (g_tls13_advertise_pq_legacy_draft_group){
+                groups[gcount++] = TLS13_GROUP_X25519_KYBER768_DRAFT00;
+            }
         }
         groups[gcount++] = TLS13_GROUP_X25519;
         unsigned int groups_bytes = gcount * 2u;
@@ -771,17 +791,47 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         }
     }
 
-    // key_share (x25519 only until PQ KEM encapsulation is implemented)
-    if (i + 42u > out_cap){
-        return -1;
-    }
-    be16_write(&out[i], 0x0033u); i += 2u;
-    be16_write(&out[i], 38u); i += 2u;
-    be16_write(&out[i], 36u); i += 2u;
-    be16_write(&out[i], TLS13_GROUP_X25519); i += 2u;
-    be16_write(&out[i], 32u); i += 2u;
-    for (unsigned int k = 0; k < 32u; k++){
-        out[i++] = client_pub[k];
+    // key_share
+    {
+        unsigned int client_shares_len = 0u;
+        unsigned int ext_len = 0u;
+        int include_hybrid = (preferred_kex_group == TLS13_GROUP_X25519_MLKEM768 &&
+                              mlkem_pk && mlkem_pk_len == QOS_KEM_MLKEM768_PK_BYTES) ? 1 : 0;
+
+        if (include_hybrid){
+            // We include both the preferred hybrid share and classic X25519
+            // share for compatibility with servers that do not support 0x11EC.
+            client_shares_len =
+                (2u + 2u + TLS13_X25519MLKEM768_CLIENT_KX_BYTES) +
+                (2u + 2u + TLS13_X25519_BYTES);
+        } else{
+            client_shares_len = 2u + 2u + TLS13_X25519_BYTES;
+        }
+        ext_len = 2u + client_shares_len;
+        if (i + 4u + ext_len > out_cap){
+            return -1;
+        }
+
+        be16_write(&out[i], 0x0033u); i += 2u;
+        be16_write(&out[i], (unsigned short)ext_len); i += 2u;
+        be16_write(&out[i], (unsigned short)client_shares_len); i += 2u;
+
+        if (include_hybrid){
+            be16_write(&out[i], TLS13_GROUP_X25519_MLKEM768); i += 2u;
+            be16_write(&out[i], (unsigned short)TLS13_X25519MLKEM768_CLIENT_KX_BYTES); i += 2u;
+            for (unsigned int k = 0; k < QOS_KEM_MLKEM768_PK_BYTES; k++){
+                out[i++] = mlkem_pk[k];
+            }
+            for (unsigned int k = 0; k < TLS13_X25519_BYTES; k++){
+                out[i++] = client_pub[k];
+            }
+        }
+
+        be16_write(&out[i], TLS13_GROUP_X25519); i += 2u;
+        be16_write(&out[i], (unsigned short)TLS13_X25519_BYTES); i += 2u;
+        for (unsigned int k = 0; k < TLS13_X25519_BYTES; k++){
+            out[i++] = client_pub[k];
+        }
     }
 
     unsigned int ext_len = i - ext_start;
@@ -946,7 +996,8 @@ static void sha256_snapshot(const sha256_ctx_t* in, unsigned char out[32]){
     sha256_final(&tmp, out);
 }
 
-static int tls13_derive_master_and_app_secrets(const unsigned char shared_secret[32],
+static int tls13_derive_master_and_app_secrets(const unsigned char* shared_secret,
+                                                unsigned int shared_secret_len,
                                                 const unsigned char transcript_hash_server_finished[32],
                                                 unsigned char client_app_secret[32],
                                                 unsigned char server_app_secret[32]){
@@ -967,7 +1018,10 @@ static int tls13_derive_master_and_app_secrets(const unsigned char shared_secret
     if (tls13_hkdf_expand_label_sha256(early, "derived", empty_hash, sizeof(empty_hash), d1, sizeof(d1)) != 0){
         goto done;
     }
-    crypto_hkdf_sha256_extract(d1, sizeof(d1), shared_secret, 32u, hs_secret);
+    if (!shared_secret || shared_secret_len == 0u){
+        goto done;
+    }
+    crypto_hkdf_sha256_extract(d1, sizeof(d1), shared_secret, shared_secret_len, hs_secret);
     if (tls13_hkdf_expand_label_sha256(hs_secret, "derived", empty_hash, sizeof(empty_hash), d2, sizeof(d2)) != 0){
         goto done;
     }
@@ -1142,10 +1196,22 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned int ch_len = 0;
     unsigned int sh_len = 0;
     unsigned short sh_kex_group = 0u;
+    const unsigned char* sh_kex = 0;
+    unsigned int sh_kex_len = 0u;
+    const unsigned char* kem_ct = 0;
+    const unsigned char* sh_x25519 = 0;
+    unsigned short client_kex_pref = TLS13_GROUP_X25519;
+    int client_hybrid_enabled = 0;
     unsigned char client_priv[32];
     unsigned char client_pub[32];
     unsigned char server_pub[32];
     unsigned char shared[32];
+    unsigned char hybrid_shared[64];
+    unsigned char mlkem_client_pk[QOS_KEM_MLKEM768_PK_BYTES];
+    unsigned char mlkem_client_sk[QOS_KEM_MLKEM768_SK_BYTES];
+    unsigned char mlkem_shared[QOS_KEM_MLKEM768_SS_BYTES];
+    const unsigned char* negotiated_shared_ptr = shared;
+    unsigned int negotiated_shared_len = sizeof(shared);
     unsigned char thash[32];
     unsigned char server_finished_expected[32];
     unsigned char server_finished_key[32];
@@ -1153,9 +1219,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned int client_hs_finished_len = 0;
     unsigned char client_cert_msg[16];
     unsigned int client_cert_len = 0;
-    unsigned char ch_msg[1024];
-    unsigned char sh_msg[512];
-    unsigned char hs_record[1024];
+    unsigned char ch_msg[4096];
+    unsigned char sh_msg[4096];
+    unsigned char hs_record[4096];
     unsigned int hs_record_len = 0;
     unsigned int app_req_record_len = 0;
     unsigned char transcript_server_finished[32];
@@ -1180,6 +1246,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
         g_tcp_https_fail_count++;
         return g_tcp_https_last_error;
     }
+    g_tls13_last_kex_was_pq = 0;
 
     if (g_conn.active){
         g_conn.active = 0;
@@ -1243,7 +1310,24 @@ int tcp_https_get(const unsigned char dst_ip[4],
         return g_tcp_https_last_error;
     }
 
-    if (tls13_build_client_hello_sni_x25519(host, client_pub, ch_msg, sizeof(ch_msg), &ch_len) != 0){
+    if (g_tls13_advertise_pq_kem && tls13_pq_kem_backend_ready()){
+        if (pq_kem_mlkem768_keypair(mlkem_client_pk, sizeof(mlkem_client_pk),
+                                     mlkem_client_sk, sizeof(mlkem_client_sk)) == 0){
+            client_kex_pref = TLS13_GROUP_X25519_MLKEM768;
+            client_hybrid_enabled = 1;
+        } else{
+            client_kex_pref = TLS13_GROUP_X25519;
+            client_hybrid_enabled = 0;
+            uart_puts("HTTPS: ML-KEM keypair failed; falling back to X25519.\n");
+        }
+    }
+
+    if (tls13_build_client_hello_sni_x25519(host,
+                                            client_kex_pref,
+                                            client_pub,
+                                            client_hybrid_enabled ? mlkem_client_pk : 0,
+                                            client_hybrid_enabled ? (unsigned int)sizeof(mlkem_client_pk) : 0u,
+                                            ch_msg, sizeof(ch_msg), &ch_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
@@ -1343,46 +1427,85 @@ int tcp_https_get(const unsigned char dst_ip[4],
         }
     }
 
-    if (tls13_server_hello_keyshare_group(sh_msg, sh_len, &sh_kex_group) != 0){
+    if (tls13_server_hello_keyshare_entry(sh_msg, sh_len, &sh_kex_group, &sh_kex, &sh_kex_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-112);
     }
-    if (sh_kex_group != TLS13_GROUP_X25519){
+    if (sh_kex_group == TLS13_GROUP_X25519){
+        if (tls13_process_server_hello_x25519(sh_msg, sh_len, server_pub) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-112);
+        }
+        if (x25519_shared_secret(client_priv, server_pub, shared) != 0 || x25519_is_all_zero(shared)){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-113);
+        }
+        sha256_snapshot(&transcript, thash);
+        if (tls13_derive_handshake_secrets_sha256(shared, thash, &hs_sec) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-114);
+        }
+        negotiated_shared_ptr = shared;
+        negotiated_shared_len = sizeof(shared);
+        g_tls13_last_kex_was_pq = 0;
+    } else if (sh_kex_group == TLS13_GROUP_X25519_MLKEM768){
+        if (!client_hybrid_enabled || sh_kex_len != TLS13_X25519MLKEM768_SERVER_KX_BYTES){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-210);
+        }
+        kem_ct = sh_kex;
+        sh_x25519 = sh_kex + QOS_KEM_MLKEM768_CT_BYTES;
+        for (unsigned int i = 0; i < TLS13_X25519_BYTES; i++){
+            server_pub[i] = sh_x25519[i];
+        }
+        if (x25519_shared_secret(client_priv, server_pub, shared) != 0 || x25519_is_all_zero(shared)){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-113);
+        }
+        if (pq_kem_mlkem768_decaps(mlkem_shared, sizeof(mlkem_shared),
+                                   kem_ct, QOS_KEM_MLKEM768_CT_BYTES,
+                                   mlkem_client_sk, sizeof(mlkem_client_sk)) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-213);
+        }
+        for (unsigned int i = 0; i < QOS_KEM_MLKEM768_SS_BYTES; i++){
+            hybrid_shared[i] = mlkem_shared[i];
+        }
+        for (unsigned int i = 0; i < TLS13_X25519_BYTES; i++){
+            hybrid_shared[QOS_KEM_MLKEM768_SS_BYTES + i] = shared[i];
+        }
+        sha256_snapshot(&transcript, thash);
+        if (tls13_derive_handshake_secrets_sha256_kex(hybrid_shared, sizeof(hybrid_shared), thash, &hs_sec) != 0){
+            g_conn.active = 0;
+            g_conn.state = TCP_ST_CLOSED;
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-114);
+        }
+        negotiated_shared_ptr = hybrid_shared;
+        negotiated_shared_len = sizeof(hybrid_shared);
+        g_tls13_last_kex_was_pq = 1;
+    } else{
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
-        if (sh_kex_group == TLS13_GROUP_X25519_MLKEM768 ||
-            sh_kex_group == TLS13_GROUP_X25519_KYBER768_DRAFT00){
-            uart_puts("HTTPS: server selected PQ KEX group ");
-            uart_puthex((unsigned int)sh_kex_group);
-            uart_puts(" but ML-KEM backend is not integrated yet.\n");
-            HTTPS_FAIL(-210);
-        }
         uart_puts("HTTPS: unsupported key share group ");
         uart_puthex((unsigned int)sh_kex_group);
         uart_puts("\n");
         HTTPS_FAIL(-211);
-    }
-    if (tls13_process_server_hello_x25519(sh_msg, sh_len, server_pub) != 0){
-        g_conn.active = 0;
-        g_conn.state = TCP_ST_CLOSED;
-        g_tcp_stats.http_fail++;
-        HTTPS_FAIL(-112);
-    }
-    if (x25519_shared_secret(client_priv, server_pub, shared) != 0 || x25519_is_all_zero(shared)){
-        g_conn.active = 0;
-        g_conn.state = TCP_ST_CLOSED;
-        g_tcp_stats.http_fail++;
-        HTTPS_FAIL(-113);
-    }
-    sha256_snapshot(&transcript, thash);
-    if (tls13_derive_handshake_secrets_sha256(shared, thash, &hs_sec) != 0){
-        g_conn.active = 0;
-        g_conn.state = TCP_ST_CLOSED;
-        g_tcp_stats.http_fail++;
-        HTTPS_FAIL(-114);
     }
     if (tls13_record_init(&hs_tx, hs_sec.client_key, TLS13_KEY_BYTES, hs_sec.client_iv) != 0 ||
         tls13_record_init(&hs_rx, hs_sec.server_key, TLS13_KEY_BYTES, hs_sec.server_iv) != 0){
@@ -1633,7 +1756,8 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned char c_app_iv[12];
     unsigned char s_app_iv[12];
 
-    if (tls13_derive_master_and_app_secrets(shared,
+    if (tls13_derive_master_and_app_secrets(negotiated_shared_ptr,
+                                            negotiated_shared_len,
                                             transcript_server_finished,
                                             c_app_secret, s_app_secret) != 0){
         g_conn.active = 0;
@@ -1778,6 +1902,10 @@ https_fail_secure:
     crypto_memzero(client_pub, sizeof(client_pub));
     crypto_memzero(server_pub, sizeof(server_pub));
     crypto_memzero(shared, sizeof(shared));
+    crypto_memzero(hybrid_shared, sizeof(hybrid_shared));
+    crypto_memzero(mlkem_client_pk, sizeof(mlkem_client_pk));
+    crypto_memzero(mlkem_client_sk, sizeof(mlkem_client_sk));
+    crypto_memzero(mlkem_shared, sizeof(mlkem_shared));
     crypto_memzero(thash, sizeof(thash));
     crypto_memzero(server_finished_expected, sizeof(server_finished_expected));
     crypto_memzero(server_finished_key, sizeof(server_finished_key));
@@ -1809,6 +1937,8 @@ https_fail_secure:
         uart_puthex((unsigned int)x509_res.leaf_cert_sig_alg);
         uart_puts(" cert_verify_alg=");
         uart_puthex((unsigned int)server_cert_verify_alg);
+        uart_puts(" kex=");
+        uart_puts(g_tls13_last_kex_was_pq ? "X25519+ML-KEM-768" : "X25519");
         uart_puts("\n");
     } else if (server_cert_verify_alg != 0u){
         uart_puts("HTTPS cert signature alg=");

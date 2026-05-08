@@ -26,6 +26,7 @@
 #include "aes_gcm.h"
 #include "tls_record.h"
 #include "x25519.h"
+#include "pq_kem.h"
 #include "tls_key_schedule.h"
 #include "tls_handshake.h"
 #include "tls_session.h"
@@ -147,6 +148,15 @@ void kernel_main(void){
         uart_puts("X25519 self-test FAILED rc=");
         uart_putdec(x25519_abs);
         uart_puts("\n");
+    }
+    if (pq_kem_mlkem768_available()){
+        if (pq_kem_mlkem768_self_test() == 0){
+            uart_puts("ML-KEM-768 self-test OK\n");
+        } else{
+            uart_puts("ML-KEM-768 self-test FAILED\n");
+        }
+    } else{
+        uart_puts("ML-KEM-768 backend unavailable (X25519 fallback)\n");
     }
     if (pq_sig_self_test() == 0){
         uart_puts("PQ signature self-test OK\n");
