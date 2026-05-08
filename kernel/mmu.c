@@ -41,6 +41,13 @@
 #define MMU_USER_POOL_START 0x08000000UL
 #define MMU_USER_POOL_SIZE  (16UL * 1024UL * 1024UL)
 #define MMU_USER_POOL_END   (MMU_USER_POOL_START + MMU_USER_POOL_SIZE)
+#define MMU_ASID_BITS       8U
+#define MMU_ASID_MAX        ((1U << MMU_ASID_BITS) - 1U)
+#define MMU_ASID_KERNEL     0U
+#define NG_BIT              (1UL << 11)
+#define TTBR0_BADDR_MASK    0x0000FFFFFFFFF000UL
+#define TTBR0_ASID_SHIFT    48U
+#define TTBR0_ASID_MASK     (0xFFUL << TTBR0_ASID_SHIFT)
 #define MMU_TLB_WAIT_RETRY_INTERVAL 1024U
 #define MMU_TLB_WAIT_MAX_SPINS 2000000U
 
@@ -49,6 +56,7 @@ typedef struct {
     unsigned long sh;
     unsigned long ap;
     unsigned long xn;
+    unsigned long ng;
 } mmu_block_attrs_t;
 
 static unsigned long l1_table[L1_ENTRIES] __attribute__((aligned(4096)));
@@ -63,6 +71,8 @@ static int core_active_pid[MMU_MAX_CORES];
 static spinlock_t g_mmu_lock;
 static volatile unsigned int g_tlb_epoch = 1;
 static volatile unsigned int g_tlb_ack_epoch[MMU_MAX_CORES];
+static unsigned short proc_asid[MMU_MAX_PROCESS_SPACES];
+static unsigned short core_active_asid[MMU_MAX_CORES];
 
 static unsigned int mmu_local_core_id(void){
     unsigned int core = cpu_get_id();
@@ -85,6 +95,18 @@ static int mmu_range_within_user_pool(unsigned long start, unsigned long size){
     return 1;
 }
 
+static unsigned short mmu_default_asid_for_pid(int pid){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES){
+        return (unsigned short)MMU_ASID_KERNEL;
+    }
+    // Reserve ASID 0 for the kernel TTBR0 context.
+    unsigned int asid = (unsigned int)pid + 1u;
+    if (asid > MMU_ASID_MAX){
+        asid = MMU_ASID_MAX;
+    }
+    return (unsigned short)asid;
+}
+
 static void mmu_local_tlbi_all(void){
     // Translation-table update ordering for SMP:
     // 1) table stores visible 2) invalidate TLBs in shareable domain
@@ -95,15 +117,12 @@ static void mmu_local_tlbi_all(void){
     asm volatile("isb");
 }
 
-static void mmu_local_tlbi_self(void){
-    asm volatile("dsb ishst");
-    asm volatile("tlbi vmalle1");
-    asm volatile("dsb ish");
-    asm volatile("isb");
-}
-
-static void mmu_set_ttbr0(unsigned long table_base){
-    asm volatile("msr ttbr0_el1, %0" : : "r"(table_base));
+static void mmu_set_ttbr0(unsigned long table_base, unsigned short asid){
+    unsigned long ttbr = (table_base & TTBR0_BADDR_MASK) |
+                         ((((unsigned long)asid) & 0xFFUL) << TTBR0_ASID_SHIFT);
+    // Ensure we never accidentally leak stale ASID high bits into TTBR0.
+    ttbr &= (TTBR0_BADDR_MASK | TTBR0_ASID_MASK);
+    asm volatile("msr ttbr0_el1, %0" : : "r"(ttbr));
     asm volatile("isb");
 }
 
@@ -205,7 +224,7 @@ static void mmu_program_core_registers(void){
 
     asm volatile("msr mair_el1, %0" : : "r"(mair));
     asm volatile("msr tcr_el1, %0" : : "r"(tcr));
-    mmu_set_ttbr0((unsigned long)l1_table);
+    mmu_set_ttbr0((unsigned long)l1_table, (unsigned short)MMU_ASID_KERNEL);
 }
 
 static void mmu_enable_current_core(void){
@@ -221,9 +240,11 @@ static void mmu_enable_current_core(void){
 static void zero_tables(void){
     for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
         proc_space_active[p] = 0;
+        proc_asid[p] = mmu_default_asid_for_pid((int)p);
     }
     for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
         core_active_pid[c] = -1;
+        core_active_asid[c] = (unsigned short)MMU_ASID_KERNEL;
     }
     for (int i = 0; i < L1_ENTRIES; i++){
         l1_table[i] = 0;
@@ -248,13 +269,13 @@ static void zero_tables(void){
 
 static unsigned long block_desc(unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long desc = (pa & 0xFFFFFFFFFFE00000UL) | DESC_VALID | DESC_BLOCK | AF_BIT;
-    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn;
+    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn | attrs->ng;
     return desc;
 }
 
 static unsigned long page_desc(unsigned long pa, const mmu_block_attrs_t* attrs){
     unsigned long desc = (pa & 0xFFFFFFFFFFFFF000UL) | DESC_VALID | DESC_PAGE | AF_BIT;
-    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn;
+    desc |= (attrs->attridx << ATTRIDX_SHIFT) | attrs->sh | attrs->ap | attrs->xn | attrs->ng;
     return desc;
 }
 
@@ -306,7 +327,8 @@ static void l3_fill_kernel_private(unsigned long* l3, unsigned long slot_base){
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_NONE,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = 0
     };
     for (unsigned int i = 0; i < L3_ENTRIES; i++){
         l3[i] = page_desc(slot_base + ((unsigned long)i * MMU_PAGE_SIZE), &kernel_private);
@@ -433,13 +455,15 @@ void mmu_init(void){
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_NONE,
-        .xn = 0
+        .xn = 0,
+        .ng = 0
     };
     static const mmu_block_attrs_t kernel_device = {
         .attridx = ATTRIDX_DEVICE,
         .sh = SH_OUTER,
         .ap = AP_EL1_RW_EL0_NONE,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = 0
     };
 
     for (unsigned long i = 0; i < L2_ENTRIES; i++){
@@ -474,8 +498,9 @@ void mmu_process_spaces_reset(void){
     }
     for (unsigned int core = 0; core < MMU_MAX_CORES; core++){
         core_active_pid[core] = -1;
+        core_active_asid[core] = (unsigned short)MMU_ASID_KERNEL;
     }
-    mmu_set_ttbr0((unsigned long)l1_table);
+    mmu_set_ttbr0((unsigned long)l1_table, (unsigned short)MMU_ASID_KERNEL);
     mmu_tlb_shootdown_all_locked();
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
@@ -493,13 +518,15 @@ int mmu_process_space_create(int pid,
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RO_EL0_RO,
-        .xn = PXN_BIT
+        .xn = PXN_BIT,
+        .ng = NG_BIT
     };
     static const mmu_block_attrs_t user_data_rw_nx = {
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_RW,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = NG_BIT
     };
     const unsigned long guard_bytes = QOS_USER_GUARD_PAGE_BYTES;
     const unsigned long stack_bytes = QOS_USER_STACK_BYTES;
@@ -593,6 +620,7 @@ int mmu_process_space_create(int pid,
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
+    proc_asid[pid] = mmu_default_asid_for_pid(pid);
     proc_space_active[pid] = 1;
 
     mmu_tlb_shootdown_all_locked();
@@ -622,17 +650,20 @@ void mmu_switch_to_pid(int pid){
 
     unsigned long* table = l1_table;
     int effective_pid = -1;
+    unsigned short effective_asid = (unsigned short)MMU_ASID_KERNEL;
     if (pid >= 0 && (unsigned int)pid < MMU_MAX_PROCESS_SPACES && proc_space_active[pid]){
         table = proc_l1_table[pid];
         effective_pid = pid;
+        effective_asid = proc_asid[pid];
     }
 
     unsigned int core = mmu_local_core_id();
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
-    if (core_active_pid[core] != effective_pid){
-        mmu_set_ttbr0((unsigned long)table);
-        mmu_local_tlbi_self();
+    if (core_active_pid[core] != effective_pid || core_active_asid[core] != effective_asid){
+        // Context switch now selects both a page-table root and ASID.
+        mmu_set_ttbr0((unsigned long)table, effective_asid);
         core_active_pid[core] = effective_pid;
+        core_active_asid[core] = effective_asid;
     }
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
@@ -642,7 +673,8 @@ void mmu_map_device_region(unsigned long pa_start, unsigned long size){
         .attridx = ATTRIDX_DEVICE,
         .sh = SH_OUTER,
         .ap = AP_EL1_RW_EL0_NONE,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = 0
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     apply_region_attrs_all_spaces(pa_start, size, &kernel_device);
@@ -654,7 +686,8 @@ void mmu_map_user_code_region(unsigned long pa_start, unsigned long size){
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RO_EL0_RO,
-        .xn = PXN_BIT
+        .xn = PXN_BIT,
+        .ng = NG_BIT
     };
     if ((pa_start & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
         (size & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
@@ -672,7 +705,8 @@ void mmu_map_user_data_region(unsigned long pa_start, unsigned long size){
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_RW,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = NG_BIT
     };
     if ((pa_start & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
         (size & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
@@ -690,7 +724,8 @@ void mmu_map_kernel_private_region(unsigned long pa_start, unsigned long size){
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_NONE,
-        .xn = PXN_BIT | UXN_BIT
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = 0
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     apply_region_attrs_all_spaces(pa_start, size, &kernel_private);
