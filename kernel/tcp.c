@@ -676,6 +676,7 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
     }
 
     unsigned int i = 0;
+    int compact_pq_client_hello = (preferred_kex_group == TLS13_GROUP_X25519_MLKEM768) ? 1 : 0;
     out[i++] = (unsigned char)TLS13_HS_TYPE_CLIENT_HELLO;
     out[i++] = 0;
     out[i++] = 0;
@@ -780,8 +781,10 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         }
     }
 
-    // signature_algorithms_cert
-    {
+    // signature_algorithms_cert is optional in TLS 1.3.
+    // For PQ-first handshakes, keep ClientHello compact to reduce
+    // transport fragility on constrained/quirky paths.
+    if (!compact_pq_client_hello){
         unsigned short sigs[16];
         unsigned int scount = tls13_fill_signature_schemes(sigs, 16u);
         if (scount == 0u){
@@ -1412,7 +1415,8 @@ https_retry_connect:
     consumed = 0u;
 
     while (!saw_server_hello){
-        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 4500u) != 0){
+        unsigned int sh_wait_ms = client_hybrid_enabled ? 7000u : 4500u;
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, sh_wait_ms) != 0){
             if (client_hybrid_enabled && !force_x25519_only && !retried_after_pq_timeout){
                 retried_after_pq_timeout = 1;
                 force_x25519_only = 1;
