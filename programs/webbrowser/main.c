@@ -730,9 +730,9 @@ static int inflate_huff_decode(inflate_reader_t* r, const inflate_huff_t* h, int
         if (inflate_bits(r, 1, &bit) != 0){
             return -1;
         }
-        code |= (bit << (len - 1));
+        code |= bit;
         count = (unsigned int)h->count[len];
-        if (code < first + count){
+        if (count != 0u && code >= first && code < first + count){
             *sym = (int)h->symbol[index + (code - first)];
             return 0;
         }
