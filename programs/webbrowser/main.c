@@ -16,6 +16,10 @@ static int g_input_len = 0;
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
+// Forward declarations for helpers used before their definitions.
+static unsigned char ascii_lower(unsigned char c);
+static int append_str(char* dst, int cap, int* idx, const char* s);
+
 static void print_uint(unsigned int v){
     char tmp[16];
     int n = 0;
