@@ -15,6 +15,7 @@
 static char g_input[INPUT_CAP];
 static int g_input_len = 0;
 static int g_accept_gzip = 1;
+static int g_gzip_truncated = 0;
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 
@@ -763,7 +764,11 @@ static int inflate_build_fixed(inflate_huff_t* ll, inflate_huff_t* dd){
     return 0;
 }
 
-static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsigned char* out, int out_cap){
+static int inflate_raw_deflate_local(const unsigned char* in,
+                                     int in_len,
+                                     unsigned char* out,
+                                     int out_cap,
+                                     int* truncated){
     static const unsigned short len_base[29] = {
         3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
         35,43,51,59,67,83,99,115,131,163,195,227,258
@@ -814,13 +819,16 @@ static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsign
             if (((len ^ 0xFFFFu) & 0xFFFFu) != (nlen & 0xFFFFu)){
                 return -1;
             }
-            if (out_pos + (int)len > out_cap){
-                return -1;
-            }
             while (len--){
                 unsigned int byte = 0u;
                 if (inflate_bits(&r, 8, &byte) != 0){
                     return -1;
+                }
+                if (out_pos >= out_cap){
+                    if (truncated){
+                        *truncated = 1;
+                    }
+                    return out_pos;
                 }
                 out[out_pos++] = (unsigned char)byte;
             }
@@ -928,7 +936,10 @@ static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsign
             }
             if (sym < 256){
                 if (out_pos >= out_cap){
-                    return -1;
+                    if (truncated){
+                        *truncated = 1;
+                    }
+                    return out_pos;
                 }
                 out[out_pos++] = (unsigned char)sym;
             } else if (sym == 256){
@@ -956,10 +967,13 @@ static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsign
                 if (dist == 0u || (int)dist > out_pos){
                     return -1;
                 }
-                if (out_pos + (int)len > out_cap){
-                    return -1;
-                }
                 while (len--){
+                    if (out_pos >= out_cap){
+                        if (truncated){
+                            *truncated = 1;
+                        }
+                        return out_pos;
+                    }
                     out[out_pos] = out[out_pos - (int)dist];
                     out_pos++;
                 }
@@ -975,6 +989,8 @@ static int inflate_raw_deflate_local(const unsigned char* in, int in_len, unsign
 static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned char* out, int out_cap){
     int pos;
     unsigned int flags;
+    int truncated = 0;
+    g_gzip_truncated = 0;
     if (!in || in_len < 18 || !out || out_cap <= 0){
         return -1;
     }
@@ -1012,10 +1028,11 @@ static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned c
     }
 
     {
-        int out_n = inflate_raw_deflate_local(&in[pos], in_len - pos - 8, out, out_cap);
+        int out_n = inflate_raw_deflate_local(&in[pos], in_len - pos - 8, out, out_cap, &truncated);
         if (out_n <= 0){
             return -1;
         }
+        g_gzip_truncated = truncated ? 1 : 0;
         return out_n;
     }
 }
@@ -1565,6 +1582,9 @@ static void cmd_open(char* host, const char* path){
             if (decoded > 0){
                 body_ptr = out_buf;
                 body_len = decoded;
+                if (g_gzip_truncated){
+                    qos_puts("Gzip output reached browser buffer limit; page text may be truncated.\n");
+                }
             } else{
                 qos_puts("Gzip decode failed; showing raw body.\n");
             }
