@@ -24,6 +24,8 @@ typedef struct{
     program_entry_t entry;
     void* program_memory;
     unsigned long program_size;
+    unsigned long user_rw_offset;
+    unsigned long user_rw_size;
     int program_heap_alloc;
     int user_mode;
     unsigned int owner_core;
@@ -65,5 +67,11 @@ void* scheduler_on_irq(void* irq_frame_sp);
 void process_sleep(unsigned int ms);
 void process_dump(void);
 __attribute__((noreturn)) void process_enter_idle_loop(void);
+
+int process_user_range_readable(const void* user_ptr, unsigned long len);
+int process_user_range_writable(void* user_ptr, unsigned long len);
+int process_copy_from_user(void* dst, const void* user_src, unsigned long len);
+int process_copy_to_user(void* user_dst, const void* src, unsigned long len);
+int process_copy_cstr_from_user(char* dst, unsigned long dst_cap, const char* user_src);
 
 #endif

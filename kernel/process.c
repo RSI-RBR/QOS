@@ -55,6 +55,7 @@ static void runq_enqueue(unsigned int core, int pid);
 static void mark_need_resched_locked(unsigned int core_id);
 static int is_pid_pending_zombie(int pid);
 static int pid_running_on_other_core_locked(int pid, unsigned int core);
+static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -379,6 +380,8 @@ static void clear_process_descriptor(int pid){
     processes[pid].entry = 0;
     processes[pid].program_memory = 0;
     processes[pid].program_size = 0;
+    processes[pid].user_rw_offset = 0;
+    processes[pid].user_rw_size = 0;
     processes[pid].program_heap_alloc = 0;
     processes[pid].user_mode = 0;
     processes[pid].owner_core = 0;
@@ -450,6 +453,8 @@ static int process_create_common_locked(program_entry_t entry,
         processes[i].wake_tick = 0;
         processes[i].program_memory = 0;
         processes[i].program_size = 0;
+        processes[i].user_rw_offset = 0;
+        processes[i].user_rw_size = 0;
         processes[i].program_heap_alloc = 0;
         processes[i].user_mode = 0;
         processes[i].user_sp = 0;
@@ -457,6 +462,8 @@ static int process_create_common_locked(program_entry_t entry,
         if (user_mode){
             processes[i].program_memory = program_memory;
             processes[i].program_size = program_size;
+            processes[i].user_rw_offset = user_rw_offset;
+            processes[i].user_rw_size = user_rw_size;
             processes[i].program_heap_alloc = program_heap_alloc;
             processes[i].user_mode = 1;
             processes[i].user_sp = user_sp;
@@ -527,6 +534,8 @@ static void detach_process_resources_locked(int pid, process_cleanup_t* out){
     processes[pid].stack = 0;
     processes[pid].program_memory = 0;
     processes[pid].program_size = 0;
+    processes[pid].user_rw_offset = 0;
+    processes[pid].user_rw_size = 0;
     processes[pid].program_heap_alloc = 0;
     processes[pid].sp = 0;
     processes[pid].state = PROC_REAPING;
@@ -838,6 +847,94 @@ process_t* get_current_process(void){
         return 0;
     }
     return &processes[pid];
+}
+
+static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable){
+    if (!p || !p->user_mode || !p->program_memory){
+        return 0;
+    }
+    if (len == 0u){
+        return 1;
+    }
+
+    unsigned long end = addr + len - 1u;
+    if (end < addr){
+        return 0;
+    }
+
+    unsigned long base = (unsigned long)p->program_memory;
+    unsigned long rw_start = base + p->user_rw_offset;
+    unsigned long rw_end = rw_start + p->user_rw_size;
+    if (rw_start < base || rw_end < rw_start){
+        return 0;
+    }
+
+    if (writeable){
+        return (addr >= rw_start && end < rw_end) ? 1 : 0;
+    }
+
+    return (addr >= base && end < rw_end) ? 1 : 0;
+}
+
+int process_user_range_readable(const void* user_ptr, unsigned long len){
+    process_t* p = get_current_process();
+    return process_user_range_check(p, (unsigned long)user_ptr, len, 0);
+}
+
+int process_user_range_writable(void* user_ptr, unsigned long len){
+    process_t* p = get_current_process();
+    return process_user_range_check(p, (unsigned long)user_ptr, len, 1);
+}
+
+int process_copy_from_user(void* dst, const void* user_src, unsigned long len){
+    if (!dst || !user_src){
+        return -1;
+    }
+    if (!process_user_range_readable(user_src, len)){
+        return -1;
+    }
+    unsigned char* d = (unsigned char*)dst;
+    const unsigned char* s = (const unsigned char*)user_src;
+    for (unsigned long i = 0; i < len; i++){
+        d[i] = s[i];
+    }
+    return 0;
+}
+
+int process_copy_to_user(void* user_dst, const void* src, unsigned long len){
+    if (!user_dst || !src){
+        return -1;
+    }
+    if (!process_user_range_writable(user_dst, len)){
+        return -1;
+    }
+    unsigned char* d = (unsigned char*)user_dst;
+    const unsigned char* s = (const unsigned char*)src;
+    for (unsigned long i = 0; i < len; i++){
+        d[i] = s[i];
+    }
+    return 0;
+}
+
+int process_copy_cstr_from_user(char* dst, unsigned long dst_cap, const char* user_src){
+    if (!dst || dst_cap == 0u || !user_src){
+        return -1;
+    }
+
+    for (unsigned long i = 0; i < dst_cap; i++){
+        if (!process_user_range_readable(user_src + i, 1u)){
+            dst[0] = 0;
+            return -1;
+        }
+        char c = user_src[i];
+        dst[i] = c;
+        if (c == 0){
+            return 0;
+        }
+    }
+
+    dst[dst_cap - 1u] = 0;
+    return -1;
 }
 
 process_t* scheduler_next(void){

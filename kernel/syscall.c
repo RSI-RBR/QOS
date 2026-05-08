@@ -21,6 +21,10 @@
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
 #define ESR_EC_SVC64  0x15UL
+#define USER_CSTR_MAX 256u
+#define USER_PASS_MAX 128u
+#define USER_IO_MAX   16384u
+#define USER_WIFI_SCAN_MAX 64u
 
 // Trap frame layout in vectors.S
 #define TF_X0   0
@@ -50,6 +54,25 @@ static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
     }
     out[i] = 0;
     return 0;
+}
+
+static unsigned int clamp_u32(unsigned int v, unsigned int max){
+    return (v > max) ? max : v;
+}
+
+static int copy_cstr_from_user_bound(char* out, unsigned int out_cap, const char* user_in){
+    return process_copy_cstr_from_user(out, out_cap, user_in);
+}
+
+static unsigned int cstr_bytes_with_nul(const char* s, unsigned int cap){
+    unsigned int n = 0;
+    if (!s || cap == 0u){
+        return 0u;
+    }
+    while (n + 1u < cap && s[n]){
+        n++;
+    }
+    return n + 1u;
 }
 
 static void syscall_poll_background_io(void){
@@ -143,9 +166,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_PUTS:
-            syscall_write_puts(process_current_pid(), (const char*)frame[TF_X0]);
+        {
+            char tmp[1025];
+            tmp[0] = 0;
+            if (copy_cstr_from_user_bound(tmp, sizeof(tmp), (const char*)frame[TF_X0]) == 0){
+                syscall_write_puts(process_current_pid(), tmp);
+            }
             frame[TF_X0] = 0;
             return frame_sp;
+        }
 
         case SYS_SLEEP: {
             unsigned int ms = (unsigned int)frame[TF_X0];
@@ -229,13 +258,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_RUN_PROGRAM_NAMED: {
             const char* fat_name_83 = (const char*)frame[TF_X0];
-            if (!fat_name_83){
+            char fat_name_local[12];
+            if (!fat_name_83 || process_copy_from_user(fat_name_local, fat_name_83, 11u) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
+            fat_name_local[11] = 0;
 
             kernel_preempt_enter();
-            loaded_program_t prog = load_program_from_sd_named(fat_name_83);
+            loaded_program_t prog = load_program_from_sd_named(fat_name_local);
             if (!prog.entry){
                 kernel_preempt_exit();
                 frame[TF_X0] = (unsigned long)-1;
@@ -279,14 +310,37 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_NET_RECV_RAW:
-            frame[TF_X0] = (unsigned long)net_recv_raw((unsigned char*)frame[TF_X0],
-                                                       (unsigned int)frame[TF_X1]);
+        {
+            unsigned char* user_out = (unsigned char*)frame[TF_X0];
+            unsigned int cap = clamp_u32((unsigned int)frame[TF_X1], NET_MAX_FRAME_SIZE);
+            unsigned char kbuf[NET_MAX_FRAME_SIZE];
+            int n = net_recv_raw(kbuf, cap);
+            if (n > 0){
+                if (process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+            }
+            frame[TF_X0] = (unsigned long)n;
             return frame_sp;
+        }
 
         case SYS_NET_SEND_RAW:
-            frame[TF_X0] = (unsigned long)net_send_raw((const unsigned char*)frame[TF_X0],
-                                                       (unsigned int)frame[TF_X1]);
+        {
+            const unsigned char* user_frame = (const unsigned char*)frame[TF_X0];
+            unsigned int len = (unsigned int)frame[TF_X1];
+            if (len == 0u || len > NET_MAX_FRAME_SIZE){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned char kbuf[NET_MAX_FRAME_SIZE];
+            if (process_copy_from_user(kbuf, user_frame, len) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)net_send_raw(kbuf, len);
             return frame_sp;
+        }
 
         case SYS_USB_DUMP_INFO:
             syscall_dump_usb_info();
@@ -304,28 +358,81 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_NET_UDP_RECV:
-            frame[TF_X0] = (unsigned long)udp_recv_next((unsigned char*)frame[TF_X1],
-                                                        (unsigned int)frame[TF_X2],
-                                                        (udp_meta_t*)frame[TF_X0]);
+        {
+            udp_meta_t kmeta;
+            unsigned char kbuf[UDP_MAX_PAYLOAD];
+            udp_meta_t* user_meta = (udp_meta_t*)frame[TF_X0];
+            unsigned char* user_out = (unsigned char*)frame[TF_X1];
+            unsigned int cap = clamp_u32((unsigned int)frame[TF_X2], UDP_MAX_PAYLOAD);
+            int n = udp_recv_next(kbuf, cap, &kmeta);
+            if (n > 0){
+                if (process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0 ||
+                    process_copy_to_user(user_meta, &kmeta, sizeof(kmeta)) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+            }
+            frame[TF_X0] = (unsigned long)n;
             return frame_sp;
+        }
 
         case SYS_NET_UDP_SEND:
-            frame[TF_X0] = (unsigned long)udp_send((const unsigned char*)frame[TF_X0],
+        {
+            unsigned char dst_ip[4];
+            unsigned int len = (unsigned int)frame[TF_X4];
+            if (len > UDP_MAX_PAYLOAD){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned char kbuf[UDP_MAX_PAYLOAD];
+            if (process_copy_from_user(dst_ip, (const void*)frame[TF_X0], 4u) != 0 ||
+                process_copy_from_user(kbuf, (const void*)frame[TF_X3], len) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)udp_send(dst_ip,
                                                    (unsigned short)frame[TF_X1],
                                                    (unsigned short)frame[TF_X2],
-                                                   (const unsigned char*)frame[TF_X3],
-                                                   (unsigned int)frame[TF_X4]);
+                                                   kbuf,
+                                                   len);
             return frame_sp;
+        }
 
         case SYS_NET_TCP_HTTP_GET:
+        {
+            unsigned char dst_ip[4];
+            char host[USER_CSTR_MAX];
+            char path[USER_CSTR_MAX];
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X4], USER_IO_MAX);
+            unsigned char* user_out = (unsigned char*)frame[TF_X3];
+            unsigned char* kout = 0;
+
+            if (out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_copy_from_user(dst_ip, (const void*)frame[TF_X0], 4u) != 0 ||
+                copy_cstr_from_user_bound(host, sizeof(host), (const char*)frame[TF_X1]) != 0 ||
+                copy_cstr_from_user_bound(path, sizeof(path), (const char*)frame[TF_X2]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kout = (unsigned char*)kmalloc(out_cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             kernel_preempt_enter();
-            frame[TF_X0] = (unsigned long)tcp_http_get((const unsigned char*)frame[TF_X0],
-                                                       (const char*)frame[TF_X1],
-                                                       (const char*)frame[TF_X2],
-                                                       (unsigned char*)frame[TF_X3],
-                                                       (unsigned int)frame[TF_X4]);
+            int rc = tcp_http_get(dst_ip, host, path, kout, out_cap);
             kernel_preempt_exit();
+            if (rc > 0 && process_copy_to_user(user_out, kout, (unsigned long)rc) != 0){
+                rc = -1;
+            }
+            kfree(kout);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
+        }
 
         case SYS_SOCKET_CREATE: {
             int pid = process_current_pid();
@@ -338,32 +445,68 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_SOCKET_CONNECT: {
             int pid = process_current_pid();
+            qos_sockaddr_in_t addr;
+            if ((unsigned int)frame[TF_X2] < (unsigned int)sizeof(addr) ||
+                process_copy_from_user(&addr, (const void*)frame[TF_X1], sizeof(addr)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             frame[TF_X0] = (unsigned long)ksocket_connect(pid,
                                                           (int)frame[TF_X0],
-                                                          (const qos_sockaddr_in_t*)frame[TF_X1],
-                                                          (unsigned int)frame[TF_X2]);
+                                                          &addr,
+                                                          (unsigned int)sizeof(addr));
             return frame_sp;
         }
 
         case SYS_SOCKET_SEND: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)ksocket_send(pid,
-                                                       (int)frame[TF_X0],
-                                                       (const unsigned char*)frame[TF_X1],
-                                                       (unsigned int)frame[TF_X2],
-                                                       (unsigned int)frame[TF_X3]);
+            unsigned int len = clamp_u32((unsigned int)frame[TF_X2], USER_IO_MAX);
+            unsigned char* kbuf = 0;
+            if (len == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kbuf = (unsigned char*)kmalloc(len);
+            if (!kbuf || process_copy_from_user(kbuf, (const void*)frame[TF_X1], len) != 0){
+                if (kbuf){ kfree(kbuf); }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int rc = ksocket_send(pid,
+                                  (int)frame[TF_X0],
+                                  kbuf,
+                                  len,
+                                  (unsigned int)frame[TF_X3]);
+            kfree(kbuf);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
         case SYS_SOCKET_RECV: {
             int pid = process_current_pid();
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X2], USER_IO_MAX);
+            unsigned char* kout = 0;
+            if (out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kout = (unsigned char*)kmalloc(out_cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             kernel_preempt_enter();
-            frame[TF_X0] = (unsigned long)ksocket_recv(pid,
-                                                       (int)frame[TF_X0],
-                                                       (unsigned char*)frame[TF_X1],
-                                                       (unsigned int)frame[TF_X2],
-                                                       (unsigned int)frame[TF_X3]);
+            int rc = ksocket_recv(pid,
+                                  (int)frame[TF_X0],
+                                  kout,
+                                  out_cap,
+                                  (unsigned int)frame[TF_X3]);
             kernel_preempt_exit();
+            if (rc > 0 && process_copy_to_user((void*)frame[TF_X1], kout, (unsigned long)rc) != 0){
+                rc = -1;
+            }
+            kfree(kout);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
@@ -445,68 +588,240 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_TLS_GET_LOCAL_PUBLIC: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)ktls_get_local_public(pid,
-                                                                 (int)frame[TF_X0],
-                                                                 (unsigned char*)frame[TF_X1]);
+            unsigned char pub[32];
+            int rc = ktls_get_local_public(pid, (int)frame[TF_X0], pub);
+            if (rc == 0 && process_copy_to_user((void*)frame[TF_X1], pub, sizeof(pub)) != 0){
+                rc = -1;
+            }
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
         case SYS_TLS_SET_PEER_PUBLIC: {
             int pid = process_current_pid();
+            unsigned char pub[32];
+            if (process_copy_from_user(pub, (const void*)frame[TF_X1], sizeof(pub)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             frame[TF_X0] = (unsigned long)ktls_set_peer_public(pid,
                                                                 (int)frame[TF_X0],
-                                                                (const unsigned char*)frame[TF_X1]);
+                                                                pub);
             return frame_sp;
         }
 
         case SYS_TLS_BUILD_CLIENT_HELLO: {
             int pid = process_current_pid();
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X2], USER_IO_MAX);
             unsigned int out_len = 0;
+            unsigned char* kout = 0;
+            if (out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kout = (unsigned char*)kmalloc(out_cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             int rc = ktls_build_client_hello(pid,
                                              (int)frame[TF_X0],
-                                             (unsigned char*)frame[TF_X1],
-                                             (unsigned int)frame[TF_X2],
+                                             kout,
+                                             out_cap,
                                              &out_len);
+            if (rc == 0 && process_copy_to_user((void*)frame[TF_X1], kout, out_len) != 0){
+                rc = -1;
+            }
+            kfree(kout);
             frame[TF_X0] = (rc == 0) ? (unsigned long)out_len : (unsigned long)-1;
             return frame_sp;
         }
 
         case SYS_TLS_PROCESS_SERVER_HELLO: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)ktls_process_server_hello(pid,
-                                                                     (int)frame[TF_X0],
-                                                                     (const unsigned char*)frame[TF_X1],
-                                                                     (unsigned int)frame[TF_X2]);
+            unsigned int in_len = clamp_u32((unsigned int)frame[TF_X2], USER_IO_MAX);
+            unsigned char* kin = 0;
+            if (in_len == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kin = (unsigned char*)kmalloc(in_len);
+            if (!kin || process_copy_from_user(kin, (const void*)frame[TF_X1], in_len) != 0){
+                if (kin){ kfree(kin); }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int rc = ktls_process_server_hello(pid,
+                                               (int)frame[TF_X0],
+                                               kin,
+                                               in_len);
+            kfree(kin);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
         case SYS_TLS_PROCESS_CLIENT_HELLO_BUILD_SERVER_HELLO: {
             int pid = process_current_pid();
+            unsigned int in_len = clamp_u32((unsigned int)frame[TF_X2], USER_IO_MAX);
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X4], USER_IO_MAX);
+            unsigned char* kin = 0;
+            unsigned char* kout = 0;
             unsigned int out_len = 0;
+            if (in_len == 0u || out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kin = (unsigned char*)kmalloc(in_len);
+            kout = (unsigned char*)kmalloc(out_cap);
+            if (!kin || !kout || process_copy_from_user(kin, (const void*)frame[TF_X1], in_len) != 0){
+                if (kin){ kfree(kin); }
+                if (kout){ kfree(kout); }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             int rc = ktls_process_client_hello_build_server_hello(pid,
                                                                    (int)frame[TF_X0],
-                                                                   (const unsigned char*)frame[TF_X1],
-                                                                   (unsigned int)frame[TF_X2],
-                                                                   (unsigned char*)frame[TF_X3],
-                                                                   (unsigned int)frame[TF_X4],
+                                                                   kin,
+                                                                   in_len,
+                                                                   kout,
+                                                                   out_cap,
                                                                    &out_len);
+            if (rc == 0 && process_copy_to_user((void*)frame[TF_X3], kout, out_len) != 0){
+                rc = -1;
+            }
+            kfree(kin);
+            kfree(kout);
             frame[TF_X0] = (rc == 0) ? (unsigned long)out_len : (unsigned long)-1;
             return frame_sp;
         }
 
         case SYS_TLS_RECORD_ENCRYPT: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)ktls_record_encrypt(pid,
-                                                               (int)frame[TF_X0],
-                                                               (qos_tls_record_io_t*)frame[TF_X1]);
+            qos_tls_record_io_t user_io;
+            qos_tls_record_io_t kio;
+            unsigned char* kin = 0;
+            unsigned char* kout = 0;
+            int rc = -1;
+
+            if (process_copy_from_user(&user_io, (const void*)frame[TF_X1], sizeof(user_io)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (!user_io.out || user_io.out_cap == 0u || user_io.out_cap > USER_IO_MAX ||
+                user_io.in_len > USER_IO_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            if (user_io.in_len > 0u){
+                if (!user_io.in){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+                kin = (unsigned char*)kmalloc(user_io.in_len);
+                if (!kin || process_copy_from_user(kin, user_io.in, user_io.in_len) != 0){
+                    if (kin){
+                        kfree_secure(kin, user_io.in_len);
+                    }
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+            }
+
+            kout = (unsigned char*)kmalloc(user_io.out_cap);
+            if (!kout){
+                if (kin){
+                    kfree_secure(kin, user_io.in_len);
+                }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kio.inner_type = user_io.inner_type;
+            kio.in = kin;
+            kio.in_len = user_io.in_len;
+            kio.out = kout;
+            kio.out_cap = user_io.out_cap;
+            kio.out_len = 0u;
+
+            rc = ktls_record_encrypt(pid, (int)frame[TF_X0], &kio);
+            if (rc > 0){
+                if (kio.out_len > user_io.out_cap ||
+                    process_copy_to_user(user_io.out, kout, kio.out_len) != 0){
+                    rc = -1;
+                }
+            }
+
+            user_io.out_len = kio.out_len;
+            if (process_copy_to_user((void*)frame[TF_X1], &user_io, sizeof(user_io)) != 0){
+                rc = -1;
+            }
+
+            kfree_secure(kout, user_io.out_cap);
+            if (kin){
+                kfree_secure(kin, user_io.in_len);
+            }
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
         case SYS_TLS_RECORD_DECRYPT: {
             int pid = process_current_pid();
-            frame[TF_X0] = (unsigned long)ktls_record_decrypt(pid,
-                                                               (int)frame[TF_X0],
-                                                               (qos_tls_record_io_t*)frame[TF_X1]);
+            qos_tls_record_io_t user_io;
+            qos_tls_record_io_t kio;
+            unsigned char* kin = 0;
+            unsigned char* kout = 0;
+            int rc = -1;
+
+            if (process_copy_from_user(&user_io, (const void*)frame[TF_X1], sizeof(user_io)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (!user_io.in || !user_io.out ||
+                user_io.in_len == 0u || user_io.out_cap == 0u ||
+                user_io.in_len > USER_IO_MAX || user_io.out_cap > USER_IO_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kin = (unsigned char*)kmalloc(user_io.in_len);
+            kout = (unsigned char*)kmalloc(user_io.out_cap);
+            if (!kin || !kout ||
+                process_copy_from_user(kin, user_io.in, user_io.in_len) != 0){
+                if (kin){
+                    kfree_secure(kin, user_io.in_len);
+                }
+                if (kout){
+                    kfree_secure(kout, user_io.out_cap);
+                }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kio.inner_type = user_io.inner_type;
+            kio.in = kin;
+            kio.in_len = user_io.in_len;
+            kio.out = kout;
+            kio.out_cap = user_io.out_cap;
+            kio.out_len = 0u;
+
+            rc = ktls_record_decrypt(pid, (int)frame[TF_X0], &kio);
+            if (rc > 0){
+                if (kio.out_len > user_io.out_cap ||
+                    process_copy_to_user(user_io.out, kout, kio.out_len) != 0){
+                    rc = -1;
+                }
+            }
+
+            user_io.inner_type = kio.inner_type;
+            user_io.out_len = kio.out_len;
+            if (process_copy_to_user((void*)frame[TF_X1], &user_io, sizeof(user_io)) != 0){
+                rc = -1;
+            }
+
+            kfree_secure(kout, user_io.out_cap);
+            kfree_secure(kin, user_io.in_len);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 
@@ -524,54 +839,140 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_NET_GET_LOCAL_IP:
-            net_proto_get_local_ip((unsigned char*)frame[TF_X0]);
-            frame[TF_X0] = 0;
+        {
+            unsigned char ip[4];
+            net_proto_get_local_ip(ip);
+            frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0], ip, sizeof(ip)) == 0)
+                               ? 0ul
+                               : (unsigned long)-1;
             return frame_sp;
+        }
 
         case SYS_NET_SET_LOCAL_IP:
-            net_proto_set_local_ip((const unsigned char*)frame[TF_X0]);
+        {
+            unsigned char ip[4];
+            if (process_copy_from_user(ip, (const void*)frame[TF_X0], sizeof(ip)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            net_proto_set_local_ip(ip);
             frame[TF_X0] = 0;
             return frame_sp;
+        }
 
         case SYS_NET_GET_GATEWAY_IP:
-            net_proto_get_gateway_ip((unsigned char*)frame[TF_X0]);
-            frame[TF_X0] = 0;
+        {
+            unsigned char ip[4];
+            net_proto_get_gateway_ip(ip);
+            frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0], ip, sizeof(ip)) == 0)
+                               ? 0ul
+                               : (unsigned long)-1;
             return frame_sp;
+        }
 
         case SYS_NET_SET_GATEWAY_IP:
-            net_proto_set_gateway_ip((const unsigned char*)frame[TF_X0]);
+        {
+            unsigned char ip[4];
+            if (process_copy_from_user(ip, (const void*)frame[TF_X0], sizeof(ip)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            net_proto_set_gateway_ip(ip);
             frame[TF_X0] = 0;
             return frame_sp;
+        }
 
         case SYS_AUTH_IS_READY:
             frame[TF_X0] = (unsigned long)auth_is_ready();
             return frame_sp;
 
         case SYS_AUTH_GET_USERNAME:
+        {
+            char kname[AUTH_USERNAME_MAX + 1u];
+            unsigned int user_cap = (unsigned int)frame[TF_X1];
+            unsigned int copy_len = 0u;
+
             if (!auth_is_ready()){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-            frame[TF_X0] = (unsigned long)copy_cstr_out((char*)frame[TF_X0],
-                                                        (unsigned int)frame[TF_X1],
-                                                        auth_username());
+            if (user_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(kname); i++){
+                kname[i] = 0;
+            }
+            if (copy_cstr_out(kname, (unsigned int)sizeof(kname), auth_username()) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            copy_len = cstr_bytes_with_nul(kname, (unsigned int)sizeof(kname));
+            if (copy_len == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (user_cap < copy_len){
+                copy_len = user_cap;
+                kname[copy_len - 1u] = 0;
+            }
+            frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0], kname, copy_len) == 0)
+                               ? 0ul
+                               : (unsigned long)-1;
             return frame_sp;
+        }
 
         case SYS_AUTH_VERIFY_PASSWORD:
-            frame[TF_X0] = (unsigned long)auth_verify_password((const char*)frame[TF_X0],
-                                                               (const char*)frame[TF_X1]);
+        {
+            char username[AUTH_USERNAME_MAX + 1u];
+            char password[USER_PASS_MAX];
+            int auth_rc = -1;
+            if (copy_cstr_from_user_bound(username, sizeof(username), (const char*)frame[TF_X0]) != 0 ||
+                copy_cstr_from_user_bound(password, sizeof(password), (const char*)frame[TF_X1]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            auth_rc = auth_verify_password(username, password);
+            for (unsigned int i = 0; i < sizeof(password); i++){
+                password[i] = 0;
+            }
+            for (unsigned int i = 0; i < sizeof(username); i++){
+                username[i] = 0;
+            }
+            frame[TF_X0] = (unsigned long)auth_rc;
             return frame_sp;
+        }
 
         case SYS_WIFI_INIT:
             frame[TF_X0] = (unsigned long)cyw43_init();
             return frame_sp;
 
         case SYS_WIFI_LOAD_FW:
+        {
+            char fw_name[32];
+            char nv_name[32];
+            const char* fw_arg = 0;
+            const char* nv_arg = 0;
+
+            if ((const void*)frame[TF_X0]){
+                if (copy_cstr_from_user_bound(fw_name, sizeof(fw_name), (const char*)frame[TF_X0]) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+                fw_arg = fw_name;
+            }
+            if ((const void*)frame[TF_X1]){
+                if (copy_cstr_from_user_bound(nv_name, sizeof(nv_name), (const char*)frame[TF_X1]) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+                nv_arg = nv_name;
+            }
             kernel_preempt_enter();
-            frame[TF_X0] = (unsigned long)cyw43_upload_firmware_from_fat((const char*)frame[TF_X0],
-                                                                          (const char*)frame[TF_X1]);
+            frame[TF_X0] = (unsigned long)cyw43_upload_firmware_from_fat(fw_arg, nv_arg);
             kernel_preempt_exit();
             return frame_sp;
+        }
 
         case SYS_WIFI_UP:
             frame[TF_X0] = (unsigned long)cyw43_ioctl_up();
@@ -582,18 +983,67 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_WIFI_SCAN: {
+            cyw43_scan_result_t* user_out = (cyw43_scan_result_t*)frame[TF_X0];
+            unsigned int cap = clamp_u32((unsigned int)frame[TF_X1], USER_WIFI_SCAN_MAX);
+            cyw43_scan_result_t* kout = 0;
             unsigned int count = 0;
-            int rc = cyw43_ioctl_scan((cyw43_scan_result_t*)frame[TF_X0],
-                                      (unsigned int)frame[TF_X1],
-                                      &count);
+            int rc = -1;
+
+            if (!user_out || cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kout = (cyw43_scan_result_t*)kmalloc((unsigned long)sizeof(cyw43_scan_result_t) * cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            rc = cyw43_ioctl_scan(kout, cap, &count);
+            if (rc == 0){
+                if (count > cap){
+                    count = cap;
+                }
+                if (count > 0u &&
+                    process_copy_to_user(user_out,
+                                         kout,
+                                         (unsigned long)sizeof(cyw43_scan_result_t) * count) != 0){
+                    rc = -1;
+                }
+            }
+            kfree_secure(kout, (unsigned long)sizeof(cyw43_scan_result_t) * cap);
             frame[TF_X0] = (rc == 0) ? (unsigned long)count : (unsigned long)-1;
             return frame_sp;
         }
 
         case SYS_WIFI_JOIN:
-            frame[TF_X0] = (unsigned long)cyw43_ioctl_join((const char*)frame[TF_X0],
-                                                           (const char*)frame[TF_X1]);
+        {
+            char ssid[33];
+            char password[USER_PASS_MAX];
+            const char* pass_arg = 0;
+            int join_rc = -1;
+            if (copy_cstr_from_user_bound(ssid, sizeof(ssid), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if ((const void*)frame[TF_X1]){
+                if (copy_cstr_from_user_bound(password, sizeof(password), (const char*)frame[TF_X1]) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+                pass_arg = password;
+            }
+            join_rc = cyw43_ioctl_join(ssid, pass_arg);
+            for (unsigned int i = 0; i < sizeof(password); i++){
+                password[i] = 0;
+            }
+            for (unsigned int i = 0; i < sizeof(ssid); i++){
+                ssid[i] = 0;
+            }
+            frame[TF_X0] = (unsigned long)join_rc;
             return frame_sp;
+        }
 
         case SYS_WIFI_DUMP_STATUS:
             cyw43_dump_status();
@@ -601,9 +1051,37 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_WIFI_GET_VERSION:
-            frame[TF_X0] = (unsigned long)cyw43_get_firmware_version((char*)frame[TF_X0],
-                                                                      (unsigned int)frame[TF_X1]);
+        {
+            char* user_out = (char*)frame[TF_X0];
+            unsigned int user_cap = clamp_u32((unsigned int)frame[TF_X1], USER_CSTR_MAX);
+            char* kout = 0;
+            int rc = -1;
+
+            if (!user_out || user_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kout = (char*)kmalloc(user_cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            rc = cyw43_get_firmware_version(kout, user_cap);
+            if (rc == 0){
+                unsigned int copy_len = cstr_bytes_with_nul(kout, user_cap);
+                if (copy_len == 0u){
+                    copy_len = 1u;
+                }
+                if (process_copy_to_user(user_out, kout, copy_len) != 0){
+                    rc = -1;
+                }
+            }
+            kfree_secure(kout, user_cap);
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
+        }
 
         default:
             frame[TF_X0] = (unsigned long)-1;
