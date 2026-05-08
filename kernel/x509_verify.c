@@ -25,6 +25,7 @@
 #define X509_REVOKE_BIN_MAX (256u * 1024u)
 #define X509_REVOKE_SIG_MAX 128u
 #define X509_REVOKE_MAX_ENTRIES 2048u
+#define X509_NC_DNS_MAX 16u
 
 #define X509_KU_DIGITAL_SIGNATURE (1u << 0)
 #define X509_KU_KEY_CERT_SIGN     (1u << 5)
@@ -77,6 +78,15 @@ typedef struct {
     unsigned int path_len_constraint;
     int key_usage_present;
     unsigned int key_usage_bits;
+    int name_constraints_present;
+    int name_constraints_critical;
+    int name_constraints_parse_error;
+    unsigned int nc_dns_permit_count;
+    const unsigned char* nc_dns_permit[X509_NC_DNS_MAX];
+    unsigned int nc_dns_permit_len[X509_NC_DNS_MAX];
+    unsigned int nc_dns_exclude_count;
+    const unsigned char* nc_dns_exclude[X509_NC_DNS_MAX];
+    unsigned int nc_dns_exclude_len[X509_NC_DNS_MAX];
     int eku_present;
     int eku_server_auth;
     int eku_any;
@@ -129,6 +139,8 @@ static int g_revoke_cache_state = 0; // 0=uninitialized, 1=ready, 2=missing, -1=
 static int g_require_revocation_list = 0;
 static long long g_validation_time_unix = 0;
 static int g_validation_time_set = 0;
+static int g_validation_time_source = 0; // 0=none, 1=build-fallback, 2=external
+static int g_require_explicit_validation_time = 0;
 
 static unsigned int get_u32_le(const unsigned char* p){
     return (unsigned int)p[0] |
@@ -313,7 +325,9 @@ static void seed_validation_time_from_build_if_unset(void){
     mm = ((t[3] - '0') * 10) + (t[4] - '0');
     ss = ((t[6] - '0') * 10) + (t[7] - '0');
     if (ymdhms_to_unix(year, mon, day, hh, mm, ss, &unix_time) == 0){
-        x509_set_validation_time_unix(unix_time);
+        g_validation_time_unix = unix_time;
+        g_validation_time_set = 1;
+        g_validation_time_source = 1;
     }
 }
 
@@ -342,6 +356,64 @@ static int trim_trailing_dot_len(const char* s, unsigned int len){
         len--;
     }
     return (int)len;
+}
+
+static int trim_trailing_dot_u8_len(const unsigned char* s, unsigned int len){
+    while (len > 0u && s[len - 1u] == '.'){
+        len--;
+    }
+    return (int)len;
+}
+
+static int ascii_equal_nocase_u8(const char* a, unsigned int a_len,
+                                 const unsigned char* b, unsigned int b_len){
+    if (!a || !b || a_len != b_len){
+        return 0;
+    }
+    for (unsigned int i = 0; i < a_len; i++){
+        if (ascii_lower((unsigned char)a[i]) != ascii_lower(b[i])){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// RFC 5280 label-by-label suffix matching for dNSName subtrees.
+static int dns_subtree_match(const char* host, unsigned int host_len,
+                             const unsigned char* subtree, unsigned int subtree_len){
+    if (!host || !subtree || host_len == 0u || subtree_len == 0u){
+        return 0;
+    }
+    host_len = (unsigned int)trim_trailing_dot_len(host, host_len);
+    subtree_len = (unsigned int)trim_trailing_dot_u8_len(subtree, subtree_len);
+    if (host_len == 0u || subtree_len == 0u){
+        return 0;
+    }
+
+    if (subtree[0] == '.'){
+        // .example.com => subdomains only, not exact example.com
+        subtree++;
+        subtree_len--;
+        if (subtree_len == 0u || host_len <= subtree_len){
+            return 0;
+        }
+        if (!ascii_equal_nocase_u8(&host[host_len - subtree_len], subtree_len, subtree, subtree_len)){
+            return 0;
+        }
+        return host[host_len - subtree_len - 1u] == '.';
+    }
+
+    // host.example.com => exact match OR any additional labels on the left.
+    if (host_len == subtree_len){
+        return ascii_equal_nocase_u8(host, host_len, subtree, subtree_len);
+    }
+    if (host_len > subtree_len){
+        if (!ascii_equal_nocase_u8(&host[host_len - subtree_len], subtree_len, subtree, subtree_len)){
+            return 0;
+        }
+        return host[host_len - subtree_len - 1u] == '.';
+    }
+    return 0;
 }
 
 static int hostname_pattern_match(const char* host, unsigned int host_len,
@@ -937,6 +1009,125 @@ static int parse_extended_key_usage(const unsigned char* ext_value_der,
     return 0;
 }
 
+static int parse_name_constraints_dns_subtrees(const unsigned char* payload,
+                                               unsigned int payload_len,
+                                               const unsigned char** out_names,
+                                               unsigned int* out_lens,
+                                               unsigned int* out_count){
+    unsigned int off = 0u;
+    const unsigned char* seq_bytes = payload;
+    unsigned int seq_len = payload_len;
+    asn1_tlv_t maybe_seq;
+    if (!payload || payload_len == 0u || !out_names || !out_lens || !out_count){
+        return -1;
+    }
+
+    // Accept either explicit SEQUENCE wrapper or raw SEQUENCE content.
+    if (asn1_parse_tlv(payload, payload_len, &maybe_seq) == 0 &&
+        maybe_seq.total_len == payload_len && maybe_seq.tag == 0x30u){
+        seq_bytes = maybe_seq.val;
+        seq_len = maybe_seq.val_len;
+    }
+
+    while (off < seq_len){
+        asn1_tlv_t subtree;
+        asn1_tlv_t base;
+        unsigned int soff = 0u;
+        if (asn1_parse_tlv(seq_bytes + off, seq_len - off, &subtree) != 0 || subtree.tag != 0x30u){
+            return -1;
+        }
+        off += subtree.total_len;
+        if (asn1_parse_tlv(subtree.val + soff, subtree.val_len - soff, &base) != 0){
+            return -1;
+        }
+        soff += base.total_len;
+
+        // RFC5280 profile: minimum must be zero, maximum must be absent.
+        while (soff < subtree.val_len){
+            asn1_tlv_t opt;
+            if (asn1_parse_tlv(subtree.val + soff, subtree.val_len - soff, &opt) != 0){
+                return -1;
+            }
+            if (opt.tag == 0xA0u){
+                asn1_tlv_t minv;
+                const unsigned char* p = 0;
+                unsigned int n = 0u;
+                unsigned int minv_int = 0u;
+                if (asn1_parse_tlv(opt.val, opt.val_len, &minv) != 0 || minv.tag != 0x02u){
+                    return -1;
+                }
+                if (asn1_integer_positive_bytes(&minv, &p, &n) != 0 || n > 4u){
+                    return -1;
+                }
+                for (unsigned int i = 0; i < n; i++){
+                    minv_int = (minv_int << 8) | p[i];
+                }
+                if (minv_int != 0u){
+                    return -1;
+                }
+            } else if (opt.tag == 0xA1u){
+                return -1; // maximum MUST be absent in profile
+            }
+            soff += opt.total_len;
+        }
+
+        // dNSName [2] IA5String
+        if (base.tag == 0x82u && base.val_len > 0u){
+            if (*out_count >= X509_NC_DNS_MAX){
+                return -1;
+            }
+            out_names[*out_count] = base.val;
+            out_lens[*out_count] = base.val_len;
+            (*out_count)++;
+        }
+    }
+    return 0;
+}
+
+static int parse_name_constraints_ext(const unsigned char* ext_value_der,
+                                      unsigned int ext_value_der_len,
+                                      parsed_cert_t* out){
+    asn1_tlv_t nc;
+    unsigned int off = 0u;
+    int saw_any = 0;
+    if (!ext_value_der || ext_value_der_len == 0u || !out){
+        return -1;
+    }
+    if (asn1_parse_tlv(ext_value_der, ext_value_der_len, &nc) != 0 || nc.tag != 0x30u){
+        return -1;
+    }
+    while (off < nc.val_len){
+        asn1_tlv_t fld;
+        if (asn1_parse_tlv(nc.val + off, nc.val_len - off, &fld) != 0){
+            return -1;
+        }
+        if (fld.tag == 0xA0u){
+            saw_any = 1;
+            if (parse_name_constraints_dns_subtrees(fld.val, fld.val_len,
+                                                    out->nc_dns_permit,
+                                                    out->nc_dns_permit_len,
+                                                    &out->nc_dns_permit_count) != 0){
+                return -1;
+            }
+        } else if (fld.tag == 0xA1u){
+            saw_any = 1;
+            if (parse_name_constraints_dns_subtrees(fld.val, fld.val_len,
+                                                    out->nc_dns_exclude,
+                                                    out->nc_dns_exclude_len,
+                                                    &out->nc_dns_exclude_count) != 0){
+                return -1;
+            }
+        } else{
+            return -1;
+        }
+        off += fld.total_len;
+    }
+    if (!saw_any){
+        return -1;
+    }
+    return 0;
+}
+
 static int parse_cert_tbs(const unsigned char* tbs_tlv,
                           unsigned int tbs_tlv_len,
                           const char* host,
@@ -946,6 +1137,7 @@ static int parse_cert_tbs(const unsigned char* tbs_tlv,
     static const unsigned char OID_SAN[] = { 0x55,0x1D,0x11 };
     static const unsigned char OID_BASIC_CONSTRAINTS[] = { 0x55,0x1D,0x13 };
     static const unsigned char OID_KEY_USAGE[] = { 0x55,0x1D,0x0F };
+    static const unsigned char OID_NAME_CONSTRAINTS[] = { 0x55,0x1D,0x1E };
     static const unsigned char OID_EKU[] = { 0x55,0x1D,0x25 };
     static const unsigned char OID_SUBJECT_KEY_ID[] = { 0x55,0x1D,0x0E };
     static const unsigned char OID_AUTHORITY_KEY_ID[] = { 0x55,0x1D,0x23 };
@@ -1111,6 +1303,12 @@ static int parse_cert_tbs(const unsigned char* tbs_tlv,
                 if (san_match){
                     match = 1;
                 }
+            } else if (oid_equal(&oid, OID_NAME_CONSTRAINTS, sizeof(OID_NAME_CONSTRAINTS))){
+                out->name_constraints_present = 1;
+                out->name_constraints_critical = critical ? 1 : 0;
+                if (parse_name_constraints_ext(ext_value.val, ext_value.val_len, out) != 0){
+                    out->name_constraints_parse_error = 1;
+                }
             } else if (oid_equal(&oid, OID_BASIC_CONSTRAINTS, sizeof(OID_BASIC_CONSTRAINTS))){
                 int is_ca = 0;
                 int has_plen = 0;
@@ -1202,6 +1400,17 @@ static int parse_cert_identity(const unsigned char* der,
     out->path_len_constraint = 0u;
     out->key_usage_present = 0;
     out->key_usage_bits = 0u;
+    out->name_constraints_present = 0;
+    out->name_constraints_critical = 0;
+    out->name_constraints_parse_error = 0;
+    out->nc_dns_permit_count = 0u;
+    out->nc_dns_exclude_count = 0u;
+    for (unsigned int i = 0; i < X509_NC_DNS_MAX; i++){
+        out->nc_dns_permit[i] = 0;
+        out->nc_dns_permit_len[i] = 0u;
+        out->nc_dns_exclude[i] = 0;
+        out->nc_dns_exclude_len[i] = 0u;
+    }
     out->eku_present = 0;
     out->eku_server_auth = 0;
     out->eku_any = 0;
@@ -1839,6 +2048,42 @@ static int cert_is_revoked(const unsigned char issuer_hash[32],
     return 0;
 }
 
+static int leaf_host_allowed_by_name_constraints(const parsed_cert_t* ca,
+                                                 const char* host,
+                                                 unsigned int host_len){
+    int permit_ok = 0;
+    if (!ca || !host || host_len == 0u){
+        return -1;
+    }
+    if (!ca->name_constraints_present){
+        return 0;
+    }
+    if (ca->name_constraints_parse_error){
+        return -1;
+    }
+
+    // Excluded always wins.
+    for (unsigned int i = 0; i < ca->nc_dns_exclude_count; i++){
+        if (dns_subtree_match(host, host_len, ca->nc_dns_exclude[i], ca->nc_dns_exclude_len[i])){
+            return -1;
+        }
+    }
+
+    // If permitted set exists, leaf must match at least one.
+    if (ca->nc_dns_permit_count > 0u){
+        for (unsigned int i = 0; i < ca->nc_dns_permit_count; i++){
+            if (dns_subtree_match(host, host_len, ca->nc_dns_permit[i], ca->nc_dns_permit_len[i])){
+                permit_ok = 1;
+                break;
+            }
+        }
+        if (!permit_ok){
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int cert_time_valid_now(const parsed_cert_t* cert, long long now_unix){
     if (!cert || !cert->validity_present){
         return -1;
@@ -1977,11 +2222,21 @@ void x509_set_validation_time_unix(long long unix_time){
     }
     g_validation_time_unix = unix_time;
     g_validation_time_set = 1;
+    g_validation_time_source = 2;
 }
 
 void x509_clear_validation_time(void){
     g_validation_time_unix = 0;
     g_validation_time_set = 0;
+    g_validation_time_source = 0;
+}
+
+void x509_require_explicit_validation_time(int required){
+    g_require_explicit_validation_time = required ? 1 : 0;
+}
+
+void x509_require_revocation_list(int required){
+    g_require_revocation_list = required ? 1 : 0;
 }
 
 int x509_verify_tls13_certificate(const char* host,
@@ -2033,6 +2288,10 @@ int x509_verify_tls13_certificate(const char* host,
     seed_validation_time_from_build_if_unset();
     if (!g_validation_time_set){
         uart_puts("X509: validation time not set.\n");
+        return -1;
+    }
+    if (g_require_explicit_validation_time && g_validation_time_source != 2){
+        uart_puts("X509: explicit validation time required.\n");
         return -1;
     }
     now_unix = g_validation_time_unix;
@@ -2213,6 +2472,10 @@ int x509_verify_tls13_certificate(const char* host,
     for (unsigned int i = 1u; i < path_len; i++){
         const parsed_cert_t* ca = &certs[path_idx[i]];
         unsigned int ca_below = i - 1u; // number of CA certs between leaf and this CA
+        if (leaf_host_allowed_by_name_constraints(ca, host, host_len) != 0){
+            uart_puts("X509: nameConstraints reject leaf host.\n");
+            return -1;
+        }
         if (ca->path_len_present && ca_below > ca->path_len_constraint){
             uart_puts("X509: pathLen constraint violated (chain cert).\n");
             return -1;
