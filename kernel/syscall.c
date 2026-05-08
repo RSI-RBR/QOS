@@ -83,8 +83,9 @@ static void syscall_poll_background_io(void){
     if ((long)(now - next_poll_tick) < 0){
         return;
     }
-    // Keep interactive shell and remote-login latency low.
-    next_poll_tick = now + 2u;
+    // This runs from the userspace shell idle loop. Keep it responsive, but
+    // do not poll USB/network so aggressively that graphics tasks lose time.
+    next_poll_tick = now + 10u;
     (void)net_poll();
     remote_login_poll();
 }

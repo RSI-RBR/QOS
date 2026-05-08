@@ -2548,11 +2548,12 @@ void usb_host_poll(void){
     if ((long)(now - g_kbd_next_poll_tick) < 0){
         return;
     }
-    g_kbd_next_poll_tick = now + 1u;
+    // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
+    // transactions, so doing this every shell idle tick steals visible time
+    // from graphics-heavy user programs. 8ms is still responsive for typing
+    // while avoiding a permanent USB tax on scheduled workloads.
+    g_kbd_next_poll_tick = now + 8u;
     (void)usb_hid_poll_once();
-    if (g_kbd.q_count == 0u){
-        (void)usb_hid_poll_once();
-    }
 }
 
 int usb_host_try_getc(char* out){
