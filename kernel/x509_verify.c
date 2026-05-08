@@ -16,9 +16,11 @@
 #define X509_CA_LABEL "CA_ROOTS_PEM"
 #define X509_CA_LABEL_LEN 12u
 
-#define X509_CA_PEM_FAT "CA_ROOTS PEM"
-#define X509_CA_SIG_FAT "CA_ROOTS SIG"
-#define X509_CA_PQS_FAT "CA_ROOTS PQS"
+// FAT directory entries are raw 8.3 bytes with no dot. CA_ROOTS is already
+// 8 chars, so the extension begins immediately at byte 8.
+#define X509_CA_PEM_FAT "CA_ROOTSPEM"
+#define X509_CA_SIG_FAT "CA_ROOTSSIG"
+#define X509_CA_PQS_FAT "CA_ROOTSPQS"
 
 typedef struct {
     unsigned char tag;
@@ -810,6 +812,7 @@ static int verify_ca_bundle_ed25519(const unsigned char* pem_bytes,
 
     sig_n = fat32_read_file(X509_CA_SIG_FAT, g_ca_sig_buf, (int)sizeof(g_ca_sig_buf));
     if (sig_n != 64){
+        uart_puts("X509: CA_ROOTS.SIG read failed or wrong size.\n");
         return -1;
     }
 
@@ -851,6 +854,7 @@ static int verify_ca_bundle_pq_optional(const unsigned char* pem_bytes,
 
     n = fat32_read_file(X509_CA_PQS_FAT, g_ca_pqs_buf, (int)sizeof(g_ca_pqs_buf));
     if (n <= 0){
+        uart_puts("X509: CA_ROOTS.PQS not present; using Ed25519 CA bundle signature.\n");
         return 0; // optional
     }
     if (n < (int)QOS_PQ_SIG_HEADER_BYTES){
@@ -913,10 +917,12 @@ static int ensure_ca_anchors_loaded(void){
     }
     n = fat32_read_file(X509_CA_PEM_FAT, g_ca_pem_buf, X509_CA_PEM_MAX);
     if (n <= 0){
+        uart_puts("X509: CA_ROOTS.PEM read failed.\n");
         g_ca_cache_state = -1;
         return -1;
     }
     if (n >= (int)X509_CA_PEM_MAX){
+        uart_puts("X509: CA_ROOTS.PEM exceeds verifier buffer.\n");
         g_ca_cache_state = -1;
         return -1;
     }
@@ -933,9 +939,13 @@ static int ensure_ca_anchors_loaded(void){
         return -1;
     }
     if (parse_ca_bundle_anchors(g_ca_pem_buf, (unsigned int)n) != 0){
+        uart_puts("X509: CA_ROOTS.PEM parsed no anchors.\n");
         g_ca_cache_state = -1;
         return -1;
     }
+    uart_puts("X509: CA roots loaded anchors=");
+    uart_putdec((unsigned long)g_ca_anchor_count);
+    uart_puts("\n");
     g_ca_cache_state = 1;
     return 0;
 }
