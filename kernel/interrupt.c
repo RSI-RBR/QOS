@@ -116,6 +116,7 @@ int kernel_preempt_enabled(void){
 
 void* irq_handler(void* irq_frame_sp){
     unsigned int core = cpu_get_id();
+    mmu_sync_local_tlb();
     unsigned int local_src = CORE_IRQ_SOURCE(core);
     if (local_src & CORE_CNTPNSIRQ_PENDING){
         timer_clear_interrupt();

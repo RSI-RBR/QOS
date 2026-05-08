@@ -11,6 +11,7 @@ void mmu_map_user_code_region(unsigned long pa_start, unsigned long size);
 void mmu_map_user_data_region(unsigned long pa_start, unsigned long size);
 void mmu_map_kernel_private_region(unsigned long pa_start, unsigned long size);
 void mmu_tlb_shootdown_all(void);
+void mmu_sync_local_tlb(void);
 void mmu_handle_ipi(void);
 void mmu_process_spaces_reset(void);
 int mmu_process_space_create(int pid,

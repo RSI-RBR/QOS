@@ -35,6 +35,8 @@
 #define MMU_MAX_PROCESS_SPACES 8U
 #define MMU_PAGE_SIZE       4096UL
 #define MMU_SLOT_SIZE       (L3_ENTRIES * MMU_PAGE_SIZE)
+#define MMU_TLB_WAIT_RETRY_INTERVAL 1024U
+#define MMU_TLB_WAIT_MAX_SPINS 2000000U
 
 typedef struct {
     unsigned long attridx;
@@ -86,6 +88,49 @@ static void mmu_set_ttbr0(unsigned long table_base){
     asm volatile("isb");
 }
 
+static int mmu_epoch_acked_by_online(unsigned int online, unsigned int epoch){
+    asm volatile("dmb ish" : : : "memory");
+    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
+        if ((online & (1u << c)) == 0u){
+            continue;
+        }
+        if (g_tlb_ack_epoch[c] != epoch){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void mmu_poke_unacked_cores(unsigned int online, unsigned int epoch, unsigned int local_core){
+    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
+        if (c == local_core){
+            continue;
+        }
+        if ((online & (1u << c)) == 0u){
+            continue;
+        }
+        if (g_tlb_ack_epoch[c] != epoch){
+            smp_send_ipi(c);
+        }
+    }
+    // Kick cores waiting in WFE loops so delayed ack is observed quickly.
+    asm volatile("sev" : : : "memory");
+}
+
+void mmu_sync_local_tlb(void){
+    unsigned int core = mmu_local_core_id();
+    unsigned int epoch = g_tlb_epoch;
+    asm volatile("dmb ish" : : : "memory");
+    if (g_tlb_ack_epoch[core] == epoch){
+        return;
+    }
+
+    mmu_local_tlbi_all();
+    g_tlb_ack_epoch[core] = epoch;
+    asm volatile("dmb ishst" : : : "memory");
+    asm volatile("sev" : : : "memory");
+}
+
 static void mmu_tlb_shootdown_all_locked(void){
     unsigned int core = mmu_local_core_id();
     unsigned int online = smp_online_mask();
@@ -98,29 +143,29 @@ static void mmu_tlb_shootdown_all_locked(void){
         epoch = 1u;
     }
     g_tlb_epoch = epoch;
-    g_tlb_ack_epoch[core] = epoch;
     asm volatile("dmb ishst" : : : "memory");
 
     // Hardware broadcast invalidation plus explicit IPI poke so remote cores
     // observe epoch changes promptly even while idle in WFI.
     mmu_local_tlbi_all();
-    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
-        if (c == core){
-            continue;
-        }
-        if ((online & (1u << c)) != 0u){
-            smp_send_ipi(c);
-        }
-    }
+    g_tlb_ack_epoch[core] = epoch;
+    asm volatile("dmb ishst" : : : "memory");
+    mmu_poke_unacked_cores(online, epoch, core);
 
-    // Wait for every online core to acknowledge this epoch.
-    for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
-        if ((online & (1u << c)) == 0u){
-            continue;
+    // Wait for every online core to acknowledge this epoch. Re-poke stragglers
+    // so shootdown completes even if a mailbox edge was missed.
+    unsigned int spins = 0u;
+    while (!mmu_epoch_acked_by_online(online, epoch)){
+        if ((spins & (MMU_TLB_WAIT_RETRY_INTERVAL - 1u)) == 0u){
+            mmu_poke_unacked_cores(online, epoch, core);
         }
-        while (g_tlb_ack_epoch[c] != epoch){
-            asm volatile("nop");
+        if (spins++ >= MMU_TLB_WAIT_MAX_SPINS){
+            // Fail closed: stale remote TLB state is a security boundary risk.
+            while (1){
+                asm volatile("wfi");
+            }
         }
+        asm volatile("wfe");
     }
     asm volatile("dmb ish" : : : "memory");
 }
@@ -345,6 +390,7 @@ void mmu_enable_secondary(void){
     mmu_program_core_registers();
     mmu_enable_current_core();
     g_tlb_ack_epoch[mmu_local_core_id()] = g_tlb_epoch;
+    asm volatile("dmb ishst" : : : "memory");
 }
 
 void mmu_process_spaces_reset(void){
@@ -356,7 +402,7 @@ void mmu_process_spaces_reset(void){
         core_active_pid[core] = -1;
     }
     mmu_set_ttbr0((unsigned long)l1_table);
-    mmu_local_tlbi_self();
+    mmu_tlb_shootdown_all_locked();
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
@@ -483,6 +529,10 @@ void mmu_process_space_destroy(int pid){
 }
 
 void mmu_switch_to_pid(int pid){
+    // Defensive catch-up for cases where a core had IRQs masked during a
+    // remote shootdown request.
+    mmu_sync_local_tlb();
+
     unsigned long* table = l1_table;
     int effective_pid = -1;
     if (pid >= 0 && (unsigned int)pid < MMU_MAX_PROCESS_SPACES && proc_space_active[pid]){
@@ -557,14 +607,5 @@ void mmu_tlb_shootdown_all(void){
 }
 
 void mmu_handle_ipi(void){
-    unsigned int core = mmu_local_core_id();
-    unsigned int epoch = g_tlb_epoch;
-    if (g_tlb_ack_epoch[core] == epoch){
-        return;
-    }
-
-    // Respond to remote shootdown request.
-    mmu_local_tlbi_all();
-    g_tlb_ack_epoch[core] = epoch;
-    asm volatile("dmb ishst" : : : "memory");
+    mmu_sync_local_tlb();
 }
