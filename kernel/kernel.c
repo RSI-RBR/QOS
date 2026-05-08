@@ -62,6 +62,8 @@ static int create_boot_shell_process(void){
         int pid = process_create_loaded(shell_prog);
         if (pid >= 0){
             (void)terminal_attach_pid(pid, 0);
+            (void)terminal_set_foreground_pid(0, pid);
+            (void)console_set_owner(pid, pid);
             klog_puts("User shell started as PID ");
             klog_putdec((unsigned long)pid);
             klog_puts("\n");
