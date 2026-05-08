@@ -10,6 +10,9 @@
 #define TLS_SIG_RSA_PSS_RSAE_SHA256 0x0804u
 #define TLS_SIG_RSA_PSS_RSAE_SHA384 0x0805u
 #define TLS_SIG_RSA_PSS_RSAE_SHA512 0x0806u
+#define TLS_SIG_RSA_PSS_PSS_SHA256 0x0809u
+#define TLS_SIG_RSA_PSS_PSS_SHA384 0x080Au
+#define TLS_SIG_RSA_PSS_PSS_SHA512 0x080Bu
 
 static void mem_zero(unsigned char* p, unsigned int n) {
     for (unsigned int i = 0; i < n; ++i) {
@@ -206,17 +209,23 @@ static int hash_bytes_for_sig_alg(unsigned short sig_alg,
                                   unsigned int msg_len,
                                   unsigned char* digest,
                                   unsigned int* digest_len) {
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA256 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA256) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA256 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA256 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA256) {
         sha256_digest(msg, msg_len, digest);
         *digest_len = 32;
         return 0;
     }
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA384 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA384) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA384 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA384 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA384) {
         sha384_digest(msg, msg_len, digest);
         *digest_len = 48;
         return 0;
     }
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA512 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA512 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA512) {
         sha512(msg, (size_t)msg_len, digest);
         *digest_len = 64;
         return 0;
@@ -234,17 +243,23 @@ static int hash_for_sig_alg(unsigned short sig_alg,
     if (hash_bytes_for_sig_alg(sig_alg, msg, msg_len, digest, digest_len) != 0) {
         return -1;
     }
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA256 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA256) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA256 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA256 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA256) {
         if (di_prefix) *di_prefix = sha256_digestinfo_prefix;
         if (di_prefix_len) *di_prefix_len = sizeof(sha256_digestinfo_prefix);
         return 0;
     }
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA384 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA384) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA384 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA384 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA384) {
         if (di_prefix) *di_prefix = sha384_digestinfo_prefix;
         if (di_prefix_len) *di_prefix_len = sizeof(sha384_digestinfo_prefix);
         return 0;
     }
-    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA512 || sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512) {
+    if (sig_alg == TLS_SIG_RSA_PKCS1_SHA512 ||
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA512) {
         if (di_prefix) *di_prefix = sha512_digestinfo_prefix;
         if (di_prefix_len) *di_prefix_len = sizeof(sha512_digestinfo_prefix);
         return 0;
@@ -422,7 +437,10 @@ int rsa_verify_x509_signature(const unsigned char* modulus,
 
     if (sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA256 ||
         sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA384 ||
-        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512) {
+        sig_alg == TLS_SIG_RSA_PSS_RSAE_SHA512 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA256 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA384 ||
+        sig_alg == TLS_SIG_RSA_PSS_PSS_SHA512) {
         return verify_pss(em, modulus_len, bn_bitlen(modulus, modulus_len), sig_alg, digest, digest_len);
     }
 

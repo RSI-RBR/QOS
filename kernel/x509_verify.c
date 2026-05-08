@@ -272,6 +272,7 @@ static int parse_rsa_spki(const unsigned char* spki_tlv,
                           unsigned char* out_e,
                           unsigned int* out_e_len){
     static const unsigned char OID_RSA_ENCRYPTION[] = { 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x01 };
+    static const unsigned char OID_RSA_PSS[] = { 0x2A,0x86,0x48,0x86,0xF7,0x0D,0x01,0x01,0x0A };
     asn1_tlv_t spki;
     asn1_tlv_t algid;
     asn1_tlv_t oid;
@@ -299,7 +300,9 @@ static int parse_rsa_spki(const unsigned char* spki_tlv,
         return -1;
     }
     off += algid.total_len;
-    if (asn1_parse_tlv(algid.val, algid.val_len, &oid) != 0 || !oid_equal(&oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION))){
+    if (asn1_parse_tlv(algid.val, algid.val_len, &oid) != 0 ||
+        (!oid_equal(&oid, OID_RSA_ENCRYPTION, sizeof(OID_RSA_ENCRYPTION)) &&
+         !oid_equal(&oid, OID_RSA_PSS, sizeof(OID_RSA_PSS)))){
         return -1;
     }
     if (asn1_parse_tlv(spki.val + off, spki.val_len - off, &pubbits) != 0 ||

@@ -600,11 +600,14 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms
     {
-        unsigned short sigs[6];
+        unsigned short sigs[9];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
         sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
+        sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
+        sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
+        sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
@@ -623,11 +626,14 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms_cert
     {
-        unsigned short sigs[6];
+        unsigned short sigs[9];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
         sigs[scount++] = 0x0806u; // rsa_pss_rsae_sha512
+        sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
+        sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
+        sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
@@ -923,6 +929,9 @@ static int tls13_sigalg_is_supported(unsigned short alg){
         case 0x0804u: // rsa_pss_rsae_sha256
         case 0x0805u: // rsa_pss_rsae_sha384
         case 0x0806u: // rsa_pss_rsae_sha512
+        case 0x0809u: // rsa_pss_pss_sha256
+        case 0x080Au: // rsa_pss_pss_sha384
+        case 0x080Bu: // rsa_pss_pss_sha512
         case 0x0401u: // rsa_pkcs1_sha256
         case 0x0501u: // rsa_pkcs1_sha384
         case 0x0601u: // rsa_pkcs1_sha512
@@ -1137,6 +1146,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
             g_tcp_stats.http_fail++;
             if (rec_len >= 2u){
                 unsigned int alert_desc = rec_payload[1];
+                uart_puts("HTTPS TLS alert desc=");
+                uart_putdec((unsigned long)alert_desc);
+                uart_puts("\n");
                 HTTPS_FAIL(-200 - (int)alert_desc);
             }
             HTTPS_FAIL(-109);

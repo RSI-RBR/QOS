@@ -414,7 +414,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
         int n;
         if (stream_remote_port == 443u){
-            uart_puts("HTTPS profile: kex_used=X25519, kex_pq=off, x509_hostname=on, x509_chain_sig=RSA, certverify=RSA, sig_advertised=RSA-only\n");
+            uart_puts("HTTPS profile: kex_used=X25519, kex_pq=off, x509_hostname=on, x509_chain_sig=RSA, certverify=RSA, sig_advertised=RSA/RSA-PSS\n");
             n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
         } else{
             n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
