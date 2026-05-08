@@ -37,6 +37,10 @@
 #define MMU_MAX_PROCESS_SPACES 8U
 #define MMU_PAGE_SIZE       4096UL
 #define MMU_SLOT_SIZE       (L3_ENTRIES * MMU_PAGE_SIZE)
+#define MMU_BLOCK_SIZE      (1UL << 21)
+#define MMU_USER_POOL_START 0x08000000UL
+#define MMU_USER_POOL_SIZE  (16UL * 1024UL * 1024UL)
+#define MMU_USER_POOL_END   (MMU_USER_POOL_START + MMU_USER_POOL_SIZE)
 #define MMU_TLB_WAIT_RETRY_INTERVAL 1024U
 #define MMU_TLB_WAIT_MAX_SPINS 2000000U
 
@@ -66,6 +70,19 @@ static unsigned int mmu_local_core_id(void){
         return 0;
     }
     return core;
+}
+
+static int mmu_range_within_user_pool(unsigned long start, unsigned long size){
+    if (size == 0UL){
+        return 0;
+    }
+    if (start < MMU_USER_POOL_START || start >= MMU_USER_POOL_END){
+        return 0;
+    }
+    if (size > (MMU_USER_POOL_END - start)){
+        return 0;
+    }
+    return 1;
 }
 
 static void mmu_local_tlbi_all(void){
@@ -369,6 +386,38 @@ static int l3_slot_is_wx_safe(const unsigned long* l3){
     return 1;
 }
 
+static int l2_is_el0_none_except_user_slot(const unsigned long* l2, unsigned long user_slot_index){
+    if (!l2){
+        return 0;
+    }
+    if (user_slot_index > L2_ENTRIES){
+        return 0;
+    }
+
+    for (unsigned int i = 0; i < L2_ENTRIES; i++){
+        unsigned long desc = l2[i];
+        if ((desc & DESC_VALID) == 0UL){
+            continue;
+        }
+
+        // Only the designated user slot may point to an L3 table.
+        if ((desc & DESC_KIND_MASK) == (DESC_VALID | DESC_TABLE)){
+            if (user_slot_index >= L2_ENTRIES || (unsigned long)i != user_slot_index){
+                return 0;
+            }
+            continue;
+        }
+
+        // For all block mappings, EL0 access must be disabled.
+        unsigned long ap = (desc & AP_MASK) >> AP_SHIFT;
+        int el0_access = (ap == 1UL || ap == 3UL) ? 1 : 0;
+        if (el0_access){
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void mmu_init(void){
     spinlock_init(&g_mmu_lock);
     zero_tables();
@@ -462,6 +511,10 @@ int mmu_process_space_create(int pid,
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
+    if (!mmu_range_within_user_pool(slot_base, MMU_SLOT_SIZE)){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
     if (user_rw_offset >= MMU_SLOT_SIZE || user_rw_size == 0u){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
@@ -523,6 +576,11 @@ int mmu_process_space_create(int pid,
     }
 
     l2[l2_index] = ((unsigned long)proc_l3_user_slot[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+    if (!l2_is_el0_none_except_user_slot(proc_l2_table[pid], (l1_index == 0UL) ? l2_index : L2_ENTRIES) ||
+        !l2_is_el0_none_except_user_slot(proc_l2_table_1[pid], (l1_index == 1UL) ? l2_index : L2_ENTRIES)){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
 
     l3_fill_kernel_private(proc_l3_user_slot[pid], slot_base);
     l3_map_range(proc_l3_user_slot[pid], slot_base, 0u, user_rw_offset, &user_code_rx);
@@ -598,6 +656,11 @@ void mmu_map_user_code_region(unsigned long pa_start, unsigned long size){
         .ap = AP_EL1_RO_EL0_RO,
         .xn = PXN_BIT
     };
+    if ((pa_start & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
+        (size & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
+        !mmu_range_within_user_pool(pa_start, size)){
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     apply_region_attrs_for_tables(l2_table, l2_table_1, pa_start, size, &user_code);
     mmu_tlb_shootdown_all_locked();
@@ -611,6 +674,11 @@ void mmu_map_user_data_region(unsigned long pa_start, unsigned long size){
         .ap = AP_EL1_RW_EL0_RW,
         .xn = PXN_BIT | UXN_BIT
     };
+    if ((pa_start & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
+        (size & (MMU_BLOCK_SIZE - 1UL)) != 0UL ||
+        !mmu_range_within_user_pool(pa_start, size)){
+        return;
+    }
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     apply_region_attrs_for_tables(l2_table, l2_table_1, pa_start, size, &user_data);
     mmu_tlb_shootdown_all_locked();
