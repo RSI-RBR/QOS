@@ -355,15 +355,26 @@ static const char g_wifi_fw_83[] = "4343WIFIBIN";
 static const char g_wifi_nv_83[] = "4343NVRMTXT";
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
-    int rc = qos_dns_resolve_a_socket(host, g_dns_server, out_ip, 3000u);
+    int rc = qos_dns_resolve_a_secure_socket(host, out_ip, 4500u);
     if (rc == 0){
         if (verbose){
             qos_puts("A ");
             print_ip4(out_ip);
-            qos_puts("\n");
+            qos_puts(" (DoH/TLS)\n");
         }
         return 0;
     }
+
+    rc = qos_dns_resolve_a_socket(host, g_dns_server, out_ip, 3000u);
+    if (rc == 0){
+        if (verbose){
+            qos_puts("A ");
+            print_ip4(out_ip);
+            qos_puts(" (fallback UDP)\n");
+        }
+        return 0;
+    }
+
     if (verbose){
         if (rc == QOS_DNS_ERR_TIMEOUT){
             qos_puts("DNS timeout.\n");

@@ -1246,7 +1246,10 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
     unsigned long recv_ms = 0;
     unsigned int recv_chunks = 0u;
 
-    int dns_rc = qos_dns_resolve_a_socket(host, g_dns_server, ip, DNS_TIMEOUT_MS);
+    int dns_rc = qos_dns_resolve_a_secure_socket(host, ip, DNS_TIMEOUT_MS + 1500u);
+    if (dns_rc != 0){
+        dns_rc = qos_dns_resolve_a_socket(host, g_dns_server, ip, DNS_TIMEOUT_MS);
+    }
     dns_ms = qos_get_ticks() - t_stage_start;
     if (dns_rc != 0){
         qos_puts("DNS resolve failed.\n");
