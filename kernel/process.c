@@ -1119,6 +1119,7 @@ void* scheduler_on_irq(void* irq_frame_sp){
 void process_sleep(unsigned int ms){
     unsigned int core = scheduler_core_id();
     int pid = -1;
+    unsigned long target_tick = 0;
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
@@ -1126,7 +1127,8 @@ void process_sleep(unsigned int ms){
         return;
     }
 
-    sleepq_insert_locked(pid, system_ticks + ms);
+    target_tick = system_ticks + ms;
+    sleepq_insert_locked(pid, target_tick);
     processes[pid].state = PROC_SLEEPING;
     spin_unlock_irqrestore(&g_process_lock, irq);
 
@@ -1147,6 +1149,15 @@ void process_sleep(unsigned int ms){
                 current_pid[core] == pid){
                 processes[pid].state = PROC_RUNNING;
             }
+            spin_unlock_irqrestore(&g_process_lock, irq);
+            break;
+        }
+        if (tick_reached(system_ticks, target_tick)){
+            // Local fail-safe: if cross-core wake delivery is delayed/lost,
+            // complete the wakeup on this core once the target tick is reached.
+            sleepq_remove_locked(pid);
+            processes[pid].wake_tick = 0;
+            processes[pid].state = PROC_RUNNING;
             spin_unlock_irqrestore(&g_process_lock, irq);
             break;
         }
