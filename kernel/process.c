@@ -495,12 +495,6 @@ static int process_create_common_locked(program_entry_t entry,
         if (!program_memory || !user_sp || program_size == 0u || user_rw_size == 0u){
             return -1;
         }
-        if (user_rw_offset >= program_size){
-            return -1;
-        }
-        if ((program_size - user_rw_offset) < user_rw_size){
-            return -1;
-        }
     }
 
     for (int i = 0; i < MAX_PROCESSES; i++){
@@ -945,8 +939,6 @@ static int process_user_range_check(const process_t* p, unsigned long addr, unsi
     QOS_ASSERT(p->pid >= 0 && p->pid < MAX_PROCESSES);
     QOS_ASSERT(p->program_size > 0u);
     QOS_ASSERT(p->user_rw_size > 0u);
-    QOS_ASSERT(p->user_rw_offset < p->program_size);
-    QOS_ASSERT((p->program_size - p->user_rw_offset) >= p->user_rw_size);
 
     if (len == 0u){
         return 1;
