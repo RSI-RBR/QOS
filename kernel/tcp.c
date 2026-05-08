@@ -635,7 +635,7 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
 
     // signature_algorithms_cert
     {
-        unsigned short sigs[9];
+        unsigned short sigs[16];
         unsigned int scount = 0;
         sigs[scount++] = 0x0804u; // rsa_pss_rsae_sha256
         sigs[scount++] = 0x0805u; // rsa_pss_rsae_sha384
@@ -643,9 +643,18 @@ static int tls13_build_client_hello_sni_x25519(const char* host,
         sigs[scount++] = 0x0809u; // rsa_pss_pss_sha256
         sigs[scount++] = 0x080Au; // rsa_pss_pss_sha384
         sigs[scount++] = 0x080Bu; // rsa_pss_pss_sha512
+        // Keep this broad for compatibility: some endpoints abort the
+        // handshake if their cert algorithm is not offered here.
+        sigs[scount++] = 0x0403u; // ecdsa_secp256r1_sha256
+        sigs[scount++] = 0x0503u; // ecdsa_secp384r1_sha384
+        sigs[scount++] = 0x0603u; // ecdsa_secp521r1_sha512
+        sigs[scount++] = 0x0807u; // ed25519
         sigs[scount++] = 0x0401u; // rsa_pkcs1_sha256
         sigs[scount++] = 0x0501u; // rsa_pkcs1_sha384
         sigs[scount++] = 0x0601u; // rsa_pkcs1_sha512
+        if (g_tls13_advertise_pq){
+            sigs[scount++] = TLS13_SIGALG_MLDSA65;
+        }
         unsigned int sig_bytes = scount * 2u;
         unsigned int ext_len = 2u + sig_bytes;
         if (i + 4u + ext_len > out_cap){
