@@ -2,6 +2,7 @@
 #include "auth.h"
 #include "udp.h"
 #include "x25519.h"
+#include "pq_kem.h"
 #include "crypto.h"
 #include "aes_gcm.h"
 #include "uart.h"
@@ -20,14 +21,22 @@
 #define RLOGIN_TYPE_TTY_INPUT 7u
 #define RLOGIN_TYPE_TTY_OUTPUT 8u
 
-#define RLOGIN_PAYLOAD_MAX 512u
+#define RLOGIN_PAYLOAD_MAX 1400u
 #define RLOGIN_TAG_LEN 16u
 #define RLOGIN_SERVER_HELLO_BASE_LEN (32u + AUTH_NONCE_BYTES + AUTH_SALT_BYTES + 1u)
 #define RLOGIN_SERVER_HELLO_KDF_EXT_LEN (1u + 4u + 4u + 4u + 4u)
+#define RLOGIN_KEX_EXT_FIXED_LEN 8u
+#define RLOGIN_SERVER_HELLO_MAX_LEN (RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN + RLOGIN_KEX_EXT_FIXED_LEN + QOS_KEM_MLKEM768_CT_BYTES)
 #define RLOGIN_TTY_IN_CAP 512u
 #define RLOGIN_TTY_OUT_CAP 2048u
 #define RLOGIN_TTY_OUT_CHUNK 220u
 #define RLOGIN_REPLAY_WINDOW 32u
+
+#define RLOGIN_KEX_EXT_MAGIC 0x524B4558u /* RKEX */
+#define RLOGIN_KEX_EXT_VER 1u
+#define RLOGIN_KEX_X25519 1u
+#define RLOGIN_KEX_MLKEM768 2u
+#define RLOGIN_KEX_HYBRID 3u
 
 #define RLOGIN_STATUS_OK 0u
 #define RLOGIN_STATUS_AUTH_UNAVAILABLE 1u
@@ -52,6 +61,9 @@ typedef struct {
     unsigned long cmd_fail;
     unsigned long tty_in_bytes;
     unsigned long tty_out_bytes;
+    unsigned long kex_x25519;
+    unsigned long kex_mlkem768;
+    unsigned long kex_hybrid;
 } remote_login_stats_t;
 
 typedef struct {
@@ -64,10 +76,13 @@ typedef struct {
     unsigned int client_seq_top;
     unsigned int client_seq_seen_bitmap;
     unsigned int server_next_seq;
+    unsigned char kex_mode;
     char username[AUTH_USERNAME_MAX + 1u];
     unsigned char client_pub[32];
     unsigned char server_priv[32];
     unsigned char server_pub[32];
+    unsigned char client_mlkem_pk[QOS_KEM_MLKEM768_PK_BYTES];
+    unsigned char server_mlkem_ct[QOS_KEM_MLKEM768_CT_BYTES];
     unsigned char client_nonce[AUTH_NONCE_BYTES];
     unsigned char server_nonce[AUTH_NONCE_BYTES];
     unsigned char key[32];
@@ -115,6 +130,22 @@ static void write_be32(unsigned char* p, unsigned int v){
 
 static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
+}
+
+static int kex_mode_valid(unsigned char kex_mode){
+    return (kex_mode == RLOGIN_KEX_X25519 ||
+            kex_mode == RLOGIN_KEX_MLKEM768 ||
+            kex_mode == RLOGIN_KEX_HYBRID) ? 1 : 0;
+}
+
+static const char* kex_mode_name(unsigned char kex_mode){
+    if (kex_mode == RLOGIN_KEX_MLKEM768){
+        return "ML-KEM-768";
+    }
+    if (kex_mode == RLOGIN_KEX_HYBRID){
+        return "ML-KEM-768+X25519";
+    }
+    return "X25519";
 }
 
 static int tick_before(unsigned long a, unsigned long b){
@@ -224,12 +255,15 @@ static void session_clear(void){
     g_sess.client_seq_top = 0;
     g_sess.client_seq_seen_bitmap = 0;
     g_sess.server_next_seq = 0;
+    g_sess.kex_mode = RLOGIN_KEX_X25519;
     for (unsigned int i = 0; i < sizeof(g_sess.username); i++){
         g_sess.username[i] = 0;
     }
     crypto_memzero(g_sess.client_pub, sizeof(g_sess.client_pub));
     crypto_memzero(g_sess.server_priv, sizeof(g_sess.server_priv));
     crypto_memzero(g_sess.server_pub, sizeof(g_sess.server_pub));
+    crypto_memzero(g_sess.client_mlkem_pk, sizeof(g_sess.client_mlkem_pk));
+    crypto_memzero(g_sess.server_mlkem_ct, sizeof(g_sess.server_mlkem_ct));
     crypto_memzero(g_sess.client_nonce, sizeof(g_sess.client_nonce));
     crypto_memzero(g_sess.server_nonce, sizeof(g_sess.server_nonce));
     crypto_memzero(g_sess.key, sizeof(g_sess.key));
@@ -303,19 +337,94 @@ static void make_iv(unsigned int seq, unsigned char out_iv[12]){
     out_iv[11] ^= (unsigned char)(seq & 0xFFu);
 }
 
-static int derive_session_keys(void){
+static int parse_client_kex_ext(const unsigned char* payload,
+                                unsigned short payload_len,
+                                unsigned int off,
+                                unsigned char* out_req_mode,
+                                unsigned short* out_mlkem_pk_len){
+    unsigned char req_mode;
+    unsigned short mlkem_pk_len;
+
+    if (!payload || !out_req_mode || !out_mlkem_pk_len){
+        return -1;
+    }
+    *out_req_mode = RLOGIN_KEX_X25519;
+    *out_mlkem_pk_len = 0u;
+
+    if (off == (unsigned int)payload_len){
+        return 0;
+    }
+    if ((unsigned int)payload_len < off + RLOGIN_KEX_EXT_FIXED_LEN){
+        return -1;
+    }
+    if (read_be32(&payload[off]) != RLOGIN_KEX_EXT_MAGIC){
+        return -1;
+    }
+    if (payload[off + 4u] != RLOGIN_KEX_EXT_VER){
+        return -1;
+    }
+    req_mode = payload[off + 5u];
+    if (!kex_mode_valid(req_mode)){
+        return -1;
+    }
+    mlkem_pk_len = read_be16(&payload[off + 6u]);
+    if ((unsigned int)payload_len != off + RLOGIN_KEX_EXT_FIXED_LEN + (unsigned int)mlkem_pk_len){
+        return -1;
+    }
+    if (req_mode == RLOGIN_KEX_X25519){
+        if (mlkem_pk_len != 0u){
+            return -1;
+        }
+    } else{
+        if (mlkem_pk_len != (unsigned short)QOS_KEM_MLKEM768_PK_BYTES){
+            return -1;
+        }
+    }
+    *out_req_mode = req_mode;
+    *out_mlkem_pk_len = mlkem_pk_len;
+    return 0;
+}
+
+static int derive_session_keys(unsigned char kex_mode,
+                               const unsigned char x_shared[32],
+                               int have_x,
+                               const unsigned char pq_shared[QOS_KEM_MLKEM768_SS_BYTES],
+                               int have_pq){
     static const unsigned char key_label[] = "qos-rlogin-key-v1";
     static const unsigned char iv_label[] = "qos-rlogin-iv-v1";
-    unsigned char shared[32];
+    unsigned char ikm[64];
+    unsigned int ikm_len = 0u;
     unsigned char salt_buf[64];
     unsigned char prk[32];
     int rc = -1;
 
-    if (x25519_shared_secret(g_sess.server_priv, g_sess.client_pub, shared) != 0){
-        goto out;
+    if (!kex_mode_valid(kex_mode)){
+        return -1;
     }
-    if (x25519_is_all_zero(shared)){
-        goto out;
+    if (kex_mode == RLOGIN_KEX_X25519){
+        if (!have_x || !x_shared){
+            return -1;
+        }
+        for (unsigned int i = 0; i < 32u; i++){
+            ikm[ikm_len++] = x_shared[i];
+        }
+    } else if (kex_mode == RLOGIN_KEX_MLKEM768){
+        if (!have_pq || !pq_shared){
+            return -1;
+        }
+        for (unsigned int i = 0; i < QOS_KEM_MLKEM768_SS_BYTES; i++){
+            ikm[ikm_len++] = pq_shared[i];
+        }
+    } else{
+        if (!have_x || !x_shared || !have_pq || !pq_shared){
+            return -1;
+        }
+        for (unsigned int i = 0; i < 32u; i++){
+            ikm[ikm_len++] = x_shared[i];
+        }
+        for (unsigned int i = 0; i < QOS_KEM_MLKEM768_SS_BYTES; i++){
+            ikm[ikm_len++] = pq_shared[i];
+        }
     }
 
     for (unsigned int i = 0; i < 32u; i++){
@@ -323,7 +432,7 @@ static int derive_session_keys(void){
         salt_buf[32u + i] = g_sess.server_nonce[i];
     }
 
-    crypto_hkdf_sha256_extract(salt_buf, sizeof(salt_buf), shared, sizeof(shared), prk);
+    crypto_hkdf_sha256_extract(salt_buf, sizeof(salt_buf), ikm, ikm_len, prk);
     if (crypto_hkdf_sha256_expand(prk,
                                   key_label,
                                   (unsigned int)(sizeof(key_label) - 1u),
@@ -336,10 +445,11 @@ static int derive_session_keys(void){
                                   g_sess.nonce_base, 12u) != 0){
         goto out;
     }
+    g_sess.kex_mode = kex_mode;
     rc = 0;
 
 out:
-    crypto_memzero(shared, sizeof(shared));
+    crypto_memzero(ikm, sizeof(ikm));
     crypto_memzero(salt_buf, sizeof(salt_buf));
     crypto_memzero(prk, sizeof(prk));
     return rc;
@@ -411,6 +521,7 @@ static int decrypt_payload(const unsigned char* frame,
                            unsigned int frame_len,
                            unsigned int seq,
                            unsigned char* out_plain,
+                           unsigned short out_plain_cap,
                            unsigned short* out_plain_len){
     unsigned short payload_len = read_be16(&frame[16]);
     if (frame_len < 20u || payload_len < RLOGIN_TAG_LEN){
@@ -421,6 +532,10 @@ static int decrypt_payload(const unsigned char* frame,
     const unsigned char* tag = &frame[20u + ct_len];
     aes_gcm_key_t key;
     unsigned char iv[12];
+
+    if (ct_len > out_plain_cap){
+        return -1;
+    }
 
     if (aes_gcm_key_init(&key, g_sess.key, 32u) != 0){
         return -1;
@@ -464,7 +579,7 @@ static int tty_out_enqueue_char(unsigned char c){
 }
 
 static void send_reject_server_hello(const udp_meta_t* meta, unsigned char status){
-    unsigned char resp[RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN];
+    unsigned char resp[RLOGIN_SERVER_HELLO_MAX_LEN];
     auth_kdf_info_t kdf_info;
     unsigned int off;
     unsigned int resp_len = RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN;
@@ -491,6 +606,12 @@ static void send_reject_server_hello(const udp_meta_t* meta, unsigned char statu
     off += 4u;
     write_be32(&resp[off], kdf_info.argon2_version);
     off += 4u;
+    write_be32(&resp[off], RLOGIN_KEX_EXT_MAGIC);
+    off += 4u;
+    resp[off++] = RLOGIN_KEX_EXT_VER;
+    resp[off++] = RLOGIN_KEX_X25519;
+    write_be16(&resp[off], 0u);
+    off += 2u;
     resp_len = off;
 
     session_clear();
@@ -508,7 +629,7 @@ static void send_reject_server_hello(const udp_meta_t* meta, unsigned char statu
 }
 
 static void handle_client_hello(const unsigned char* payload, unsigned short payload_len, const udp_meta_t* meta){
-    unsigned char resp[RLOGIN_SERVER_HELLO_BASE_LEN + RLOGIN_SERVER_HELLO_KDF_EXT_LEN];
+    unsigned char resp[RLOGIN_SERVER_HELLO_MAX_LEN];
     unsigned char rnd[8];
     auth_kdf_info_t kdf_info;
     unsigned int off = 0;
@@ -516,6 +637,15 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     unsigned int username_len;
     unsigned char salt[AUTH_SALT_BYTES];
     int status = 0;
+    unsigned char req_kex_mode = RLOGIN_KEX_X25519;
+    unsigned short client_mlkem_pk_len = 0u;
+    unsigned char selected_kex_mode = RLOGIN_KEX_X25519;
+    unsigned short server_mlkem_ct_len = 0u;
+    unsigned char x_shared[32];
+    unsigned char pq_shared[QOS_KEM_MLKEM768_SS_BYTES];
+    int have_x_shared = 0;
+    int have_pq_shared = 0;
+    int fail = 0;
 
     if (payload_len < (32u + AUTH_NONCE_BYTES + 1u)){
         g_stats.bad_header++;
@@ -562,14 +692,31 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
         g_sess.username[i] = (char)payload[off + i];
     }
     g_sess.username[username_len] = 0;
+    if (parse_client_kex_ext(payload, payload_len, off + username_len, &req_kex_mode, &client_mlkem_pk_len) != 0){
+        g_stats.bad_header++;
+        fail = 1;
+        goto out;
+    }
+    if (client_mlkem_pk_len == (unsigned short)QOS_KEM_MLKEM768_PK_BYTES){
+        unsigned int pk_off = off + username_len + RLOGIN_KEX_EXT_FIXED_LEN;
+        for (unsigned int i = 0; i < QOS_KEM_MLKEM768_PK_BYTES; i++){
+            g_sess.client_mlkem_pk[i] = payload[pk_off + i];
+        }
+    }
 
     if (x25519_generate_keypair(g_sess.server_priv, g_sess.server_pub) != 0){
         g_stats.bad_crypto++;
-        return;
+        fail = 1;
+        goto out;
+    }
+    if (x25519_shared_secret(g_sess.server_priv, g_sess.client_pub, x_shared) == 0 &&
+        !x25519_is_all_zero(x_shared)){
+        have_x_shared = 1;
     }
     if (auth_issue_nonce(g_sess.server_nonce) != 0){
         g_stats.bad_crypto++;
-        return;
+        fail = 1;
+        goto out;
     }
     if (crypto_random_bytes(rnd, sizeof(rnd)) != 0){
         for (unsigned int i = 0; i < sizeof(rnd); i++){
@@ -580,9 +727,44 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     if (g_sess.session_id == 0u){
         g_sess.session_id = 1u;
     }
-    if (derive_session_keys() != 0){
+    if ((req_kex_mode == RLOGIN_KEX_MLKEM768 || req_kex_mode == RLOGIN_KEX_HYBRID) &&
+        client_mlkem_pk_len == (unsigned short)QOS_KEM_MLKEM768_PK_BYTES){
+        if (pq_kem_mlkem768_available() &&
+            pq_kem_mlkem768_encaps(g_sess.server_mlkem_ct, sizeof(g_sess.server_mlkem_ct),
+                                   pq_shared, sizeof(pq_shared),
+                                   g_sess.client_mlkem_pk, sizeof(g_sess.client_mlkem_pk)) == 0){
+            have_pq_shared = 1;
+            server_mlkem_ct_len = (unsigned short)QOS_KEM_MLKEM768_CT_BYTES;
+        }
+    }
+
+    if (req_kex_mode == RLOGIN_KEX_X25519){
+        if (!have_x_shared){
+            g_stats.bad_crypto++;
+            fail = 1;
+            goto out;
+        }
+        selected_kex_mode = RLOGIN_KEX_X25519;
+    } else if (req_kex_mode == RLOGIN_KEX_MLKEM768){
+        if (!have_pq_shared){
+            g_stats.bad_crypto++;
+            fail = 1;
+            goto out;
+        }
+        selected_kex_mode = RLOGIN_KEX_MLKEM768;
+    } else{
+        if (!have_x_shared || !have_pq_shared){
+            g_stats.bad_crypto++;
+            fail = 1;
+            goto out;
+        }
+        selected_kex_mode = RLOGIN_KEX_HYBRID;
+    }
+
+    if (derive_session_keys(selected_kex_mode, x_shared, have_x_shared, pq_shared, have_pq_shared) != 0){
         g_stats.bad_crypto++;
-        return;
+        fail = 1;
+        goto out;
     }
 
     if (auth_get_salt(salt) != 0){
@@ -620,6 +802,16 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     off += 4u;
     write_be32(&resp[off], kdf_info.argon2_version);
     off += 4u;
+    write_be32(&resp[off], RLOGIN_KEX_EXT_MAGIC);
+    off += 4u;
+    resp[off++] = RLOGIN_KEX_EXT_VER;
+    resp[off++] = selected_kex_mode;
+    write_be16(&resp[off], server_mlkem_ct_len);
+    off += 2u;
+    for (unsigned int i = 0; i < server_mlkem_ct_len; i++){
+        resp[off + i] = g_sess.server_mlkem_ct[i];
+    }
+    off += server_mlkem_ct_len;
     resp_len = off;
 
     g_sess.active = 1;
@@ -628,7 +820,20 @@ static void handle_client_hello(const unsigned char* payload, unsigned short pay
     g_sess.client_seq_top = 0;
     g_sess.client_seq_seen_bitmap = 0;
     g_sess.server_next_seq = 0;
+    if (selected_kex_mode == RLOGIN_KEX_HYBRID){
+        g_stats.kex_hybrid++;
+    } else if (selected_kex_mode == RLOGIN_KEX_MLKEM768){
+        g_stats.kex_mlkem768++;
+    } else{
+        g_stats.kex_x25519++;
+    }
     (void)send_plain(RLOGIN_TYPE_SERVER_HELLO, g_sess.session_id, next_server_seq(), resp, (unsigned short)resp_len);
+out:
+    crypto_memzero(x_shared, sizeof(x_shared));
+    crypto_memzero(pq_shared, sizeof(pq_shared));
+    if (fail){
+        session_clear();
+    }
 }
 
 static void handle_auth_proof(const unsigned char* frame,
@@ -656,7 +861,7 @@ static void handle_auth_proof(const unsigned char* frame,
         g_stats.bad_header++;
         return;
     }
-    if (decrypt_payload(frame, frame_len, seq, plain, &plain_len) != 0){
+    if (decrypt_payload(frame, frame_len, seq, plain, (unsigned short)sizeof(plain), &plain_len) != 0){
         g_stats.bad_crypto++;
         return;
     }
@@ -709,7 +914,7 @@ static void handle_command(const unsigned char* frame,
         g_stats.bad_header++;
         return;
     }
-    if (decrypt_payload(frame, frame_len, seq, plain, &plain_len) != 0){
+    if (decrypt_payload(frame, frame_len, seq, plain, (unsigned short)sizeof(plain), &plain_len) != 0){
         g_stats.bad_crypto++;
         return;
     }
@@ -783,7 +988,7 @@ static void handle_tty_input(const unsigned char* frame,
         g_stats.bad_header++;
         return;
     }
-    if (decrypt_payload(frame, frame_len, seq, plain, &plain_len) != 0){
+    if (decrypt_payload(frame, frame_len, seq, plain, (unsigned short)sizeof(plain), &plain_len) != 0){
         g_stats.bad_crypto++;
         return;
     }
@@ -830,6 +1035,9 @@ int remote_login_init(void){
     g_stats.cmd_fail = 0;
     g_stats.tty_in_bytes = 0;
     g_stats.tty_out_bytes = 0;
+    g_stats.kex_x25519 = 0;
+    g_stats.kex_mlkem768 = 0;
+    g_stats.kex_hybrid = 0;
     g_auth_fail_streak = 0;
     g_auth_delay_until_tick = 0;
     g_auth_lockout_until_tick = 0;
@@ -837,6 +1045,8 @@ int remote_login_init(void){
     g_enabled = 1;
     g_auth_ready = auth_is_ready() ? 1 : 0;
     uart_puts("Remote login: enabled on UDP port 2222\n");
+    uart_puts("Remote login: ML-KEM backend ");
+    uart_puts(pq_kem_mlkem768_available() ? "available\n" : "unavailable (X25519 only)\n");
     if (!g_auth_ready){
         uart_puts("Remote login: AUTH.BIN not ready; auth attempts will be rejected\n");
         return -1;
@@ -923,6 +1133,8 @@ void remote_login_dump_stats(void){
     uart_putdec((unsigned long)g_tty_in_count);
     uart_puts(" outq=");
     uart_putdec((unsigned long)g_tty_out_count);
+    uart_puts(" kex=");
+    uart_puts(kex_mode_name(g_sess.kex_mode));
     uart_puts("\n");
 
     uart_puts("RLOGIN rx=");
@@ -951,5 +1163,11 @@ void remote_login_dump_stats(void){
     uart_putdec(g_stats.tty_in_bytes);
     uart_puts(" tty_out=");
     uart_putdec(g_stats.tty_out_bytes);
+    uart_puts(" kex_x=");
+    uart_putdec(g_stats.kex_x25519);
+    uart_puts(" kex_pq=");
+    uart_putdec(g_stats.kex_mlkem768);
+    uart_puts(" kex_hybrid=");
+    uart_putdec(g_stats.kex_hybrid);
     uart_puts("\n");
 }

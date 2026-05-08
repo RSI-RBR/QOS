@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import mlkem768_host
 
 try:
     from argon2.low_level import Type as Argon2Type
@@ -46,6 +47,11 @@ RLOGIN_STATUS_OK = 0
 RLOGIN_STATUS_AUTH_UNAVAILABLE = 1
 RLOGIN_STATUS_RATE_LIMITED = 2
 RLOGIN_STATUS_LOCKED = 3
+RLOGIN_KEX_EXT_MAGIC = 0x524B4558  # "RKEX"
+RLOGIN_KEX_EXT_VER = 1
+RLOGIN_KEX_X25519 = 1
+RLOGIN_KEX_MLKEM768 = 2
+RLOGIN_KEX_HYBRID = 3
 
 
 def be16(v: int) -> bytes:
@@ -88,6 +94,14 @@ def parse_header(pkt: bytes):
     if 20 + payload_len > len(pkt):
         raise ValueError("bad length")
     return msg_type, session_id, seq, pkt[20 : 20 + payload_len]
+
+
+def kex_mode_name(mode: int) -> str:
+    if mode == RLOGIN_KEX_MLKEM768:
+        return "ML-KEM-768"
+    if mode == RLOGIN_KEX_HYBRID:
+        return "ML-KEM-768+X25519"
+    return "X25519"
 
 
 def sha256(data: bytes) -> bytes:
@@ -192,6 +206,17 @@ def main():
     ap.add_argument("--username", required=True)
     ap.add_argument("--password", required=True)
     ap.add_argument("--broadcast", action="store_true", help="send first hello to 255.255.255.255")
+    ap.add_argument(
+        "--kex",
+        choices=["hybrid", "pq", "x25519"],
+        default="hybrid",
+        help="key exchange mode preference (default: hybrid)",
+    )
+    ap.add_argument(
+        "--allow-x25519-fallback",
+        action="store_true",
+        help="allow downgrade to X25519 if server does not negotiate PQ",
+    )
     args = ap.parse_args()
 
     server = (args.host, args.port)
@@ -208,12 +233,34 @@ def main():
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
     )
+    req_kex_mode = RLOGIN_KEX_HYBRID
+    if args.kex == "pq":
+        req_kex_mode = RLOGIN_KEX_MLKEM768
+    elif args.kex == "x25519":
+        req_kex_mode = RLOGIN_KEX_X25519
+
+    mlkem_pk = b""
+    mlkem_sk = b""
+    if req_kex_mode != RLOGIN_KEX_X25519:
+        try:
+            mlkem_pk, mlkem_sk = mlkem768_host.keypair_bytes()
+        except Exception as exc:
+            raise SystemExit(f"ML-KEM keygen failed: {exc}")
+        if len(mlkem_pk) != mlkem768_host.PK_BYTES or len(mlkem_sk) != mlkem768_host.SK_BYTES:
+            raise SystemExit("ML-KEM key material size mismatch")
+
+    kex_ext = (
+        be32(RLOGIN_KEX_EXT_MAGIC)
+        + bytes([RLOGIN_KEX_EXT_VER, req_kex_mode])
+        + be16(len(mlkem_pk))
+        + mlkem_pk
+    )
     client_nonce = os.urandom(32)
     user = args.username.encode("ascii")
     if len(user) == 0 or len(user) > 31:
         raise SystemExit("username must be 1..31 chars")
 
-    hello_payload = pk + client_nonce + bytes([len(user)]) + user
+    hello_payload = pk + client_nonce + bytes([len(user)]) + user + kex_ext
     hello = build_header(TYPE_CLIENT_HELLO, 0, 0, len(hello_payload)) + hello_payload
     if args.broadcast:
         sock.sendto(hello, hello_server)
@@ -242,12 +289,14 @@ def main():
     argon2_m_cost_kib = AUTH_ARGON2_DEFAULT_M_COST_KIB
     argon2_parallelism = AUTH_ARGON2_DEFAULT_PARALLELISM
     argon2_version = AUTH_ARGON2_DEFAULT_VERSION
+    kex_ext_off = 81
     if len(payload) >= 98:
         kdf_id = payload[81]
         argon2_t_cost = read_be32(payload[82:86])
         argon2_m_cost_kib = read_be32(payload[86:90])
         argon2_parallelism = read_be32(payload[90:94])
         argon2_version = read_be32(payload[94:98])
+        kex_ext_off = 98
     if status != RLOGIN_STATUS_OK:
         if status == RLOGIN_STATUS_AUTH_UNAVAILABLE:
             raise SystemExit("server auth store unavailable")
@@ -265,7 +314,52 @@ def main():
     else:
         print("Server auth KDF: sha256")
 
-    shared = sk.exchange(x25519.X25519PublicKey.from_public_bytes(server_pub))
+    negotiated_kex = RLOGIN_KEX_X25519
+    server_mlkem_ct = b""
+    if len(payload) >= kex_ext_off + 8 and read_be32(payload[kex_ext_off : kex_ext_off + 4]) == RLOGIN_KEX_EXT_MAGIC:
+        if payload[kex_ext_off + 4] != RLOGIN_KEX_EXT_VER:
+            raise SystemExit("unsupported remote-login KEX extension version")
+        negotiated_kex = payload[kex_ext_off + 5]
+        ct_len = read_be16(payload[kex_ext_off + 6 : kex_ext_off + 8])
+        ct_off = kex_ext_off + 8
+        if ct_off + ct_len > len(payload):
+            raise SystemExit("short server KEX extension")
+        server_mlkem_ct = payload[ct_off : ct_off + ct_len]
+
+    if req_kex_mode == RLOGIN_KEX_X25519 and negotiated_kex != RLOGIN_KEX_X25519:
+        raise SystemExit("server did not honor requested X25519-only mode")
+    if req_kex_mode == RLOGIN_KEX_MLKEM768 and negotiated_kex == RLOGIN_KEX_X25519 and not args.allow_x25519_fallback:
+        raise SystemExit("server downgraded to X25519; rerun with --allow-x25519-fallback to permit")
+    if req_kex_mode == RLOGIN_KEX_HYBRID:
+        if negotiated_kex == RLOGIN_KEX_X25519 and not args.allow_x25519_fallback:
+            raise SystemExit("server downgraded to X25519; rerun with --allow-x25519-fallback to permit")
+        if negotiated_kex == RLOGIN_KEX_MLKEM768 and not args.allow_x25519_fallback:
+            raise SystemExit("server did not provide hybrid KEX; rerun with --allow-x25519-fallback to permit")
+
+    x_shared = sk.exchange(x25519.X25519PublicKey.from_public_bytes(server_pub))
+    pq_shared = b""
+    if negotiated_kex in (RLOGIN_KEX_MLKEM768, RLOGIN_KEX_HYBRID):
+        if len(server_mlkem_ct) != mlkem768_host.CT_BYTES:
+            raise SystemExit("invalid ML-KEM ciphertext length in server hello")
+        if not mlkem_sk:
+            raise SystemExit("server selected PQ KEX but client has no ML-KEM key")
+        try:
+            pq_shared = mlkem768_host.decaps_with_sk(mlkem_sk, server_mlkem_ct)
+        except Exception as exc:
+            raise SystemExit(f"ML-KEM decapsulation failed: {exc}")
+        if len(pq_shared) != mlkem768_host.SS_BYTES:
+            raise SystemExit("invalid ML-KEM shared secret length")
+
+    if negotiated_kex == RLOGIN_KEX_X25519:
+        shared = x_shared
+    elif negotiated_kex == RLOGIN_KEX_MLKEM768:
+        shared = pq_shared
+    elif negotiated_kex == RLOGIN_KEX_HYBRID:
+        shared = x_shared + pq_shared
+    else:
+        raise SystemExit(f"unsupported negotiated KEX mode: {negotiated_kex}")
+
+    print(f"Remote login negotiated KEX: {kex_mode_name(negotiated_kex)}")
     key, nonce_base = derive_key_material(shared, client_nonce, server_nonce)
     cs = CryptoState(key=key, nonce_base=nonce_base)
 
