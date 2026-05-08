@@ -126,6 +126,18 @@ static void mmu_set_ttbr0(unsigned long table_base, unsigned short asid){
     asm volatile("isb");
 }
 
+static unsigned long mmu_make_ttbr0_value(unsigned long table_base, unsigned short asid){
+    unsigned long ttbr = (table_base & TTBR0_BADDR_MASK) |
+                         ((((unsigned long)asid) & 0xFFUL) << TTBR0_ASID_SHIFT);
+    return ttbr & (TTBR0_BADDR_MASK | TTBR0_ASID_MASK);
+}
+
+static unsigned long mmu_read_ttbr0(void){
+    unsigned long ttbr;
+    asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr));
+    return ttbr & (TTBR0_BADDR_MASK | TTBR0_ASID_MASK);
+}
+
 static int mmu_epoch_acked_by_online(unsigned int online, unsigned int epoch){
     asm volatile("dmb ish" : : : "memory");
     for (unsigned int c = 0; c < MMU_MAX_CORES; c++){
@@ -708,6 +720,33 @@ void mmu_switch_to_pid(int pid){
     core_active_pid[core] = effective_pid;
     core_active_asid[core] = effective_asid;
     spin_unlock_irqrestore(&g_mmu_lock, irq);
+}
+
+void mmu_prepare_return_to_pid(int pid){
+    unsigned int core = mmu_local_core_id();
+    unsigned long* table = l1_table;
+    int effective_pid = -1;
+    unsigned short effective_asid = (unsigned short)MMU_ASID_KERNEL;
+
+    if (pid >= 0 &&
+        (unsigned int)pid < MMU_MAX_PROCESS_SPACES &&
+        proc_space_active[pid]){
+        table = proc_l1_table[pid];
+        effective_pid = pid;
+        effective_asid = proc_asid[pid];
+    }
+
+    unsigned long expected = mmu_make_ttbr0_value((unsigned long)table, effective_asid);
+    if (core_active_pid[core] == effective_pid &&
+        core_active_asid[core] == effective_asid &&
+        mmu_read_ttbr0() == expected){
+        return;
+    }
+
+    // Slow path only when a caller is about to return with a stale/wrong
+    // address space. This preserves the final eret safety net without paying
+    // the full TLB/lock cost on every timer tick.
+    mmu_switch_to_pid(pid);
 }
 
 void mmu_map_device_region(unsigned long pa_start, unsigned long size){

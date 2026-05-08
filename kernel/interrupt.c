@@ -53,11 +53,7 @@ static void ensure_return_ttbr_for_frame(void* frame_sp){
 
     process_t* cur = get_current_process();
     int pid = process_current_pid();
-    if (cur && cur->user_mode && pid >= 0){
-        mmu_switch_to_pid(pid);
-    } else{
-        mmu_switch_to_pid(-1);
-    }
+    mmu_prepare_return_to_pid((cur && cur->user_mode && pid >= 0) ? pid : -1);
 }
 
 void interrupt_prepare_return(void* frame_sp){

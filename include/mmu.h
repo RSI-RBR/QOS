@@ -21,5 +21,6 @@ int mmu_process_space_create(int pid,
                              unsigned long user_rw_size);
 void mmu_process_space_destroy(int pid);
 void mmu_switch_to_pid(int pid);
+void mmu_prepare_return_to_pid(int pid);
 
 #endif
