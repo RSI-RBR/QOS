@@ -774,6 +774,26 @@ static int tls13_build_finished_message(const unsigned char base_secret[32],
     return 0;
 }
 
+static int tls13_sigalg_is_supported(unsigned short alg){
+    switch (alg){
+        case 0x0804u: // rsa_pss_rsae_sha256
+        case 0x0805u: // rsa_pss_rsae_sha384
+        case 0x0806u: // rsa_pss_rsae_sha512
+        case 0x0403u: // ecdsa_secp256r1_sha256
+        case 0x0503u: // ecdsa_secp384r1_sha384
+        case 0x0603u: // ecdsa_secp521r1_sha512
+        case 0x0807u: // ed25519
+        case 0x0401u: // rsa_pkcs1_sha256
+        case 0x0501u: // rsa_pkcs1_sha384
+        case 0x0601u: // rsa_pkcs1_sha512
+            return 1;
+        case TLS13_SIGALG_MLDSA65:
+            return g_tls13_advertise_pq ? 1 : 0;
+        default:
+            return 0;
+    }
+}
+
 int tcp_https_get(const unsigned char dst_ip[4],
                   const char* host,
                   const char* path,
@@ -786,6 +806,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned int hs_used = 0;
     int saw_server_hello = 0;
     int saw_server_finished = 0;
+    int saw_server_certificate = 0;
+    int saw_server_certificate_verify = 0;
+    unsigned short server_cert_verify_alg = 0u;
     int need_client_empty_cert = 0;
     int app_bytes = 0;
     int result = -1;
@@ -1075,11 +1098,43 @@ int tcp_https_get(const unsigned char dst_ip[4],
             unsigned char hs_type = g_tls_hs_buf[parsed];
             const unsigned char* hs_ptr = &g_tls_hs_buf[parsed];
 
+            if (hs_type == 11u){
+                // TLS 1.3 Certificate
+                saw_server_certificate = 1;
+            }
+
+            if (hs_type == 15u){
+                // TLS 1.3 CertificateVerify: SignatureScheme(2) + sig_len(2) + signature
+                if (msg_tot < 8u){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-137);
+                }
+                unsigned short sig_alg = be16_read(&hs_ptr[4]);
+                unsigned short sig_len = be16_read(&hs_ptr[6]);
+                unsigned int body_len = msg_tot - 4u;
+                if ((unsigned int)sig_len != (body_len - 4u) || !tls13_sigalg_is_supported(sig_alg)){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-138);
+                }
+                saw_server_certificate_verify = 1;
+                server_cert_verify_alg = sig_alg;
+            }
+
             if (hs_type == 13u){
                 need_client_empty_cert = 1;
             }
 
             if (hs_type == 20u){
+                if (!saw_server_certificate || !saw_server_certificate_verify){
+                    g_conn.active = 0;
+                    g_conn.state = TCP_ST_CLOSED;
+                    g_tcp_stats.http_fail++;
+                    HTTPS_FAIL(-139);
+                }
                 if (msg_tot != 36u){
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;
@@ -1335,6 +1390,10 @@ https_fail_secure:
     if (result < 0){
         g_tcp_https_last_error = fail_code;
         g_tcp_https_fail_count++;
+    } else if (server_cert_verify_alg != 0u){
+        uart_puts("HTTPS cert signature alg=");
+        uart_puthex((unsigned int)server_cert_verify_alg);
+        uart_puts("\n");
     }
 
 #undef HTTPS_FAIL
