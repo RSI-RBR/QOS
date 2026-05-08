@@ -50,16 +50,12 @@ extern volatile unsigned long system_ticks;
 #define IRQ_FRAME_USER_SP_IDX 33
 #define INITIAL_SPSR_EL1H 0x345
 #define INITIAL_SPSR_EL0T 0x000
-#define SPSR_MODE_MASK 0xFUL
-#define SPSR_MODE_EL0T 0x0UL
 
 static void runq_enqueue(unsigned int core, int pid);
 static void mark_need_resched_locked(unsigned int core_id);
 static int is_pid_pending_zombie(int pid);
 static int pid_running_on_other_core_locked(int pid, unsigned int core);
 static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable);
-static int irq_frame_is_el0(const void* frame_sp);
-static void* save_process_irq_frame_locked(int pid, void* frame_sp);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -439,39 +435,6 @@ static void* build_initial_context_el0(void* stack_top, unsigned long entry, voi
     frame[IRQ_FRAME_SPSR_IDX] = INITIAL_SPSR_EL0T;
     frame[IRQ_FRAME_USER_SP_IDX] = (unsigned long)user_sp;
     return frame;
-}
-
-static int irq_frame_is_el0(const void* frame_sp){
-    const unsigned long* frame = (const unsigned long*)frame_sp;
-    if (!frame){
-        return 0;
-    }
-    return ((frame[IRQ_FRAME_SPSR_IDX] & SPSR_MODE_MASK) == SPSR_MODE_EL0T) ? 1 : 0;
-}
-
-static void* process_saved_frame_base(process_t* p){
-    if (!p || !p->stack){
-        return 0;
-    }
-    return (void*)((unsigned long)p->stack - IRQ_FRAME_SIZE);
-}
-
-static void* save_process_irq_frame_locked(int pid, void* frame_sp){
-    if (pid < 0 || pid >= MAX_PROCESSES || !frame_sp){
-        return 0;
-    }
-    void* dst = process_saved_frame_base(&processes[pid]);
-    if (!dst){
-        return 0;
-    }
-
-    unsigned long* d = (unsigned long*)dst;
-    const unsigned long* s = (const unsigned long*)frame_sp;
-    for (unsigned int i = 0; i < IRQ_FRAME_WORDS; i++){
-        d[i] = s[i];
-    }
-    processes[pid].sp = dst;
-    return dst;
 }
 
 static int process_create_common_locked(program_entry_t entry,
@@ -1090,22 +1053,11 @@ void* scheduler_on_irq(void* irq_frame_sp){
     wake_due_sleepers_locked(core);
 
     if (cur >= 0 && cur < MAX_PROCESSES){
-        if (!irq_frame_is_el0(irq_frame_sp)){
-            spin_unlock_irqrestore(&g_process_lock, irq);
-            release_process_resources(&cleanup);
-            return irq_frame_sp;
-        }
         if (processes[cur].state == PROC_RUNNING){
-            if (!save_process_irq_frame_locked(cur, irq_frame_sp)){
-                processes[cur].state = PROC_RUNNING;
-                current_pid[core] = cur;
-                spin_unlock_irqrestore(&g_process_lock, irq);
-                release_process_resources(&cleanup);
-                return irq_frame_sp;
-            }
             processes[cur].state = PROC_READY;
             runq_enqueue(core, cur);
         }
+        processes[cur].sp = irq_frame_sp;
     } else{
         process_t* next = scheduler_next_for_core(core);
         if (next){
