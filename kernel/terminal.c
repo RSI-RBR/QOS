@@ -386,8 +386,7 @@ void terminal_putc(int term_id, int pid, char c){
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
     int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
-    int foreground = term && (pid < 0 || term->foreground_pid == pid);
-    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) && foreground;
+    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB);
     int mirror_remote = (pid >= 0 && owner == pid);
 
     if (term){
@@ -433,8 +432,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
     int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
-    int foreground = term && (pid < 0 || term->foreground_pid == pid);
-    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) && foreground;
+    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB);
     int mirror_remote = (pid >= 0 && owner == pid);
     unsigned int dirty_start = term ? term->cursor_row : 0u;
     unsigned int dirty_end = dirty_start;
