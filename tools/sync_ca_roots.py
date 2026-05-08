@@ -239,14 +239,48 @@ def extract_debian_ca_bundle_from_deb(deb_bytes: bytes) -> bytes:
         raise RuntimeError("unsupported Debian data.tar compression (expected xz/gz)")
 
     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf:
+        names = set(tf.getnames())
+
+        # Some package variants may already include the assembled bundle.
         for member_name in ("etc/ssl/certs/ca-certificates.crt", "./etc/ssl/certs/ca-certificates.crt"):
-            member = tf.getmember(member_name) if member_name in tf.getnames() else None
-            if member is not None:
+            if member_name in names:
+                member = tf.getmember(member_name)
                 f = tf.extractfile(member)
-                if not f:
-                    break
-                return f.read()
-    raise RuntimeError("ca-certificates.crt not found in Debian package")
+                if f:
+                    return f.read()
+
+        # Fallback: construct Debian bundle from packaged Mozilla CRT files.
+        # In many Debian builds the final /etc/ssl/certs/ca-certificates.crt
+        # is generated at install time by update-ca-certificates.
+        crt_members = []
+        for name in names:
+            if not name.endswith(".crt"):
+                continue
+            norm = name[2:] if name.startswith("./") else name
+            if norm.startswith("usr/share/ca-certificates/mozilla/"):
+                crt_members.append(name)
+
+        if not crt_members:
+            raise RuntimeError(
+                "Debian package missing both prebuilt ca-certificates.crt and "
+                "usr/share/ca-certificates/mozilla/*.crt"
+            )
+
+        bundle_parts: List[bytes] = []
+        for name in sorted(crt_members):
+            member = tf.getmember(name)
+            f = tf.extractfile(member)
+            if not f:
+                continue
+            data = f.read()
+            if not data:
+                continue
+            bundle_parts.append(data.rstrip() + b"\n")
+
+        if not bundle_parts:
+            raise RuntimeError("no readable Debian CRT members found")
+
+        return b"\n".join(bundle_parts)
 
 
 def build_consensus_bundle(
