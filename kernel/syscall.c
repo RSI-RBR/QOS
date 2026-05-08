@@ -77,17 +77,20 @@ static unsigned int cstr_bytes_with_nul(const char* s, unsigned int cap){
 }
 
 static void syscall_poll_background_io(void){
-    static unsigned long next_poll_tick = 0;
+    static unsigned long next_net_poll_tick = 0;
+    static unsigned long next_remote_poll_tick = 0;
     unsigned long now = system_ticks;
 
-    if ((long)(now - next_poll_tick) < 0){
-        return;
+    if ((long)(now - next_net_poll_tick) >= 0){
+        // The default NIC path is USB-backed on Pi 3, so background polling is
+        // intentionally modest. Explicit network syscalls still poll directly.
+        next_net_poll_tick = now + 50u;
+        (void)net_poll();
     }
-    // This runs from the userspace shell idle loop. Keep it responsive, but
-    // do not poll USB/network so aggressively that graphics tasks lose time.
-    next_poll_tick = now + 10u;
-    (void)net_poll();
-    remote_login_poll();
+    if ((long)(now - next_remote_poll_tick) >= 0){
+        next_remote_poll_tick = now + 10u;
+        remote_login_poll();
+    }
 }
 
 static void syscall_write_puts(int pid, const char* s){

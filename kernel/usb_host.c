@@ -151,6 +151,9 @@
 #define USB_HID_REQ_SET_PROTOCOL 0x0Bu
 #define USB_HID_REPORT_LEN 8u
 #define USB_HID_CHAR_QUEUE_LEN 128u
+#define USB_HID_ACTIVE_POLL_MS 4u
+#define USB_HID_IDLE_POLL_MS 32u
+#define USB_HID_ACTIVE_HOLD_MS 250u
 
 // USB 2.0 Hub class requests/features.
 #define HUB_REQ_GET_STATUS      0x00u
@@ -190,6 +193,7 @@ static unsigned char g_usb_dma_buffer[USB_DMA_BUFFER_SIZE] __attribute__((aligne
 static unsigned char g_bulk_in_toggle[16];
 static unsigned char g_bulk_out_toggle[16];
 static unsigned long g_kbd_next_poll_tick = 0;
+static unsigned long g_kbd_active_until_tick = 0;
 static unsigned int g_hub_ports = 0;
 static unsigned int g_hub_connected_mask = 0;
 static unsigned int g_hub_enum_attempts = 0;
@@ -550,6 +554,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.in_toggle = 0;
     g_kbd.have_prev_report = 0;
     g_kbd.last_report_tick = system_ticks;
+    g_kbd_active_until_tick = 0;
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         g_kbd.prev_report[i] = 0;
     }
@@ -606,6 +611,7 @@ static int usb_hid_poll_once(void){
         return 0;
     }
     g_root_info.hid_report_count++;
+    g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
     if (actual >= 9u && report[0] != 0u && report[1] == 0u){
         // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
         usb_hid_process_report(&report[1]);
@@ -2548,12 +2554,15 @@ void usb_host_poll(void){
     if ((long)(now - g_kbd_next_poll_tick) < 0){
         return;
     }
-    // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
-    // transactions, so doing this every shell idle tick steals visible time
-    // from graphics-heavy user programs. 8ms is still responsive for typing
-    // while avoiding a permanent USB tax on scheduled workloads.
-    g_kbd_next_poll_tick = now + 8u;
     (void)usb_hid_poll_once();
+    now = system_ticks;
+    // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
+    // transactions. Poll slowly while idle, then briefly speed up after any
+    // report so normal typing stays responsive without taxing graphics loops.
+    unsigned int interval = ((long)(now - g_kbd_active_until_tick) < 0) ?
+                            USB_HID_ACTIVE_POLL_MS :
+                            USB_HID_IDLE_POLL_MS;
+    g_kbd_next_poll_tick = now + interval;
 }
 
 int usb_host_try_getc(char* out){

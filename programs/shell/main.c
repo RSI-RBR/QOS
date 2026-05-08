@@ -1188,7 +1188,7 @@ void program_main(void){
         int ch = qos_try_getc_ex(&ev);
         if (ch < 0){
             // Avoid turning an idle prompt into a hot loop that starves peers.
-            qos_sleep(1);
+            qos_sleep(4);
             continue;
         }
 
