@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "tcp.h"
 #include "spinlock.h"
+#include "uart.h"
 
 #define SOCKET_MAX_GLOBAL 32
 #define SOCKET_MAX_PER_PROCESS 8
@@ -363,6 +364,7 @@ int ksocket_send(int pid, int fd, const unsigned char* data, unsigned int len, u
         unsigned long sio_irq = spin_lock_irqsave(&g_socket_stream_lock);
         int n;
         if (stream_remote_port == 443u){
+            uart_puts("HTTPS profile: kex_used=X25519, kex_pq=off, cert_sig_verify=off, sig_advertised=RSA_PSS/ECDSA/ED25519/MLDSA65(draft)\n");
             n = tcp_https_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);
         } else{
             n = tcp_http_get(stream_remote_ip, stream_host, stream_path, g_stream_http_tmp, stream_out_cap);

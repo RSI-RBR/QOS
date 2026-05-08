@@ -323,19 +323,6 @@ static void cmd_help(void){
     qos_puts(" exit\n");
 }
 
-static void print_tls_profile(unsigned short port){
-    if (port != 443u){
-        qos_puts("TLS: disabled (plain HTTP)\n");
-        return;
-    }
-
-    qos_puts("TLS profile:\n");
-    qos_puts(" key_exchange_used: X25519 (ECDHE)\n");
-    qos_puts(" key_exchange_pq: not active (PQ KEM not integrated)\n");
-    qos_puts(" signature_verify: server certificate verification not implemented\n");
-    qos_puts(" signature_advertised: rsa_pss_rsae_sha256, ecdsa_secp256r1_sha256, ed25519, mldsa65(draft)\n");
-}
-
 static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
     const char* req_host = host;
@@ -380,7 +367,6 @@ static void cmd_open(char* host, const char* path){
     qos_puts(req_host);
     qos_puts(req_path);
     qos_puts("\n");
-    print_tls_profile(port);
 
     n = http_fetch_raw(req_host, req_path, port, resp, (int)sizeof(resp));
     if (n <= 0){
