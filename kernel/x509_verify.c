@@ -981,11 +981,11 @@ int x509_verify_tls13_certificate(const char* host,
     unsigned int list_len;
     unsigned int list_end;
     unsigned int host_len;
-    unsigned char child_issuer_hash[32];
-    unsigned char parent_subject_hash[32];
-    unsigned char top_issuer_hash[32];
-    unsigned char top_der_hash[32];
-    int chain_ok = 1;
+    unsigned char subject_hashes[X509_MAX_CHAIN_CERTS][32];
+    unsigned char issuer_hashes[X509_MAX_CHAIN_CERTS][32];
+    unsigned char cur_der_hash[32];
+    int used[X509_MAX_CHAIN_CERTS];
+    unsigned int path_len = 0u;
 
     if (out_result){
         out_result->chain_certs = 0u;
@@ -1055,46 +1055,59 @@ int x509_verify_tls13_certificate(const char* host,
         if (parse_cert_identity(cert_der[i], cert_der_len[i], host, host_len, leaf, &certs[i]) != 0){
             return -1;
         }
+        if (name_hash(certs[i].subject_tlv, certs[i].subject_tlv_len, subject_hashes[i]) != 0 ||
+            name_hash(certs[i].issuer_tlv, certs[i].issuer_tlv_len, issuer_hashes[i]) != 0){
+            return -1;
+        }
+        used[i] = 0;
     }
 
     if (!certs[0].hostname_match){
+        uart_puts("X509: hostname mismatch.\n");
         return -1;
     }
 
-    for (unsigned int i = 0u; i + 1u < cert_count; i++){
-        if (name_hash(certs[i].issuer_tlv, certs[i].issuer_tlv_len, child_issuer_hash) != 0 ||
-            name_hash(certs[i + 1u].subject_tlv, certs[i + 1u].subject_tlv_len, parent_subject_hash) != 0){
+    // Build a chain path from leaf (index 0), tolerating out-of-order
+    // intermediates and extra certificates. Leaf must be first.
+    unsigned int cur = 0u;
+    used[cur] = 1;
+    path_len = 1u;
+    int anchor_ok = 0;
+    for (unsigned int depth = 0u; depth < cert_count; depth++){
+        if (cert_der_hash(cert_der[cur], cert_der_len[cur], cur_der_hash) != 0){
             return -1;
         }
-        if (!crypto_consttime_equal(child_issuer_hash, parent_subject_hash, 32u)){
-            chain_ok = 0;
+        // Trust anchor may be sent directly, or omitted (issuer name match).
+        if (anchor_contains_der_hash(cur_der_hash) ||
+            anchor_contains_subject_hash(issuer_hashes[cur])){
+            anchor_ok = 1;
             break;
         }
-    }
-    if (!chain_ok){
-        return -1;
-    }
 
-    // Anchor check:
-    // 1) If top certificate itself is a trusted root, accept.
-    // 2) Otherwise require top issuer Name to match a trusted root subject.
-    if (cert_der_hash(cert_der[cert_count - 1u], cert_der_len[cert_count - 1u], top_der_hash) != 0 ||
-        name_hash(certs[cert_count - 1u].issuer_tlv, certs[cert_count - 1u].issuer_tlv_len, top_issuer_hash) != 0){
-        return -1;
-    }
-
-    int anchor_ok = 0;
-    if (anchor_contains_der_hash(top_der_hash)){
-        anchor_ok = 1;
-    } else if (anchor_contains_subject_hash(top_issuer_hash)){
-        anchor_ok = 1;
+        int next = -1;
+        for (unsigned int j = 1u; j < cert_count; j++){
+            if (used[j]){
+                continue;
+            }
+            if (crypto_consttime_equal(subject_hashes[j], issuer_hashes[cur], 32u)){
+                next = (int)j;
+                break;
+            }
+        }
+        if (next < 0){
+            break;
+        }
+        cur = (unsigned int)next;
+        used[cur] = 1;
+        path_len++;
     }
     if (!anchor_ok){
+        uart_puts("X509: chain not anchored in CA_ROOTS.\n");
         return -1;
     }
 
     if (out_result){
-        out_result->chain_certs = cert_count;
+        out_result->chain_certs = path_len;
         out_result->anchor_count = g_ca_anchor_count;
         out_result->leaf_cert_sig_alg = certs[0].cert_sig_alg;
         out_result->hostname_ok = certs[0].hostname_match ? 1 : 0;
