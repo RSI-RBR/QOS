@@ -30,7 +30,8 @@ master:
 
     // Enable cluster coherency in EL2 before enabling EL1 MMU/caches.
     // Matches the common armstub flow on Cortex-A53.
-    mov x0, #(1 << 6)       // CPUECTLR_EL1.SMPEN
+    mrs x0, s3_1_c15_c2_1
+    orr x0, x0, #(1 << 6)   // CPUECTLR_EL1.SMPEN
     msr s3_1_c15_c2_1, x0
     isb
 
@@ -77,7 +78,8 @@ secondary_start:
     b.ne secondary_enter_kernel
 
     // Enable cluster coherency in EL2 before enabling EL1 MMU/caches.
-    mov x0, #(1 << 6)       // CPUECTLR_EL1.SMPEN
+    mrs x0, s3_1_c15_c2_1
+    orr x0, x0, #(1 << 6)   // CPUECTLR_EL1.SMPEN
     msr s3_1_c15_c2_1, x0
     isb
 
