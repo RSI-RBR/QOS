@@ -94,6 +94,15 @@ static unsigned long read_cntpct(void){
     return v;
 }
 
+static unsigned long cnt_ticks_to_ms(unsigned long ticks, unsigned long freq){
+    unsigned long long num;
+    if (freq == 0UL){
+        return 0UL;
+    }
+    num = (unsigned long long)ticks * 1000ULL;
+    return (unsigned long)(num / (unsigned long long)freq);
+}
+
 static void be16_write(unsigned char* p, unsigned short v){
     p[0] = (unsigned char)(v >> 8);
     p[1] = (unsigned char)(v & 0xFFu);
@@ -1263,8 +1272,26 @@ int tcp_https_get(const unsigned char dst_ip[4],
     sha256_ctx_t transcript;
     int force_x25519_only = 0;
     int retried_after_pq_timeout = 0;
+    unsigned long perf_freq = read_cntfrq();
+    unsigned long t_total_start = read_cntpct();
+    unsigned long t_stage_start = t_total_start;
+    unsigned long ms_connect = 0UL;
+    unsigned long ms_keygen = 0UL;
+    unsigned long ms_ch_build = 0UL;
+    unsigned long ms_ch_send = 0UL;
+    unsigned long ms_sh_wait = 0UL;
+    unsigned long ms_hs_tail = 0UL;
+    unsigned long ms_req_send = 0UL;
+    unsigned long ms_resp_total = 0UL;
+    unsigned long ms_first_byte = 0UL;
+    unsigned long attempts = 0UL;
+    int saw_first_app_data = 0;
 
 #define HTTPS_FAIL(_code) do { fail_code = (_code); goto https_fail_secure; } while (0)
+
+    if (perf_freq == 0UL){
+        perf_freq = 1000000UL;
+    }
 
     if (!dst_ip || !host || !*host || !out || out_cap < 2u){
         g_tcp_stats.http_fail++;
@@ -1281,6 +1308,7 @@ int tcp_https_get(const unsigned char dst_ip[4],
     g_tls13_last_kex_was_pq = 0;
 
 https_retry_connect:
+    attempts++;
     consumed = 0u;
     hs_used = 0u;
     saw_server_hello = 0;
@@ -1344,6 +1372,7 @@ https_retry_connect:
     g_conn.state = TCP_ST_SYN_SENT;
     g_conn.active = 1;
 
+    t_stage_start = read_cntpct();
     if (tcp_send_segment(TCP_FLAG_SYN, 0, 0) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
@@ -1362,7 +1391,9 @@ https_retry_connect:
         g_tcp_https_fail_count++;
         return g_tcp_https_last_error;
     }
+    ms_connect += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    t_stage_start = read_cntpct();
     if (x25519_generate_keypair(client_priv, client_pub) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
@@ -1383,7 +1414,9 @@ https_retry_connect:
             uart_puts("HTTPS: ML-KEM keypair failed; falling back to X25519.\n");
         }
     }
+    ms_keygen += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    t_stage_start = read_cntpct();
     if (tls13_build_client_hello_sni_x25519(host,
                                             client_kex_pref,
                                             client_pub,
@@ -1395,7 +1428,9 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-105);
     }
+    ms_ch_build += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    t_stage_start = read_cntpct();
     if (tls13_build_plain_record(22u, ch_msg, ch_len, hs_record, sizeof(hs_record), &hs_record_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
@@ -1408,15 +1443,18 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-107);
     }
+    ms_ch_send += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
     sha256_init(&transcript);
     sha256_update(&transcript, ch_msg, ch_len);
     hs_used = 0u;
     consumed = 0u;
 
+    t_stage_start = read_cntpct();
     while (!saw_server_hello){
         unsigned int sh_wait_ms = client_hybrid_enabled ? 7000u : 4500u;
         if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, sh_wait_ms) != 0){
+            ms_sh_wait += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
             if (client_hybrid_enabled && !force_x25519_only && !retried_after_pq_timeout){
                 retried_after_pq_timeout = 1;
                 force_x25519_only = 1;
@@ -1497,7 +1535,9 @@ https_retry_connect:
             HTTPS_FAIL(-111);
         }
     }
+    ms_sh_wait += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    t_stage_start = read_cntpct();
     if (tls13_server_hello_keyshare_entry(sh_msg, sh_len, &sh_kex_group, &sh_kex, &sh_kex_len) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
@@ -1852,7 +1892,9 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-132);
     }
+    ms_hs_tail += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    t_stage_start = read_cntpct();
     if (append_str(req, (int)sizeof(req), &rq, "GET ") != 0 ||
         append_str(req, (int)sizeof(req), &rq, req_path) != 0 ||
         append_str(req, (int)sizeof(req), &rq, " HTTP/1.1\r\nHost: ") != 0 ||
@@ -1881,6 +1923,7 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-135);
     }
+    ms_req_send += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
     out[0] = 0;
     app_bytes = 0;
@@ -1888,6 +1931,7 @@ https_retry_connect:
     unsigned long start_tick = system_ticks;
     unsigned long last_progress_tick = system_ticks;
 
+    t_stage_start = read_cntpct();
     while (1){
         int completion = (app_bytes > 0) ? http_response_completion_state(out, (unsigned int)app_bytes) : 0;
         if (completion == 1){
@@ -1930,6 +1974,10 @@ https_retry_connect:
             }
             app_bytes += (int)take;
             out[app_bytes] = 0;
+            if (!saw_first_app_data){
+                saw_first_app_data = 1;
+                ms_first_byte = cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
+            }
             last_progress_tick = system_ticks;
             if (http_response_completion_state(out, (unsigned int)app_bytes) == 1){
                 break;
@@ -1954,6 +2002,7 @@ https_retry_connect:
             }
         }
     }
+    ms_resp_total += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
     g_conn.active = 0;
     g_conn.state = TCP_ST_CLOSED;
@@ -2014,6 +2063,44 @@ https_fail_secure:
     } else if (server_cert_verify_alg != 0u){
         uart_puts("HTTPS cert signature alg=");
         uart_puthex((unsigned int)server_cert_verify_alg);
+        uart_puts("\n");
+    }
+
+    {
+        unsigned long ms_total = cnt_ticks_to_ms(read_cntpct() - t_total_start, perf_freq);
+        uart_puts("HTTPS timing ms: attempts=");
+        uart_putdec(attempts);
+        uart_puts(" conn=");
+        uart_putdec(ms_connect);
+        uart_puts(" keygen=");
+        uart_putdec(ms_keygen);
+        uart_puts(" ch_build=");
+        uart_putdec(ms_ch_build);
+        uart_puts(" ch_send=");
+        uart_putdec(ms_ch_send);
+        uart_puts(" sh_wait=");
+        uart_putdec(ms_sh_wait);
+        uart_puts(" hs_tail=");
+        uart_putdec(ms_hs_tail);
+        uart_puts(" req_send=");
+        uart_putdec(ms_req_send);
+        uart_puts(" first_byte=");
+        uart_putdec(ms_first_byte);
+        uart_puts(" resp_total=");
+        uart_putdec(ms_resp_total);
+        uart_puts(" total=");
+        uart_putdec(ms_total);
+        uart_puts(" pq_retry=");
+        uart_putdec(retried_after_pq_timeout ? 1UL : 0UL);
+        if (result < 0){
+            uart_puts(" err=");
+            if (fail_code < 0){
+                uart_puts("-");
+                uart_putdec((unsigned long)(-fail_code));
+            } else{
+                uart_putdec((unsigned long)fail_code);
+            }
+        }
         uart_puts("\n");
     }
 

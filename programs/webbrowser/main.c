@@ -55,6 +55,24 @@ static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[3]);
 }
 
+static void print_fetch_timing(unsigned long dns_ms,
+                               unsigned long connect_ms,
+                               unsigned long send_ms,
+                               unsigned long recv_ms,
+                               unsigned long total_ms){
+    qos_puts("Fetch timing ms: dns=");
+    print_uint((unsigned int)dns_ms);
+    qos_puts(" connect=");
+    print_uint((unsigned int)connect_ms);
+    qos_puts(" send=");
+    print_uint((unsigned int)send_ms);
+    qos_puts(" recv=");
+    print_uint((unsigned int)recv_ms);
+    qos_puts(" total=");
+    print_uint((unsigned int)total_ms);
+    qos_puts("\n");
+}
+
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
         if (*a != *b){
@@ -613,10 +631,18 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
     qos_sockaddr_in_t sa;
     char req[REQ_CAP];
     int rq = 0;
+    unsigned long t_total_start = qos_get_ticks();
+    unsigned long t_stage_start = t_total_start;
+    unsigned long dns_ms = 0;
+    unsigned long connect_ms = 0;
+    unsigned long send_ms = 0;
+    unsigned long recv_ms = 0;
 
     int dns_rc = qos_dns_resolve_a_socket(host, g_dns_server, ip, DNS_TIMEOUT_MS);
+    dns_ms = qos_get_ticks() - t_stage_start;
     if (dns_rc != 0){
         qos_puts("DNS resolve failed.\n");
+        print_fetch_timing(dns_ms, connect_ms, send_ms, recv_ms, qos_get_ticks() - t_total_start);
         return -1;
     }
 
@@ -629,6 +655,7 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
     int fd = qos_socket(QOS_AF_INET, QOS_SOCK_STREAM, 0);
     if (fd < 0){
         qos_puts("socket() failed.\n");
+        print_fetch_timing(dns_ms, connect_ms, send_ms, recv_ms, qos_get_ticks() - t_total_start);
         return -1;
     }
 
@@ -645,11 +672,15 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         sa.reserved[i] = 0;
     }
 
+    t_stage_start = qos_get_ticks();
     if (qos_connect(fd, &sa, (unsigned int)sizeof(sa)) != 0){
+        connect_ms = qos_get_ticks() - t_stage_start;
         qos_puts("connect() failed.\n");
         (void)qos_close(fd);
+        print_fetch_timing(dns_ms, connect_ms, send_ms, recv_ms, qos_get_ticks() - t_total_start);
         return -1;
     }
+    connect_ms = qos_get_ticks() - t_stage_start;
 
     if (append_str(req, REQ_CAP, &rq, "GET ") != 0 ||
         append_str(req, REQ_CAP, &rq, (path && *path) ? path : "/") != 0 ||
@@ -665,16 +696,20 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         return -1;
     }
 
+    t_stage_start = qos_get_ticks();
     int send_rc = qos_send(fd, req, (unsigned int)rq, 0);
+    send_ms = qos_get_ticks() - t_stage_start;
     if (send_rc < 0){
         qos_puts("send() failed rc=");
         print_int(send_rc);
         qos_puts("\n");
         (void)qos_close(fd);
+        print_fetch_timing(dns_ms, connect_ms, send_ms, recv_ms, qos_get_ticks() - t_total_start);
         return -1;
     }
 
     int total = 0;
+    t_stage_start = qos_get_ticks();
     while (total < resp_cap){
         int n = qos_recv(fd, &resp[total], (unsigned int)(resp_cap - total), QOS_SOCK_TIMEOUT_USE_SOCKET);
         if (n == QOS_SOCK_ERR_AGAIN){
@@ -685,8 +720,10 @@ static int http_fetch_raw(const char* host, const char* path, unsigned short por
         }
         total += n;
     }
+    recv_ms = qos_get_ticks() - t_stage_start;
 
     (void)qos_close(fd);
+    print_fetch_timing(dns_ms, connect_ms, send_ms, recv_ms, qos_get_ticks() - t_total_start);
     return total;
 }
 
