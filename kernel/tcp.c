@@ -523,6 +523,15 @@ static unsigned int g_tls_stream_pending_off = 0u;
 static unsigned int g_tls_stream_pending_len = 0u;
 static unsigned int g_tls_stream_consumed = 0u;
 static int g_tls_stream_active = 0;
+static int g_tls_stream_perf_active = 0;
+static unsigned long g_tls_stream_perf_freq = 0UL;
+static unsigned long g_tls_stream_perf_t0 = 0UL;
+static unsigned long g_tls_stream_wait_ticks = 0UL;
+static unsigned long g_tls_stream_decrypt_ticks = 0UL;
+static unsigned long g_tls_stream_copy_ticks = 0UL;
+static unsigned long g_tls_stream_pull_calls = 0UL;
+static unsigned long g_tls_stream_records = 0UL;
+static unsigned long g_tls_stream_bytes_out = 0UL;
 
 // PQ TLS negotiation policy:
 // - Prefer ML-DSA signatures in ClientHello when available.
@@ -547,6 +556,44 @@ static void tls_stream_reset_state(void){
     g_tls_stream_active = 0;
     crypto_memzero(g_tls_stream_pending, sizeof(g_tls_stream_pending));
     crypto_memzero(&g_tls_stream_app_rx, sizeof(g_tls_stream_app_rx));
+}
+
+static void tls_stream_perf_begin(void){
+    g_tls_stream_perf_freq = read_cntfrq();
+    if (g_tls_stream_perf_freq == 0UL){
+        g_tls_stream_perf_freq = 1000000UL;
+    }
+    g_tls_stream_perf_t0 = read_cntpct();
+    g_tls_stream_wait_ticks = 0UL;
+    g_tls_stream_decrypt_ticks = 0UL;
+    g_tls_stream_copy_ticks = 0UL;
+    g_tls_stream_pull_calls = 0UL;
+    g_tls_stream_records = 0UL;
+    g_tls_stream_bytes_out = 0UL;
+    g_tls_stream_perf_active = 1;
+}
+
+static void tls_stream_perf_end_and_print(void){
+    if (!g_tls_stream_perf_active){
+        return;
+    }
+    unsigned long total_ticks = read_cntpct() - g_tls_stream_perf_t0;
+    uart_puts("HTTPS stream timing ms: wait=");
+    uart_putdec(cnt_ticks_to_ms(g_tls_stream_wait_ticks, g_tls_stream_perf_freq));
+    uart_puts(" decrypt=");
+    uart_putdec(cnt_ticks_to_ms(g_tls_stream_decrypt_ticks, g_tls_stream_perf_freq));
+    uart_puts(" copy=");
+    uart_putdec(cnt_ticks_to_ms(g_tls_stream_copy_ticks, g_tls_stream_perf_freq));
+    uart_puts(" total=");
+    uart_putdec(cnt_ticks_to_ms(total_ticks, g_tls_stream_perf_freq));
+    uart_puts(" pulls=");
+    uart_putdec(g_tls_stream_pull_calls);
+    uart_puts(" recs=");
+    uart_putdec(g_tls_stream_records);
+    uart_puts(" out=");
+    uart_putdec(g_tls_stream_bytes_out);
+    uart_puts("\n");
+    g_tls_stream_perf_active = 0;
 }
 
 static int tls13_pq_kem_backend_ready(void){
@@ -1229,6 +1276,7 @@ int tcp_https_stream_active(void){
 }
 
 void tcp_https_stream_close(void){
+    tls_stream_perf_end_and_print();
     g_conn.active = 0;
     g_conn.state = TCP_ST_CLOSED;
     tls_stream_reset_state();
@@ -1248,11 +1296,14 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
     }
 
     if (g_tls_stream_pending_off < g_tls_stream_pending_len){
+        unsigned long t_copy = read_cntpct();
         unsigned int avail = g_tls_stream_pending_len - g_tls_stream_pending_off;
         unsigned int take = (avail < out_cap) ? avail : out_cap;
         for (unsigned int i = 0; i < take; i++){
             out[i] = g_tls_stream_pending[g_tls_stream_pending_off + i];
         }
+        g_tls_stream_copy_ticks += (read_cntpct() - t_copy);
+        g_tls_stream_bytes_out += (unsigned long)take;
         g_tls_stream_pending_off += take;
         if (g_tls_stream_pending_off >= g_tls_stream_pending_len){
             g_tls_stream_pending_off = 0u;
@@ -1263,7 +1314,10 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
 
     while (1){
         unsigned int consumed_before = g_tls_stream_consumed;
+        unsigned long t_wait = read_cntpct();
+        g_tls_stream_pull_calls++;
         if (tls13_pull_record(&g_tls_stream_consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, timeout_ms) != 0){
+            g_tls_stream_wait_ticks += (read_cntpct() - t_wait);
             g_tls_stream_consumed = consumed_before;
             if (g_conn.state == TCP_ST_CLOSE_WAIT){
                 tcp_https_stream_close();
@@ -1275,6 +1329,7 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
             tcp_https_stream_close();
             return -1;
         }
+        g_tls_stream_wait_ticks += (read_cntpct() - t_wait);
         if (rec_type == 20u){
             continue;
         }
@@ -1298,13 +1353,16 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
 
         unsigned int p_len = 0u;
         unsigned char inner = 0u;
+        unsigned long t_decrypt = read_cntpct();
         if (tls13_record_decrypt(&g_tls_stream_app_rx,
                                  g_tls_record_wire, 5u + rec_len,
                                  g_tls_record_plain, sizeof(g_tls_record_plain),
                                  &p_len, &inner) != 0){
+            g_tls_stream_decrypt_ticks += (read_cntpct() - t_decrypt);
             tcp_https_stream_close();
             return -1;
         }
+        g_tls_stream_decrypt_ticks += (read_cntpct() - t_decrypt);
         if (inner != 23u || p_len == 0u){
             continue;
         }
@@ -1312,6 +1370,8 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
             tcp_https_stream_close();
             return -1;
         }
+        g_tls_stream_records++;
+        unsigned long t_copy = read_cntpct();
         for (unsigned int i = 0; i < p_len; i++){
             g_tls_stream_pending[i] = g_tls_record_plain[i];
         }
@@ -1323,6 +1383,8 @@ static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, uns
             for (unsigned int i = 0; i < take; i++){
                 out[i] = g_tls_stream_pending[i];
             }
+            g_tls_stream_copy_ticks += (read_cntpct() - t_copy);
+            g_tls_stream_bytes_out += (unsigned long)take;
             g_tls_stream_pending_off = take;
             if (g_tls_stream_pending_off >= g_tls_stream_pending_len){
                 g_tls_stream_pending_off = 0u;
@@ -2063,6 +2125,7 @@ https_retry_connect:
         g_tls_stream_pending_off = 0u;
         g_tls_stream_pending_len = 0u;
         g_tls_stream_active = 1;
+        tls_stream_perf_begin();
 
         t_stage_start = read_cntpct();
         first_chunk = tls13_stream_read_chunk(out, out_cap, 6000u);
