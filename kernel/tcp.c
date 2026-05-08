@@ -744,26 +744,40 @@ static int tls13_wait_for_established(void){
     unsigned long start_cnt = read_cntpct();
     unsigned long freq = read_cntfrq();
     unsigned long handshake_to_cnt;
-    unsigned long spin_budget = 25000000UL;
+    unsigned long syn_rtx_cnt;
+    unsigned long last_syn_cnt = start_cnt;
+    unsigned int syn_retries = 0u;
 
     if (freq == 0){
         freq = 1000000UL;
     }
-    handshake_to_cnt = (freq / 1000UL) * 2500UL;
+    handshake_to_cnt = (freq / 1000UL) * 6000UL;
     if (handshake_to_cnt == 0){
-        handshake_to_cnt = freq;
+        handshake_to_cnt = freq * 6UL;
+    }
+    syn_rtx_cnt = (freq / 1000UL) * 900UL;
+    if (syn_rtx_cnt == 0){
+        syn_rtx_cnt = freq / 2UL;
     }
 
     while (g_conn.state == TCP_ST_SYN_SENT){
         (void)net_poll();
-        if ((read_cntpct() - start_cnt) > handshake_to_cnt){
+        unsigned long now_cnt = read_cntpct();
+        if ((now_cnt - start_cnt) > handshake_to_cnt){
             return -1;
         }
-        if ((long)(system_ticks - start_tick) > 2000){
+        if ((long)(system_ticks - start_tick) > 5500){
             return -1;
         }
-        if (spin_budget-- == 0){
-            return -1;
+        if (syn_retries < 2u && (now_cnt - last_syn_cnt) > syn_rtx_cnt){
+            // Retransmit SYN with the original ISN sequence number.
+            g_conn.snd_nxt = g_conn.iss;
+            if (tcp_send_segment(TCP_FLAG_SYN, 0, 0) != 0){
+                return -1;
+            }
+            g_tcp_stats.syn_sent++;
+            syn_retries++;
+            last_syn_cnt = now_cnt;
         }
     }
     return (g_conn.state == TCP_ST_ESTABLISHED) ? 0 : -1;
@@ -1762,35 +1776,47 @@ int tcp_http_get(const unsigned char dst_ip[4],
     if (freq == 0){
         freq = 1000000UL;
     }
-    handshake_to_cnt = (freq / 1000UL) * 2500UL; // 2.5s
+    handshake_to_cnt = (freq / 1000UL) * 6000UL; // 6s with SYN retransmits
     overall_to_cnt = (freq / 1000UL) * 9000UL;   // 9s
     idle_to_cnt = (freq / 1000UL) * 1500UL;      // 1.5s
-    if (handshake_to_cnt == 0) handshake_to_cnt = freq;
+    if (handshake_to_cnt == 0) handshake_to_cnt = freq * 6UL;
     if (overall_to_cnt == 0) overall_to_cnt = freq * 2UL;
     if (idle_to_cnt == 0) idle_to_cnt = freq / 2UL;
 
     start_tick = system_ticks;
     start_cnt = read_cntpct();
-    spin_budget = 25000000UL;
+    unsigned long syn_rtx_cnt = (freq / 1000UL) * 900UL;
+    unsigned long last_syn_cnt = start_cnt;
+    unsigned int syn_retries = 0u;
+    if (syn_rtx_cnt == 0){
+        syn_rtx_cnt = freq / 2UL;
+    }
     while (g_conn.state == TCP_ST_SYN_SENT){
         (void)net_poll();
-        if ((read_cntpct() - start_cnt) > handshake_to_cnt){
+        unsigned long now_cnt = read_cntpct();
+        if ((now_cnt - start_cnt) > handshake_to_cnt){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
             return -1;
         }
-        if ((long)(system_ticks - start_tick) > 2000){
+        if ((long)(system_ticks - start_tick) > 5500){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
             return -1;
         }
-        if (spin_budget-- == 0){
-            g_conn.active = 0;
-            g_conn.state = TCP_ST_CLOSED;
-            g_tcp_stats.http_fail++;
-            return -1;
+        if (syn_retries < 2u && (now_cnt - last_syn_cnt) > syn_rtx_cnt){
+            g_conn.snd_nxt = g_conn.iss;
+            if (tcp_send_segment(TCP_FLAG_SYN, 0, 0) != 0){
+                g_conn.active = 0;
+                g_conn.state = TCP_ST_CLOSED;
+                g_tcp_stats.http_fail++;
+                return -1;
+            }
+            g_tcp_stats.syn_sent++;
+            syn_retries++;
+            last_syn_cnt = now_cnt;
         }
     }
     if (g_conn.state != TCP_ST_ESTABLISHED){
