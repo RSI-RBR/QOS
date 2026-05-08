@@ -132,7 +132,7 @@ void loader_free_program_memory(void* ptr, unsigned long size){
     program_slot_used[slot] = 0;
 }
 
-void* loader_user_stack_top(void* program_base){
+void* loader_user_stack_top(void* program_base, unsigned long user_rw_offset, unsigned long user_rw_size){
     if (!program_base){
         return 0;
     }
@@ -143,7 +143,27 @@ void* loader_user_stack_top(void* program_base){
     unsigned long off = p - PROGRAM_POOL_START;
     unsigned long slot = off / PROGRAM_SLOT_SIZE;
     unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
-    unsigned long top = (slot_base + PROGRAM_SLOT_SIZE) & ~0xFUL;
+
+    if ((user_rw_offset & (PROGRAM_PAGE_SIZE - 1UL)) != 0UL){
+        return 0;
+    }
+    if (user_rw_offset >= PROGRAM_SLOT_SIZE || user_rw_size == 0UL){
+        return 0;
+    }
+    if (user_rw_size > (PROGRAM_SLOT_SIZE - user_rw_offset)){
+        return 0;
+    }
+    if (user_rw_size <= (QOS_USER_STACK_BYTES + QOS_USER_GUARD_PAGE_BYTES + PROGRAM_PAGE_SIZE)){
+        return 0;
+    }
+
+    unsigned long rw_end = slot_base + user_rw_offset + user_rw_size;
+    unsigned long stack_start = rw_end - QOS_USER_STACK_BYTES;
+    unsigned long guard_start = stack_start - QOS_USER_GUARD_PAGE_BYTES;
+    if (guard_start < (slot_base + user_rw_offset)){
+        return 0;
+    }
+    unsigned long top = rw_end & ~0xFUL;
     return (void*)(top - 16);
 }
 

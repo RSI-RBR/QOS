@@ -738,7 +738,7 @@ int process_create(program_entry_t entry){
 }
 
 int process_create_loaded(loaded_program_t prog){
-    void* user_sp = loader_user_stack_top(prog.memory);
+    void* user_sp = loader_user_stack_top(prog.memory, prog.user_rw_offset, prog.user_rw_size);
     if (!user_sp){
         return -1;
     }
@@ -867,6 +867,26 @@ static int process_user_range_check(const process_t* p, unsigned long addr, unsi
     unsigned long rw_end = rw_start + p->user_rw_size;
     if (rw_start < base || rw_end < rw_start){
         return 0;
+    }
+
+    unsigned long guard_start = 0;
+    unsigned long guard_end = 0;
+    int has_guard = 0;
+    if (p->user_rw_size > (QOS_USER_STACK_BYTES + QOS_USER_GUARD_PAGE_BYTES)){
+        unsigned long stack_start = rw_end - QOS_USER_STACK_BYTES;
+        if (stack_start >= (rw_start + QOS_USER_GUARD_PAGE_BYTES)){
+            guard_start = stack_start - QOS_USER_GUARD_PAGE_BYTES;
+            guard_end = guard_start + QOS_USER_GUARD_PAGE_BYTES;
+            if (guard_end > guard_start){
+                has_guard = 1;
+            }
+        }
+    }
+
+    if (has_guard){
+        if (!(end < guard_start || addr >= guard_end)){
+            return 0;
+        }
     }
 
     if (writeable){

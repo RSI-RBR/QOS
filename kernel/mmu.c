@@ -275,6 +275,30 @@ static void l3_map_range(unsigned long* l3,
     }
 }
 
+static void l3_unmap_range(unsigned long* l3,
+                           unsigned long off,
+                           unsigned long size){
+    if (size == 0u){
+        return;
+    }
+    if (off >= MMU_SLOT_SIZE){
+        return;
+    }
+    if (size > (MMU_SLOT_SIZE - off)){
+        size = MMU_SLOT_SIZE - off;
+    }
+
+    unsigned long start = off & ~(MMU_PAGE_SIZE - 1UL);
+    unsigned long end = (off + size + (MMU_PAGE_SIZE - 1UL)) & ~(MMU_PAGE_SIZE - 1UL);
+    for (unsigned long p = start; p < end; p += MMU_PAGE_SIZE){
+        unsigned int idx = (unsigned int)(p / MMU_PAGE_SIZE);
+        if (idx >= L3_ENTRIES){
+            break;
+        }
+        l3[idx] = 0UL;
+    }
+}
+
 void mmu_init(void){
     spinlock_init(&g_mmu_lock);
     zero_tables();
@@ -357,6 +381,8 @@ int mmu_process_space_create(int pid,
         .ap = AP_EL1_RW_EL0_RW,
         .xn = PXN_BIT | UXN_BIT
     };
+    const unsigned long guard_bytes = QOS_USER_GUARD_PAGE_BYTES;
+    const unsigned long stack_bytes = QOS_USER_STACK_BYTES;
 
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
 
@@ -378,6 +404,27 @@ int mmu_process_space_create(int pid,
         return -1;
     }
     if (user_rw_size > (MMU_SLOT_SIZE - user_rw_offset)){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if ((guard_bytes & (MMU_PAGE_SIZE - 1UL)) != 0UL ||
+        (stack_bytes & (MMU_PAGE_SIZE - 1UL)) != 0UL){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_size <= (stack_bytes + guard_bytes + MMU_PAGE_SIZE)){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    unsigned long rw_end = user_rw_offset + user_rw_size;
+    unsigned long stack_off = rw_end - stack_bytes;
+    unsigned long guard_off = stack_off - guard_bytes;
+    if (guard_off < user_rw_offset){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    unsigned long heap_size = guard_off - user_rw_offset;
+    if (heap_size < MMU_PAGE_SIZE){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
@@ -408,7 +455,11 @@ int mmu_process_space_create(int pid,
 
     l3_fill_kernel_private(proc_l3_user_slot[pid], slot_base);
     l3_map_range(proc_l3_user_slot[pid], slot_base, 0u, user_rw_offset, &user_code_rx);
-    l3_map_range(proc_l3_user_slot[pid], slot_base, user_rw_offset, user_rw_size, &user_data_rw_nx);
+    // Heap/data are RW+NX up to the guard page below the stack.
+    l3_map_range(proc_l3_user_slot[pid], slot_base, user_rw_offset, heap_size, &user_data_rw_nx);
+    // Leave one unmapped guard page between heap and stack.
+    l3_unmap_range(proc_l3_user_slot[pid], guard_off, guard_bytes);
+    l3_map_range(proc_l3_user_slot[pid], slot_base, stack_off, stack_bytes, &user_data_rw_nx);
     proc_space_active[pid] = 1;
 
     mmu_tlb_shootdown_all_locked();
