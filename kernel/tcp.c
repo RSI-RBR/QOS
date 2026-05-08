@@ -69,6 +69,8 @@ static unsigned short g_next_local_port = 42000u;
 static int g_tcp_https_last_error = 0;
 static unsigned long g_tcp_https_fail_count = 0;
 
+#define TCP_RECV_WINDOW_MAX 60000u
+
 #define TCP_FLAG_FIN 0x01u
 #define TCP_FLAG_SYN 0x02u
 #define TCP_FLAG_RST 0x04u
@@ -146,6 +148,17 @@ static unsigned short tcp_checksum(const unsigned char src_ip[4],
     return sum_finalize(sum);
 }
 
+static unsigned short tcp_advertised_window(void){
+    unsigned int room = TCP_RECV_WINDOW_MAX;
+    if (g_conn.out && g_conn.out_cap > g_conn.out_len){
+        room = g_conn.out_cap - g_conn.out_len;
+    }
+    if (room > TCP_RECV_WINDOW_MAX){
+        room = TCP_RECV_WINDOW_MAX;
+    }
+    return (unsigned short)room;
+}
+
 static int tcp_send_segment(unsigned char flags,
                             const unsigned char* payload,
                             unsigned int payload_len){
@@ -167,7 +180,7 @@ static int tcp_send_segment(unsigned char flags,
     be32_write(&buf[8], g_conn.rcv_nxt);
     buf[12] = (unsigned char)(5u << 4); // data offset
     buf[13] = flags;
-    be16_write(&buf[14], 4096u);
+    be16_write(&buf[14], tcp_advertised_window());
     be16_write(&buf[16], 0);
     be16_write(&buf[18], 0);
 
@@ -309,6 +322,150 @@ static int append_str(char* dst, int cap, int* idx, const char* s){
         s++;
     }
     return 0;
+}
+
+static unsigned char http_ascii_lower(unsigned char c){
+    if (c >= 'A' && c <= 'Z'){
+        return (unsigned char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int http_header_name_eq(const unsigned char* p, unsigned int len, const char* name){
+    unsigned int i = 0u;
+    if (!p || !name){
+        return 0;
+    }
+    while (i < len && name[i]){
+        if (http_ascii_lower(p[i]) != http_ascii_lower((unsigned char)name[i])){
+            return 0;
+        }
+        i++;
+    }
+    return i == len && name[i] == 0;
+}
+
+static int http_value_has_token(const unsigned char* p, unsigned int len, const char* token){
+    unsigned int tlen = 0u;
+    if (!p || !token){
+        return 0;
+    }
+    while (token[tlen]){
+        tlen++;
+    }
+    if (tlen == 0u || len < tlen){
+        return 0;
+    }
+    for (unsigned int i = 0u; i + tlen <= len; i++){
+        unsigned int j = 0u;
+        while (j < tlen && http_ascii_lower(p[i + j]) == http_ascii_lower((unsigned char)token[j])){
+            j++;
+        }
+        if (j == tlen){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int http_find_body_offset(const unsigned char* buf, unsigned int len, unsigned int* out_body){
+    if (!buf || !out_body || len < 4u){
+        return 0;
+    }
+    for (unsigned int i = 0u; i + 3u < len; i++){
+        if (buf[i] == '\r' && buf[i + 1u] == '\n' &&
+            buf[i + 2u] == '\r' && buf[i + 3u] == '\n'){
+            *out_body = i + 4u;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Returns 1 when complete, 0 when definitely waiting for more, -1 when
+// headers are complete but no exact length is available.
+static int http_response_completion_state(const unsigned char* buf, unsigned int len){
+    unsigned int body = 0u;
+    unsigned int i = 0u;
+    unsigned int content_len = 0u;
+    int have_content_len = 0;
+    int chunked = 0;
+
+    if (!http_find_body_offset(buf, len, &body)){
+        return 0;
+    }
+
+    while (i < body){
+        unsigned int ls = i;
+        unsigned int le;
+        unsigned int colon = 0xFFFFFFFFu;
+        unsigned int vs;
+        unsigned int ve;
+
+        while (i < body && buf[i] != '\n'){
+            if (buf[i] == ':' && colon == 0xFFFFFFFFu){
+                colon = i;
+            }
+            i++;
+        }
+        le = i;
+        if (i < body && buf[i] == '\n'){
+            i++;
+        }
+        while (le > ls && (buf[le - 1u] == '\r' || buf[le - 1u] == '\n')){
+            le--;
+        }
+        if (le == ls){
+            break;
+        }
+        if (colon == 0xFFFFFFFFu || colon <= ls || colon >= le){
+            continue;
+        }
+
+        vs = colon + 1u;
+        while (vs < le && (buf[vs] == ' ' || buf[vs] == '\t')){
+            vs++;
+        }
+        ve = le;
+        while (ve > vs && (buf[ve - 1u] == ' ' || buf[ve - 1u] == '\t')){
+            ve--;
+        }
+
+        if (http_header_name_eq(&buf[ls], colon - ls, "content-length")){
+            unsigned int v = 0u;
+            int ok = 0;
+            for (unsigned int k = vs; k < ve; k++){
+                if (buf[k] < '0' || buf[k] > '9'){
+                    ok = 0;
+                    break;
+                }
+                ok = 1;
+                v = (v * 10u) + (unsigned int)(buf[k] - '0');
+            }
+            if (ok){
+                content_len = v;
+                have_content_len = 1;
+            }
+        } else if (http_header_name_eq(&buf[ls], colon - ls, "transfer-encoding") &&
+                   http_value_has_token(&buf[vs], ve - vs, "chunked")){
+            chunked = 1;
+        }
+    }
+
+    if (have_content_len){
+        return ((len - body) >= content_len) ? 1 : 0;
+    }
+    if (chunked){
+        for (unsigned int k = body; k + 4u < len; k++){
+            if (buf[k] == '\r' && buf[k + 1u] == '\n' &&
+                buf[k + 2u] == '0' &&
+                (buf[k + 3u] == '\r' || buf[k + 3u] == ';')){
+                return 1;
+            }
+        }
+        return 0;
+    }
+    return -1;
 }
 
 #define TCP_TLS_REC_MAX (16384u + 256u)
@@ -1320,7 +1477,12 @@ int tcp_https_get(const unsigned char dst_ip[4],
     unsigned long last_progress_tick = system_ticks;
 
     while (1){
-        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, 2500u) != 0){
+        int completion = (app_bytes > 0) ? http_response_completion_state(out, (unsigned int)app_bytes) : 0;
+        if (completion == 1){
+            break;
+        }
+        unsigned int pull_timeout = (app_bytes > 0 && completion < 0) ? 350u : 2500u;
+        if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, pull_timeout) != 0){
             break;
         }
         if (rec_type == 21u){
@@ -1357,6 +1519,9 @@ int tcp_https_get(const unsigned char dst_ip[4],
             app_bytes += (int)take;
             out[app_bytes] = 0;
             last_progress_tick = system_ticks;
+            if (http_response_completion_state(out, (unsigned int)app_bytes) == 1){
+                break;
+            }
             if (room == 0u){
                 break;
             }
