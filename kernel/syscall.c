@@ -146,6 +146,21 @@ static void syscall_dump_usb_info(void){
         uart_puthex(info.child_bulk_out_mps);
         syscall_write_puts(-1, "\n");
     }
+    syscall_write_puts(-1, "USB hub ports=");
+    uart_putdec(info.hub_ports);
+    syscall_write_puts(-1, " conn_mask=");
+    uart_puthex(info.hub_connected_mask);
+    syscall_write_puts(-1, " enum_attempts=");
+    uart_putdec(info.hub_enum_attempts);
+    syscall_write_puts(-1, " enum_ok=");
+    uart_putdec(info.hub_enum_success);
+    syscall_write_puts(-1, " enum_ok_mask=");
+    uart_puthex(info.hub_enum_success_mask);
+    syscall_write_puts(-1, " hid_candidates=");
+    uart_putdec(info.hub_hid_candidates);
+    syscall_write_puts(-1, " hid_mask=");
+    uart_puthex(info.hub_hid_candidate_mask);
+    syscall_write_puts(-1, "\n");
 
     if (info.child_hid_kbd_present){
         syscall_write_puts(-1, "USB HID kbd addr=");

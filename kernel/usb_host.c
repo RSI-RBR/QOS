@@ -189,6 +189,13 @@ static unsigned char g_usb_dma_buffer[USB_DMA_BUFFER_SIZE] __attribute__((aligne
 static unsigned char g_bulk_in_toggle[16];
 static unsigned char g_bulk_out_toggle[16];
 static unsigned long g_kbd_next_poll_tick = 0;
+static unsigned int g_hub_ports = 0;
+static unsigned int g_hub_connected_mask = 0;
+static unsigned int g_hub_enum_attempts = 0;
+static unsigned int g_hub_enum_success = 0;
+static unsigned int g_hub_enum_success_mask = 0;
+static unsigned int g_hub_hid_candidates = 0;
+static unsigned int g_hub_hid_candidate_mask = 0;
 extern volatile unsigned long system_ticks;
 
 typedef struct {
@@ -259,6 +266,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char hub_addr,
                                       unsigned char hub_port);
 static int usb_hid_poll_once(void);
+static void usb_snapshot_hub_diag_to_root_info(void);
 
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
@@ -841,6 +849,12 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                         &hid_ep,
                                                         &hid_mps,
                                                         &hid_boot) == 0) ? 1 : 0;
+        if (hid_found){
+            g_hub_hid_candidates++;
+            if (port < 32u){
+                g_hub_hid_candidate_mask |= (1u << port);
+            }
+        }
     }
 
     // Preserve first child as the primary USB downstream function (used by NIC path).
@@ -1592,6 +1606,13 @@ int usb_host_init(void){
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
+    g_hub_ports = 0;
+    g_hub_connected_mask = 0;
+    g_hub_enum_attempts = 0;
+    g_hub_enum_success = 0;
+    g_hub_enum_success_mask = 0;
+    g_hub_hid_candidates = 0;
+    g_hub_hid_candidate_mask = 0;
     usb_reset_bulk_toggles();
 
     unsigned int id = GSNPSID;
@@ -1965,6 +1986,13 @@ int usb_host_enumerate_root_device(void){
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
+    g_hub_ports = 0;
+    g_hub_connected_mask = 0;
+    g_hub_enum_attempts = 0;
+    g_hub_enum_success = 0;
+    g_hub_enum_success_mask = 0;
+    g_hub_hid_candidates = 0;
+    g_hub_hid_candidate_mask = 0;
 
     if (!g_usb_ready){
         return -1;
@@ -2050,6 +2078,7 @@ int usb_host_enumerate_root_device(void){
                             (unsigned short)(USB_HUB_DESC_TYPE << 8), 0, hub_desc, sizeof(hub_desc)) == 0){
             unsigned int ports = hub_desc[2];
             unsigned int pwr_on_2ms = hub_desc[5];
+            g_hub_ports = ports;
             uart_puts("USB: hub ports=");
             uart_puthex(ports);
             uart_puts(" pwr2good=");
@@ -2070,6 +2099,11 @@ int usb_host_enumerate_root_device(void){
                 for (unsigned int port = 1; port <= ports; port++){
                     unsigned short st = 0, chg = 0;
                     if (hub_port_get_status(g_root_info.address, (unsigned short)port, &st, &chg) == 0){
+                        if (st & HUB_PORT_STAT_CONNECTION){
+                            if (port < 32u){
+                                g_hub_connected_mask |= (1u << port);
+                            }
+                        }
                         uart_puts("USB: hub p");
                         uart_puthex(port);
                         uart_puts(" st=");
@@ -2081,8 +2115,16 @@ int usb_host_enumerate_root_device(void){
                 }
 
                 for (unsigned int port = 1; port <= ports && next_addr < 16; port++){
+                    if (port >= 32u || !(g_hub_connected_mask & (1u << port))){
+                        continue;
+                    }
+                    g_hub_enum_attempts++;
                     if (usb_enumerate_hub_downstream_child(g_root_info.address, (unsigned short)port, next_addr) == 0){
                         child_found = 1;
+                        g_hub_enum_success++;
+                        if (port < 32u){
+                            g_hub_enum_success_mask |= (1u << port);
+                        }
                         next_addr++;
                     }
                 }
@@ -2094,6 +2136,7 @@ int usb_host_enumerate_root_device(void){
             uart_puts("USB: hub descriptor read failed\n");
         }
     }
+    usb_snapshot_hub_diag_to_root_info();
     return 0;
 }
 
@@ -2119,4 +2162,14 @@ void usb_host_poll(void){
 
 int usb_host_try_getc(char* out){
     return usb_hid_queue_pop(out);
+}
+
+static void usb_snapshot_hub_diag_to_root_info(void){
+    g_root_info.hub_ports = (unsigned char)(g_hub_ports & 0xFFu);
+    g_root_info.hub_enum_attempts = (unsigned char)(g_hub_enum_attempts & 0xFFu);
+    g_root_info.hub_enum_success = (unsigned char)(g_hub_enum_success & 0xFFu);
+    g_root_info.hub_hid_candidates = (unsigned char)(g_hub_hid_candidates & 0xFFu);
+    g_root_info.hub_connected_mask = g_hub_connected_mask;
+    g_root_info.hub_enum_success_mask = g_hub_enum_success_mask;
+    g_root_info.hub_hid_candidate_mask = g_hub_hid_candidate_mask;
 }

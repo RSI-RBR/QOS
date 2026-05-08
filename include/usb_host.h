@@ -60,6 +60,13 @@ typedef struct {
     unsigned short child_vid;
     unsigned short child_pid;
     unsigned short config_total_len;
+    unsigned char hub_ports;
+    unsigned char hub_enum_attempts;
+    unsigned char hub_enum_success;
+    unsigned char hub_hid_candidates;
+    unsigned int hub_connected_mask;
+    unsigned int hub_enum_success_mask;
+    unsigned int hub_hid_candidate_mask;
 } usb_root_device_info_t;
 
 // Enumerate the root-port attached device (Default->Address->Configured).
