@@ -1490,6 +1490,14 @@ static int hc_transfer_reg(unsigned int ch,
                 }
                 usb_copy_from_dma(in_data, actual);
             }
+            if (ep_in && in_data && in_len > 0 && actual == 0){
+                retry_hcint = done_hcint;
+                if (hc_force_halt(ch) != 0){
+                    return -1;
+                }
+                spin_delay(50000);
+                continue;
+            }
             if (actual_out){
                 *actual_out = actual;
             }
@@ -1621,8 +1629,10 @@ static int hc_transfer_split(unsigned int ch,
         }
         // Complete-split can return NYET transiently; retry a few times.
         for (unsigned int tries = 0; tries < 6; tries++){
+            unsigned int actual = 0;
             if (hc_transfer_reg(ch, dev_addr, 0, HC_EPTYPE_CONTROL, 1, ep_mps, pid,
-                                0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT, 0, 0) == 0){
+                                0, 0, in_data, in_len, split_reg | HCSPLT_COMPSPLT, 0, &actual) == 0 &&
+                (in_len == 0 || actual > 0)){
                 HCSPLT(ch) = 0;
                 return 0;
             }
