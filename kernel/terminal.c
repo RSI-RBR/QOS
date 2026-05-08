@@ -350,7 +350,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
         uart_send(c);
     }
     if (mirror_fb){
-        fb_console_write(s, len);
+        terminal_render_locked(term);
     }
 
     spin_unlock_irqrestore(&g_terminal_lock, irq);

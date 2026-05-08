@@ -146,28 +146,6 @@ static void redraw_all_locked(void){
     }
 }
 
-static int scroll_pixels_locked(void){
-    unsigned long base = fb_get_base();
-    unsigned int pitch = fb_get_pitch();
-    unsigned int width = fb_get_width();
-    unsigned int height = fb_get_height();
-    if (!base || pitch == 0u || width == 0u || height <= FB_CONSOLE_CELL_H){
-        return -1;
-    }
-
-    for (unsigned int y = 0; y + FB_CONSOLE_CELL_H < height; y++){
-        unsigned int* dst = (unsigned int*)((unsigned char*)base + ((unsigned long)y * pitch));
-        unsigned int* src = (unsigned int*)((unsigned char*)base + ((unsigned long)(y + FB_CONSOLE_CELL_H) * pitch));
-        for (unsigned int x = 0; x < width; x++){
-            dst[x] = src[x];
-        }
-    }
-
-    unsigned int clear_y = height - FB_CONSOLE_CELL_H;
-    fb_draw_rect(0, clear_y, width, FB_CONSOLE_CELL_H, g_bg);
-    return 0;
-}
-
 static void scroll_locked(void){
     if (g_rows == 0u || g_cols == 0u){
         return;
@@ -182,9 +160,7 @@ static void scroll_locked(void){
         g_cells[g_rows - 1u][col] = ' ';
     }
     g_cursor_row = g_rows - 1u;
-    if (scroll_pixels_locked() != 0){
-        redraw_all_locked();
-    }
+    redraw_all_locked();
 }
 
 static void newline_locked(void){
