@@ -1,44 +1,19 @@
 #include "klog.h"
-#include "process.h"
-#include "string.h"
-#include "terminal.h"
 #include "uart.h"
 
-static int g_klog_terminal_ready = 0;
-
 void klog_set_terminal_ready(int ready){
-    g_klog_terminal_ready = ready ? 1 : 0;
+    (void)ready;
 }
 
 void klog_send(char c){
-    if (!g_klog_terminal_ready){
-        uart_send(c);
-        return;
-    }
-
-    char s[2];
-    s[0] = c;
-    s[1] = 0;
-    klog_puts(s);
+    uart_send(c);
 }
 
 void klog_puts(const char* s){
     if (!s){
         return;
     }
-
-    if (!g_klog_terminal_ready){
-        uart_puts(s);
-        return;
-    }
-
-    int len = kstrlen(s);
-    int pid = process_current_pid();
-    if (pid >= 0){
-        terminal_write_for_pid(pid, s, (unsigned long)len);
-    } else{
-        terminal_write(terminal_get_active(), -1, s, (unsigned long)len);
-    }
+    uart_puts(s);
 }
 
 void klog_puthex(unsigned int val){
@@ -59,7 +34,7 @@ void klog_putdec(unsigned long val){
     int o = 0;
 
     if (val == 0UL){
-        klog_puts("0");
+        uart_send('0');
         return;
     }
 

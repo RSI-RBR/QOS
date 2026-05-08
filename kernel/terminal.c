@@ -78,7 +78,9 @@ static void terminal_render_rows_unlocked(int term_id,
         return;
     }
 
-    spin_lock(&g_terminal_render_lock);
+    if (!spin_trylock(&g_terminal_render_lock)){
+        return;
+    }
 
     unsigned int cursor_col = 0u;
     unsigned int cursor_row = 0u;
