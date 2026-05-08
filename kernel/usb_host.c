@@ -521,11 +521,12 @@ static int usb_hid_keyboard_configure(unsigned char addr,
                               0);
     }
 
-    // Idle=0 -> only report when state changes.
+    // Request periodic reports while keys are held. A 4ms idle interval makes
+    // the polling path tolerant of missed edge reports on simple split polling.
     (void)usb_std_request(addr,
                           0x21,
                           USB_HID_REQ_SET_IDLE,
-                          0u,
+                          (1u << 8),
                           iface,
                           0,
                           0);
@@ -589,12 +590,12 @@ static int usb_hid_poll_once(void){
         return -1;
     }
     g_root_info.hid_last_actual = actual;
-    if (actual < USB_HID_REPORT_LEN){
+    if (actual < 3u){
         g_root_info.hid_nodata_count++;
         return 0;
     }
     g_root_info.hid_report_count++;
-    if (actual >= 9u && report[0] != 0u && report[1] == 0u){
+    if (actual >= 4u && report[0] != 0u && report[1] == 0u){
         // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
         usb_hid_process_report(&report[1]);
     } else{
@@ -2515,7 +2516,7 @@ void usb_host_poll(void){
     if ((long)(now - g_kbd_next_poll_tick) < 0){
         return;
     }
-    g_kbd_next_poll_tick = now + 2u;
+    g_kbd_next_poll_tick = now + 1u;
     (void)usb_hid_poll_once();
 }
 
