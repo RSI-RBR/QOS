@@ -69,6 +69,8 @@ static tcp_conn_t g_conn;
 static unsigned short g_next_local_port = 42000u;
 static int g_tcp_https_last_error = 0;
 static unsigned long g_tcp_https_fail_count = 0;
+static unsigned short g_tls13_last_cert_verify_alg = 0u;
+static unsigned short g_tls13_last_leaf_cert_sig_alg = 0u;
 static void tls_stream_reset_state(void);
 
 #define TCP_RECV_WINDOW_MAX 60000u
@@ -610,6 +612,34 @@ int tcp_tls13_pq_kex_offered(void){
 
 int tcp_tls13_pq_kex_active(void){
     return g_tls13_last_kex_was_pq ? 1 : 0;
+}
+
+unsigned short tcp_tls13_last_cert_verify_alg(void){
+    return g_tls13_last_cert_verify_alg;
+}
+
+unsigned short tcp_tls13_last_leaf_cert_sig_alg(void){
+    return g_tls13_last_leaf_cert_sig_alg;
+}
+
+const char* tcp_tls13_sigalg_name(unsigned short alg){
+    switch (alg){
+        case 0x0401u: return "rsa_pkcs1_sha256";
+        case 0x0501u: return "rsa_pkcs1_sha384";
+        case 0x0601u: return "rsa_pkcs1_sha512";
+        case 0x0403u: return "ecdsa_secp256r1_sha256";
+        case 0x0503u: return "ecdsa_secp384r1_sha384";
+        case 0x0603u: return "ecdsa_secp521r1_sha512";
+        case 0x0804u: return "rsa_pss_rsae_sha256";
+        case 0x0805u: return "rsa_pss_rsae_sha384";
+        case 0x0806u: return "rsa_pss_rsae_sha512";
+        case 0x0807u: return "ed25519";
+        case 0x0809u: return "rsa_pss_pss_sha256";
+        case 0x080Au: return "rsa_pss_pss_sha384";
+        case 0x080Bu: return "rsa_pss_pss_sha512";
+        case TLS13_SIGALG_MLDSA65: return "mldsa65";
+        default: return "unknown";
+    }
 }
 
 static unsigned int tls13_fill_signature_schemes(unsigned short* sigs,
@@ -1512,6 +1542,8 @@ static int tcp_https_get_internal(const unsigned char dst_ip[4],
         g_tcp_https_fail_count++;
         return g_tcp_https_last_error;
     }
+    g_tls13_last_cert_verify_alg = 0u;
+    g_tls13_last_leaf_cert_sig_alg = 0u;
     if (prefer_pq_sig_mldsa65){
         effective_advertise_pq_sig = 1;
         effective_prioritize_pq_sig = 1;
@@ -2306,6 +2338,8 @@ https_fail_secure:
         g_tcp_https_last_error = fail_code;
         g_tcp_https_fail_count++;
     } else if (x509_res.hostname_ok && x509_res.chain_anchor_ok){
+        g_tls13_last_cert_verify_alg = server_cert_verify_alg;
+        g_tls13_last_leaf_cert_sig_alg = x509_res.leaf_cert_sig_alg;
         uart_puts("HTTPS X509: host+anchor OK chain=");
         uart_putdec((unsigned long)x509_res.chain_certs);
         uart_puts(" anchors=");
@@ -2318,6 +2352,8 @@ https_fail_secure:
         uart_puts(g_tls13_last_kex_was_pq ? "X25519+ML-KEM-768" : "X25519");
         uart_puts("\n");
     } else if (server_cert_verify_alg != 0u){
+        g_tls13_last_cert_verify_alg = server_cert_verify_alg;
+        g_tls13_last_leaf_cert_sig_alg = x509_res.leaf_cert_sig_alg;
         uart_puts("HTTPS cert signature alg=");
         uart_puthex((unsigned int)server_cert_verify_alg);
         uart_puts("\n");

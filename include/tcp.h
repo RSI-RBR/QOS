@@ -43,5 +43,8 @@ void tcp_dump_stats(void);
 int tcp_tls13_pq_sig_offered(void);
 int tcp_tls13_pq_kex_offered(void);
 int tcp_tls13_pq_kex_active(void);
+unsigned short tcp_tls13_last_cert_verify_alg(void);
+unsigned short tcp_tls13_last_leaf_cert_sig_alg(void);
+const char* tcp_tls13_sigalg_name(unsigned short alg);
 
 #endif
