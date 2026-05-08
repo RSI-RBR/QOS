@@ -1930,6 +1930,10 @@ https_retry_connect:
     hs_used = 0u;
     unsigned long start_tick = system_ticks;
     unsigned long last_progress_tick = system_ticks;
+    unsigned long overall_budget_ms = 25000u;
+    unsigned long idle_budget_ms = 6000u;
+    unsigned long close_wait_tail_ms = 750u;
+    unsigned int app_pull_fail_streak = 0u;
 
     t_stage_start = read_cntpct();
     while (1){
@@ -1937,10 +1941,22 @@ https_retry_connect:
         if (completion == 1){
             break;
         }
-        unsigned int pull_timeout = (app_bytes > 0 && completion < 0) ? 350u : 2500u;
+        unsigned int pull_timeout = (app_bytes > 0 && completion < 0) ? 1200u : 2500u;
         if (tls13_pull_record(&consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, pull_timeout) != 0){
+            // For responses without a definitive length (no Content-Length and
+            // not chunked), tolerate a few receive gaps before deciding EOF.
+            if (app_bytes > 0 &&
+                completion < 0 &&
+                g_conn.state != TCP_ST_CLOSE_WAIT &&
+                app_pull_fail_streak < 8u &&
+                (unsigned long)(system_ticks - start_tick) <= overall_budget_ms &&
+                (unsigned long)(system_ticks - last_progress_tick) <= idle_budget_ms){
+                app_pull_fail_streak++;
+                continue;
+            }
             break;
         }
+        app_pull_fail_streak = 0u;
         if (rec_type == 21u){
             break;
         }
@@ -1990,14 +2006,14 @@ https_retry_connect:
         }
 
         if (g_conn.state == TCP_ST_CLOSE_WAIT){
-            if ((unsigned long)(system_ticks - last_progress_tick) > 250u){
+            if ((unsigned long)(system_ticks - last_progress_tick) > close_wait_tail_ms){
                 break;
             }
         } else{
-            if ((unsigned long)(system_ticks - start_tick) > 9000u){
+            if ((unsigned long)(system_ticks - start_tick) > overall_budget_ms){
                 break;
             }
-            if ((unsigned long)(system_ticks - last_progress_tick) > 2000u && app_bytes > 0){
+            if ((unsigned long)(system_ticks - last_progress_tick) > idle_budget_ms && app_bytes > 0){
                 break;
             }
         }

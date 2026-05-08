@@ -64,7 +64,7 @@ static void print_fetch_timing(unsigned long dns_ms,
     print_uint((unsigned int)dns_ms);
     qos_puts(" connect=");
     print_uint((unsigned int)connect_ms);
-    qos_puts(" send=");
+    qos_puts(" send_blocking=");
     print_uint((unsigned int)send_ms);
     qos_puts(" recv=");
     print_uint((unsigned int)recv_ms);
