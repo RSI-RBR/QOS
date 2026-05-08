@@ -134,14 +134,22 @@
 
 #define USB_CTRL_EP_MPS_DEFAULT 8u
 #define USB_HUB_DESC_TYPE 0x29u
+#define USB_DESC_TYPE_INTERFACE 0x04u
 #define USB_DESC_TYPE_ENDPOINT 0x05u
 #define USB_ENDPOINT_XFER_BULK 0x02u
+#define USB_ENDPOINT_XFER_INTERRUPT 0x03u
 #define USB_DMA_BUFFER_SIZE 2048u
 #define USB_DWC2_CHANNELS 8u
 #define GPU_UNCACHED_BASE 0xC0000000UL
 
 #define HC_EPTYPE_CONTROL 0u
 #define HC_EPTYPE_BULK    2u
+#define HC_EPTYPE_INTERRUPT 3u
+
+#define USB_HID_REQ_SET_IDLE     0x0Au
+#define USB_HID_REQ_SET_PROTOCOL 0x0Bu
+#define USB_HID_REPORT_LEN 8u
+#define USB_HID_CHAR_QUEUE_LEN 128u
 
 // USB 2.0 Hub class requests/features.
 #define HUB_REQ_GET_STATUS      0x00u
@@ -180,6 +188,28 @@ static int g_usb_dma_mode = 1;
 static unsigned char g_usb_dma_buffer[USB_DMA_BUFFER_SIZE] __attribute__((aligned(64)));
 static unsigned char g_bulk_in_toggle[16];
 static unsigned char g_bulk_out_toggle[16];
+static unsigned long g_kbd_next_poll_tick = 0;
+extern volatile unsigned long system_ticks;
+
+typedef struct {
+    int present;
+    unsigned char addr;
+    unsigned char iface;
+    unsigned char in_ep;
+    unsigned short in_mps;
+    unsigned char hub_addr;
+    unsigned char hub_port;
+    int use_split;
+    int low_speed;
+    unsigned char prev_report[USB_HID_REPORT_LEN];
+    int have_prev_report;
+    unsigned char q[USB_HID_CHAR_QUEUE_LEN];
+    unsigned int q_head;
+    unsigned int q_tail;
+    unsigned int q_count;
+} usb_hid_keyboard_state_t;
+
+static usb_hid_keyboard_state_t g_kbd;
 
 static int usb_std_request(unsigned char dev_addr,
                            unsigned char bmRequestType,
@@ -198,7 +228,34 @@ static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, 
 static int usb_target_is_low_speed(unsigned char dev_addr);
 static void usb_dcache_clean_invalidate_range(unsigned long start, unsigned long size);
 static void usb_dcache_invalidate_range(unsigned long start, unsigned long size);
-static void usb_parse_child_config_endpoints(const unsigned char* cfg, unsigned int len);
+static void usb_set_split_context(unsigned char hub_addr, unsigned char hub_port, int use_split, int low_speed);
+static void usb_clear_split_context(void);
+static void usb_parse_bulk_endpoints_from_config(const unsigned char* cfg,
+                                                 unsigned int len,
+                                                 unsigned char* out_in_ep,
+                                                 unsigned short* out_in_mps,
+                                                 unsigned char* out_out_ep,
+                                                 unsigned short* out_out_mps);
+static void usb_hid_queue_reset(void);
+static int usb_hid_queue_push(unsigned char c);
+static int usb_hid_queue_pop(char* out);
+static int usb_hid_key_present(const unsigned char* report, unsigned char key);
+static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift);
+static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN]);
+static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
+                                              unsigned int len,
+                                              unsigned char* out_iface,
+                                              unsigned char* out_ep,
+                                              unsigned short* out_mps);
+static int usb_hid_keyboard_configure(unsigned char addr,
+                                      unsigned char iface,
+                                      unsigned char in_ep,
+                                      unsigned short in_mps,
+                                      int use_split,
+                                      int low_speed,
+                                      unsigned char hub_addr,
+                                      unsigned char hub_port);
+static int usb_hid_poll_once(void);
 
 static unsigned short le16(const unsigned char* p){
     return (unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8));
@@ -211,13 +268,260 @@ static void usb_reset_bulk_toggles(void){
     }
 }
 
-static void usb_parse_child_config_endpoints(const unsigned char* cfg, unsigned int len){
-    g_root_info.child_bulk_in_ep = 0;
-    g_root_info.child_bulk_out_ep = 0;
-    g_root_info.child_bulk_in_mps = 0;
-    g_root_info.child_bulk_out_mps = 0;
+static void usb_hid_queue_reset(void){
+    g_kbd.q_head = 0;
+    g_kbd.q_tail = 0;
+    g_kbd.q_count = 0;
+}
+
+static int usb_hid_queue_push(unsigned char c){
+    if (g_kbd.q_count >= USB_HID_CHAR_QUEUE_LEN){
+        return -1;
+    }
+    g_kbd.q[g_kbd.q_tail] = c;
+    g_kbd.q_tail = (g_kbd.q_tail + 1u) % USB_HID_CHAR_QUEUE_LEN;
+    g_kbd.q_count++;
+    return 0;
+}
+
+static int usb_hid_queue_pop(char* out){
+    if (!out || g_kbd.q_count == 0u){
+        return 0;
+    }
+    *out = (char)g_kbd.q[g_kbd.q_head];
+    g_kbd.q_head = (g_kbd.q_head + 1u) % USB_HID_CHAR_QUEUE_LEN;
+    g_kbd.q_count--;
+    return 1;
+}
+
+static int usb_hid_key_present(const unsigned char* report, unsigned char key){
+    if (!report || key == 0){
+        return 0;
+    }
+    for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+        if (report[i] == key){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift){
+    if (key >= 0x04u && key <= 0x1Du){
+        unsigned char base = (unsigned char)('a' + (key - 0x04u));
+        if (shift){
+            base = (unsigned char)('A' + (key - 0x04u));
+        }
+        return base;
+    }
+
+    if (key >= 0x1Eu && key <= 0x27u){
+        static const unsigned char plain[] = "1234567890";
+        static const unsigned char with_shift[] = "!@#$%^&*()";
+        unsigned int idx = (unsigned int)(key - 0x1Eu);
+        return shift ? with_shift[idx] : plain[idx];
+    }
+
+    switch (key){
+        case 0x28: return '\n';
+        case 0x2A: return '\b';
+        case 0x2B: return '\t';
+        case 0x2C: return ' ';
+        case 0x2D: return shift ? '_' : '-';
+        case 0x2E: return shift ? '+' : '=';
+        case 0x2F: return shift ? '{' : '[';
+        case 0x30: return shift ? '}' : ']';
+        case 0x31: return shift ? '|' : '\\';
+        case 0x33: return shift ? ':' : ';';
+        case 0x34: return shift ? '"' : '\'';
+        case 0x35: return shift ? '~' : '`';
+        case 0x36: return shift ? '<' : ',';
+        case 0x37: return shift ? '>' : '.';
+        case 0x38: return shift ? '?' : '/';
+        default: return 0;
+    }
+}
+
+static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN]){
+    if (!report){
+        return;
+    }
+
+    int shift = (report[0] & 0x22u) ? 1 : 0;
+    for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+        unsigned char key = report[i];
+        if (key == 0u){
+            continue;
+        }
+        if (key == 0x01u){
+            continue;
+        }
+        if (g_kbd.have_prev_report && usb_hid_key_present(g_kbd.prev_report, key)){
+            continue;
+        }
+        unsigned char ascii = usb_hid_keycode_to_ascii(key, shift);
+        if (ascii){
+            (void)usb_hid_queue_push(ascii);
+        }
+    }
+
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        g_kbd.prev_report[i] = report[i];
+    }
+    g_kbd.have_prev_report = 1;
+}
+
+static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
+                                              unsigned int len,
+                                              unsigned char* out_iface,
+                                              unsigned char* out_ep,
+                                              unsigned short* out_mps){
+    unsigned char cur_iface = 0xFFu;
+    int iface_is_kbd = 0;
+
+    if (!cfg || !out_iface || !out_ep || !out_mps || len < 9u){
+        return -1;
+    }
+
+    *out_iface = 0u;
+    *out_ep = 0u;
+    *out_mps = 0u;
+
+    unsigned int off = 0;
+    while (off + 2u <= len){
+        unsigned int desc_len = cfg[off];
+        unsigned int desc_type = cfg[off + 1u];
+        if (desc_len < 2u || off + desc_len > len){
+            break;
+        }
+
+        if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9u){
+            cur_iface = cfg[off + 2u];
+            unsigned char cls = cfg[off + 5u];
+            unsigned char sub = cfg[off + 6u];
+            unsigned char proto = cfg[off + 7u];
+            iface_is_kbd = (cls == 0x03u && sub == 0x01u && proto == 0x01u) ? 1 : 0;
+        } else if (iface_is_kbd && desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
+            unsigned char ep_addr = cfg[off + 2u];
+            unsigned char attrs = cfg[off + 3u];
+            unsigned short mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
+            if ((attrs & 0x3u) == USB_ENDPOINT_XFER_INTERRUPT &&
+                (ep_addr & 0x80u) &&
+                mps >= USB_HID_REPORT_LEN){
+                *out_iface = cur_iface;
+                *out_ep = ep_addr;
+                *out_mps = mps;
+                return 0;
+            }
+        }
+
+        off += desc_len;
+    }
+
+    return -1;
+}
+
+static int usb_hid_keyboard_configure(unsigned char addr,
+                                      unsigned char iface,
+                                      unsigned char in_ep,
+                                      unsigned short in_mps,
+                                      int use_split,
+                                      int low_speed,
+                                      unsigned char hub_addr,
+                                      unsigned char hub_port){
+    if (use_split){
+        usb_set_split_context(hub_addr, hub_port, 1, low_speed);
+    }
+
+    // Boot protocol for fixed 8-byte reports.
+    (void)usb_std_request(addr,
+                          0x21,
+                          USB_HID_REQ_SET_PROTOCOL,
+                          0u,
+                          iface,
+                          0,
+                          0);
+
+    // Idle=0 -> only report when state changes.
+    (void)usb_std_request(addr,
+                          0x21,
+                          USB_HID_REQ_SET_IDLE,
+                          0u,
+                          iface,
+                          0,
+                          0);
+
+    if (use_split){
+        usb_clear_split_context();
+    }
+
+    g_kbd.present = 1;
+    g_kbd.addr = addr;
+    g_kbd.iface = iface;
+    g_kbd.in_ep = in_ep;
+    g_kbd.in_mps = (in_mps != 0u) ? in_mps : USB_HID_REPORT_LEN;
+    g_kbd.hub_addr = hub_addr;
+    g_kbd.hub_port = hub_port;
+    g_kbd.use_split = use_split ? 1 : 0;
+    g_kbd.low_speed = low_speed ? 1 : 0;
+    g_kbd.have_prev_report = 0;
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        g_kbd.prev_report[i] = 0;
+    }
+    g_kbd_next_poll_tick = 0;
+    usb_hid_queue_reset();
+    return 0;
+}
+
+static int usb_hid_poll_once(void){
+    if (!g_kbd.present || g_kbd.addr == 0u){
+        return 0;
+    }
+
+    unsigned char report[USB_HID_REPORT_LEN];
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        report[i] = 0;
+    }
+
+    if (g_kbd.use_split){
+        usb_set_split_context(g_kbd.hub_addr, g_kbd.hub_port, 1, g_kbd.low_speed);
+    }
+
+    int rc = usb_std_request(g_kbd.addr,
+                             0xA1u,
+                             0x01u, // GET_REPORT
+                             (1u << 8), // INPUT report, report-id 0
+                             g_kbd.iface,
+                             report,
+                             USB_HID_REPORT_LEN);
+
+    if (g_kbd.use_split){
+        usb_clear_split_context();
+    }
+
+    if (rc != 0){
+        return -1;
+    }
+    usb_hid_process_report(report);
+    return 0;
+}
+
+static void usb_parse_bulk_endpoints_from_config(const unsigned char* cfg,
+                                                 unsigned int len,
+                                                 unsigned char* out_in_ep,
+                                                 unsigned short* out_in_mps,
+                                                 unsigned char* out_out_ep,
+                                                 unsigned short* out_out_mps){
+    unsigned char in_ep = 0;
+    unsigned char out_ep = 0;
+    unsigned short in_mps = 0;
+    unsigned short out_mps = 0;
 
     if (!cfg || len < 9){
+        if (out_in_ep){ *out_in_ep = 0; }
+        if (out_out_ep){ *out_out_ep = 0; }
+        if (out_in_mps){ *out_in_mps = 0; }
+        if (out_out_mps){ *out_out_mps = 0; }
         return;
     }
 
@@ -234,18 +538,23 @@ static void usb_parse_child_config_endpoints(const unsigned char* cfg, unsigned 
             unsigned char attrs = cfg[off + 3];
             unsigned short mps = (unsigned short)(le16(&cfg[off + 4]) & 0x7FFu);
             if ((attrs & 0x3u) == USB_ENDPOINT_XFER_BULK && mps != 0){
-                if ((ep_addr & 0x80u) && g_root_info.child_bulk_in_ep == 0){
-                    g_root_info.child_bulk_in_ep = ep_addr;
-                    g_root_info.child_bulk_in_mps = mps;
-                } else if (!(ep_addr & 0x80u) && g_root_info.child_bulk_out_ep == 0){
-                    g_root_info.child_bulk_out_ep = ep_addr;
-                    g_root_info.child_bulk_out_mps = mps;
+                if ((ep_addr & 0x80u) && in_ep == 0){
+                    in_ep = ep_addr;
+                    in_mps = mps;
+                } else if (!(ep_addr & 0x80u) && out_ep == 0){
+                    out_ep = ep_addr;
+                    out_mps = mps;
                 }
             }
         }
 
         off += desc_len;
     }
+
+    if (out_in_ep){ *out_in_ep = in_ep; }
+    if (out_out_ep){ *out_out_ep = out_ep; }
+    if (out_in_mps){ *out_in_mps = in_mps; }
+    if (out_out_mps){ *out_out_mps = out_mps; }
 }
 
 static void usb_set_split_context(unsigned char hub_addr, unsigned char hub_port, int use_split, int low_speed){
@@ -292,6 +601,17 @@ static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, 
         return 1;
     }
 
+    // Optional route for HID keyboard child behind the onboard hub.
+    if (g_kbd.present &&
+        g_kbd.use_split &&
+        g_kbd.addr == dev_addr &&
+        g_kbd.hub_addr != 0 &&
+        g_kbd.hub_port != 0){
+        *hub_addr = g_kbd.hub_addr;
+        *hub_port = g_kbd.hub_port;
+        return 1;
+    }
+
     return 0;
 }
 
@@ -311,6 +631,13 @@ static int usb_target_is_low_speed(unsigned char dev_addr){
         g_child_use_split &&
         g_child_low_speed &&
         dev_addr == g_root_info.child_address){
+        return 1;
+    }
+
+    if (g_kbd.present &&
+        g_kbd.use_split &&
+        g_kbd.low_speed &&
+        g_kbd.addr == dev_addr){
         return 1;
     }
 
@@ -353,6 +680,16 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char dev_desc[18];
     unsigned char cfg_desc[256];
     unsigned short cfg_total = 0;
+    unsigned char cfg_value = 0;
+    int cfg_set = 0;
+    unsigned char bulk_in_ep = 0;
+    unsigned char bulk_out_ep = 0;
+    unsigned short bulk_in_mps = 0;
+    unsigned short bulk_out_mps = 0;
+    unsigned char hid_iface = 0;
+    unsigned char hid_ep = 0;
+    unsigned short hid_mps = 0;
+    int hid_found = 0;
     int child_is_high_speed = 0;
     int child_is_low_speed = 0;
     int child_use_split = 0;
@@ -430,53 +767,96 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
         return -1;
     }
 
-    g_root_info.child_present = 1;
-    g_root_info.child_address = child_addr;
-    g_root_info.child_class = dev_desc[4];
-    g_root_info.child_vid = le16(&dev_desc[8]);
-    g_root_info.child_pid = le16(&dev_desc[10]);
-    g_child_use_split = child_use_split;
-    g_child_low_speed = child_is_low_speed;
-    if (child_use_split){
-        g_root_info.child_hub_address = hub_addr;
-        g_root_info.child_hub_port = (unsigned char)port;
-    } else{
-        g_root_info.child_hub_address = 0;
-        g_root_info.child_hub_port = 0;
-    }
-
     int cfg_read = usb_get_config_descriptor(child_addr, cfg_desc, sizeof(cfg_desc), &cfg_total);
     if (cfg_read >= 6){
-        g_root_info.child_config_value = cfg_desc[5];
-        usb_parse_child_config_endpoints(cfg_desc, (unsigned int)cfg_read);
-        if (g_root_info.child_config_value != 0){
-            if (usb_std_request(child_addr, 0x00, HUB_REQ_SET_CONFIGURATION, g_root_info.child_config_value, 0, 0, 0) == 0){
-                g_root_info.child_configured = 1;
-                usb_reset_bulk_toggles();
+        cfg_value = cfg_desc[5];
+        usb_parse_bulk_endpoints_from_config(cfg_desc,
+                                             (unsigned int)cfg_read,
+                                             &bulk_in_ep,
+                                             &bulk_in_mps,
+                                             &bulk_out_ep,
+                                             &bulk_out_mps);
+        if (cfg_value != 0){
+            if (usb_std_request(child_addr, 0x00, HUB_REQ_SET_CONFIGURATION, cfg_value, 0, 0, 0) == 0){
+                cfg_set = 1;
             }
+        }
+        hid_found = (usb_parse_hid_keyboard_from_config(cfg_desc,
+                                                        (unsigned int)cfg_read,
+                                                        &hid_iface,
+                                                        &hid_ep,
+                                                        &hid_mps) == 0) ? 1 : 0;
+    }
+
+    // Preserve first child as the primary USB downstream function (used by NIC path).
+    if (!g_root_info.child_present){
+        g_root_info.child_present = 1;
+        g_root_info.child_address = child_addr;
+        g_root_info.child_class = dev_desc[4];
+        g_root_info.child_vid = le16(&dev_desc[8]);
+        g_root_info.child_pid = le16(&dev_desc[10]);
+        g_root_info.child_config_value = cfg_value;
+        g_root_info.child_configured = cfg_set ? 1 : 0;
+        g_root_info.child_bulk_in_ep = bulk_in_ep;
+        g_root_info.child_bulk_out_ep = bulk_out_ep;
+        g_root_info.child_bulk_in_mps = bulk_in_mps;
+        g_root_info.child_bulk_out_mps = bulk_out_mps;
+        g_child_use_split = child_use_split;
+        g_child_low_speed = child_is_low_speed;
+        if (child_use_split){
+            g_root_info.child_hub_address = hub_addr;
+            g_root_info.child_hub_port = (unsigned char)port;
+        } else{
+            g_root_info.child_hub_address = 0;
+            g_root_info.child_hub_port = 0;
+        }
+        if (cfg_set){
+            usb_reset_bulk_toggles();
+        }
+    }
+
+    if (hid_found && !g_kbd.present){
+        if (usb_hid_keyboard_configure(child_addr,
+                                       hid_iface,
+                                       hid_ep,
+                                       hid_mps,
+                                       child_use_split,
+                                       child_is_low_speed,
+                                       hub_addr,
+                                       (unsigned char)port) == 0){
+            g_root_info.child_hid_kbd_present = 1;
+            g_root_info.child_hid_kbd_address = child_addr;
+            g_root_info.child_hid_kbd_ep = hid_ep;
+            g_root_info.child_hid_kbd_iface = hid_iface;
+            g_root_info.child_hid_kbd_mps = hid_mps;
+            uart_puts("USB: HID keyboard configured addr=");
+            uart_puthex(child_addr);
+            uart_puts(" iface=");
+            uart_puthex(hid_iface);
+            uart_puts("\n");
         }
     }
 
     uart_puts("USB: hub child addr=");
-    uart_puthex(g_root_info.child_address);
+    uart_puthex(child_addr);
     uart_puts(" vid=");
-    uart_puthex(g_root_info.child_vid);
+    uart_puthex(le16(&dev_desc[8]));
     uart_puts(" pid=");
-    uart_puthex(g_root_info.child_pid);
+    uart_puthex(le16(&dev_desc[10]));
     uart_puts(" class=");
-    uart_puthex(g_root_info.child_class);
+    uart_puthex(dev_desc[4]);
     uart_puts(" cfg=");
-    uart_puthex(g_root_info.child_config_value);
-    uart_puts(g_root_info.child_configured ? " (set)\n" : " (not set)\n");
-    if (g_root_info.child_bulk_in_ep || g_root_info.child_bulk_out_ep){
+    uart_puthex(cfg_value);
+    uart_puts(cfg_set ? " (set)\n" : " (not set)\n");
+    if (bulk_in_ep || bulk_out_ep){
         uart_puts("USB: child bulk in=");
-        uart_puthex(g_root_info.child_bulk_in_ep);
+        uart_puthex(bulk_in_ep);
         uart_puts(" mps=");
-        uart_puthex(g_root_info.child_bulk_in_mps);
+        uart_puthex(bulk_in_mps);
         uart_puts(" out=");
-        uart_puthex(g_root_info.child_bulk_out_ep);
+        uart_puthex(bulk_out_ep);
         uart_puts(" mps=");
-        uart_puthex(g_root_info.child_bulk_out_mps);
+        uart_puthex(bulk_out_mps);
         uart_puts("\n");
     }
     usb_clear_split_context();
@@ -1140,6 +1520,11 @@ int usb_host_init(void){
     for (unsigned int i = 0; i < sizeof(g_root_info); i++){
         ((unsigned char*)&g_root_info)[i] = 0;
     }
+    for (unsigned int i = 0; i < sizeof(g_kbd); i++){
+        ((unsigned char*)&g_kbd)[i] = 0;
+    }
+    g_kbd_next_poll_tick = 0;
+    usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
     usb_reset_bulk_toggles();
@@ -1508,6 +1893,11 @@ int usb_host_enumerate_root_device(void){
     for (unsigned int i = 0; i < sizeof(g_root_info); i++){
         ((unsigned char*)&g_root_info)[i] = 0;
     }
+    for (unsigned int i = 0; i < sizeof(g_kbd); i++){
+        ((unsigned char*)&g_kbd)[i] = 0;
+    }
+    g_kbd_next_poll_tick = 0;
+    usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
 
@@ -1629,8 +2019,6 @@ int usb_host_enumerate_root_device(void){
                     if (usb_enumerate_hub_downstream_child(g_root_info.address, (unsigned short)port, next_addr) == 0){
                         child_found = 1;
                         next_addr++;
-                        // Stop at first successful child for now; enough to reach Ethernet function.
-                        break;
                     }
                 }
                 if (!child_found){
@@ -1650,4 +2038,20 @@ int usb_host_get_root_device_info(usb_root_device_info_t* out_info){
     }
     *out_info = g_root_info;
     return 0;
+}
+
+void usb_host_poll(void){
+    if (!g_usb_ready || !g_kbd.present){
+        return;
+    }
+    unsigned long now = system_ticks;
+    if ((long)(now - g_kbd_next_poll_tick) < 0){
+        return;
+    }
+    g_kbd_next_poll_tick = now + 2u;
+    (void)usb_hid_poll_once();
+}
+
+int usb_host_try_getc(char* out){
+    return usb_hid_queue_pop(out);
 }

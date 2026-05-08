@@ -3,9 +3,11 @@
 #include "process.h"
 #include "spinlock.h"
 #include "remote_login.h"
+#include "usb_host.h"
 
 #define CONSOLE_INPUT_SRC_UART   1u
 #define CONSOLE_INPUT_SRC_REMOTE 2u
+#define CONSOLE_INPUT_SRC_USB    3u
 
 static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
@@ -81,6 +83,13 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
     if (remote_login_try_read_tty_char(out)){
         if (out_source){
             *out_source = CONSOLE_INPUT_SRC_REMOTE;
+        }
+        return 1;
+    }
+    usb_host_poll();
+    if (usb_host_try_getc(out)){
+        if (out_source){
+            *out_source = CONSOLE_INPUT_SRC_USB;
         }
         return 1;
     }

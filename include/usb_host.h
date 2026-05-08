@@ -35,8 +35,10 @@ typedef struct {
     int configured;
     int child_present;
     int child_configured;
+    int child_hid_kbd_present;
     unsigned char address;
     unsigned char child_address;
+    unsigned char child_hid_kbd_address;
     unsigned char ep0_mps;
     unsigned char dev_class;
     unsigned char child_class;
@@ -48,8 +50,11 @@ typedef struct {
     unsigned char child_hub_port;
     unsigned char child_bulk_in_ep;
     unsigned char child_bulk_out_ep;
+    unsigned char child_hid_kbd_ep;
+    unsigned char child_hid_kbd_iface;
     unsigned short child_bulk_in_mps;
     unsigned short child_bulk_out_mps;
+    unsigned short child_hid_kbd_mps;
     unsigned short vid;
     unsigned short pid;
     unsigned short child_vid;
@@ -60,5 +65,7 @@ typedef struct {
 // Enumerate the root-port attached device (Default->Address->Configured).
 int usb_host_enumerate_root_device(void);
 int usb_host_get_root_device_info(usb_root_device_info_t* out_info);
+void usb_host_poll(void);
+int usb_host_try_getc(char* out);
 
 #endif

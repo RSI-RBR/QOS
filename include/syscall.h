@@ -194,6 +194,7 @@ static inline int qos_try_getc(void){
 
 #define QOS_INPUT_SRC_UART   1u
 #define QOS_INPUT_SRC_REMOTE 2u
+#define QOS_INPUT_SRC_USB    3u
 
 typedef struct {
     int ch;

@@ -146,6 +146,18 @@ static void syscall_dump_usb_info(void){
         uart_puthex(info.child_bulk_out_mps);
         syscall_write_puts(-1, "\n");
     }
+
+    if (info.child_hid_kbd_present){
+        syscall_write_puts(-1, "USB HID kbd addr=");
+        uart_puthex(info.child_hid_kbd_address);
+        syscall_write_puts(-1, " iface=");
+        uart_puthex(info.child_hid_kbd_iface);
+        syscall_write_puts(-1, " ep=");
+        uart_puthex(info.child_hid_kbd_ep);
+        syscall_write_puts(-1, " mps=");
+        uart_puthex(info.child_hid_kbd_mps);
+        syscall_write_puts(-1, "\n");
+    }
 }
 
 static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
