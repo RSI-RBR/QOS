@@ -6,8 +6,11 @@
 #define FB_CONSOLE_CELL_H 16u
 #define FB_CONSOLE_MAX_COLS (1920u / FB_CONSOLE_CELL_W)
 #define FB_CONSOLE_MAX_ROWS (1080u / FB_CONSOLE_CELL_H)
+#define FB_CONSOLE_MAX_PIXEL_W (FB_CONSOLE_MAX_COLS * FB_CONSOLE_CELL_W)
+#define FB_CONSOLE_MAX_PIXEL_H (FB_CONSOLE_MAX_ROWS * FB_CONSOLE_CELL_H)
 
 static unsigned char g_cells[FB_CONSOLE_MAX_ROWS][FB_CONSOLE_MAX_COLS];
+static unsigned int g_pixels[FB_CONSOLE_MAX_PIXEL_H][FB_CONSOLE_MAX_PIXEL_W] __attribute__((aligned(64)));
 static unsigned int g_cols = 0;
 static unsigned int g_rows = 0;
 static unsigned int g_cursor_col = 0;
@@ -17,6 +20,131 @@ static unsigned int g_bg = 0x00000000;
 static unsigned int g_cursor = 0x0040DDB8;
 static int g_ready = 0;
 static spinlock_t g_fb_console_lock;
+
+static unsigned int console_pixel_width_locked(void){
+    unsigned int w = g_cols * FB_CONSOLE_CELL_W;
+    if (w > FB_CONSOLE_MAX_PIXEL_W){
+        w = FB_CONSOLE_MAX_PIXEL_W;
+    }
+    return w;
+}
+
+static unsigned int console_pixel_height_locked(void){
+    unsigned int h = g_rows * FB_CONSOLE_CELL_H;
+    if (h > FB_CONSOLE_MAX_PIXEL_H){
+        h = FB_CONSOLE_MAX_PIXEL_H;
+    }
+    return h;
+}
+
+static void back_draw_pixel_locked(unsigned int x, unsigned int y, unsigned int color){
+    if (x >= console_pixel_width_locked() || y >= console_pixel_height_locked()){
+        return;
+    }
+    g_pixels[y][x] = color;
+}
+
+static void back_draw_rect_locked(unsigned int x,
+                                  unsigned int y,
+                                  unsigned int w,
+                                  unsigned int h,
+                                  unsigned int color){
+    unsigned int max_w = console_pixel_width_locked();
+    unsigned int max_h = console_pixel_height_locked();
+
+    if (x >= max_w || y >= max_h || w == 0u || h == 0u){
+        return;
+    }
+    if (x + w < x || x + w > max_w){
+        w = max_w - x;
+    }
+    if (y + h < y || y + h > max_h){
+        h = max_h - y;
+    }
+
+    for (unsigned int py = y; py < y + h; py++){
+        for (unsigned int px = x; px < x + w; px++){
+            g_pixels[py][px] = color;
+        }
+    }
+}
+
+static void present_pixel_rows_locked(unsigned int start_y, unsigned int height){
+    unsigned long base = fb_get_base();
+    unsigned int pitch = fb_get_pitch();
+    unsigned int fb_w = fb_get_width();
+    unsigned int fb_h = fb_get_height();
+    unsigned int width = console_pixel_width_locked();
+    unsigned int max_h = console_pixel_height_locked();
+
+    if (!base || pitch == 0u || width == 0u || height == 0u || start_y >= max_h){
+        return;
+    }
+    if (width > fb_w){
+        width = fb_w;
+    }
+    if (max_h > fb_h){
+        max_h = fb_h;
+    }
+    if (start_y >= max_h){
+        return;
+    }
+    if (start_y + height < start_y || start_y + height > max_h){
+        height = max_h - start_y;
+    }
+
+    for (unsigned int y = 0; y < height; y++){
+        unsigned int dst_y = start_y + y;
+        unsigned int* dst = (unsigned int*)((unsigned char*)base + ((unsigned long)dst_y * pitch));
+        unsigned int* src = &g_pixels[dst_y][0];
+        for (unsigned int x = 0; x < width; x++){
+            dst[x] = src[x];
+        }
+    }
+}
+
+static void present_console_rows_locked(unsigned int start_row, unsigned int row_count){
+    if (row_count == 0u || start_row >= g_rows){
+        return;
+    }
+    if (start_row + row_count < start_row || start_row + row_count > g_rows){
+        row_count = g_rows - start_row;
+    }
+    present_pixel_rows_locked(start_row * FB_CONSOLE_CELL_H, row_count * FB_CONSOLE_CELL_H);
+}
+
+static void dirty_note_row_locked(unsigned int* start_row, unsigned int* end_row, unsigned int row){
+    if (!start_row || !end_row || row >= g_rows){
+        return;
+    }
+    if (row < *start_row){
+        *start_row = row;
+    }
+    if (row > *end_row){
+        *end_row = row;
+    }
+}
+
+static void present_dirty_rows_locked(unsigned int start_row, unsigned int end_row){
+    if (start_row >= g_rows || end_row >= g_rows || end_row < start_row){
+        return;
+    }
+    present_console_rows_locked(start_row, (end_row - start_row) + 1u);
+}
+
+static void clear_visible_margins_locked(void){
+    unsigned int w = console_pixel_width_locked();
+    unsigned int h = console_pixel_height_locked();
+    unsigned int fb_w = fb_get_width();
+    unsigned int fb_h = fb_get_height();
+
+    if (w < fb_w){
+        fb_draw_rect(w, 0, fb_w - w, fb_h, g_bg);
+    }
+    if (h < fb_h){
+        fb_draw_rect(0, h, fb_w, fb_h - h, g_bg);
+    }
+}
 
 static void glyph_rows(unsigned char ch, unsigned char rows[7]){
     for (unsigned int i = 0; i < 7u; i++){
@@ -115,7 +243,7 @@ static void draw_cell_locked(unsigned int row, unsigned int col, int cursor_on){
     unsigned char ch = g_cells[row][col];
 
     glyph_rows(ch, rows);
-    fb_draw_rect(x0, y0, FB_CONSOLE_CELL_W, FB_CONSOLE_CELL_H, g_bg);
+    back_draw_rect_locked(x0, y0, FB_CONSOLE_CELL_W, FB_CONSOLE_CELL_H, g_bg);
 
     for (unsigned int gy = 0; gy < 7u; gy++){
         for (unsigned int gx = 0; gx < 5u; gx++){
@@ -124,13 +252,13 @@ static void draw_cell_locked(unsigned int row, unsigned int col, int cursor_on){
             }
             unsigned int px = x0 + 1u + gx;
             unsigned int py = y0 + 1u + gy * 2u;
-            fb_draw_pixel(px, py, g_fg);
-            fb_draw_pixel(px, py + 1u, g_fg);
+            back_draw_pixel_locked(px, py, g_fg);
+            back_draw_pixel_locked(px, py + 1u, g_fg);
         }
     }
 
     if (cursor_on){
-        fb_draw_rect(x0, y0 + FB_CONSOLE_CELL_H - 2u, FB_CONSOLE_CELL_W, 2u, g_cursor);
+        back_draw_rect_locked(x0, y0 + FB_CONSOLE_CELL_H - 2u, FB_CONSOLE_CELL_W, 2u, g_cursor);
     }
 }
 
@@ -138,12 +266,14 @@ static void redraw_all_locked(void){
     if (!g_ready){
         return;
     }
-    fb_draw_rect(0, 0, fb_get_width(), fb_get_height(), g_bg);
+    back_draw_rect_locked(0, 0, console_pixel_width_locked(), console_pixel_height_locked(), g_bg);
     for (unsigned int row = 0; row < g_rows; row++){
         for (unsigned int col = 0; col < g_cols; col++){
             draw_cell_locked(row, col, row == g_cursor_row && col == g_cursor_col);
         }
     }
+    present_console_rows_locked(0, g_rows);
+    clear_visible_margins_locked();
 }
 
 static void scroll_locked(void){
@@ -177,16 +307,21 @@ static void putc_locked(char c){
         return;
     }
 
+    unsigned int dirty_start = g_cursor_row;
+    unsigned int dirty_end = g_cursor_row;
     draw_cell_locked(g_cursor_row, g_cursor_col, 0);
 
     if (c == '\n'){
         newline_locked();
+        dirty_note_row_locked(&dirty_start, &dirty_end, g_cursor_row);
         draw_cell_locked(g_cursor_row, g_cursor_col, 1);
+        present_dirty_rows_locked(dirty_start, dirty_end);
         return;
     }
     if (c == '\r'){
         g_cursor_col = 0;
         draw_cell_locked(g_cursor_row, g_cursor_col, 1);
+        present_dirty_rows_locked(dirty_start, dirty_end);
         return;
     }
     if (c == '\b' || c == 0x7F){
@@ -196,8 +331,10 @@ static void putc_locked(char c){
             g_cursor_row--;
             g_cursor_col = g_cols - 1u;
         }
+        dirty_note_row_locked(&dirty_start, &dirty_end, g_cursor_row);
         g_cells[g_cursor_row][g_cursor_col] = ' ';
         draw_cell_locked(g_cursor_row, g_cursor_col, 1);
+        present_dirty_rows_locked(dirty_start, dirty_end);
         return;
     }
     if (c == '\t'){
@@ -218,7 +355,9 @@ static void putc_locked(char c){
     if (g_cursor_col >= g_cols){
         newline_locked();
     }
+    dirty_note_row_locked(&dirty_start, &dirty_end, g_cursor_row);
     draw_cell_locked(g_cursor_row, g_cursor_col, 1);
+    present_dirty_rows_locked(dirty_start, dirty_end);
 }
 
 void fb_console_init(void){
@@ -354,6 +493,7 @@ void fb_console_render_rows(const unsigned char* cells,
             draw_cell_locked(row, col, row == g_cursor_row && col == g_cursor_col);
         }
     }
+    present_console_rows_locked(start_row, end_row - start_row);
     spin_unlock_irqrestore(&g_fb_console_lock, irq);
 }
 
