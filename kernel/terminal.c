@@ -34,6 +34,8 @@ static terminal_t g_terms[QOS_TERMINAL_MAX];
 static signed char g_pid_term[TERM_PID_MAP_MAX];
 static int g_active_term = 0;
 static spinlock_t g_terminal_lock;
+static spinlock_t g_terminal_render_lock;
+static unsigned char g_render_cells[TERM_MAX_ROWS][TERM_MAX_COLS];
 
 static int terminal_valid_id(int term_id){
     return term_id >= 0 && term_id < QOS_TERMINAL_MAX;
@@ -69,36 +71,57 @@ static void terminal_clear_buffer_locked(terminal_t* term){
     term->cursor_row = 0;
 }
 
-static void terminal_render_locked(const terminal_t* term){
-    if (!term || term->cols == 0u || term->rows == 0u){
+static void terminal_render_rows_unlocked(int term_id,
+                                          unsigned int start_row,
+                                          unsigned int end_row){
+    if (!terminal_valid_id(term_id)){
         return;
     }
-    fb_console_load_screen(&term->cells[0][0],
-                           TERM_MAX_COLS,
-                           TERM_MAX_ROWS,
-                           term->cursor_col,
-                           term->cursor_row);
-}
 
-static void terminal_render_rows_locked(const terminal_t* term,
-                                        unsigned int start_row,
-                                        unsigned int end_row){
+    if (!spin_trylock(&g_terminal_render_lock)){
+        return;
+    }
+
+    unsigned int cursor_col = 0u;
+    unsigned int cursor_row = 0u;
+    unsigned int row_count = 0u;
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    terminal_t* term = terminal_get_locked(term_id);
     if (!term || term->cols == 0u || term->rows == 0u || start_row >= term->rows){
+        spin_unlock_irqrestore(&g_terminal_lock, irq);
+        spin_unlock(&g_terminal_render_lock);
         return;
     }
     if (end_row >= term->rows){
         end_row = term->rows - 1u;
     }
     if (end_row < start_row){
+        spin_unlock_irqrestore(&g_terminal_lock, irq);
+        spin_unlock(&g_terminal_render_lock);
         return;
     }
-    fb_console_render_rows(&term->cells[0][0],
+    for (unsigned int row = start_row; row <= end_row; row++){
+        for (unsigned int col = 0; col < term->cols; col++){
+            g_render_cells[row][col] = term->cells[row][col];
+        }
+    }
+    cursor_col = term->cursor_col;
+    cursor_row = term->cursor_row;
+    row_count = (end_row - start_row) + 1u;
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+
+    fb_console_render_rows(&g_render_cells[0][0],
                            TERM_MAX_COLS,
                            TERM_MAX_ROWS,
                            start_row,
-                           (end_row - start_row) + 1u,
-                           term->cursor_col,
-                           term->cursor_row);
+                           row_count,
+                           cursor_col,
+                           cursor_row);
+    spin_unlock(&g_terminal_render_lock);
+}
+
+static void terminal_render_all_unlocked(int term_id){
+    terminal_render_rows_unlocked(term_id, 0u, TERM_MAX_ROWS - 1u);
 }
 
 static void terminal_dirty_note(unsigned int* start_row, unsigned int* end_row, unsigned int row){
@@ -233,6 +256,7 @@ static int terminal_pid_is_foreground_locked(int term_id, int pid){
 
 void terminal_init(void){
     spinlock_init(&g_terminal_lock);
+    spinlock_init(&g_terminal_render_lock);
     fb_console_init();
     unsigned int cols = fb_console_cols();
     unsigned int rows = fb_console_rows();
@@ -261,19 +285,23 @@ void terminal_init(void){
     }
     g_active_term = 0;
     g_terms[0].flags = TERM_FLAG_UART | TERM_FLAG_FB;
-    terminal_render_locked(&g_terms[0]);
+    terminal_render_all_unlocked(0);
 }
 
 void terminal_clear_active(void){
+    int term_id = -1;
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(g_active_term);
     if (term){
         terminal_clear_buffer_locked(term);
         if (term->flags & TERM_FLAG_FB){
-            terminal_render_locked(term);
+            term_id = g_active_term;
         }
     }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (term_id >= 0){
+        terminal_render_all_unlocked(term_id);
+    }
 }
 
 int terminal_attach_pid(int pid, int term_id){
@@ -351,6 +379,9 @@ int terminal_get_for_pid(int pid){
 
 void terminal_putc(int term_id, int pid, char c){
     int owner = (pid >= 0) ? console_get_owner() : -1;
+    int do_render = 0;
+    unsigned int dirty_start = 0u;
+    unsigned int dirty_end = 0u;
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
@@ -359,8 +390,21 @@ void terminal_putc(int term_id, int pid, char c){
     int mirror_remote = (pid >= 0 && owner == pid);
 
     if (term){
+        unsigned int old_row = term->cursor_row;
+        int dirty_all = terminal_char_will_scroll(term, c);
+        dirty_start = old_row;
+        dirty_end = old_row;
         terminal_buffer_putc_locked(term, c);
+        if (dirty_all){
+            dirty_start = 0u;
+            dirty_end = (term->rows > 0u) ? (term->rows - 1u) : 0u;
+        } else{
+            terminal_dirty_note(&dirty_start, &dirty_end, term->cursor_row);
+        }
     }
+    do_render = mirror_fb;
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+
     if (mirror_remote){
         remote_login_on_tty_output_char(c);
     }
@@ -370,11 +414,9 @@ void terminal_putc(int term_id, int pid, char c){
         }
         uart_send(c);
     }
-    if (mirror_fb){
-        fb_console_putc(c);
+    if (do_render){
+        terminal_render_rows_unlocked(term_id, dirty_start, dirty_end);
     }
-
-    spin_unlock_irqrestore(&g_terminal_lock, irq);
 }
 
 void terminal_write(int term_id, int pid, const char* s, unsigned long len){
@@ -383,6 +425,9 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     }
 
     int owner = (pid >= 0) ? console_get_owner() : -1;
+    int do_render = 0;
+    int do_uart = 0;
+    int do_remote = 0;
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
@@ -409,21 +454,31 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
                 terminal_dirty_note(&dirty_start, &dirty_end, term->cursor_row);
             }
         }
-        if (mirror_remote){
-            remote_login_on_tty_output_char(c);
+    }
+    do_render = mirror_fb;
+    do_uart = mirror_uart;
+    do_remote = mirror_remote;
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+
+    if (do_remote){
+        for (unsigned long i = 0; i < len; i++){
+            remote_login_on_tty_output_char(s[i]);
         }
-        if (mirror_uart){
+    }
+
+    if (do_uart){
+        for (unsigned long i = 0; i < len; i++){
+            char c = s[i];
             if (c == '\n'){
                 uart_send('\r');
             }
             uart_send(c);
         }
     }
-    if (mirror_fb){
-        terminal_render_rows_locked(term, dirty_start, dirty_end);
-    }
 
-    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (do_render){
+        terminal_render_rows_unlocked(term_id, dirty_start, dirty_end);
+    }
 }
 
 void terminal_poll_inputs(void){
@@ -505,8 +560,8 @@ int terminal_set_active(int id){
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     g_active_term = id;
     g_terms[g_active_term].flags |= TERM_FLAG_FB;
-    terminal_render_locked(&g_terms[g_active_term]);
     spin_unlock_irqrestore(&g_terminal_lock, irq);
+    terminal_render_all_unlocked(id);
     return 0;
 }
 
@@ -526,14 +581,15 @@ int terminal_set_active_output(unsigned int flags){
 
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(g_active_term);
+    int term_id = g_active_term;
     if (!term){
         spin_unlock_irqrestore(&g_terminal_lock, irq);
         return -1;
     }
     term->flags = flags;
-    if (term->flags & TERM_FLAG_FB){
-        terminal_render_locked(term);
-    }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (flags & TERM_FLAG_FB){
+        terminal_render_all_unlocked(term_id);
+    }
     return 0;
 }
