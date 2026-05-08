@@ -648,17 +648,19 @@ void mmu_switch_to_pid(int pid){
     // remote shootdown request.
     mmu_sync_local_tlb();
 
+    unsigned int core = mmu_local_core_id();
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     unsigned long* table = l1_table;
     int effective_pid = -1;
     unsigned short effective_asid = (unsigned short)MMU_ASID_KERNEL;
-    if (pid >= 0 && (unsigned int)pid < MMU_MAX_PROCESS_SPACES && proc_space_active[pid]){
+    if (pid >= 0 &&
+        (unsigned int)pid < MMU_MAX_PROCESS_SPACES &&
+        proc_space_active[pid]){
         table = proc_l1_table[pid];
         effective_pid = pid;
         effective_asid = proc_asid[pid];
     }
 
-    unsigned int core = mmu_local_core_id();
-    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     if (core_active_pid[core] != effective_pid || core_active_asid[core] != effective_asid){
         // Context switch now selects both a page-table root and ASID.
         mmu_set_ttbr0((unsigned long)table, effective_asid);

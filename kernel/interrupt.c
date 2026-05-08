@@ -21,8 +21,8 @@ extern void vectors(void);
 #define IRQ_SDHOST_PENDING_BIT (1u << 30) // IRQ 62 -> bank2 bit 30
 
 static void (*g_sdhost_irq_handler)(void) = 0;
-static volatile unsigned int g_kernel_preempt_depth = 0;
-static volatile unsigned long g_kernel_preempt_saved_daif = 0;
+static volatile unsigned int g_kernel_preempt_depth[MAX_CPU_CORES];
+static volatile unsigned long g_kernel_preempt_saved_daif[MAX_CPU_CORES];
 
 #define MAX_BANK2_IRQ_HANDLERS 8
 static unsigned int g_bank2_irq_bits[MAX_BANK2_IRQ_HANDLERS];
@@ -33,6 +33,14 @@ static void (*g_bank2_irq_handlers[MAX_BANK2_IRQ_HANDLERS])(void);
 #define IRQ_FRAME_SPSR_IDX 32
 #define SPSR_MODE_MASK 0xFUL
 #define SPSR_MODE_EL0T 0x0UL
+
+static unsigned int preempt_core_id(void){
+    unsigned int core = cpu_get_id();
+    if (core >= MAX_CPU_CORES){
+        return 0u;
+    }
+    return core;
+}
 
 void interrupt_init(void){
     asm volatile("msr VBAR_EL1, %0" : : "r"(vectors));
@@ -82,12 +90,13 @@ void disable_interrupts(void){
 
 void kernel_preempt_enter(void){
     unsigned long daif_prev;
+    unsigned int core = preempt_core_id();
     asm volatile("mrs %0, daif" : "=r"(daif_prev));
     asm volatile("msr daifset, #2");
-    if (g_kernel_preempt_depth == 0){
-        g_kernel_preempt_saved_daif = daif_prev;
+    if (g_kernel_preempt_depth[core] == 0u){
+        g_kernel_preempt_saved_daif[core] = daif_prev;
     }
-    g_kernel_preempt_depth++;
+    g_kernel_preempt_depth[core]++;
     // Sync exceptions (SVC) typically enter EL1 with IRQ masked. Unmask IRQ
     // inside opted-in long kernel paths so timer IRQ can drive scheduling.
     asm volatile("msr daifclr, #2" : : : "memory");
@@ -95,14 +104,15 @@ void kernel_preempt_enter(void){
 
 void kernel_preempt_exit(void){
     unsigned long restore_daif = 0;
+    unsigned int core = preempt_core_id();
     asm volatile("msr daifset, #2");
-    if (g_kernel_preempt_depth > 0){
-        g_kernel_preempt_depth--;
-        if (g_kernel_preempt_depth == 0){
-            restore_daif = g_kernel_preempt_saved_daif;
+    if (g_kernel_preempt_depth[core] > 0u){
+        g_kernel_preempt_depth[core]--;
+        if (g_kernel_preempt_depth[core] == 0u){
+            restore_daif = g_kernel_preempt_saved_daif[core];
         }
     }
-    if (g_kernel_preempt_depth == 0){
+    if (g_kernel_preempt_depth[core] == 0u){
         asm volatile("msr daif, %0" : : "r"(restore_daif) : "memory");
     } else{
         // Keep IRQ enabled for outer opted-in region.
@@ -111,7 +121,7 @@ void kernel_preempt_exit(void){
 }
 
 int kernel_preempt_enabled(void){
-    return g_kernel_preempt_depth > 0 ? 1 : 0;
+    return g_kernel_preempt_depth[preempt_core_id()] > 0u ? 1 : 0;
 }
 
 void* irq_handler(void* irq_frame_sp){
@@ -223,9 +233,14 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         uart_puts("\n");
     }
     if (ec == 0x00UL){
-        volatile unsigned int* ip = (volatile unsigned int*)(elr & ~0x3UL);
         uart_puts("INSN@ELR=");
-        uart_puthex(*ip);
+        unsigned long insn_addr = (elr & ~0x3UL);
+        if (process_user_range_readable((const void*)insn_addr, 4u)){
+            volatile unsigned int* ip = (volatile unsigned int*)insn_addr;
+            uart_puthex(*ip);
+        } else{
+            uart_puts("UNREADABLE");
+        }
         uart_puts("\n");
     }
 

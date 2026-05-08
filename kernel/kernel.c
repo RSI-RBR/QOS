@@ -79,6 +79,8 @@ static int create_boot_shell_process(void){
 extern unsigned long stack_bottom;
 
 void kernel_secondary_main(void){
+    cpu_enable_smp_coherency();
+
     // Per-core EL1 init path for cores 1..3.
     asm volatile(
         "mrs x0, cpacr_el1\n"
@@ -100,6 +102,8 @@ void kernel_secondary_main(void){
 }
 
 void kernel_main(void){
+    cpu_enable_smp_coherency();
+
     // Enable FP/ASIMD at EL1 to avoid EC=0x07 traps on generated code paths.
     asm volatile(
         "mrs x0, cpacr_el1\n"
