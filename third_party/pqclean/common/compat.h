@@ -31,4 +31,14 @@
 #define INLINE PQCLEAN_INLINE
 #endif
 
+#ifndef PQCLEAN_PREVENT_BRANCH_HACK
+/*
+ * Some PQClean/PQCode KEM verify paths call this macro to discourage
+ * compiler-introduced branching in constant-time code paths.
+ * Fallback keeps builds portable when the upstream compatibility layer
+ * is not present in this tree.
+ */
+#define PQCLEAN_PREVENT_BRANCH_HACK(x) do { (void)(x); } while (0)
+#endif
+
 #endif
