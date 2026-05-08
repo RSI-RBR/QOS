@@ -86,7 +86,9 @@ enum {
     SYS_TERM_GET_OUTPUT = 69,
     SYS_TERM_SET_OUTPUT = 70,
     SYS_DMA_SET_ENABLED = 71,
-    SYS_DMA_STATUS = 72
+    SYS_DMA_STATUS = 72,
+    SYS_DMA_LAST_CS = 73,
+    SYS_DMA_LAST_DEBUG = 74
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -277,6 +279,14 @@ static inline int qos_dma_set_enabled(int enabled){
 
 static inline unsigned int qos_dma_status(void){
     return (unsigned int)qos_syscall0(SYS_DMA_STATUS);
+}
+
+static inline unsigned int qos_dma_last_cs(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_LAST_CS);
+}
+
+static inline unsigned int qos_dma_last_debug(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_LAST_DEBUG);
 }
 
 static inline void qos_process_dump(void){

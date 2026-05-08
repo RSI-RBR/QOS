@@ -99,10 +99,17 @@ static void present_pixel_rows_locked(unsigned int start_y, unsigned int height)
     unsigned int dst_stride = pitch - row_bytes;
     unsigned int* dst0 = (unsigned int*)((unsigned char*)base + ((unsigned long)start_y * pitch));
     unsigned int* src0 = &g_pixels[start_y][0];
+    unsigned long fb_bus = fb_get_bus_base();
 
-    if (pitch >= row_bytes &&
-        dma_memcpy_2d(dst0, dst_stride, src0, src_stride, row_bytes, height) == 0){
-        return;
+    if (pitch >= row_bytes && fb_bus != 0u){
+        unsigned int dst_bus = (unsigned int)(fb_bus + ((unsigned long)start_y * pitch));
+        if (src_stride == 0u && dst_stride == 0u){
+            if (dma_memcpy_to_bus(dst_bus, src0, row_bytes * height) == 0){
+                return;
+            }
+        } else if (dma_memcpy_2d_to_bus(dst_bus, dst_stride, src0, src_stride, row_bytes, height) == 0){
+            return;
+        }
     }
 
     for (unsigned int y = 0; y < height; y++){

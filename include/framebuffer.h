@@ -21,5 +21,6 @@ unsigned int fb_get_width();
 unsigned int fb_get_height();
 unsigned int fb_get_pitch();
 unsigned long fb_get_base();
+unsigned long fb_get_bus_base();
 
 #endif

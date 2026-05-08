@@ -309,6 +309,15 @@ static void print_int(int v){
     print_uint((unsigned int)v);
 }
 
+static void print_hex32(unsigned int v){
+    static const char hexdigits[] = "0123456789ABCDEF";
+    qos_puts("0x");
+    for (int i = 7; i >= 0; i--){
+        unsigned int nibble = (v >> ((unsigned int)i * 4u)) & 0xFu;
+        qos_putc(hexdigits[nibble]);
+    }
+}
+
 static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[0]);
     qos_putc('.');
@@ -609,6 +618,10 @@ static void cmd_dma(const char* mode){
         qos_puts((st & 1u) ? "on" : "off");
         qos_puts(" failures=");
         print_uint((st >> 16) & 0xFFFFu);
+        qos_puts(" cs=");
+        print_hex32(qos_dma_last_cs());
+        qos_puts(" debug=");
+        print_hex32(qos_dma_last_debug());
         qos_puts("\n");
         return;
     }

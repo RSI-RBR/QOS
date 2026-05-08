@@ -11,6 +11,7 @@ static unsigned int width = 1920;
 static unsigned int height = 1080;
 static unsigned int pitch;
 static unsigned int *fb;
+static unsigned long fb_bus;
 //static unsigned char bytes_per_pixel = 4;
 
 static unsigned char dirty_map[MAX_HEIGHT][MAX_WIDTH];
@@ -61,7 +62,8 @@ void fb_init(){
     mbox[25] = 0;
 
     if (mailbox_call(8)){
-        fb = (unsigned int*)((unsigned long)(mbox[23] & 0x3FFFFFFF));
+        fb_bus = (unsigned long)mbox[23];
+        fb = (unsigned int*)((unsigned long)(fb_bus & 0x3FFFFFFF));
         pitch = mbox[19];
         // Use actual dimensions returned by firmware, not only requested values.
         if (mbox[5] > 0 && mbox[6] > 0){
@@ -258,4 +260,8 @@ unsigned int fb_get_pitch(){
 
 unsigned long fb_get_base(){
     return (unsigned long)fb;
+}
+
+unsigned long fb_get_bus_base(){
+    return fb_bus;
 }

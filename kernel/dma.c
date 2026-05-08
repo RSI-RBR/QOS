@@ -50,6 +50,8 @@ static int g_dma_ready = 0;
 static int g_dma_enabled = 0;
 static int g_dma_disabled = 0;
 static unsigned int g_dma_failures = 0;
+static unsigned int g_dma_last_cs = 0;
+static unsigned int g_dma_last_debug = 0;
 
 static void dma_barrier(void){
     asm volatile("dsb sy" : : : "memory");
@@ -116,6 +118,123 @@ unsigned int dma_failure_count(void){
     return g_dma_failures;
 }
 
+unsigned int dma_last_cs(void){
+    return g_dma_last_cs;
+}
+
+unsigned int dma_last_debug(void){
+    return g_dma_last_debug;
+}
+
+static int dma_start_memcopy(unsigned int src_bus,
+                             unsigned int dst_bus,
+                             unsigned int txfr_len,
+                             unsigned int stride,
+                             unsigned int ti_extra){
+    unsigned long irq = spin_lock_irqsave(&g_dma_lock);
+    dma_reset_channel();
+
+    g_dma_cb.ti = DMA_TI_WAIT_RESP |
+                  DMA_TI_DEST_INC |
+                  DMA_TI_SRC_INC |
+                  DMA_TI_NO_WIDE_BURSTS |
+                  ti_extra;
+    g_dma_cb.source_ad = src_bus;
+    g_dma_cb.dest_ad = dst_bus;
+    g_dma_cb.txfr_len = txfr_len;
+    g_dma_cb.stride = stride;
+    g_dma_cb.nextconbk = 0;
+    g_dma_cb.reserved0 = 0;
+    g_dma_cb.reserved1 = 0;
+
+    clean_invalidate_data_cache_range((unsigned long)&g_dma_cb, sizeof(g_dma_cb));
+
+    dma_barrier();
+    DMA_CONBLK_AD = dma_bus_address(&g_dma_cb);
+    DMA_CS = DMA_CS_END | DMA_CS_INT | DMA_CS_ERROR;
+    DMA_DEBUG = 0x7u;
+    dma_barrier();
+    DMA_CS = DMA_CS_ACTIVE |
+             DMA_CS_WAIT_FOR_WRITES |
+             (8u << DMA_CS_PRIORITY_SHIFT) |
+             (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
+
+    int rc = -1;
+    for (unsigned int i = 0; i < DMA_TIMEOUT_LOOPS; i++){
+        unsigned int cs = DMA_CS;
+        g_dma_last_cs = cs;
+        if (cs & DMA_CS_ERROR){
+            break;
+        }
+        if ((cs & DMA_CS_ACTIVE) == 0u && (cs & DMA_CS_END)){
+            rc = 0;
+            break;
+        }
+    }
+
+    if (rc != 0){
+        g_dma_last_cs = DMA_CS;
+        g_dma_last_debug = DMA_DEBUG;
+        g_dma_failures++;
+        g_dma_disabled = 1;
+        dma_reset_channel();
+    } else{
+        DMA_CS = DMA_CS_END | DMA_CS_INT;
+        dma_barrier();
+    }
+
+    spin_unlock_irqrestore(&g_dma_lock, irq);
+    return rc;
+}
+
+int dma_memcpy_to_bus(unsigned int dst_bus, const void* src, unsigned int bytes){
+    if (!src || dst_bus == 0u || bytes == 0u){
+        return -1;
+    }
+    if (!g_dma_enabled || g_dma_disabled){
+        return -1;
+    }
+    if (bytes >= (1u << 30)){
+        return -1;
+    }
+
+    dma_init();
+    clean_invalidate_data_cache_range((unsigned long)src, bytes);
+    return dma_start_memcopy(dma_bus_address(src), dst_bus, bytes, 0u, 0u);
+}
+
+int dma_memcpy_2d_to_bus(unsigned int dst_bus,
+                         unsigned int dst_stride,
+                         const void* src,
+                         unsigned int src_stride,
+                         unsigned int row_bytes,
+                         unsigned int rows){
+    if (!src || dst_bus == 0u || row_bytes == 0u || rows == 0u){
+        return -1;
+    }
+    if (!g_dma_enabled || g_dma_disabled){
+        return -1;
+    }
+    if (row_bytes > 0xFFFFu || rows > 0x3FFFu){
+        return -1;
+    }
+    if (dst_stride > 0x7FFFu || src_stride > 0x7FFFu){
+        return -1;
+    }
+
+    dma_init();
+
+    unsigned long src_total = ((unsigned long)(row_bytes + src_stride) * (unsigned long)(rows - 1u)) +
+                              (unsigned long)row_bytes;
+    clean_invalidate_data_cache_range((unsigned long)src, src_total);
+
+    return dma_start_memcopy(dma_bus_address(src),
+                             dst_bus,
+                             (rows << 16) | row_bytes,
+                             ((dst_stride & 0xFFFFu) << 16) | (src_stride & 0xFFFFu),
+                             DMA_TI_TDMODE);
+}
+
 int dma_memcpy_2d(void* dst,
                   unsigned int dst_stride,
                   const void* src,
@@ -135,60 +254,10 @@ int dma_memcpy_2d(void* dst,
         return -1;
     }
 
-    dma_init();
-
-    unsigned long irq = spin_lock_irqsave(&g_dma_lock);
-    dma_reset_channel();
-
-    g_dma_cb.ti = DMA_TI_TDMODE |
-                  DMA_TI_WAIT_RESP |
-                  DMA_TI_DEST_INC |
-                  DMA_TI_SRC_INC |
-                  DMA_TI_NO_WIDE_BURSTS;
-    g_dma_cb.source_ad = dma_bus_address(src);
-    g_dma_cb.dest_ad = dma_bus_address(dst);
-    g_dma_cb.txfr_len = (rows << 16) | row_bytes;
-    g_dma_cb.stride = ((dst_stride & 0xFFFFu) << 16) | (src_stride & 0xFFFFu);
-    g_dma_cb.nextconbk = 0;
-    g_dma_cb.reserved0 = 0;
-    g_dma_cb.reserved1 = 0;
-
-    unsigned long src_total = ((unsigned long)(row_bytes + src_stride) * (unsigned long)(rows - 1u)) +
-                              (unsigned long)row_bytes;
-    clean_invalidate_data_cache_range((unsigned long)src, src_total);
-    clean_invalidate_data_cache_range((unsigned long)&g_dma_cb, sizeof(g_dma_cb));
-
-    dma_barrier();
-    DMA_CONBLK_AD = dma_bus_address(&g_dma_cb);
-    DMA_CS = DMA_CS_END | DMA_CS_INT | DMA_CS_ERROR;
-    DMA_DEBUG = 0x7u;
-    dma_barrier();
-    DMA_CS = DMA_CS_ACTIVE |
-             DMA_CS_WAIT_FOR_WRITES |
-             (8u << DMA_CS_PRIORITY_SHIFT) |
-             (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
-
-    int rc = -1;
-    for (unsigned int i = 0; i < DMA_TIMEOUT_LOOPS; i++){
-        unsigned int cs = DMA_CS;
-        if (cs & DMA_CS_ERROR){
-            break;
-        }
-        if ((cs & DMA_CS_ACTIVE) == 0u && (cs & DMA_CS_END)){
-            rc = 0;
-            break;
-        }
-    }
-
-    if (rc != 0){
-        g_dma_failures++;
-        g_dma_disabled = 1;
-        dma_reset_channel();
-    } else{
-        DMA_CS = DMA_CS_END | DMA_CS_INT;
-        dma_barrier();
-    }
-
-    spin_unlock_irqrestore(&g_dma_lock, irq);
-    return rc;
+    return dma_memcpy_2d_to_bus(dma_bus_address(dst),
+                                dst_stride,
+                                src,
+                                src_stride,
+                                row_bytes,
+                                rows);
 }
