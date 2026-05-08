@@ -293,6 +293,12 @@ static void set_block_attr_for_tables(unsigned long* table0, unsigned long* tabl
         return;
     }
 
+    // Never clobber an L2 table-descriptor (used for per-process L3 user slot
+    // mappings) with a block descriptor. This preserves per-process slot tables
+    // when global/device attribute updates run on active address spaces.
+    if ((table[l2_index] & DESC_KIND_MASK) == (DESC_VALID | DESC_TABLE)){
+        return;
+    }
     table[l2_index] = block_desc(pa, attrs);
 }
 
