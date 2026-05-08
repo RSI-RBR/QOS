@@ -69,6 +69,7 @@ static tcp_conn_t g_conn;
 static unsigned short g_next_local_port = 42000u;
 static int g_tcp_https_last_error = 0;
 static unsigned long g_tcp_https_fail_count = 0;
+static void tls_stream_reset_state(void);
 
 #define TCP_RECV_WINDOW_MAX 60000u
 
@@ -263,6 +264,7 @@ void tcp_init(void){
     g_tcp_stats.http_fail = 0;
     g_conn.active = 0;
     g_conn.state = TCP_ST_CLOSED;
+    tls_stream_reset_state();
 }
 
 void tcp_handle_ipv4_packet(const unsigned char src_ip[4],
@@ -515,6 +517,12 @@ static unsigned char g_tls_hs_buf[TCP_TLS_HS_BUF_CAP];
 static unsigned char g_tls_record_wire[TCP_TLS_APP_IO_CAP];
 static unsigned char g_tls_record_plain[TCP_TLS_REC_MAX];
 static unsigned char g_tls_record_tx[TCP_TLS_APP_IO_CAP];
+static unsigned char g_tls_stream_pending[TCP_TLS_REC_MAX];
+static tls13_record_ctx_t g_tls_stream_app_rx;
+static unsigned int g_tls_stream_pending_off = 0u;
+static unsigned int g_tls_stream_pending_len = 0u;
+static unsigned int g_tls_stream_consumed = 0u;
+static int g_tls_stream_active = 0;
 
 // PQ TLS negotiation policy:
 // - Prefer ML-DSA signatures in ClientHello when available.
@@ -531,6 +539,15 @@ static const int g_tls13_prioritize_pq_sig = 1;
 static const int g_tls13_advertise_pq_kem = 1;
 static const int g_tls13_advertise_pq_legacy_draft_group = 0;
 static int g_tls13_last_kex_was_pq = 0;
+
+static void tls_stream_reset_state(void){
+    g_tls_stream_pending_off = 0u;
+    g_tls_stream_pending_len = 0u;
+    g_tls_stream_consumed = 0u;
+    g_tls_stream_active = 0;
+    crypto_memzero(g_tls_stream_pending, sizeof(g_tls_stream_pending));
+    crypto_memzero(&g_tls_stream_app_rx, sizeof(g_tls_stream_app_rx));
+}
 
 static int tls13_pq_kem_backend_ready(void){
     return pq_kem_mlkem768_available() ? 1 : 0;
@@ -1207,11 +1224,121 @@ static int tls13_verify_server_certificate_verify(const x509_verify_result_t* ce
     return -1;
 }
 
-int tcp_https_get(const unsigned char dst_ip[4],
-                  const char* host,
-                  const char* path,
-                  unsigned char* out,
-                  unsigned int out_cap){
+int tcp_https_stream_active(void){
+    return g_tls_stream_active ? 1 : 0;
+}
+
+void tcp_https_stream_close(void){
+    g_conn.active = 0;
+    g_conn.state = TCP_ST_CLOSED;
+    tls_stream_reset_state();
+}
+
+static int tls13_stream_read_chunk(unsigned char* out, unsigned int out_cap, unsigned int timeout_ms){
+    unsigned char rec_type = 0;
+    unsigned int rec_len = 0u;
+    const unsigned char* rec_payload = 0;
+    unsigned char rec_hdr[5];
+
+    if (!out || out_cap == 0u){
+        return -1;
+    }
+    if (!g_tls_stream_active){
+        return 0;
+    }
+
+    if (g_tls_stream_pending_off < g_tls_stream_pending_len){
+        unsigned int avail = g_tls_stream_pending_len - g_tls_stream_pending_off;
+        unsigned int take = (avail < out_cap) ? avail : out_cap;
+        for (unsigned int i = 0; i < take; i++){
+            out[i] = g_tls_stream_pending[g_tls_stream_pending_off + i];
+        }
+        g_tls_stream_pending_off += take;
+        if (g_tls_stream_pending_off >= g_tls_stream_pending_len){
+            g_tls_stream_pending_off = 0u;
+            g_tls_stream_pending_len = 0u;
+        }
+        return (int)take;
+    }
+
+    while (1){
+        unsigned int consumed_before = g_tls_stream_consumed;
+        if (tls13_pull_record(&g_tls_stream_consumed, &rec_type, &rec_payload, &rec_len, rec_hdr, timeout_ms) != 0){
+            g_tls_stream_consumed = consumed_before;
+            if (g_conn.state == TCP_ST_CLOSE_WAIT){
+                tcp_https_stream_close();
+                return 0;
+            }
+            if (g_conn.state == TCP_ST_ESTABLISHED){
+                return 0;
+            }
+            tcp_https_stream_close();
+            return -1;
+        }
+        if (rec_type == 20u){
+            continue;
+        }
+        if (rec_type == 21u){
+            tcp_https_stream_close();
+            return 0;
+        }
+        if (rec_type != 23u){
+            continue;
+        }
+        if (rec_len > TCP_TLS_REC_MAX){
+            tcp_https_stream_close();
+            return -1;
+        }
+        for (unsigned int h = 0; h < 5u; h++){
+            g_tls_record_wire[h] = rec_hdr[h];
+        }
+        for (unsigned int i = 0; i < rec_len; i++){
+            g_tls_record_wire[5u + i] = rec_payload[i];
+        }
+
+        unsigned int p_len = 0u;
+        unsigned char inner = 0u;
+        if (tls13_record_decrypt(&g_tls_stream_app_rx,
+                                 g_tls_record_wire, 5u + rec_len,
+                                 g_tls_record_plain, sizeof(g_tls_record_plain),
+                                 &p_len, &inner) != 0){
+            tcp_https_stream_close();
+            return -1;
+        }
+        if (inner != 23u || p_len == 0u){
+            continue;
+        }
+        if (p_len > sizeof(g_tls_stream_pending)){
+            tcp_https_stream_close();
+            return -1;
+        }
+        for (unsigned int i = 0; i < p_len; i++){
+            g_tls_stream_pending[i] = g_tls_record_plain[i];
+        }
+        g_tls_stream_pending_off = 0u;
+        g_tls_stream_pending_len = p_len;
+
+        {
+            unsigned int take = (p_len < out_cap) ? p_len : out_cap;
+            for (unsigned int i = 0; i < take; i++){
+                out[i] = g_tls_stream_pending[i];
+            }
+            g_tls_stream_pending_off = take;
+            if (g_tls_stream_pending_off >= g_tls_stream_pending_len){
+                g_tls_stream_pending_off = 0u;
+                g_tls_stream_pending_len = 0u;
+            }
+            return (int)take;
+        }
+    }
+}
+
+static int tcp_https_get_internal(const unsigned char dst_ip[4],
+                                  const char* host,
+                                  const char* path,
+                                  unsigned char* out,
+                                  unsigned int out_cap,
+                                  int stream_mode){
     const char* req_path = (path && *path) ? path : "/";
     char req[1024];
     int rq = 0;
@@ -1293,7 +1420,11 @@ int tcp_https_get(const unsigned char dst_ip[4],
         perf_freq = 1000000UL;
     }
 
-    if (!dst_ip || !host || !*host || !out || out_cap < 2u){
+    if (stream_mode){
+        tcp_https_stream_close();
+    }
+
+    if (!dst_ip || !host || !*host || !out || out_cap == 0u){
         g_tcp_stats.http_fail++;
         g_tcp_https_last_error = -100;
         g_tcp_https_fail_count++;
@@ -1925,6 +2056,29 @@ https_retry_connect:
     }
     ms_req_send += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
 
+    if (stream_mode){
+        int first_chunk = 0;
+        g_tls_stream_app_rx = app_rx;
+        g_tls_stream_consumed = consumed;
+        g_tls_stream_pending_off = 0u;
+        g_tls_stream_pending_len = 0u;
+        g_tls_stream_active = 1;
+
+        t_stage_start = read_cntpct();
+        first_chunk = tls13_stream_read_chunk(out, out_cap, 6000u);
+        ms_resp_total += cnt_ticks_to_ms(read_cntpct() - t_stage_start, perf_freq);
+        if (first_chunk <= 0){
+            tcp_https_stream_close();
+            g_tcp_stats.http_fail++;
+            HTTPS_FAIL(-136);
+        }
+        ms_first_byte = ms_resp_total;
+        result = first_chunk;
+        g_tcp_stats.http_ok++;
+        g_tcp_https_last_error = 0;
+        goto https_fail_secure;
+    }
+
     out[0] = 0;
     app_bytes = 0;
     hs_used = 0u;
@@ -2123,6 +2277,32 @@ https_fail_secure:
 #undef HTTPS_FAIL
 
     return (result < 0) ? fail_code : result;
+}
+
+int tcp_https_get(const unsigned char dst_ip[4],
+                  const char* host,
+                  const char* path,
+                  unsigned char* out,
+                  unsigned int out_cap){
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 0);
+}
+
+int tcp_https_stream_start(const unsigned char dst_ip[4],
+                           const char* host,
+                           const char* path,
+                           unsigned char* out,
+                           unsigned int out_cap){
+    return tcp_https_get_internal(dst_ip, host, path, out, out_cap, 1);
+}
+
+int tcp_https_stream_read(unsigned char* out,
+                          unsigned int out_cap,
+                          unsigned int timeout_ms){
+    int n = tls13_stream_read_chunk(out, out_cap, timeout_ms);
+    if (n < 0){
+        tcp_https_stream_close();
+    }
+    return n;
 }
 
 int tcp_http_get(const unsigned char dst_ip[4],
