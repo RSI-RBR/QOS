@@ -32,9 +32,9 @@ typedef struct {
 // Framework mode:
 // 0 = warn only, continue boot on failure.
 // 1 = halt boot on failure.
-static const int g_kernel_verify_enforce = 0;
+static const int g_kernel_verify_enforce = 1;
 static const int g_require_kernel_ed25519 = 1;
-static const int g_require_kernel_pq = 0;
+static const int g_require_kernel_pq = 1;
 
 static int g_warned_kernel_digest_only = 0;
 static int g_logged_kernel_verify_mode = 0;
@@ -56,11 +56,16 @@ __attribute__((section(".kmanifest"), used)) = {
 
 #define KERNEL_IMAGE_FAT_NAME "KERNEL8 IMG"
 #define KERNEL_PQ_SIG_FAT_NAME "KERNEL8 PQS"
+#define KERNEL_FILE_ED_SIG_FAT_NAME "KERNFILESIG"
+#define KERNEL_FILE_PQ_SIG_FAT_NAME "KERNFILEPQS"
+#define KERNEL_FILE_SIG_LABEL "KERNEL8_IMG"
+#define KERNEL_FILE_SIG_LABEL_LEN 11u
 #define KERNEL_IMAGE_MAX_SIZE (4u * 1024u * 1024u)
 #define KERNEL_PQ_SIG_HEADER_BYTES QOS_PQ_SIG_HEADER_BYTES
 #define KERNEL_PQ_SIG_MAX QOS_PQ_SIG_MAX
 
 static unsigned char g_kernel_file_buf[KERNEL_IMAGE_MAX_SIZE];
+static unsigned char g_kernel_file_sig[64];
 static unsigned char g_kernel_pq_sig_buf[KERNEL_PQ_SIG_MAX];
 static int g_kernel_pq_cached = 0;
 static int g_kernel_pq_cached_rc = 0;
@@ -110,6 +115,12 @@ static void put_u32_le(unsigned char* out, unsigned int v){
     out[1] = (unsigned char)((v >> 8) & 0xFFu);
     out[2] = (unsigned char)((v >> 16) & 0xFFu);
     out[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
+static void put_u64_le(unsigned char* out, unsigned long long v){
+    for (unsigned int i = 0; i < 8u; i++){
+        out[i] = (unsigned char)((v >> (8u * i)) & 0xFFu);
+    }
 }
 
 static unsigned int get_u32_le(const unsigned char* p){
@@ -343,6 +354,131 @@ static int verify_manifest_pq_sidecar(const trust_key_t* key){
     return g_kernel_pq_cached_rc;
 }
 
+static int build_kernel_file_sig_message(const unsigned char* file_bytes,
+                                         unsigned int file_len,
+                                         unsigned int signer_key_id,
+                                         unsigned char* out,
+                                         unsigned int out_cap,
+                                         unsigned int* out_len){
+    static const unsigned char tag[16] = {
+        'Q','O','S','-','F','I','L','E','-','S','I','G','-','V','1','\0'
+    };
+    unsigned char digest[32];
+    const unsigned int need = 16u + 4u + 4u + 4u + 8u + 1u + KERNEL_FILE_SIG_LABEL_LEN + 32u;
+    unsigned int o = 0u;
+    if (!file_bytes || file_len == 0u || !out || !out_len || out_cap < need){
+        return -1;
+    }
+
+    sha256_digest(file_bytes, file_len, digest);
+    for (unsigned int i = 0; i < 16u; i++) out[o++] = tag[i];
+    put_u32_le(out + o, 1u); o += 4u;
+    put_u32_le(out + o, signer_key_id); o += 4u;
+    put_u32_le(out + o, QOS_SIG_ALG_ED25519); o += 4u;
+    put_u64_le(out + o, (unsigned long long)file_len); o += 8u;
+    out[o++] = (unsigned char)KERNEL_FILE_SIG_LABEL_LEN;
+    for (unsigned int i = 0; i < KERNEL_FILE_SIG_LABEL_LEN; i++){
+        out[o++] = (unsigned char)KERNEL_FILE_SIG_LABEL[i];
+    }
+    for (unsigned int i = 0; i < 32u; i++){
+        out[o++] = digest[i];
+    }
+    *out_len = o;
+    return 0;
+}
+
+static int kernel_file_pq_key_allowed(const trust_key_t* key, unsigned int sig_alg){
+    if (!key || key->revoked){
+        return 0;
+    }
+    if ((key->role_mask & TRUST_ROLE_ADMIN) == 0u){
+        return 0;
+    }
+    if ((key->scope_mask & TRUST_SCOPE_KERNEL) == 0u){
+        return 0;
+    }
+    if (!key_has_pq_pubkey(key)){
+        return 0;
+    }
+    if (!alg_mask_has(key->pq_sig_alg_mask, sig_alg)){
+        return 0;
+    }
+    if (!alg_mask_has(key->sig_alg_mask, QOS_SIG_ALG_ED25519)){
+        return 0;
+    }
+    return 1;
+}
+
+static int verify_kernel_file_pq_signature(const unsigned char* file_bytes,
+                                           unsigned int file_len){
+    unsigned char msg[16u + 4u + 4u + 4u + 8u + 1u + KERNEL_FILE_SIG_LABEL_LEN + 32u];
+    unsigned char msg_digest[32];
+    unsigned int msg_len = 0u;
+
+    int n = fat32_read_file(KERNEL_FILE_PQ_SIG_FAT_NAME, g_kernel_pq_sig_buf, (int)sizeof(g_kernel_pq_sig_buf));
+    if (n <= 0){
+        uart_puts("Kernel file verify: required KERNFILE.PQS missing.\n");
+        return -1;
+    }
+    if (n < (int)QOS_PQ_SIG_HEADER_BYTES){
+        uart_puts("Kernel file verify: KERNFILE.PQS too small.\n");
+        return -1;
+    }
+
+    unsigned int magic = get_u32_le(&g_kernel_pq_sig_buf[0]);
+    unsigned int version = get_u32_le(&g_kernel_pq_sig_buf[4]);
+    unsigned int signer_key_id = get_u32_le(&g_kernel_pq_sig_buf[8]);
+    unsigned int sig_alg = get_u32_le(&g_kernel_pq_sig_buf[12]);
+    unsigned int sig_len = get_u32_le(&g_kernel_pq_sig_buf[16]);
+    if (magic != QOS_PQ_SIG_MAGIC || version != QOS_PQ_SIG_VERSION){
+        uart_puts("Kernel file verify: invalid KERNFILE.PQS header.\n");
+        return -1;
+    }
+    if ((QOS_PQ_SIG_HEADER_BYTES + sig_len) > (unsigned int)n){
+        uart_puts("Kernel file verify: truncated KERNFILE.PQS signature.\n");
+        return -1;
+    }
+
+    const trust_key_t* key = trust_find_key(signer_key_id);
+    if (!kernel_file_pq_key_allowed(key, sig_alg)){
+        uart_puts("Kernel file verify: KERNFILE.PQS signer not allowed.\n");
+        return -1;
+    }
+    if (build_kernel_file_sig_message(file_bytes,
+                                      file_len,
+                                      signer_key_id,
+                                      msg,
+                                      sizeof(msg),
+                                      &msg_len) != 0){
+        return -1;
+    }
+    int sig_n = fat32_read_file(KERNEL_FILE_ED_SIG_FAT_NAME, g_kernel_file_sig, (int)sizeof(g_kernel_file_sig));
+    if (sig_n != 64){
+        uart_puts("Kernel file verify: required KERNFILE.SIG missing or wrong size.\n");
+        return -1;
+    }
+    if (!qos_ed25519_verify(g_kernel_file_sig, msg, msg_len, key->ed25519_pubkey)){
+        uart_puts("Kernel file verify: KERNFILE.SIG signature failed.\n");
+        return -1;
+    }
+    uart_puts("Kernel file verify: KERNFILE.SIG OK.\n");
+
+    sha256_digest(msg, msg_len, msg_digest);
+    if (pq_sig_verify_digest_sha256(sig_alg,
+                                    msg_digest,
+                                    &g_kernel_pq_sig_buf[QOS_PQ_SIG_HEADER_BYTES],
+                                    sig_len,
+                                    key->pq_pubkey,
+                                    key->pq_pubkey_len) != 0){
+        uart_puts("Kernel file verify: KERNFILE.PQS signature failed.\n");
+        return -1;
+    }
+    uart_puts("Kernel file verify: KERNFILE.PQS OK (");
+    uart_puts(pq_sig_alg_name(sig_alg));
+    uart_puts(").\n");
+    return 0;
+}
+
 int kernel_verify_self(void){
     uart_puts("Kernel verify: start\n");
     if (verify_manifest_policy() != 0){
@@ -429,6 +565,9 @@ int kernel_verify_storage_image(void){
     int n = fat32_read_file(KERNEL_IMAGE_FAT_NAME, g_kernel_file_buf, (int)KERNEL_IMAGE_MAX_SIZE);
     if (n <= 0){
         uart_puts("Kernel file verify: read kernel8.img failed.\n");
+        return -1;
+    }
+    if (verify_kernel_file_pq_signature(g_kernel_file_buf, (unsigned int)n) != 0){
         return -1;
     }
 

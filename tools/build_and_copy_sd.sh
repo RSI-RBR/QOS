@@ -12,6 +12,11 @@ DEV_PQ_PUB="${DEV_PQ_PUB:-${DEV_LAMPORT_PUB:-keys/dev_mldsa65_pk.bin}}"
 CA_BUNDLE_SRC="${CA_BUNDLE_SRC:-build/ca/ca_roots_consensus.pem}"
 CA_REPORT_SRC="${CA_REPORT_SRC:-build/ca/ca_roots_consensus_report.json}"
 CA_SIGNER_KEY_ID="${CA_SIGNER_KEY_ID:-0x1}"
+AUTH_SRC="${AUTH_SRC:-AUTH.BIN}"
+AUTH_SIGNER_KEY_ID="${AUTH_SIGNER_KEY_ID:-0x00010001}"
+AUTH_SIGN_KEY="${AUTH_SIGN_KEY:-}"
+AUTH_PQ_SIGN_KEY="${AUTH_PQ_SIGN_KEY:-}"
+KERNEL_FILE_SIGNER_KEY_ID="${KERNEL_FILE_SIGNER_KEY_ID:-0x1}"
 
 TMP_CA_DIR=""
 cleanup_tmp_ca() {
@@ -49,6 +54,22 @@ if [[ -n "$DEV_PQ_PUB" && ! -f "$DEV_PQ_PUB" ]]; then
   echo "Developer PQ public key not found: $DEV_PQ_PUB"
   exit 1
 fi
+if [[ -z "$AUTH_SIGN_KEY" ]]; then
+  AUTH_SIGN_KEY="$DEV_KEY"
+fi
+if [[ -z "$AUTH_PQ_SIGN_KEY" ]]; then
+  AUTH_PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY"
+fi
+if [[ -f "$AUTH_SRC" ]]; then
+  if [[ ! -f "$AUTH_SIGN_KEY" ]]; then
+    echo "AUTH signing key not found: $AUTH_SIGN_KEY"
+    exit 1
+  fi
+  if [[ -z "$AUTH_PQ_SIGN_KEY" || ! -f "$AUTH_PQ_SIGN_KEY" ]]; then
+    echo "AUTH PQ signing key not found: $AUTH_PQ_SIGN_KEY"
+    exit 1
+  fi
+fi
 
 # Preserve CA artifacts across "make clean" (which removes build/ by default).
 if [[ -f "$CA_BUNDLE_SRC" || -f "$CA_REPORT_SRC" ]]; then
@@ -69,10 +90,14 @@ ADMIN_PQ_SIGN_KEY_ABS=""
 DEV_PQ_SIGN_KEY_ABS=""
 ADMIN_PQ_PUB_ABS=""
 DEV_PQ_PUB_ABS=""
+AUTH_SIGN_KEY_ABS=""
+AUTH_PQ_SIGN_KEY_ABS=""
 if [[ -n "$ADMIN_PQ_SIGN_KEY" ]]; then ADMIN_PQ_SIGN_KEY_ABS="$(realpath "$ADMIN_PQ_SIGN_KEY")"; fi
 if [[ -n "$DEV_PQ_SIGN_KEY" ]]; then DEV_PQ_SIGN_KEY_ABS="$(realpath "$DEV_PQ_SIGN_KEY")"; fi
 if [[ -n "$ADMIN_PQ_PUB" ]]; then ADMIN_PQ_PUB_ABS="$(realpath "$ADMIN_PQ_PUB")"; fi
 if [[ -n "$DEV_PQ_PUB" ]]; then DEV_PQ_PUB_ABS="$(realpath "$DEV_PQ_PUB")"; fi
+if [[ -n "$AUTH_SIGN_KEY" ]]; then AUTH_SIGN_KEY_ABS="$(realpath "$AUTH_SIGN_KEY")"; fi
+if [[ -n "$AUTH_PQ_SIGN_KEY" ]]; then AUTH_PQ_SIGN_KEY_ABS="$(realpath "$AUTH_PQ_SIGN_KEY")"; fi
 
 echo "[1/5] Building signed kernel..."
 make clean
@@ -87,7 +112,29 @@ make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMI
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 
-echo "[3/5] Signing CA bundle artifacts (if present)..."
+echo "[3/5] Signing data artifacts..."
+mkdir -p build
+KERNEL_FILE_SIG="build/kernel8.file.sig"
+KERNEL_FILE_PQS="build/kernel8.file.pqs"
+python3 tools/sign_detached_artifact.py \
+  kernel8.img "$KERNEL_FILE_SIG" \
+  "$KERNEL_FILE_SIGNER_KEY_ID" "$ADMIN_KEY_ABS" "$OPENSSL_BIN" \
+  "$ADMIN_PQ_SIGN_KEY_ABS" "$KERNEL_FILE_PQS" "KERNEL8_IMG"
+
+AUTH_SIG=""
+AUTH_PQS=""
+if [[ -f "$AUTH_SRC" ]]; then
+  AUTH_SIG="build/auth.sig"
+  AUTH_PQS="build/auth.pqs"
+  python3 tools/sign_detached_artifact.py \
+    "$AUTH_SRC" "$AUTH_SIG" \
+    "$AUTH_SIGNER_KEY_ID" "$AUTH_SIGN_KEY_ABS" "$OPENSSL_BIN" \
+    "$AUTH_PQ_SIGN_KEY_ABS" "$AUTH_PQS" "AUTH_BIN"
+else
+  echo "AUTH.BIN not found; skipping AUTH signing/copy: $AUTH_SRC"
+fi
+
+echo "      Signing CA bundle artifacts (if present)..."
 CA_BUNDLE_SIG=""
 CA_BUNDLE_PQS=""
 CA_REPORT_SIG=""
@@ -117,6 +164,8 @@ fi
 echo "[4/5] Copying artifacts to $SD_MOUNT ..."
 cp -f kernel8.img "$SD_MOUNT/KERNEL8.IMG"
 if [[ -f kernel8.pqs ]]; then cp -f kernel8.pqs "$SD_MOUNT/KERNEL8.PQS"; fi
+cp -f "$KERNEL_FILE_SIG" "$SD_MOUNT/KERNFILE.SIG"
+cp -f "$KERNEL_FILE_PQS" "$SD_MOUNT/KERNFILE.PQS"
 cp -f programs/shell/shell.bin "$SD_MOUNT/SHELL.BIN"
 if [[ -f programs/shell/shell.pqs ]]; then cp -f programs/shell/shell.pqs "$SD_MOUNT/SHELL.PQS"; fi
 cp -f programs/webbrowser/webbrowser.bin "$SD_MOUNT/WEBBROWS.BIN"
@@ -125,6 +174,11 @@ cp -f programs/hello/program.bin "$SD_MOUNT/PROGRAM.BIN"
 if [[ -f programs/hello/program.pqs ]]; then cp -f programs/hello/program.pqs "$SD_MOUNT/PROGRAM.PQS"; fi
 cp -f programs/game/game.bin "$SD_MOUNT/GAME.BIN"
 if [[ -f programs/game/game.pqs ]]; then cp -f programs/game/game.pqs "$SD_MOUNT/GAME.PQS"; fi
+if [[ -f "$AUTH_SRC" && -n "$AUTH_SIG" && -f "$AUTH_SIG" && -n "$AUTH_PQS" && -f "$AUTH_PQS" ]]; then
+  cp -f "$AUTH_SRC" "$SD_MOUNT/AUTH.BIN"
+  cp -f "$AUTH_SIG" "$SD_MOUNT/AUTH.SIG"
+  cp -f "$AUTH_PQS" "$SD_MOUNT/AUTH.PQS"
+fi
 if [[ -f "$CA_BUNDLE_SRC" && -n "$CA_BUNDLE_SIG" && -f "$CA_BUNDLE_SIG" ]]; then
   cp -f "$CA_BUNDLE_SRC" "$SD_MOUNT/CA_ROOTS.PEM"
   cp -f "$CA_BUNDLE_SIG" "$SD_MOUNT/CA_ROOTS.SIG"
@@ -147,6 +201,8 @@ echo "Done."
 echo "Copied:"
 echo "  $SD_MOUNT/KERNEL8.IMG"
 if [[ -f "$SD_MOUNT/KERNEL8.PQS" ]]; then echo "  $SD_MOUNT/KERNEL8.PQS"; fi
+if [[ -f "$SD_MOUNT/KERNFILE.SIG" ]]; then echo "  $SD_MOUNT/KERNFILE.SIG"; fi
+if [[ -f "$SD_MOUNT/KERNFILE.PQS" ]]; then echo "  $SD_MOUNT/KERNFILE.PQS"; fi
 echo "  $SD_MOUNT/SHELL.BIN"
 if [[ -f "$SD_MOUNT/SHELL.PQS" ]]; then echo "  $SD_MOUNT/SHELL.PQS"; fi
 echo "  $SD_MOUNT/WEBBROWS.BIN"
@@ -155,6 +211,11 @@ echo "  $SD_MOUNT/PROGRAM.BIN"
 if [[ -f "$SD_MOUNT/PROGRAM.PQS" ]]; then echo "  $SD_MOUNT/PROGRAM.PQS"; fi
 echo "  $SD_MOUNT/GAME.BIN"
 if [[ -f "$SD_MOUNT/GAME.PQS" ]]; then echo "  $SD_MOUNT/GAME.PQS"; fi
+if [[ -f "$SD_MOUNT/AUTH.BIN" ]]; then
+  echo "  $SD_MOUNT/AUTH.BIN"
+  if [[ -f "$SD_MOUNT/AUTH.SIG" ]]; then echo "  $SD_MOUNT/AUTH.SIG"; fi
+  if [[ -f "$SD_MOUNT/AUTH.PQS" ]]; then echo "  $SD_MOUNT/AUTH.PQS"; fi
+fi
 if [[ -f "$SD_MOUNT/CA_ROOTS.PEM" ]]; then
   echo "  $SD_MOUNT/CA_ROOTS.PEM"
   if [[ -f "$SD_MOUNT/CA_ROOTS.SIG" ]]; then echo "  $SD_MOUNT/CA_ROOTS.SIG"; fi

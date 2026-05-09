@@ -14,6 +14,7 @@
 #define TRUST_SCOPE_SHELL     (1u << 1)
 #define TRUST_SCOPE_WEB       (1u << 2)
 #define TRUST_SCOPE_USER_APP  (1u << 3)
+#define TRUST_SCOPE_AUTH      (1u << 4)
 
 typedef struct {
     unsigned int key_id;

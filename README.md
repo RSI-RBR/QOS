@@ -63,9 +63,10 @@ Security and crypto:
 - Admin/developer trust store compiled into the kernel.
 - Admin-signed kernel, shell, browser, and privileged artifacts.
 - Developer-signed user application support.
+- Signed `AUTH.BIN` login password file with Ed25519 + ML-DSA-65.
 - Ed25519 signatures for kernel/program artifacts.
 - ML-DSA-65 post-quantum sidecar signatures for programs.
-- Kernel ML-DSA-65 sidecar verification support.
+- Required kernel ML-DSA-65 sidecar verification for the manifest and SD kernel file.
 - ML-KEM-768 + X25519 hybrid HTTPS key exchange support.
 - ML-DSA signature algorithms are advertised for TLS where supported by servers.
 - AES-GCM, SHA-256, HKDF, X25519, ML-KEM-768, ML-DSA-65, RSA verify, and ECDSA verify are present.
@@ -240,11 +241,36 @@ Create `AUTH.BIN` with Argon2id:
 
 ```bash
 python3 tools/gen_auth_blob.py --username admin --password 'change-me' --out AUTH.BIN
-cp AUTH.BIN /media/sd/AUTH.BIN
 ```
 
 Use a real password instead of `change-me`. The username is whatever you place
 in `AUTH.BIN`; current testing usually uses `admin`.
+
+The full build/copy script signs and copies `AUTH.BIN` automatically when
+`AUTH.BIN` exists in the repository root. By default it uses the developer key
+so a device user can set their own password without the admin key:
+
+```bash
+bash tools/build_and_copy_sd.sh
+```
+
+This copies:
+
+- `AUTH.BIN`
+- `AUTH.SIG`
+- `AUTH.PQS`
+
+Override the auth signer if needed:
+
+```bash
+AUTH_SIGNER_KEY_ID=0x00000001 \
+AUTH_SIGN_KEY=keys/admin_ed25519.pem \
+AUTH_PQ_SIGN_KEY=keys/admin_mldsa65_sk.bin \
+bash tools/build_and_copy_sd.sh
+```
+
+Important: only device-owner/developer keys should receive auth scope. Do not
+grant auth scope to third-party app developer keys.
 
 ## CA Root Sync
 
@@ -277,6 +303,13 @@ Defaults:
 - developer Ed25519 key: `keys/dev_ed25519.pem`
 - admin PQ key: `keys/admin_mldsa65_sk.bin`
 - developer PQ key: `keys/dev_mldsa65_sk.bin`
+
+Required kernel trust artifacts copied by the script:
+
+- `KERNEL8.IMG`
+- `KERNEL8.PQS`
+- `KERNFILE.SIG`
+- `KERNFILE.PQS`
 
 Override paths:
 
@@ -373,6 +406,7 @@ Implemented security foundations:
 - signed kernel/program trust model with role and scope checks
 - required program Ed25519 signatures
 - required program ML-DSA-65 sidecar signatures
+- required kernel ML-DSA-65 sidecars for manifest and file verification
 - admin-only shell/browser signing
 - capability-gated syscalls tied to signer scope
 - per-process MMU address spaces and ASIDs
@@ -381,7 +415,7 @@ Implemented security foundations:
 - user stack guard pages
 - syscall user-pointer validation
 - stack canaries and panic-on-corruption
-- local and remote password login
+- signed `AUTH.BIN` for local and remote password login
 - remote-login replay/rate-limit/lockout controls
 - signed CA root bundle for HTTPS validation
 - X.509 hostname, anchor, and chain-signature checks
@@ -389,8 +423,7 @@ Implemented security foundations:
 Important remaining security work:
 
 - Raspberry Pi 3 does not provide a complete secure-boot root of trust for this custom kernel.
-- Kernel ML-DSA-65 sidecar verification is supported, but kernel PQ enforcement is not mandatory yet.
-- `AUTH.BIN` is password-hashed but not currently signed as an admin artifact.
+- `AUTH.BIN` is signed and PQ-signed, but the default auth signer is `dev-main` for owner-controlled password changes.
 - CA root bundle PQ sidecar verification is supported, but the PQ sidecar is optional today.
 - The entropy source is still early-stage and should be replaced or strengthened with hardware/jitter/persistent entropy before relying on secrets.
 - Remote login still needs explicit long-term server identity authentication or a real PAKE-style protocol to resist active MITM/offline guessing risks.
@@ -407,8 +440,7 @@ Important remaining security work:
 
 Near-term priorities:
 
-- sign and enforce `AUTH.BIN`
-- make kernel PQ signature enforcement mandatory
+- decide whether auth signing should use a separate owner key instead of `dev-main`
 - strengthen entropy collection
 - add trusted time and stricter certificate revocation policy
 - harden/fuzz TLS, X.509, DNS, FAT, gzip, USB, and Wi-Fi parsers
