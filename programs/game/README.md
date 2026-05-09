@@ -11,6 +11,9 @@ How it works:
 - `program_main.c` calls `qf2d_main(1, argv)` and then exits through QOS.
 - The Makefile force-includes `qos_stdio.h`, mapping `printf`, `fprintf`,
   and `snprintf` to QOS-safe userspace logging/formatting functions.
+- Desktop `FILE*` reads are stubbed for now. Missing text files behave like
+  EOF, while `/dev/urandom` returns lightweight pseudo-random bytes so early map
+  generation code does not read uninitialized data.
 
 Expected local layout:
 - `programs/game/src/*.c`
@@ -33,3 +36,6 @@ Notes:
 - The game build allows floating-point code because QuantumFront2D already uses
   `double`. If we later run multiple FP-heavy apps at once, the scheduler should
   grow full FP/SIMD context save/restore.
+- Real game file I/O should use QOS sandboxed asset APIs later. The current
+  `FILE*` layer is only a compile/runtime safety shim for developer-only init
+  text files.

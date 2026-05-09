@@ -363,6 +363,8 @@ The game wrapper force-includes QOS stdio compatibility:
 - `fprintf(stderr, ...)` writes through the same safe path for now.
 - `QOS_LOG(...)` and `QOS_ERR(...)` are available for new QOS-specific code.
 - `snprintf(...)` is provided for asset path construction.
+- `FILE*` calls are compatibility stubs for now: developer-only text files read
+  as EOF, and `/dev/urandom` returns lightweight pseudo-random bytes.
 - Floating-point format specifiers are consumed safely but currently print as
   `<float>`; keep important numeric gameplay diagnostics integer-based until the
   formatter grows real float conversion.
