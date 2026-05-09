@@ -11,3 +11,6 @@ keys/
 *.dat
 
 build/
+
+# Private/local game source. Keep commercial game code out of the public QOS repo.
+programs/game/

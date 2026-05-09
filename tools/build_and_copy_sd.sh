@@ -110,7 +110,11 @@ echo "[2/5] Building signed programs..."
 make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
-make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+if [[ -d programs/game && -f programs/game/Makefile ]]; then
+  make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+else
+  echo "programs/game not present; skipping private game build."
+fi
 
 echo "[3/5] Signing data artifacts..."
 mkdir -p build
@@ -172,8 +176,12 @@ cp -f programs/webbrowser/webbrowser.bin "$SD_MOUNT/WEBBROWS.BIN"
 if [[ -f programs/webbrowser/webbrowser.pqs ]]; then cp -f programs/webbrowser/webbrowser.pqs "$SD_MOUNT/WEBBROWS.PQS"; fi
 cp -f programs/hello/program.bin "$SD_MOUNT/PROGRAM.BIN"
 if [[ -f programs/hello/program.pqs ]]; then cp -f programs/hello/program.pqs "$SD_MOUNT/PROGRAM.PQS"; fi
-cp -f programs/game/game.bin "$SD_MOUNT/GAME.BIN"
-if [[ -f programs/game/game.pqs ]]; then cp -f programs/game/game.pqs "$SD_MOUNT/GAME.PQS"; fi
+if [[ -f programs/game/game.bin ]]; then
+  cp -f programs/game/game.bin "$SD_MOUNT/GAME.BIN"
+  if [[ -f programs/game/game.pqs ]]; then cp -f programs/game/game.pqs "$SD_MOUNT/GAME.PQS"; fi
+else
+  echo "Private game binary not found; skipping GAME.BIN copy."
+fi
 if [[ -f "$AUTH_SRC" && -n "$AUTH_SIG" && -f "$AUTH_SIG" && -n "$AUTH_PQS" && -f "$AUTH_PQS" ]]; then
   cp -f "$AUTH_SRC" "$SD_MOUNT/AUTH.BIN"
   cp -f "$AUTH_SIG" "$SD_MOUNT/AUTH.SIG"
@@ -209,8 +217,10 @@ echo "  $SD_MOUNT/WEBBROWS.BIN"
 if [[ -f "$SD_MOUNT/WEBBROWS.PQS" ]]; then echo "  $SD_MOUNT/WEBBROWS.PQS"; fi
 echo "  $SD_MOUNT/PROGRAM.BIN"
 if [[ -f "$SD_MOUNT/PROGRAM.PQS" ]]; then echo "  $SD_MOUNT/PROGRAM.PQS"; fi
-echo "  $SD_MOUNT/GAME.BIN"
-if [[ -f "$SD_MOUNT/GAME.PQS" ]]; then echo "  $SD_MOUNT/GAME.PQS"; fi
+if [[ -f "$SD_MOUNT/GAME.BIN" ]]; then
+  echo "  $SD_MOUNT/GAME.BIN"
+  if [[ -f "$SD_MOUNT/GAME.PQS" ]]; then echo "  $SD_MOUNT/GAME.PQS"; fi
+fi
 if [[ -f "$SD_MOUNT/AUTH.BIN" ]]; then
   echo "  $SD_MOUNT/AUTH.BIN"
   if [[ -f "$SD_MOUNT/AUTH.SIG" ]]; then echo "  $SD_MOUNT/AUTH.SIG"; fi

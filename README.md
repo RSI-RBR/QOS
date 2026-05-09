@@ -81,14 +81,14 @@ Current programs:
 - `programs/shell`: signed user shell, login, launcher, diagnostics, network commands, session commands.
 - `programs/hello`: cube/demo graphics program and performance test scaffold.
 - `programs/webbrowser`: text-mode web browser using DNS/socket/TCP/HTTPS syscalls.
-- `programs/game`: early SDL-like compatibility scaffold for future game ports.
+- `programs/game`: private/local game source directory, intentionally ignored by git.
 
 SD filenames:
 
 - `SHELL.BIN` and `SHELL.PQS`
 - `WEBBROWS.BIN` and `WEBBROWS.PQS`
 - `PROGRAM.BIN` and `PROGRAM.PQS`
-- `GAME.BIN` and `GAME.PQS`
+- `GAME.BIN` and `GAME.PQS` when a private local game build is present.
 
 ## Shell Commands
 
@@ -146,7 +146,7 @@ Graphics/session behavior:
 
 - `run` loads `PROGRAM.BIN`, creates a graphics session, and switches HDMI to it.
 - `runbg` loads `PROGRAM.BIN` without switching away from `tty0`.
-- `game` loads `GAME.BIN`.
+- `game` loads `GAME.BIN` when you copy/build a private game locally.
 - `web` loads `WEBBROWS.BIN`.
 - `chvt 0` switches to the shell text terminal.
 - `chvt 1`, `chvt 2`, and `chvt 3` switch to graphics sessions.
@@ -330,7 +330,7 @@ cp boot/config.txt /media/sd/config.txt
 
 ## Build A User Program
 
-Use `programs/hello` or `programs/game` as a starting point.
+Use `programs/hello` as the public example. `programs/game/` is ignored so private commercial game source can live there without being pushed to the public QOS repo.
 
 Developer-signed app:
 
