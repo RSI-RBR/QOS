@@ -89,5 +89,6 @@ int usb_host_enumerate_root_device(void);
 int usb_host_get_root_device_info(usb_root_device_info_t* out_info);
 void usb_host_poll(void);
 int usb_host_try_getc(char* out);
+void usb_host_flush_input(void);
 
 #endif

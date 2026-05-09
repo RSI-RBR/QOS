@@ -4,16 +4,34 @@
 #include "spinlock.h"
 #include "remote_login.h"
 #include "usb_host.h"
+#include "display.h"
 
 #define CONSOLE_INPUT_SRC_UART   1u
 #define CONSOLE_INPUT_SRC_REMOTE 2u
 #define CONSOLE_INPUT_SRC_USB    3u
+#define CONSOLE_TEXT_SHELL_PID   0
 
 static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
 static spinlock_t g_console_lock;
 
 static int process_is_alive_locked(int pid);
+
+static int console_active_graphics_pid(void){
+    int active = display_get_active();
+    display_session_t info;
+    if (active == DISPLAY_TEXT_SESSION_ID){
+        return -1;
+    }
+    if (display_get_info(active, &info) != 0 || info.type != DISPLAY_GRAPHICS){
+        return -1;
+    }
+    return info.owner_pid;
+}
+
+static int console_text_display_active(void){
+    return display_get_active() == DISPLAY_TEXT_SESSION_ID;
+}
 
 static int console_pick_recovery_owner_locked(void){
     // Prefer PID 0 (boot user shell in this system) when alive.
@@ -52,6 +70,28 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         return 0;
     }
 
+    int active_gfx_pid = console_active_graphics_pid();
+    if (active_gfx_pid == pid){
+        usb_host_poll();
+        if (usb_host_try_getc(out)){
+            if (out_source){
+                *out_source = CONSOLE_INPUT_SRC_USB;
+            }
+            return 1;
+        }
+        return 0;
+    }
+
+    if (active_gfx_pid < 0 && console_text_display_active() && pid == CONSOLE_TEXT_SHELL_PID){
+        usb_host_poll();
+        if (usb_host_try_getc(out)){
+            if (out_source){
+                *out_source = CONSOLE_INPUT_SRC_USB;
+            }
+            return 1;
+        }
+    }
+
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
     if (owner >= 0 && !process_is_alive_locked(owner)){
@@ -87,7 +127,7 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         return 1;
     }
     usb_host_poll();
-    if (usb_host_try_getc(out)){
+    if (active_gfx_pid < 0 && console_text_display_active() && usb_host_try_getc(out)){
         if (out_source){
             *out_source = CONSOLE_INPUT_SRC_USB;
         }

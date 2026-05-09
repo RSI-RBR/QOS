@@ -2583,6 +2583,10 @@ int usb_host_try_getc(char* out){
     return usb_hid_queue_pop(out);
 }
 
+void usb_host_flush_input(void){
+    usb_hid_queue_reset();
+}
+
 static void usb_snapshot_hub_diag_to_root_info(void){
     g_root_info.hub_ports = (unsigned char)(g_hub_ports & 0xFFu);
     g_root_info.hub_enum_attempts = (unsigned char)(g_hub_enum_attempts & 0xFFu);

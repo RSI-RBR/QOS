@@ -5,6 +5,7 @@
 #include "remote_login.h"
 #include "spinlock.h"
 #include "display.h"
+#include "usb_host.h"
 
 #define TERM_FLAG_UART QOS_TERM_OUTPUT_UART
 #define TERM_FLAG_FB   QOS_TERM_OUTPUT_FB
@@ -12,6 +13,7 @@
 #define TERM_MAX_COLS 240u
 #define TERM_MAX_ROWS 67u
 #define TERM_INPUT_QUEUE_LEN 256u
+#define TERM_TEXT_SHELL_PID 0
 
 typedef struct {
     int id;
@@ -256,6 +258,18 @@ static int terminal_pid_is_foreground_locked(int term_id, int pid){
         return 0;
     }
     return term->foreground_pid == pid;
+}
+
+static int terminal_active_graphics_pid(void){
+    int active = display_get_active();
+    display_session_t info;
+    if (active == DISPLAY_TEXT_SESSION_ID){
+        return -1;
+    }
+    if (display_get_info(active, &info) != 0 || info.type != DISPLAY_GRAPHICS){
+        return -1;
+    }
+    return info.owner_pid;
 }
 
 void terminal_init(void){
@@ -528,6 +542,16 @@ int terminal_read(int term_id, int pid, char* out, unsigned int* out_source){
         return 0;
     }
 
+    if (terminal_active_graphics_pid() == pid){
+        return console_try_getc_for_pid_ex(pid, out, out_source);
+    }
+    if (display_get_active() == DISPLAY_TEXT_SESSION_ID &&
+        term_id == 0 &&
+        pid == TERM_TEXT_SHELL_PID &&
+        console_try_getc_for_pid_ex(pid, out, out_source)){
+        return 1;
+    }
+
     terminal_poll_inputs();
 
     int owner = console_get_owner();
@@ -592,14 +616,27 @@ int terminal_set_active(int id){
 
 int terminal_switch_display_session(int id){
     if (id == DISPLAY_TEXT_SESSION_ID){
-        return terminal_set_active(0);
+        int rc = terminal_set_active(0);
+        if (rc == 0){
+            (void)terminal_set_foreground_pid(0, TERM_TEXT_SHELL_PID);
+            int fg = terminal_get_foreground_pid(0);
+            if (fg >= 0){
+                (void)console_set_owner(fg, fg);
+            }
+            usb_host_flush_input();
+        }
+        return rc;
     }
 
     display_session_t info;
     if (display_get_info(id, &info) != 0 || info.type != DISPLAY_GRAPHICS){
         return -1;
     }
-    return display_set_active(id);
+    int rc = display_set_active(id);
+    if (rc == 0){
+        usb_host_flush_input();
+    }
+    return rc;
 }
 
 int terminal_cycle_display_session(int direction){
