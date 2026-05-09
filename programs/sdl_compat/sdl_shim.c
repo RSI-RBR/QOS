@@ -12,6 +12,7 @@
 #define SDL_SHIM_REPEAT_DELAY_MS 400u
 #define SDL_SHIM_REPEAT_INTERVAL_MS 33u
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
+#define SDL_SHIM_RENDER_HINT_CHAR_16 2
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -622,6 +623,41 @@ static int sdl_path_has_tile_hint(const char* path){
     return 0;
 }
 
+static int sdl_path_has_char_hint(const char* path){
+    if (!path){
+        return 0;
+    }
+    for (const char* p = path; p[0] && p[1] && p[2] && p[3] && p[4] && p[5] && p[6]; p++){
+        if ((p[0] == '/' || p[0] == '\\') &&
+            sdl_ascii_lower(p[1]) == 'c' &&
+            sdl_ascii_lower(p[2]) == 'h' &&
+            sdl_ascii_lower(p[3]) == 'a' &&
+            sdl_ascii_lower(p[4]) == 'r' &&
+            sdl_ascii_lower(p[5]) == 's' &&
+            (p[6] == '/' || p[6] == '\\')){
+            return 1;
+        }
+    }
+    {
+        const char prefix[] = "img/chars/";
+        for (unsigned int i = 0u; prefix[i]; i++){
+            char got = path[i];
+            char want = prefix[i];
+            if (!got){
+                return 0;
+            }
+            if (want == '/'){
+                if (got != '/' && got != '\\'){
+                    return 0;
+                }
+            } else if (sdl_ascii_lower(got) != want){
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* sh){
     if (!t || !sx || !sy || !sw || !sh){
         return -1;
@@ -1221,35 +1257,8 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->color_b = 255u;
     t->alpha_mod = 255u;
     t->blend_mode = SDL_BLENDMODE_BLEND;
-    {
-        unsigned long long sr = 0ull;
-        unsigned long long sg = 0ull;
-        unsigned long long sb = 0ull;
-        unsigned int count = 0u;
-        int opaque = 1;
-        for (int y = 0; y < surface->h; y++){
-            const Uint8* row = surface->pixels + ((Uint32)y * (Uint32)surface->pitch);
-            for (int x = 0; x < surface->w; x++){
-                const Uint8* p = row + ((Uint32)x * 4u);
-                if (p[3] != 255u){
-                    opaque = 0;
-                }
-                if (p[3] != 0u){
-                    sr += p[0];
-                    sg += p[1];
-                    sb += p[2];
-                    count++;
-                }
-            }
-        }
-        if (count == 0u){
-            count = 1u;
-        }
-        t->average_color = rgb_to_color((Uint8)(sr / count),
-                                        (Uint8)(sg / count),
-                                        (Uint8)(sb / count));
-        t->opaque = opaque;
-    }
+    t->average_color = surface->average_color;
+    t->opaque = surface->opaque;
     t->render_hint = surface->render_hint;
     t->owns_pixels = 1;
     t->locked = 0;
@@ -1553,7 +1562,13 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     s->average_color = 0u;
     s->color_key_enabled = 0;
     s->opaque = 1;
-    s->render_hint = sdl_path_has_tile_hint(file) ? SDL_SHIM_RENDER_HINT_TILE_FILL : 0;
+    if (sdl_path_has_char_hint(file)){
+        s->render_hint = SDL_SHIM_RENDER_HINT_CHAR_16;
+    } else if (sdl_path_has_tile_hint(file)){
+        s->render_hint = SDL_SHIM_RENDER_HINT_TILE_FILL;
+    } else{
+        s->render_hint = 0;
+    }
     s->owns_pixels = 1;
     s->alive = 1;
 
@@ -1741,6 +1756,11 @@ static void apply_surface_color_key(SDL_Surface* surface){
     Uint8 kr = color_r(surface->color_key);
     Uint8 kg = color_g(surface->color_key);
     Uint8 kb = color_b(surface->color_key);
+    unsigned long long sr = 0ull;
+    unsigned long long sg = 0ull;
+    unsigned long long sb = 0ull;
+    unsigned int count = 0u;
+    int opaque = 1;
     for (int y = 0; y < surface->h; y++){
         Uint8* row = surface->pixels + ((Uint32)y * (Uint32)surface->pitch);
         for (int x = 0; x < surface->w; x++){
@@ -1748,8 +1768,24 @@ static void apply_surface_color_key(SDL_Surface* surface){
             if (p[0] == kr && p[1] == kg && p[2] == kb){
                 p[3] = 0u;
             }
+            if (p[3] != 255u){
+                opaque = 0;
+            }
+            if (p[3] != 0u){
+                sr += p[0];
+                sg += p[1];
+                sb += p[2];
+                count++;
+            }
         }
     }
+    if (count == 0u){
+        count = 1u;
+    }
+    surface->average_color = rgb_to_color((Uint8)(sr / count),
+                                          (Uint8)(sg / count),
+                                          (Uint8)(sb / count));
+    surface->opaque = opaque;
 }
 
 int SDL_SetSurfaceColorKey(SDL_Surface* surface, int enabled, Uint32 key){
