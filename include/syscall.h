@@ -13,6 +13,12 @@
 #define QOS_TERM_OUTPUT_FB   2u
 #endif
 
+#define QOS_PROC_DEAD     0
+#define QOS_PROC_READY    1
+#define QOS_PROC_RUNNING  2
+#define QOS_PROC_SLEEPING 3
+#define QOS_PROC_REAPING  4
+
 enum {
     SYS_PUTC = 0,
     SYS_PUTS = 1,
@@ -92,7 +98,9 @@ enum {
     SYS_SECURITY_LOG_DUMP = 75,
     SYS_DISPLAY_CREATE_GRAPHICS = 76,
     SYS_DISPLAY_SWITCH_GRAPHICS = 77,
-    SYS_DISPLAY_SWITCH_SESSION = 78
+    SYS_DISPLAY_SWITCH_SESSION = 78,
+    SYS_PROCESS_KILL = 79,
+    SYS_PROCESS_STATE = 80
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -251,6 +259,14 @@ static inline int qos_display_switch_graphics(int pid){
 
 static inline int qos_display_switch_session(unsigned int session_id){
     return (int)qos_syscall1(SYS_DISPLAY_SWITCH_SESSION, (unsigned long)session_id);
+}
+
+static inline int qos_process_kill(int pid){
+    return (int)qos_syscall1(SYS_PROCESS_KILL, (unsigned long)pid);
+}
+
+static inline int qos_process_state(int pid){
+    return (int)qos_syscall1(SYS_PROCESS_STATE, (unsigned long)pid);
 }
 
 static inline int qos_tty_set_owner(int pid){

@@ -291,6 +291,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_DISPLAY_CREATE_GRAPHICS:
         case SYS_DISPLAY_SWITCH_GRAPHICS:
         case SYS_DISPLAY_SWITCH_SESSION:
+        case SYS_PROCESS_KILL:
+        case SYS_PROCESS_STATE:
         case SYS_TTY_SET_OWNER:
         case SYS_TTY_RELEASE:
         case SYS_TTY_GET_OWNER:
@@ -539,6 +541,32 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 (void)console_set_owner(pid, pid);
             }
             frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_PROCESS_KILL: {
+            int target = (int)frame[TF_X0];
+            process_t* target_proc = get_process(target);
+            if (target <= 0 ||
+                !target_proc ||
+                target_proc->state == PROC_DEAD ||
+                target_proc->state == PROC_REAPING){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            process_exit(target);
+            frame[TF_X0] = 0;
+            return frame_sp;
+        }
+
+        case SYS_PROCESS_STATE: {
+            int target = (int)frame[TF_X0];
+            process_t* target_proc = get_process(target);
+            if (target < 0 || !target_proc){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)target_proc->state;
             return frame_sp;
         }
 

@@ -12,6 +12,7 @@ static char g_remote_buf[BUF_SIZE];
 static int g_remote_len = 0;
 static int g_tty_owned = 1;
 static int g_shell_pid = -1;
+static int g_foreground_pid = -1;
 static char g_login_user[LOGIN_BUF_SIZE];
 static char g_login_pass[LOGIN_BUF_SIZE];
 static unsigned int g_login_user_len = 0u;
@@ -399,6 +400,7 @@ static void cmd_help(void){
     qos_puts(" help\n");
     qos_puts(" run\n");
     qos_puts(" runbg\n");
+    qos_puts(" exit [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" web\n");
@@ -438,6 +440,7 @@ static void cmd_run(void){
         qos_puts("Program load failed.\n");
         return;
     }
+    g_foreground_pid = pid;
     qos_puts("Program queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
@@ -465,6 +468,7 @@ static void cmd_web(void){
         qos_puts("WEBBROWS.BIN load failed.\n");
         return;
     }
+    g_foreground_pid = pid;
     if (qos_tty_set_owner(pid) != 0){
         qos_puts("Warning: could not transfer TTY ownership.\n");
     } else{
@@ -483,6 +487,7 @@ static void cmd_game(void){
         qos_puts("GAME.BIN load failed.\n");
         return;
     }
+    g_foreground_pid = pid;
     qos_puts("Game queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
@@ -603,9 +608,53 @@ static void cmd_gfx(unsigned int pid){
         qos_puts("gfx switch failed.\n");
         return;
     }
+    g_foreground_pid = (int)pid;
     qos_puts("Switched HDMI to graphics PID ");
     print_uint(pid);
     qos_puts(".\n");
+}
+
+static int foreground_process_exited(void){
+    if (g_foreground_pid < 0){
+        return 0;
+    }
+    int st = qos_process_state(g_foreground_pid);
+    if (st > QOS_PROC_DEAD && st != QOS_PROC_REAPING){
+        return 0;
+    }
+    g_foreground_pid = -1;
+    (void)qos_display_switch_session(0u);
+    qos_puts("\nProcess exited, returned to shell.\n");
+    return 1;
+}
+
+static void cmd_exit_process(const char* arg){
+    unsigned int pid = 0;
+    int target = g_foreground_pid;
+
+    if (arg){
+        while (*arg == ' '){
+            arg++;
+        }
+        if (*arg){
+            if (parse_uint(arg, &pid) != 0){
+                qos_puts("Usage: exit [pid]\n");
+                return;
+            }
+            target = (int)pid;
+        }
+    }
+
+    if (target <= 0){
+        qos_puts("No foreground process to exit. Use: exit <pid>\n");
+        return;
+    }
+    if (qos_process_kill(target) != 0){
+        qos_puts("Process exit failed.\n");
+        return;
+    }
+    g_foreground_pid = target;
+    (void)foreground_process_exited();
 }
 
 static void cmd_termout(const char* mode){
@@ -1093,6 +1142,10 @@ static void execute_line(void){
         cmd_run();
     } else if (str_eq(g_buf, "runbg")){
         cmd_runbg();
+    } else if (str_eq(g_buf, "exit")){
+        cmd_exit_process(0);
+    } else if (str_starts_with(g_buf, "exit ")){
+        cmd_exit_process(g_buf + 5);
     } else if (str_starts_with(g_buf, "gfx ")){
         const char* p = g_buf + 4;
         unsigned int pid = 0;
@@ -1362,13 +1415,17 @@ void program_main(void){
         }
         if (shell_has_tty && !g_tty_owned){
             g_tty_owned = 1;
-            qos_puts("\nReturned to shell.");
+            g_foreground_pid = -1;
+            qos_puts("\nProcess exited, returned to shell.\n");
             print_prompt();
         } else if (!shell_has_tty){
             g_tty_owned = 0;
             // Avoid tight spin during ownership handoff races.
             qos_sleep(1);
             continue;
+        }
+        if (foreground_process_exited()){
+            print_prompt();
         }
 
         qos_input_event_t ev;

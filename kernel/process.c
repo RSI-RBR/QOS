@@ -621,13 +621,12 @@ static void release_process_resources(process_cleanup_t* c){
         cleanup_init(c);
         return;
     }
-    int term_id = terminal_get_for_pid(pid);
     int display_was_active = display_is_active_graphics_pid(pid);
     console_owner_on_process_exit(pid);
     terminal_detach_pid(pid);
     display_destroy_for_pid(pid);
-    if (display_was_active && term_id >= 0){
-        (void)terminal_set_active(term_id);
+    if (display_was_active){
+        (void)terminal_set_active(0);
     }
     socket_close_all_for_pid(pid);
     tls_session_close_all_for_pid(pid);
