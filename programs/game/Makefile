@@ -19,7 +19,7 @@ SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 
-COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -g -fno-omit-frame-pointer -pie -fno-builtin -DQOS_USERSPACE -DQF_QOS_BUILD -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR)
+COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -g -fno-omit-frame-pointer -pie -fno-plt -fvisibility=hidden -fno-builtin -DQOS_USERSPACE -DQF_QOS_BUILD -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR)
 GAME_CFLAGS = $(COMMON_CFLAGS) -include qos_stdio.h
 GAME_ENTRY_CFLAGS = $(GAME_CFLAGS) -Dmain=qf2d_main
 QOS_LIB_CFLAGS = $(COMMON_CFLAGS) -DQOS_STDIO_NO_MACROS

@@ -5,13 +5,10 @@
  * The private game can keep its desktop-style main(int argc, char** argv);
  * the game Makefile compiles that symbol as qf2d_main.
  */
-extern int qf2d_main(int argc, char** argv);
+extern __attribute__((visibility("hidden"))) int qf2d_main(int argc, char** argv);
 
 void program_main(void){
-    char arg0[] = "QF2D";
-    char* argv[] = { arg0, 0 };
-
-    int rc = qf2d_main(1, argv);
+    int rc = qf2d_main(0, 0);
 
     qos_exit(rc);
 }

@@ -11,7 +11,9 @@ How it works:
 - The QOS entrypoint is explicit: `GAME_ENTRY=gui_main.c` by default.
   `test_main.c` is excluded by default so an older SDL test entrypoint cannot
   accidentally become the QOS game.
-- `program_main.c` calls `qf2d_main(1, argv)` and then exits through QOS.
+- Game code is built with hidden symbols/no-PLT because QOS loads raw program
+  images and does not apply ELF dynamic relocations.
+- `program_main.c` calls `qf2d_main(0, 0)` and then exits through QOS.
 - The Makefile force-includes `qos_stdio.h` for private game C sources,
   mapping `printf`, `fprintf`, and `snprintf` to QOS-safe userspace
   logging/formatting functions.
