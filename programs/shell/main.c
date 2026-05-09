@@ -435,6 +435,7 @@ static void cmd_help(void){
 }
 
 static void cmd_run(void){
+    qos_puts("Loading PROGRAM.BIN...\n");
     int pid = qos_run_program();
     if (pid < 0){
         qos_puts("Program load failed.\n");
@@ -450,6 +451,7 @@ static void cmd_run(void){
 }
 
 static void cmd_runbg(void){
+    qos_puts("Loading PROGRAM.BIN in background...\n");
     int pid = qos_run_program();
     if (pid < 0){
         qos_puts("Program load failed.\n");
@@ -463,6 +465,7 @@ static void cmd_runbg(void){
 static void cmd_web(void){
     // FAT 8.3 uppercase, space-padded: "WEBBROWSBIN"
     static const char web_file_83[] = "WEBBROWSBIN";
+    qos_puts("Loading WEBBROWS.BIN...\n");
     int pid = qos_run_program_named(web_file_83);
     if (pid < 0){
         qos_puts("WEBBROWS.BIN load failed.\n");
@@ -482,6 +485,7 @@ static void cmd_web(void){
 static void cmd_game(void){
     // FAT 8.3 uppercase, space-padded: "GAME    BIN"
     static const char game_file_83[] = "GAME    BIN";
+    qos_puts("Loading GAME.BIN...\n");
     int pid = qos_run_program_named(game_file_83);
     if (pid < 0){
         qos_puts("GAME.BIN load failed.\n");
