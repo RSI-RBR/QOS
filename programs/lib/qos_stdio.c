@@ -1,8 +1,11 @@
 #define QOS_STDIO_NO_MACROS
 #include "qos_stdio.h"
+#include "qos_user_heap.h"
 #include "syscall.h"
 
-#define QOS_STDIO_PRINTF_BUF 768u
+#define QOS_STDIO_PRINTF_STACK_BUF 128u
+#define QOS_STDIO_PRINTF_MAX_BUF 2048u
+#define QOS_STDIO_STRING_MAX 512u
 
 static FILE g_stdin_file = {0, 0, 0};
 static FILE g_stdout_file = {1, 0, 0};
@@ -51,7 +54,7 @@ static size_t cstr_len(const char* s){
     if (!s){
         return 6u;
     }
-    while (s[n]){
+    while (n < QOS_STDIO_STRING_MAX && s[n]){
         n++;
     }
     return n;
@@ -370,9 +373,20 @@ int qos_snprintf(char* out, size_t cap, const char* fmt, ...){
 }
 
 int qos_vprintf(const char* fmt, va_list ap){
-    char buf[QOS_STDIO_PRINTF_BUF];
-    int n = qos_vsnprintf(buf, sizeof(buf), fmt, ap);
-    qos_puts(buf);
+    char stack_buf[QOS_STDIO_PRINTF_STACK_BUF];
+    char* heap_buf = 0;
+    int n;
+
+    heap_buf = (char*)malloc(QOS_STDIO_PRINTF_MAX_BUF);
+    if (heap_buf){
+        n = qos_vsnprintf(heap_buf, QOS_STDIO_PRINTF_MAX_BUF, fmt, ap);
+        qos_puts(heap_buf);
+        free(heap_buf);
+        return n;
+    }
+
+    n = qos_vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap);
+    qos_puts(stack_buf);
     return n;
 }
 
