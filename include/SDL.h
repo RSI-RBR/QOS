@@ -14,9 +14,13 @@ typedef unsigned short Uint16;
 typedef unsigned int Uint32;
 typedef unsigned long long Uint64;
 typedef int SDL_bool;
+typedef int SDL_Scancode;
+typedef int SDL_Keycode;
 
 #define SDL_FALSE 0
 #define SDL_TRUE 1
+#define SDL_DISABLE 0
+#define SDL_ENABLE 1
 
 typedef enum SDL_BlendMode {
     SDL_BLENDMODE_NONE = 0,
@@ -84,11 +88,18 @@ typedef struct SDL_Point {
 } SDL_Point;
 
 typedef struct SDL_Keysym {
-    int sym;
+    SDL_Scancode scancode;
+    SDL_Keycode sym;
+    Uint16 mod;
 } SDL_Keysym;
 
 typedef struct SDL_KeyboardEvent {
     Uint32 type;
+    Uint32 timestamp;
+    Uint8 state;
+    Uint8 repeat;
+    Uint8 padding2;
+    Uint8 padding3;
     SDL_Keysym keysym;
 } SDL_KeyboardEvent;
 
@@ -176,12 +187,93 @@ typedef union SDL_Event {
 #define SDL_BUTTON_MMASK 2u
 #define SDL_BUTTON_RMASK 4u
 
+#define KMOD_NONE  0x0000u
+#define KMOD_SHIFT 0x0001u
+#define KMOD_CTRL  0x0002u
+#define KMOD_ALT   0x0004u
+#define KMOD_GUI   0x0008u
+
+#define SDL_DEFAULT_REPEAT_DELAY 400
+#define SDL_DEFAULT_REPEAT_INTERVAL 33
+
+#define SDL_SCANCODE_UNKNOWN 0
+#define SDL_SCANCODE_A 4
+#define SDL_SCANCODE_B 5
+#define SDL_SCANCODE_C 6
+#define SDL_SCANCODE_D 7
+#define SDL_SCANCODE_E 8
+#define SDL_SCANCODE_F 9
+#define SDL_SCANCODE_G 10
+#define SDL_SCANCODE_H 11
+#define SDL_SCANCODE_I 12
+#define SDL_SCANCODE_J 13
+#define SDL_SCANCODE_K 14
+#define SDL_SCANCODE_L 15
+#define SDL_SCANCODE_M 16
+#define SDL_SCANCODE_N 17
+#define SDL_SCANCODE_O 18
+#define SDL_SCANCODE_P 19
+#define SDL_SCANCODE_Q 20
+#define SDL_SCANCODE_R 21
+#define SDL_SCANCODE_S 22
+#define SDL_SCANCODE_T 23
+#define SDL_SCANCODE_U 24
+#define SDL_SCANCODE_V 25
+#define SDL_SCANCODE_W 26
+#define SDL_SCANCODE_X 27
+#define SDL_SCANCODE_Y 28
+#define SDL_SCANCODE_Z 29
+#define SDL_SCANCODE_1 30
+#define SDL_SCANCODE_2 31
+#define SDL_SCANCODE_3 32
+#define SDL_SCANCODE_4 33
+#define SDL_SCANCODE_5 34
+#define SDL_SCANCODE_6 35
+#define SDL_SCANCODE_7 36
+#define SDL_SCANCODE_8 37
+#define SDL_SCANCODE_9 38
+#define SDL_SCANCODE_0 39
+#define SDL_SCANCODE_RETURN 40
+#define SDL_SCANCODE_ESCAPE 41
+#define SDL_SCANCODE_BACKSPACE 42
+#define SDL_SCANCODE_TAB 43
+#define SDL_SCANCODE_SPACE 44
+#define SDL_SCANCODE_RIGHT 79
+#define SDL_SCANCODE_LEFT 80
+#define SDL_SCANCODE_DOWN 81
+#define SDL_SCANCODE_UP 82
+#define SDL_SCANCODE_LCTRL 224
+#define SDL_SCANCODE_LSHIFT 225
+#define SDL_SCANCODE_LALT 226
+#define SDL_SCANCODE_LGUI 227
+#define SDL_SCANCODE_RCTRL 228
+#define SDL_SCANCODE_RSHIFT 229
+#define SDL_SCANCODE_RALT 230
+#define SDL_SCANCODE_RGUI 231
+#define SDL_NUM_SCANCODES 512
+
 #define SDL_FLIP_NONE 0
 #define SDL_FLIP_HORIZONTAL 1
 #define SDL_FLIP_VERTICAL 2
 typedef int SDL_RendererFlip;
 
+#define SDLK_RETURN '\r'
 #define SDLK_ESCAPE 27
+#define SDLK_BACKSPACE '\b'
+#define SDLK_TAB '\t'
+#define SDLK_SPACE ' '
+#define SDLK_RIGHT 1073741903
+#define SDLK_LEFT 1073741904
+#define SDLK_DOWN 1073741905
+#define SDLK_UP 1073741906
+#define SDLK_LCTRL 1073742048
+#define SDLK_LSHIFT 1073742049
+#define SDLK_LALT 1073742050
+#define SDLK_LGUI 1073742051
+#define SDLK_RCTRL 1073742052
+#define SDLK_RSHIFT 1073742053
+#define SDLK_RALT 1073742054
+#define SDLK_RGUI 1073742055
 
 int SDL_Init(Uint32 flags);
 int SDL_InitSubSystem(Uint32 flags);
@@ -213,8 +305,17 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y);
 void SDL_RenderPresent(SDL_Renderer* renderer);
 
 int SDL_PollEvent(SDL_Event* event);
+void SDL_PumpEvents(void);
 const Uint8* SDL_GetKeyboardState(int* numkeys);
+const Uint8* SDL_GetKeyState(int* numkeys);
+Uint16 SDL_GetModState(void);
+void SDL_SetModState(Uint16 modstate);
+int SDL_EnableKeyRepeat(int delay_ms, int interval_ms);
+void SDL_QOS_SetKeyRepeat(int enabled, Uint32 delay_ms, Uint32 interval_ms);
 Uint32 SDL_GetMouseState(int* x, int* y);
+Uint32 SDL_GetRelativeMouseState(int* x, int* y);
+Uint32 SDL_GetGlobalMouseState(int* x, int* y);
+int SDL_QOS_GetMouseWheel(int* x, int* y);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);

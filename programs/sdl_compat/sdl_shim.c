@@ -7,14 +7,33 @@
 #define SDL_SHIM_MAX_SURFACES 32
 #define SDL_SHIM_ROWBUF_PIXELS 2048
 #define SDL_SHIM_BMP_FILE_MAX (4u * 1024u * 1024u)
+#define SDL_SHIM_EVENT_QUEUE_SIZE 64
+#define SDL_SHIM_REPEAT_DELAY_MS 400u
+#define SDL_SHIM_REPEAT_INTERVAL_MS 33u
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
 static SDL_Texture g_textures[SDL_SHIM_MAX_TEXTURES];
 static SDL_Surface g_surfaces[SDL_SHIM_MAX_SURFACES];
-static Uint8 g_keyboard_state[256];
+static SDL_Event g_event_queue[SDL_SHIM_EVENT_QUEUE_SIZE];
+static int g_event_head = 0;
+static int g_event_tail = 0;
+static int g_event_count = 0;
+static Uint8 g_keyboard_state[SDL_NUM_SCANCODES];
+static Uint32 g_key_down_ms[SDL_NUM_SCANCODES];
+static Uint32 g_key_repeat_next_ms[SDL_NUM_SCANCODES];
+static SDL_Keycode g_key_sym[SDL_NUM_SCANCODES];
+static Uint16 g_key_mod[SDL_NUM_SCANCODES];
+static Uint16 g_mod_state = KMOD_NONE;
+static int g_key_repeat_enabled = 0;
+static Uint32 g_key_repeat_delay_ms = SDL_SHIM_REPEAT_DELAY_MS;
+static Uint32 g_key_repeat_interval_ms = SDL_SHIM_REPEAT_INTERVAL_MS;
 static int g_mouse_x = 0;
 static int g_mouse_y = 0;
+static int g_mouse_rel_x = 0;
+static int g_mouse_rel_y = 0;
+static int g_mouse_wheel_x = 0;
+static int g_mouse_wheel_y = 0;
 static Uint32 g_mouse_buttons = 0u;
 static char g_last_error[96] = "OK";
 static Uint8 g_rowbuf[SDL_SHIM_ROWBUF_PIXELS * 4u];
@@ -56,17 +75,212 @@ static int sdl_i_min(int a, int b){
     return (a < b) ? a : b;
 }
 
-static int sdl_key_sym_from_qos(const qos_event_t* ev){
+static int sdl_time_reached(Uint32 now, Uint32 target){
+    return (int)(now - target) >= 0;
+}
+
+static Uint32 sdl_now_ms(void){
+    return (Uint32)(qos_get_time_us() / 1000ull);
+}
+
+static void sdl_event_clear(SDL_Event* event){
+    Uint8* p = (Uint8*)event;
+    if (!event){
+        return;
+    }
+    for (Uint32 i = 0u; i < (Uint32)sizeof(SDL_Event); i++){
+        p[i] = 0u;
+    }
+}
+
+static int sdl_event_push(const SDL_Event* event){
+    if (!event){
+        return -1;
+    }
+    if (g_event_count >= SDL_SHIM_EVENT_QUEUE_SIZE){
+        g_event_head++;
+        if (g_event_head >= SDL_SHIM_EVENT_QUEUE_SIZE){
+            g_event_head = 0;
+        }
+        g_event_count--;
+    }
+    g_event_queue[g_event_tail] = *event;
+    g_event_tail++;
+    if (g_event_tail >= SDL_SHIM_EVENT_QUEUE_SIZE){
+        g_event_tail = 0;
+    }
+    g_event_count++;
+    return 0;
+}
+
+static int sdl_event_pop(SDL_Event* event){
+    if (!event || g_event_count <= 0){
+        return 0;
+    }
+    *event = g_event_queue[g_event_head];
+    g_event_head++;
+    if (g_event_head >= SDL_SHIM_EVENT_QUEUE_SIZE){
+        g_event_head = 0;
+    }
+    g_event_count--;
+    return 1;
+}
+
+static void sdl_event_queue_reset(void){
+    g_event_head = 0;
+    g_event_tail = 0;
+    g_event_count = 0;
+}
+
+static Uint16 sdl_mod_from_qos(unsigned int qos_mod){
+    Uint16 mod = KMOD_NONE;
+    if (qos_mod & QOS_KEYMOD_SHIFT){
+        mod |= KMOD_SHIFT;
+    }
+    if (qos_mod & QOS_KEYMOD_CTRL){
+        mod |= KMOD_CTRL;
+    }
+    if (qos_mod & QOS_KEYMOD_ALT){
+        mod |= KMOD_ALT;
+    }
+    if (qos_mod & QOS_KEYMOD_META){
+        mod |= KMOD_GUI;
+    }
+    return mod;
+}
+
+static SDL_Scancode sdl_scancode_from_ascii(unsigned int ascii){
+    if (ascii >= 'a' && ascii <= 'z'){
+        return (SDL_Scancode)(SDL_SCANCODE_A + (int)(ascii - 'a'));
+    }
+    if (ascii >= 'A' && ascii <= 'Z'){
+        return (SDL_Scancode)(SDL_SCANCODE_A + (int)(ascii - 'A'));
+    }
+    if (ascii >= '1' && ascii <= '9'){
+        return (SDL_Scancode)(SDL_SCANCODE_1 + (int)(ascii - '1'));
+    }
+    if (ascii == '0'){
+        return SDL_SCANCODE_0;
+    }
+    if (ascii == '\r' || ascii == '\n'){
+        return SDL_SCANCODE_RETURN;
+    }
+    if (ascii == '\b' || ascii == 127u){
+        return SDL_SCANCODE_BACKSPACE;
+    }
+    if (ascii == '\t'){
+        return SDL_SCANCODE_TAB;
+    }
+    if (ascii == ' '){
+        return SDL_SCANCODE_SPACE;
+    }
+    if (ascii == 27u){
+        return SDL_SCANCODE_ESCAPE;
+    }
+    return SDL_SCANCODE_UNKNOWN;
+}
+
+static SDL_Scancode sdl_scancode_from_qos(const qos_event_t* ev){
+    if (!ev){
+        return SDL_SCANCODE_UNKNOWN;
+    }
+    if (ev->keycode > 0u && ev->keycode < (unsigned int)SDL_NUM_SCANCODES){
+        return (SDL_Scancode)ev->keycode;
+    }
+    return sdl_scancode_from_ascii(ev->ascii);
+}
+
+static SDL_Keycode sdl_key_sym_from_qos(const qos_event_t* ev){
     if (!ev){
         return 0;
     }
     if (ev->ascii != 0u){
-        return (int)ev->ascii;
+        if (ev->ascii == '\n'){
+            return SDLK_RETURN;
+        }
+        if (ev->ascii == 127u){
+            return SDLK_BACKSPACE;
+        }
+        return (SDL_Keycode)ev->ascii;
     }
-    if (ev->keycode == 0x29u){
+    if (ev->keycode >= SDL_SCANCODE_A && ev->keycode <= SDL_SCANCODE_Z){
+        return (SDL_Keycode)('a' + (int)(ev->keycode - SDL_SCANCODE_A));
+    }
+    if (ev->keycode >= SDL_SCANCODE_1 && ev->keycode <= SDL_SCANCODE_9){
+        return (SDL_Keycode)('1' + (int)(ev->keycode - SDL_SCANCODE_1));
+    }
+    if (ev->keycode == SDL_SCANCODE_0){
+        return '0';
+    }
+    if (ev->keycode == SDL_SCANCODE_RETURN){
+        return SDLK_RETURN;
+    }
+    if (ev->keycode == SDL_SCANCODE_ESCAPE){
         return SDLK_ESCAPE;
     }
-    return (int)ev->keycode;
+    if (ev->keycode == SDL_SCANCODE_BACKSPACE){
+        return SDLK_BACKSPACE;
+    }
+    if (ev->keycode == SDL_SCANCODE_TAB){
+        return SDLK_TAB;
+    }
+    if (ev->keycode == SDL_SCANCODE_SPACE){
+        return SDLK_SPACE;
+    }
+    if (ev->keycode == SDL_SCANCODE_RIGHT){
+        return SDLK_RIGHT;
+    }
+    if (ev->keycode == SDL_SCANCODE_LEFT){
+        return SDLK_LEFT;
+    }
+    if (ev->keycode == SDL_SCANCODE_DOWN){
+        return SDLK_DOWN;
+    }
+    if (ev->keycode == SDL_SCANCODE_UP){
+        return SDLK_UP;
+    }
+    if (ev->keycode == SDL_SCANCODE_LCTRL){
+        return SDLK_LCTRL;
+    }
+    if (ev->keycode == SDL_SCANCODE_LSHIFT){
+        return SDLK_LSHIFT;
+    }
+    if (ev->keycode == SDL_SCANCODE_LALT){
+        return SDLK_LALT;
+    }
+    if (ev->keycode == SDL_SCANCODE_LGUI){
+        return SDLK_LGUI;
+    }
+    if (ev->keycode == SDL_SCANCODE_RCTRL){
+        return SDLK_RCTRL;
+    }
+    if (ev->keycode == SDL_SCANCODE_RSHIFT){
+        return SDLK_RSHIFT;
+    }
+    if (ev->keycode == SDL_SCANCODE_RALT){
+        return SDLK_RALT;
+    }
+    if (ev->keycode == SDL_SCANCODE_RGUI){
+        return SDLK_RGUI;
+    }
+    return (SDL_Keycode)ev->keycode;
+}
+
+static void sdl_fill_key_event(SDL_Event* event,
+                               Uint32 type,
+                               SDL_Scancode scancode,
+                               SDL_Keycode sym,
+                               Uint16 mod,
+                               Uint8 repeat){
+    sdl_event_clear(event);
+    event->type = type;
+    event->key.type = type;
+    event->key.timestamp = sdl_now_ms();
+    event->key.state = (type == SDL_KEYDOWN) ? SDL_PRESSED : SDL_RELEASED;
+    event->key.repeat = repeat;
+    event->key.keysym.scancode = scancode;
+    event->key.keysym.sym = sym;
+    event->key.keysym.mod = mod;
 }
 
 static Uint32 sdl_mouse_mask_from_qos(unsigned int qos_buttons){
@@ -94,6 +308,145 @@ static Uint8 sdl_button_from_qos(unsigned int qos_button){
         return SDL_BUTTON_RIGHT;
     }
     return 0u;
+}
+
+static int sdl_poll_repeat_event(SDL_Event* event){
+    Uint32 now;
+    if (!event || !g_key_repeat_enabled){
+        return 0;
+    }
+    now = sdl_now_ms();
+    for (int sc = 0; sc < SDL_NUM_SCANCODES; sc++){
+        if (g_keyboard_state[sc] &&
+            g_key_repeat_next_ms[sc] != 0u &&
+            sdl_time_reached(now, g_key_repeat_next_ms[sc])){
+            SDL_Keycode sym = g_key_sym[sc];
+            if (sym == 0){
+                sym = (SDL_Keycode)sc;
+            }
+            sdl_fill_key_event(event,
+                               SDL_KEYDOWN,
+                               (SDL_Scancode)sc,
+                               sym,
+                               g_key_mod[sc],
+                               1u);
+            g_key_repeat_next_ms[sc] = now + g_key_repeat_interval_ms;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int sdl_translate_qos_event(const qos_event_t* qos_ev, SDL_Event* event){
+    if (!qos_ev || !event){
+        return 0;
+    }
+
+    if (qos_ev->type == QOS_EVENT_KEY_DOWN ||
+        qos_ev->type == QOS_EVENT_KEY_UP){
+        SDL_Scancode scancode = sdl_scancode_from_qos(qos_ev);
+        SDL_Keycode sym = sdl_key_sym_from_qos(qos_ev);
+        Uint16 mod = sdl_mod_from_qos(qos_ev->modifiers);
+        Uint8 repeat = 0u;
+        Uint32 now = sdl_now_ms();
+
+        g_mod_state = mod;
+        if (scancode > SDL_SCANCODE_UNKNOWN && scancode < SDL_NUM_SCANCODES){
+            if (qos_ev->type == QOS_EVENT_KEY_DOWN){
+                repeat = g_keyboard_state[scancode] ? 1u : 0u;
+                g_keyboard_state[scancode] = 1u;
+                if (!repeat){
+                    g_key_down_ms[scancode] = now;
+                    g_key_repeat_next_ms[scancode] = now + g_key_repeat_delay_ms;
+                }
+                g_key_sym[scancode] = sym;
+                g_key_mod[scancode] = mod;
+            } else {
+                g_keyboard_state[scancode] = 0u;
+                g_key_down_ms[scancode] = 0u;
+                g_key_repeat_next_ms[scancode] = 0u;
+                g_key_sym[scancode] = 0;
+                g_key_mod[scancode] = KMOD_NONE;
+            }
+        }
+
+        sdl_fill_key_event(event,
+                           (qos_ev->type == QOS_EVENT_KEY_DOWN) ? SDL_KEYDOWN : SDL_KEYUP,
+                           scancode,
+                           sym,
+                           mod,
+                           repeat);
+
+        return 1;
+    }
+
+    if (qos_ev->source == QOS_EVENT_SOURCE_MOUSE){
+        g_mouse_x = qos_ev->x;
+        g_mouse_y = qos_ev->y;
+        if (qos_ev->type == QOS_EVENT_MOUSE_MOVE){
+            g_mouse_buttons = sdl_mouse_mask_from_qos(qos_ev->buttons);
+            g_mouse_rel_x += qos_ev->dx;
+            g_mouse_rel_y += qos_ev->dy;
+        }
+    }
+
+    if (qos_ev->type == QOS_EVENT_MOUSE_MOVE){
+        sdl_event_clear(event);
+        event->type = SDL_MOUSEMOTION;
+        event->motion.type = SDL_MOUSEMOTION;
+        event->motion.state = g_mouse_buttons;
+        event->motion.x = qos_ev->x;
+        event->motion.y = qos_ev->y;
+        event->motion.xrel = qos_ev->dx;
+        event->motion.yrel = qos_ev->dy;
+        return 1;
+    }
+
+    if (qos_ev->type == QOS_EVENT_MOUSE_BUTTON_DOWN ||
+        qos_ev->type == QOS_EVENT_MOUSE_BUTTON_UP){
+        Uint8 button = sdl_button_from_qos(qos_ev->button);
+        Uint32 mask = (button != 0u) ? SDL_BUTTON(button) : 0u;
+        Uint32 reported = sdl_mouse_mask_from_qos(qos_ev->buttons);
+
+        if (qos_ev->buttons != 0u ||
+            qos_ev->type == QOS_EVENT_MOUSE_BUTTON_UP){
+            g_mouse_buttons = reported;
+        }
+        if (qos_ev->type == QOS_EVENT_MOUSE_BUTTON_DOWN){
+            g_mouse_buttons |= mask;
+        } else {
+            g_mouse_buttons &= ~mask;
+        }
+
+        sdl_event_clear(event);
+        event->type = (qos_ev->type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
+                      SDL_MOUSEBUTTONDOWN :
+                      SDL_MOUSEBUTTONUP;
+        event->button.type = event->type;
+        event->button.button = button;
+        event->button.state = (qos_ev->type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
+                              SDL_PRESSED :
+                              SDL_RELEASED;
+        event->button.clicks = 1u;
+        event->button.padding1 = 0u;
+        event->button.x = qos_ev->x;
+        event->button.y = qos_ev->y;
+        return 1;
+    }
+
+    if (qos_ev->type == QOS_EVENT_MOUSE_WHEEL){
+        g_mouse_wheel_y += qos_ev->wheel;
+        sdl_event_clear(event);
+        event->type = SDL_MOUSEWHEEL;
+        event->wheel.type = SDL_MOUSEWHEEL;
+        event->wheel.x = 0;
+        event->wheel.y = qos_ev->wheel;
+        event->wheel.mouse_x = qos_ev->x;
+        event->wheel.mouse_y = qos_ev->y;
+        return 1;
+    }
+
+    return 0;
 }
 
 static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len){
@@ -188,8 +541,13 @@ static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* 
 
 int SDL_Init(Uint32 flags){
     (void)flags;
-    for (int i = 0; i < 256; i++){
+    sdl_event_queue_reset();
+    for (int i = 0; i < SDL_NUM_SCANCODES; i++){
         g_keyboard_state[i] = 0u;
+        g_key_down_ms[i] = 0u;
+        g_key_repeat_next_ms[i] = 0u;
+        g_key_sym[i] = 0;
+        g_key_mod[i] = KMOD_NONE;
     }
     for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
@@ -221,8 +579,16 @@ int SDL_Init(Uint32 flags){
     g_renderer.alive = 0;
     g_renderer.draw_alpha = 255u;
     g_renderer.draw_blend_mode = SDL_BLENDMODE_NONE;
+    g_mod_state = KMOD_NONE;
+    g_key_repeat_enabled = 0;
+    g_key_repeat_delay_ms = SDL_SHIM_REPEAT_DELAY_MS;
+    g_key_repeat_interval_ms = SDL_SHIM_REPEAT_INTERVAL_MS;
     g_mouse_x = 0;
     g_mouse_y = 0;
+    g_mouse_rel_x = 0;
+    g_mouse_rel_y = 0;
+    g_mouse_wheel_x = 0;
+    g_mouse_wheel_y = 0;
     g_mouse_buttons = 0u;
     set_error("OK");
     return 0;
@@ -255,8 +621,24 @@ void SDL_Quit(void){
     }
     g_renderer.alive = 0;
     g_window.alive = 0;
+    sdl_event_queue_reset();
+    for (int i = 0; i < SDL_NUM_SCANCODES; i++){
+        g_keyboard_state[i] = 0u;
+        g_key_down_ms[i] = 0u;
+        g_key_repeat_next_ms[i] = 0u;
+        g_key_sym[i] = 0;
+        g_key_mod[i] = KMOD_NONE;
+    }
+    g_mod_state = KMOD_NONE;
+    g_key_repeat_enabled = 0;
+    g_key_repeat_delay_ms = SDL_SHIM_REPEAT_DELAY_MS;
+    g_key_repeat_interval_ms = SDL_SHIM_REPEAT_INTERVAL_MS;
     g_mouse_x = 0;
     g_mouse_y = 0;
+    g_mouse_rel_x = 0;
+    g_mouse_rel_y = 0;
+    g_mouse_wheel_x = 0;
+    g_mouse_wheel_y = 0;
     g_mouse_buttons = 0u;
 }
 
@@ -265,7 +647,7 @@ const char* SDL_GetError(void){
 }
 
 Uint32 SDL_GetTicks(void){
-    return (Uint32)(qos_get_time_us() / 1000ull);
+    return sdl_now_ms();
 }
 
 void SDL_Delay(Uint32 ms){
@@ -439,80 +821,72 @@ int SDL_PollEvent(SDL_Event* event){
     if (!event){
         return 0;
     }
+
+    if (sdl_event_pop(event)){
+        return 1;
+    }
+
     if (qos_poll_event(&qos_ev) <= 0){
-        return 0;
+        return sdl_poll_repeat_event(event);
     }
 
-    if (qos_ev.type == QOS_EVENT_KEY_DOWN || qos_ev.type == QOS_EVENT_KEY_UP){
-        int sym = sdl_key_sym_from_qos(&qos_ev);
-        if (sym >= 0 && sym < 256){
-            g_keyboard_state[sym] = (qos_ev.type == QOS_EVENT_KEY_DOWN) ? 1u : 0u;
+    if (sdl_translate_qos_event(&qos_ev, event)){
+        return 1;
+    }
+    return sdl_poll_repeat_event(event);
+}
+
+void SDL_PumpEvents(void){
+    qos_event_t qos_ev;
+    SDL_Event event;
+    int guard = 0;
+    while (guard < SDL_SHIM_EVENT_QUEUE_SIZE &&
+           qos_poll_event(&qos_ev) > 0){
+        guard++;
+        if (sdl_translate_qos_event(&qos_ev, &event)){
+            (void)sdl_event_push(&event);
         }
-
-        event->type = (qos_ev.type == QOS_EVENT_KEY_DOWN) ? SDL_KEYDOWN : SDL_KEYUP;
-        event->key.type = event->type;
-        event->key.keysym.sym = sym;
-
-        if (qos_ev.type == QOS_EVENT_KEY_DOWN &&
-            (sym == 'q' || sym == 'Q' || sym == SDLK_ESCAPE)){
-            event->type = SDL_QUIT;
-            event->quit.type = SDL_QUIT;
-        }
-        return 1;
     }
-
-    if (qos_ev.source == QOS_EVENT_SOURCE_MOUSE){
-        g_mouse_x = qos_ev.x;
-        g_mouse_y = qos_ev.y;
-        g_mouse_buttons = sdl_mouse_mask_from_qos(qos_ev.buttons);
-    }
-
-    if (qos_ev.type == QOS_EVENT_MOUSE_MOVE){
-        event->type = SDL_MOUSEMOTION;
-        event->motion.type = SDL_MOUSEMOTION;
-        event->motion.state = g_mouse_buttons;
-        event->motion.x = qos_ev.x;
-        event->motion.y = qos_ev.y;
-        event->motion.xrel = qos_ev.dx;
-        event->motion.yrel = qos_ev.dy;
-        return 1;
-    }
-
-    if (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN ||
-        qos_ev.type == QOS_EVENT_MOUSE_BUTTON_UP){
-        event->type = (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
-                      SDL_MOUSEBUTTONDOWN :
-                      SDL_MOUSEBUTTONUP;
-        event->button.type = event->type;
-        event->button.button = sdl_button_from_qos(qos_ev.button);
-        event->button.state = (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
-                              SDL_PRESSED :
-                              SDL_RELEASED;
-        event->button.clicks = 1u;
-        event->button.padding1 = 0u;
-        event->button.x = qos_ev.x;
-        event->button.y = qos_ev.y;
-        return 1;
-    }
-
-    if (qos_ev.type == QOS_EVENT_MOUSE_WHEEL){
-        event->type = SDL_MOUSEWHEEL;
-        event->wheel.type = SDL_MOUSEWHEEL;
-        event->wheel.x = 0;
-        event->wheel.y = qos_ev.wheel;
-        event->wheel.mouse_x = qos_ev.x;
-        event->wheel.mouse_y = qos_ev.y;
-        return 1;
-    }
-
-    return 0;
 }
 
 const Uint8* SDL_GetKeyboardState(int* numkeys){
     if (numkeys){
-        *numkeys = 256;
+        *numkeys = SDL_NUM_SCANCODES;
     }
     return g_keyboard_state;
+}
+
+const Uint8* SDL_GetKeyState(int* numkeys){
+    return SDL_GetKeyboardState(numkeys);
+}
+
+Uint16 SDL_GetModState(void){
+    return g_mod_state;
+}
+
+void SDL_SetModState(Uint16 modstate){
+    g_mod_state = modstate;
+}
+
+int SDL_EnableKeyRepeat(int delay_ms, int interval_ms){
+    if (delay_ms <= 0 || interval_ms <= 0){
+        g_key_repeat_enabled = 0;
+        return 0;
+    }
+    g_key_repeat_enabled = 1;
+    g_key_repeat_delay_ms = (Uint32)delay_ms;
+    g_key_repeat_interval_ms = (Uint32)interval_ms;
+    return 0;
+}
+
+void SDL_QOS_SetKeyRepeat(int enabled, Uint32 delay_ms, Uint32 interval_ms){
+    g_key_repeat_enabled = enabled ? 1 : 0;
+    if (delay_ms != 0u){
+        g_key_repeat_delay_ms = delay_ms;
+    }
+    if (interval_ms != 0u){
+        g_key_repeat_interval_ms = interval_ms;
+    }
 }
 
 Uint32 SDL_GetMouseState(int* x, int* y){
@@ -523,6 +897,34 @@ Uint32 SDL_GetMouseState(int* x, int* y){
         *y = g_mouse_y;
     }
     return g_mouse_buttons;
+}
+
+Uint32 SDL_GetRelativeMouseState(int* x, int* y){
+    if (x){
+        *x = g_mouse_rel_x;
+    }
+    if (y){
+        *y = g_mouse_rel_y;
+    }
+    g_mouse_rel_x = 0;
+    g_mouse_rel_y = 0;
+    return g_mouse_buttons;
+}
+
+Uint32 SDL_GetGlobalMouseState(int* x, int* y){
+    return SDL_GetMouseState(x, y);
+}
+
+int SDL_QOS_GetMouseWheel(int* x, int* y){
+    if (x){
+        *x = g_mouse_wheel_x;
+    }
+    if (y){
+        *y = g_mouse_wheel_y;
+    }
+    g_mouse_wheel_x = 0;
+    g_mouse_wheel_y = 0;
+    return 0;
 }
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h){

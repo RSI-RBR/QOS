@@ -12,7 +12,7 @@ Current supported core APIs:
 - Timing: `SDL_GetTicks`, `SDL_Delay`, `SDL_GetTicksNS`, `SDL_GetPerformanceCounter`, `SDL_GetPerformanceFrequency`
 - Window/Renderer: `SDL_CreateWindow`, `SDL_DestroyWindow`, `SDL_CreateRenderer`, `SDL_DestroyRenderer`
 - Draw: `SDL_SetRenderDrawColor`, `SDL_RenderClear`, `SDL_RenderFillRect`, `SDL_RenderDrawRect`, `SDL_RenderDrawPoint`, `SDL_RenderPresent`
-- Input: `SDL_PollEvent`, `SDL_GetKeyboardState`, `SDL_GetMouseState`
+- Input: `SDL_PollEvent`, `SDL_PumpEvents`, `SDL_GetKeyboardState`, `SDL_GetKeyState`, `SDL_GetModState`, `SDL_GetMouseState`, `SDL_GetRelativeMouseState`, `SDL_GetGlobalMouseState`, `SDL_QOS_GetMouseWheel`
 - Texture: `SDL_CreateTexture`, `SDL_DestroyTexture`, `SDL_QueryTexture`, `SDL_LockTexture`, `SDL_UnlockTexture`, `SDL_UpdateTexture`, `SDL_RenderCopy`, `SDL_RenderCopyEx`, `SDL_RenderTexture`
 - Blending: `SDL_SetTextureBlendMode`, `SDL_SetTextureAlphaMod`, `SDL_SetTextureColorMod`, plus renderer blend-mode API
 - BMP assets: `SDL_LoadBMP`, `SDL_CreateTextureFromSurface`, `SDL_FreeSurface`, `SDL_DestroySurface`, `SDL_SetSurfaceColorKey`, `SDL_SetColorKey`
@@ -28,3 +28,6 @@ Notes:
 - The FAT driver resolves short 8.3 names and ASCII FAT long filenames for sandboxed BMP assets.
 - `SDL_RenderCopy` uses software nearest-neighbor scaling and alpha blending.
 - `SDL_RenderCopyEx` currently supports horizontal/vertical flips; rotation is accepted but ignored for now.
+- Keyboard state is scancode-based (`SDL_SCANCODE_*`) and supports held-key polling for games.
+- Key repeat is available but disabled by default; call `SDL_EnableKeyRepeat(SDL_DEFAULT_REPEAT_DELAY, SDL_DEFAULT_REPEAT_INTERVAL)` or `SDL_QOS_SetKeyRepeat(1, delay_ms, interval_ms)` if text-entry style repeat is desired.
+- Mouse motion events include button state for drag handling. `SDL_GetRelativeMouseState` returns accumulated movement since the last call, and `SDL_QOS_GetMouseWheel` returns accumulated wheel movement since the last call.
