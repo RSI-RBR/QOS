@@ -282,6 +282,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_GET_HEIGHT:
         case SYS_FB_RECT:
         case SYS_FB_PRESENT:
+        case SYS_FB_BLIT_RGBA:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_GETPID:
@@ -448,6 +449,53 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             usb_host_poll();
             frame[TF_X0] = (unsigned long)display_present_for_pid(process_current_pid());
             return frame_sp;
+
+        case SYS_FB_BLIT_RGBA: {
+            unsigned int x = (unsigned int)frame[TF_X0];
+            unsigned int y = (unsigned int)frame[TF_X1];
+            unsigned int w = (unsigned int)frame[TF_X2];
+            unsigned int h = (unsigned int)frame[TF_X3];
+            const unsigned char* user_src = (const unsigned char*)frame[TF_X4];
+            int pid = process_current_pid();
+
+            if (!user_src || w == 0u || h == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            unsigned long row_bytes = (unsigned long)w * 4ul;
+            if (row_bytes == 0ul || row_bytes > (unsigned long)USER_IO_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if ((~0ul / row_bytes) < (unsigned long)h){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            unsigned char* row = (unsigned char*)kmalloc(row_bytes);
+            if (!row){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            int rc = 0;
+            for (unsigned int py = 0u; py < h; py++){
+                const unsigned char* user_row = user_src + ((unsigned long)py * row_bytes);
+                if (process_copy_from_user(row, user_row, row_bytes) != 0){
+                    rc = -1;
+                    break;
+                }
+                if (display_blit_rgba32_for_pid(pid, x, y + py, w, 1u, row, (unsigned int)row_bytes) != 0){
+                    rc = -1;
+                    break;
+                }
+            }
+
+            kfree_secure(row, row_bytes);
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
 
         case SYS_TRY_GETC: {
             char c = 0;

@@ -513,6 +513,78 @@ int display_rect_for_pid(int owner_pid,
     return 0;
 }
 
+int display_blit_rgba32_for_pid(int owner_pid,
+                                unsigned int x,
+                                unsigned int y,
+                                unsigned int w,
+                                unsigned int h,
+                                const unsigned char* rgba,
+                                unsigned int rgba_pitch){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0 || !rgba || w == 0u || h == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS || !s->framebuffer || s->pitch == 0u ||
+        s->pitch < (s->width * sizeof(unsigned int)) ||
+        x >= s->width || y >= s->height){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    if (rgba_pitch < (w * 4u)){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    if (x + w < x || x + w > s->width){
+        w = s->width - x;
+    }
+    if (y + h < y || y + h > s->height){
+        h = s->height - y;
+    }
+
+    for (unsigned int py = 0u; py < h; py++){
+        const unsigned char* src_row = rgba + ((unsigned long)py * rgba_pitch);
+        unsigned int* dst_row = (unsigned int*)((unsigned char*)s->framebuffer +
+                                                 ((unsigned long)(y + py) * s->pitch));
+        dst_row += x;
+
+        for (unsigned int px = 0u; px < w; px++){
+            const unsigned int si = px * 4u;
+            unsigned int sr = src_row[si + 0u];
+            unsigned int sg = src_row[si + 1u];
+            unsigned int sb = src_row[si + 2u];
+            unsigned int sa = src_row[si + 3u];
+
+            if (sa == 0u){
+                continue;
+            }
+
+            if (sa >= 255u){
+                dst_row[px] = (sr << 16) | (sg << 8) | sb;
+                continue;
+            }
+
+            unsigned int dc = dst_row[px];
+            unsigned int dr = (dc >> 16) & 0xFFu;
+            unsigned int dg = (dc >> 8) & 0xFFu;
+            unsigned int db = dc & 0xFFu;
+            unsigned int ia = 255u - sa;
+
+            unsigned int orv = (sr * sa + dr * ia + 127u) / 255u;
+            unsigned int ogv = (sg * sa + dg * ia + 127u) / 255u;
+            unsigned int obv = (sb * sa + db * ia + 127u) / 255u;
+            dst_row[px] = (orv << 16) | (ogv << 8) | obv;
+        }
+    }
+    display_mark_rect_dirty_locked(s, x, y, w, h);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
 int display_present_for_pid(int owner_pid){
     int session_id = display_get_or_create_graphics_for_pid(owner_pid);
     if (session_id < 0){

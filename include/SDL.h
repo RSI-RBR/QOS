@@ -31,6 +31,11 @@ typedef struct SDL_Texture {
     int w;
     int h;
     Uint32 format;
+    Uint32 access;
+    int pitch;
+    Uint8* pixels;
+    Uint32 capacity;
+    int locked;
     int alive;
 } SDL_Texture;
 
@@ -65,10 +70,16 @@ typedef union SDL_Event {
 
 #define SDL_WINDOW_FULLSCREEN 0x00000001u
 #define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001u
+#define SDL_WINDOW_BORDERLESS 0x00000010u
+#define SDL_WINDOWPOS_CENTERED 0x2FFF0000u
 
 #define SDL_RENDERER_SOFTWARE 0x00000001u
 #define SDL_RENDERER_ACCELERATED 0x00000002u
 #define SDL_RENDERER_PRESENTVSYNC 0x00000004u
+#define SDL_PIXELFORMAT_RGBA8888 0x16462004u
+#define SDL_TEXTUREACCESS_STATIC 0
+#define SDL_TEXTUREACCESS_STREAMING 1
+#define SDL_TEXTUREACCESS_TARGET 2
 
 #define SDL_QUIT 0x100u
 #define SDL_KEYDOWN 0x300u
@@ -108,6 +119,9 @@ const Uint8* SDL_GetKeyboardState(int* numkeys);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 void SDL_DestroyTexture(SDL_Texture* texture);
+int SDL_LockTexture(SDL_Texture* texture, const SDL_Rect* rect, void** pixels, int* pitch);
+void SDL_UnlockTexture(SDL_Texture* texture);
+int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pixels, int pitch);
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
 
 #ifdef QOS_USERSPACE

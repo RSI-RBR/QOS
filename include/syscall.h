@@ -102,7 +102,8 @@ enum {
     SYS_PROCESS_KILL = 79,
     SYS_PROCESS_STATE = 80,
     SYS_GET_TIME_US = 81,
-    SYS_GET_TIME_NS = 82
+    SYS_GET_TIME_NS = 82,
+    SYS_FB_BLIT_RGBA = 83
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -216,6 +217,19 @@ static inline void qos_fb_rect(unsigned int x, unsigned int y, unsigned int w, u
 
 static inline void qos_fb_present(void){
     (void)qos_syscall0(SYS_FB_PRESENT);
+}
+
+static inline int qos_fb_blit_rgba(unsigned int x,
+                                   unsigned int y,
+                                   unsigned int w,
+                                   unsigned int h,
+                                   const unsigned char* rgba){
+    return (int)qos_syscall5(SYS_FB_BLIT_RGBA,
+                             (unsigned long)x,
+                             (unsigned long)y,
+                             (unsigned long)w,
+                             (unsigned long)h,
+                             (unsigned long)rgba);
 }
 
 static inline int qos_try_getc(void){
