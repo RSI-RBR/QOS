@@ -11,7 +11,8 @@ def parse_int(value):
     s = value.strip()
     if s.lower().startswith("0x"):
         return int(s, 16)
-    return int(s, 16 if any(c in s.lower() for c in "abcdef") else 10)
+    # QOS prints fault addresses as zero-padded hex without a 0x prefix.
+    return int(s, 16)
 
 
 def run_tool(argv):

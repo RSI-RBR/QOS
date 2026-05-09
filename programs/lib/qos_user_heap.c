@@ -55,12 +55,33 @@ static int ptr_in_heap(unsigned long p){
     return g_heap_ready && p >= g_heap_start && p < g_heap_end;
 }
 
+static unsigned long current_program_base(void){
+    unsigned long pc;
+    asm volatile("adr %0, ." : "=r"(pc));
+    return pc & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
+}
+
+static unsigned long runtime_image_end(void){
+    unsigned long base = current_program_base();
+    unsigned long image_end = (unsigned long)__qos_image_end;
+
+    /*
+     * Raw QOS program images are loaded at a dynamic slot without applying ELF
+     * relocations. Some toolchains therefore materialize linker symbols as
+     * offsets from 0. Convert those offsets to the real runtime slot address.
+     */
+    if (image_end < QOS_PROGRAM_MEMORY_BYTES){
+        return base + image_end;
+    }
+    return image_end;
+}
+
 static void heap_init(void){
     if (g_heap_ready){
         return;
     }
 
-    unsigned long image_end = (unsigned long)__qos_image_end;
+    unsigned long image_end = runtime_image_end();
     unsigned long slot_base = image_end & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
     unsigned long heap_start = align_up(image_end, QOS_HEAP_ALIGN);
     unsigned long heap_end = slot_base + QOS_PROGRAM_MEMORY_BYTES -

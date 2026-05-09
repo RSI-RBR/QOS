@@ -15,6 +15,7 @@ Userspace heap:
   - `qos_heap_free()`
   - `qos_heap_largest_free()`
 
-The heap starts after `__qos_image_end` and stops before the process stack guard
-page inside that reservation. It is private to the process address space and is
-wiped when the kernel destroys the program memory reservation.
+The heap starts after the runtime-adjusted `__qos_image_end` and stops before
+the process stack guard page inside that reservation. It is private to the
+process address space and is wiped when the kernel destroys the program memory
+reservation.
