@@ -8,20 +8,22 @@ Files:
 - Uses `include/SDL.h` and QOS syscalls (`QOS_USERSPACE`).
 
 Current supported core APIs:
-- Init/Quit: `SDL_Init`, `SDL_InitSubSystem`, `SDL_Quit`, `SDL_GetError`
-- Timing: `SDL_GetTicks`, `SDL_Delay`, `SDL_GetTicksNS`, `SDL_GetPerformanceCounter`, `SDL_GetPerformanceFrequency`
-- Window/Renderer: `SDL_CreateWindow`, `SDL_DestroyWindow`, `SDL_CreateRenderer`, `SDL_DestroyRenderer`
+- Init/Quit: `SDL_Init`, `SDL_InitSubSystem`, `SDL_Quit`, `SDL_GetError`, `SDL_GetBasePath`, `SDL_free`, `SDL_SetHint`
+- Timing: `SDL_GetTicks`, `SDL_GetTicks64`, `SDL_Delay`, `SDL_GetTicksNS`, `SDL_GetPerformanceCounter`, `SDL_GetPerformanceFrequency`, `SDL_TICKS_PASSED`
+- Window/Renderer: `SDL_CreateWindow`, `SDL_DestroyWindow`, `SDL_GetCurrentDisplayMode`, `SDL_CreateRenderer`, `SDL_DestroyRenderer`, `SDL_RenderSetIntegerScale`, `SDL_RenderSetViewport`
 - Draw: `SDL_SetRenderDrawColor`, `SDL_RenderClear`, `SDL_RenderFillRect`, `SDL_RenderDrawRect`, `SDL_RenderDrawPoint`, `SDL_RenderPresent`
-- Input: `SDL_PollEvent`, `SDL_PumpEvents`, `SDL_GetKeyboardState`, `SDL_GetKeyState`, `SDL_GetModState`, `SDL_GetMouseState`, `SDL_GetRelativeMouseState`, `SDL_GetGlobalMouseState`, `SDL_QOS_GetMouseWheel`
+- Input: `SDL_PollEvent`, `SDL_TEXTINPUT`, `SDL_PumpEvents`, `SDL_GetKeyboardState`, `SDL_GetKeyState`, `SDL_GetModState`, `SDL_GetMouseState`, `SDL_GetRelativeMouseState`, `SDL_GetGlobalMouseState`, `SDL_QOS_GetMouseWheel`
 - Texture: `SDL_CreateTexture`, `SDL_DestroyTexture`, `SDL_QueryTexture`, `SDL_LockTexture`, `SDL_UnlockTexture`, `SDL_UpdateTexture`, `SDL_RenderCopy`, `SDL_RenderCopyEx`, `SDL_RenderTexture`
 - Blending: `SDL_SetTextureBlendMode`, `SDL_SetTextureAlphaMod`, `SDL_SetTextureColorMod`, plus renderer blend-mode API
-- BMP assets: `SDL_LoadBMP`, `SDL_CreateTextureFromSurface`, `SDL_FreeSurface`, `SDL_DestroySurface`, `SDL_SetSurfaceColorKey`, `SDL_SetColorKey`
+- Surfaces/BMP assets: `SDL_LoadBMP`, `SDL_CreateRGBSurfaceWithFormat`, `SDL_CreateTextureFromSurface`, `SDL_FillRect`, `SDL_FreeSurface`, `SDL_DestroySurface`, `SDL_SetSurfaceColorKey`, `SDL_SetColorKey`, `SDL_MapRGB`, `SDL_MapRGBA`
 - SDL_image-style BMP helpers: `IMG_Init`, `IMG_Quit`, `IMG_Load`, `IMG_LoadTexture`, `IMG_GetError`
 
 Notes:
 - Texture and surface memory uses the userspace heap (`malloc`/`free`).
 - Set the program reservation large enough for sprite sheets and maps; the QOS sample app defaults to 16 MiB.
 - Pixel format currently supports `SDL_PIXELFORMAT_RGBA8888`.
+- `SDL_Surface::format` is pointer-compatible with SDL-style code, but it only carries the QOS RGBA8888 format id and 4-byte pixel size today.
+- `SDL_RenderSetIntegerScale` and `SDL_RenderSetViewport` are compatibility no-ops while QOS uses a fullscreen framebuffer session.
 - BMP loading supports uncompressed 24-bit and 32-bit BMP files, including 256x256 sprites.
 - 32-bit BMP alpha is preserved. 24-bit BMP sprites can use color-key transparency, for example magenta via `SDL_SetColorKey(surface, SDL_TRUE, SDL_MapRGB(surface->format, 255, 0, 255))`.
 - Asset paths are sandbox-relative. `GAME.BIN` is currently mapped to the `QF2D` folder, so `img/tile_grass.bmp` is read inside `QF2D/IMG/`.
@@ -30,4 +32,5 @@ Notes:
 - `SDL_RenderCopyEx` currently supports horizontal/vertical flips; rotation is accepted but ignored for now.
 - Keyboard state is scancode-based (`SDL_SCANCODE_*`) and supports held-key polling for games.
 - Key repeat is available but disabled by default; call `SDL_EnableKeyRepeat(SDL_DEFAULT_REPEAT_DELAY, SDL_DEFAULT_REPEAT_INTERVAL)` or `SDL_QOS_SetKeyRepeat(1, delay_ms, interval_ms)` if text-entry style repeat is desired.
+- `SDL_PollEvent` clears the output event to type `0` when no event is available, which is slightly more forgiving than desktop SDL for early QOS ports.
 - Mouse motion events include button state for drag handling. `SDL_GetRelativeMouseState` returns accumulated movement since the last call, and `SDL_QOS_GetMouseWheel` returns accumulated wheel movement since the last call.

@@ -13,6 +13,7 @@ typedef unsigned char Uint8;
 typedef unsigned short Uint16;
 typedef unsigned int Uint32;
 typedef unsigned long long Uint64;
+typedef signed int Sint32;
 typedef int SDL_bool;
 typedef int SDL_Scancode;
 typedef int SDL_Keycode;
@@ -62,11 +63,24 @@ typedef struct SDL_Texture {
     int alive;
 } SDL_Texture;
 
+typedef struct SDL_PixelFormat {
+    Uint32 format;
+    Uint8 bytes_per_pixel;
+} SDL_PixelFormat;
+
+typedef struct SDL_Color {
+    Uint8 r;
+    Uint8 g;
+    Uint8 b;
+    Uint8 a;
+} SDL_Color;
+
 typedef struct SDL_Surface {
     int w;
     int h;
     int pitch;
-    Uint32 format;
+    SDL_PixelFormat* format;
+    SDL_PixelFormat format_storage;
     Uint8* pixels;
     Uint32 capacity;
     Uint32 color_key;
@@ -134,6 +148,11 @@ typedef struct SDL_QuitEvent {
     Uint32 type;
 } SDL_QuitEvent;
 
+typedef struct SDL_TextInputEvent {
+    Uint32 type;
+    char text[32];
+} SDL_TextInputEvent;
+
 typedef union SDL_Event {
     Uint32 type;
     SDL_KeyboardEvent key;
@@ -141,10 +160,20 @@ typedef union SDL_Event {
     SDL_MouseButtonEvent button;
     SDL_MouseWheelEvent wheel;
     SDL_QuitEvent quit;
+    SDL_TextInputEvent text;
 } SDL_Event;
+
+typedef struct SDL_DisplayMode {
+    Uint32 format;
+    int w;
+    int h;
+    int refresh_rate;
+    void* driverdata;
+} SDL_DisplayMode;
 
 #define SDL_INIT_TIMER 0x00000001u
 #define SDL_INIT_VIDEO 0x00000020u
+#define SDL_INIT_EVERYTHING (SDL_INIT_TIMER | SDL_INIT_VIDEO)
 
 #define SDL_WINDOW_FULLSCREEN 0x00000001u
 #define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001u
@@ -166,6 +195,7 @@ typedef union SDL_Event {
 #define SDL_MOUSEBUTTONDOWN 0x401u
 #define SDL_MOUSEBUTTONUP 0x402u
 #define SDL_MOUSEWHEEL 0x403u
+#define SDL_TEXTINPUT 0x303u
 
 #define SDL_EVENT_QUIT SDL_QUIT
 #define SDL_EVENT_KEY_DOWN SDL_KEYDOWN
@@ -174,6 +204,7 @@ typedef union SDL_Event {
 #define SDL_EVENT_MOUSE_BUTTON_DOWN SDL_MOUSEBUTTONDOWN
 #define SDL_EVENT_MOUSE_BUTTON_UP SDL_MOUSEBUTTONUP
 #define SDL_EVENT_MOUSE_WHEEL SDL_MOUSEWHEEL
+#define SDL_EVENT_TEXT_INPUT SDL_TEXTINPUT
 
 #define SDL_PRESSED 1u
 #define SDL_RELEASED 0u
@@ -195,6 +226,8 @@ typedef union SDL_Event {
 
 #define SDL_DEFAULT_REPEAT_DELAY 400
 #define SDL_DEFAULT_REPEAT_INTERVAL 33
+#define SDL_HINT_RENDER_SCALE_QUALITY "SDL_HINT_RENDER_SCALE_QUALITY"
+#define SDL_TICKS_PASSED(A, B) ((Sint32)((B) - (A)) <= 0)
 
 #define SDL_SCANCODE_UNKNOWN 0
 #define SDL_SCANCODE_A 4
@@ -280,8 +313,12 @@ int SDL_InitSubSystem(Uint32 flags);
 void SDL_Quit(void);
 
 const char* SDL_GetError(void);
+char* SDL_GetBasePath(void);
+void SDL_free(void* mem);
+int SDL_SetHint(const char* name, const char* value);
 
 Uint32 SDL_GetTicks(void);
+Uint64 SDL_GetTicks64(void);
 void SDL_Delay(Uint32 ms);
 #ifndef QOS_USERSPACE
 Uint64 SDL_GetTicksNS(void);
@@ -291,6 +328,7 @@ Uint64 SDL_GetPerformanceFrequency(void);
 
 SDL_Window* SDL_CreateWindow(const char* title, int x, int y, int w, int h, Uint32 flags);
 void SDL_DestroyWindow(SDL_Window* window);
+int SDL_GetCurrentDisplayMode(int index, SDL_DisplayMode* mode);
 
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags);
 void SDL_DestroyRenderer(SDL_Renderer* renderer);
@@ -303,6 +341,8 @@ int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_Rect* rect);
 int SDL_RenderDrawRect(SDL_Renderer* renderer, const SDL_Rect* rect);
 int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y);
 void SDL_RenderPresent(SDL_Renderer* renderer);
+int SDL_RenderSetIntegerScale(SDL_Renderer* renderer, int enabled);
+void SDL_RenderSetViewport(SDL_Renderer* renderer, const SDL_Rect* rect);
 
 int SDL_PollEvent(SDL_Event* event);
 void SDL_PumpEvents(void);
@@ -334,13 +374,15 @@ int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect*
 int SDL_RenderCopyEx(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst, int angle_degrees, const SDL_Point* center, SDL_RendererFlip flip);
 int SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
 SDL_Surface* SDL_LoadBMP(const char* file);
+SDL_Surface* SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format);
 void SDL_FreeSurface(SDL_Surface* surface);
 void SDL_DestroySurface(SDL_Surface* surface);
+int SDL_FillRect(SDL_Surface* surface, const SDL_Rect* rect, Uint32 color);
 int SDL_SetSurfaceColorKey(SDL_Surface* surface, int enabled, Uint32 key);
 int SDL_SetColorKey(SDL_Surface* surface, int flag, Uint32 key);
 int SDL_GetSurfaceColorKey(SDL_Surface* surface, Uint32* key);
-Uint32 SDL_MapRGB(Uint32 format, Uint8 r, Uint8 g, Uint8 b);
-Uint32 SDL_MapRGBA(Uint32 format, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
+Uint32 SDL_MapRGB(const SDL_PixelFormat* format, Uint8 r, Uint8 g, Uint8 b);
+Uint32 SDL_MapRGBA(const SDL_PixelFormat* format, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
 
 #ifdef QOS_USERSPACE
 static inline Uint64 SDL_GetTicksNS(void){

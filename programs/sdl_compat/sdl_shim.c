@@ -58,6 +58,26 @@ static Uint8 color_b(Uint32 c){
     return (Uint8)((c >> 8) & 0xFFu);
 }
 
+static Uint8 color_a(Uint32 c){
+    return (Uint8)(c & 0xFFu);
+}
+
+static void surface_set_format(SDL_Surface* surface, Uint32 format){
+    if (!surface){
+        return;
+    }
+    surface->format_storage.format = format;
+    surface->format_storage.bytes_per_pixel = 4u;
+    surface->format = &surface->format_storage;
+}
+
+static Uint32 surface_format_value(const SDL_Surface* surface){
+    if (!surface || !surface->format){
+        return 0u;
+    }
+    return surface->format->format;
+}
+
 static void set_error(const char* msg){
     int i = 0;
     if (!msg){
@@ -337,6 +357,22 @@ static int sdl_poll_repeat_event(SDL_Event* event){
     return 0;
 }
 
+static void sdl_queue_text_input_if_printable(const qos_event_t* qos_ev){
+    SDL_Event text_event;
+    if (!qos_ev ||
+        qos_ev->type != QOS_EVENT_KEY_DOWN ||
+        qos_ev->ascii < 32u ||
+        qos_ev->ascii >= 127u){
+        return;
+    }
+    sdl_event_clear(&text_event);
+    text_event.type = SDL_TEXTINPUT;
+    text_event.text.type = SDL_TEXTINPUT;
+    text_event.text.text[0] = (char)qos_ev->ascii;
+    text_event.text.text[1] = 0;
+    (void)sdl_event_push(&text_event);
+}
+
 static int sdl_translate_qos_event(const qos_event_t* qos_ev, SDL_Event* event){
     if (!qos_ev || !event){
         return 0;
@@ -571,6 +607,9 @@ int SDL_Init(Uint32 flags){
         g_surfaces[i].alive = 0;
         g_surfaces[i].pixels = 0;
         g_surfaces[i].capacity = 0u;
+        g_surfaces[i].format = 0;
+        g_surfaces[i].format_storage.format = 0u;
+        g_surfaces[i].format_storage.bytes_per_pixel = 0u;
         g_surfaces[i].color_key = 0u;
         g_surfaces[i].color_key_enabled = 0;
         g_surfaces[i].owns_pixels = 0;
@@ -617,6 +656,9 @@ void SDL_Quit(void){
         g_surfaces[i].alive = 0;
         g_surfaces[i].pixels = 0;
         g_surfaces[i].capacity = 0u;
+        g_surfaces[i].format = 0;
+        g_surfaces[i].format_storage.format = 0u;
+        g_surfaces[i].format_storage.bytes_per_pixel = 0u;
         g_surfaces[i].owns_pixels = 0;
     }
     g_renderer.alive = 0;
@@ -646,8 +688,34 @@ const char* SDL_GetError(void){
     return g_last_error;
 }
 
+char* SDL_GetBasePath(void){
+    char* s = (char*)malloc(1u);
+    if (!s){
+        set_error("base path heap exhausted");
+        return 0;
+    }
+    s[0] = 0;
+    return s;
+}
+
+void SDL_free(void* mem){
+    if (mem){
+        free(mem);
+    }
+}
+
+int SDL_SetHint(const char* name, const char* value){
+    (void)name;
+    (void)value;
+    return SDL_TRUE;
+}
+
 Uint32 SDL_GetTicks(void){
     return sdl_now_ms();
+}
+
+Uint64 SDL_GetTicks64(void){
+    return qos_get_time_us() / 1000ull;
 }
 
 void SDL_Delay(Uint32 ms){
@@ -675,6 +743,26 @@ void SDL_DestroyWindow(SDL_Window* window){
     if (window == &g_window){
         g_window.alive = 0;
     }
+}
+
+int SDL_GetCurrentDisplayMode(int index, SDL_DisplayMode* mode){
+    (void)index;
+    if (!mode){
+        set_error("bad display mode arg");
+        return -1;
+    }
+    mode->format = SDL_PIXELFORMAT_RGBA8888;
+    mode->w = (int)qos_get_screen_width();
+    mode->h = (int)qos_get_screen_height();
+    if (mode->w <= 0){
+        mode->w = g_window.alive ? g_window.w : 1920;
+    }
+    if (mode->h <= 0){
+        mode->h = g_window.alive ? g_window.h : 1080;
+    }
+    mode->refresh_rate = 60;
+    mode->driverdata = 0;
+    return 0;
 }
 
 SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags){
@@ -816,11 +904,26 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     qos_fb_present();
 }
 
+int SDL_RenderSetIntegerScale(SDL_Renderer* renderer, int enabled){
+    (void)enabled;
+    if (!renderer || !renderer->alive){
+        set_error("renderer not alive");
+        return -1;
+    }
+    return 0;
+}
+
+void SDL_RenderSetViewport(SDL_Renderer* renderer, const SDL_Rect* rect){
+    (void)renderer;
+    (void)rect;
+}
+
 int SDL_PollEvent(SDL_Event* event){
     qos_event_t qos_ev;
     if (!event){
         return 0;
     }
+    sdl_event_clear(event);
 
     if (sdl_event_pop(event)){
         return 1;
@@ -831,6 +934,7 @@ int SDL_PollEvent(SDL_Event* event){
     }
 
     if (sdl_translate_qos_event(&qos_ev, event)){
+        sdl_queue_text_input_if_printable(&qos_ev);
         return 1;
     }
     return sdl_poll_repeat_event(event);
@@ -845,6 +949,7 @@ void SDL_PumpEvents(void){
         guard++;
         if (sdl_translate_qos_event(&qos_ev, &event)){
             (void)sdl_event_push(&event);
+            sdl_queue_text_input_if_printable(&qos_ev);
         }
     }
 }
@@ -995,7 +1100,7 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
         set_error("surface not alive");
         return 0;
     }
-    if (surface->format != SDL_PIXELFORMAT_RGBA8888){
+    if (surface_format_value(surface) != SDL_PIXELFORMAT_RGBA8888){
         set_error("surface format unsupported");
         return 0;
     }
@@ -1008,7 +1113,7 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
 
     t->w = surface->w;
     t->h = surface->h;
-    t->format = surface->format;
+    t->format = surface_format_value(surface);
     t->access = SDL_TEXTUREACCESS_STATIC;
     t->pitch = surface->pitch;
     t->capacity = surface->capacity;
@@ -1311,7 +1416,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     s->w = width;
     s->h = height;
     s->pitch = width * 4;
-    s->format = SDL_PIXELFORMAT_RGBA8888;
+    surface_set_format(s, SDL_PIXELFORMAT_RGBA8888);
     s->capacity = pixel_bytes;
     s->color_key = 0u;
     s->color_key_enabled = 0;
@@ -1355,11 +1460,118 @@ void SDL_FreeSurface(SDL_Surface* surface){
     surface->alive = 0;
     surface->pixels = 0;
     surface->capacity = 0u;
+    surface->format = 0;
+    surface->format_storage.format = 0u;
+    surface->format_storage.bytes_per_pixel = 0u;
     surface->owns_pixels = 0;
 }
 
 void SDL_DestroySurface(SDL_Surface* surface){
     SDL_FreeSurface(surface);
+}
+
+SDL_Surface* SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int depth, Uint32 format){
+    (void)flags;
+    Uint32 bytes;
+    SDL_Surface* s;
+
+    if (w <= 0 || h <= 0 || depth != 32){
+        set_error("bad surface size/depth");
+        return 0;
+    }
+    if (format == 0u){
+        format = SDL_PIXELFORMAT_RGBA8888;
+    }
+    if (format != SDL_PIXELFORMAT_RGBA8888){
+        set_error("only RGBA8888 surfaces supported");
+        return 0;
+    }
+    if ((Uint32)w > (0xFFFFFFFFu / (Uint32)h) / 4u){
+        set_error("surface size overflow");
+        return 0;
+    }
+    bytes = (Uint32)w * (Uint32)h * 4u;
+
+    s = alloc_surface_slot();
+    if (!s){
+        set_error("surface slots exhausted");
+        return 0;
+    }
+
+    s->pixels = sdl_alloc_pixels(bytes);
+    if (!s->pixels){
+        set_error("surface heap exhausted");
+        return 0;
+    }
+    s->w = w;
+    s->h = h;
+    s->pitch = w * 4;
+    surface_set_format(s, format);
+    s->capacity = bytes;
+    s->color_key = 0u;
+    s->color_key_enabled = 0;
+    s->owns_pixels = 1;
+    s->alive = 1;
+    sdl_zero_bytes(s->pixels, bytes);
+    return s;
+}
+
+int SDL_FillRect(SDL_Surface* surface, const SDL_Rect* rect, Uint32 color){
+    int x = 0;
+    int y = 0;
+    int w;
+    int h;
+    Uint8 r = color_r(color);
+    Uint8 g = color_g(color);
+    Uint8 b = color_b(color);
+    Uint8 a = color_a(color);
+
+    if (!surface || !surface->alive || !surface->pixels){
+        set_error("surface not alive");
+        return -1;
+    }
+    w = surface->w;
+    h = surface->h;
+    if (rect){
+        x = rect->x;
+        y = rect->y;
+        w = rect->w;
+        h = rect->h;
+    }
+    if (w <= 0 || h <= 0){
+        return 0;
+    }
+    if (x < 0){
+        w += x;
+        x = 0;
+    }
+    if (y < 0){
+        h += y;
+        y = 0;
+    }
+    if (x >= surface->w || y >= surface->h || w <= 0 || h <= 0){
+        return 0;
+    }
+    if (x + w > surface->w){
+        w = surface->w - x;
+    }
+    if (y + h > surface->h){
+        h = surface->h - y;
+    }
+
+    for (int yy = 0; yy < h; yy++){
+        Uint8* row = surface->pixels +
+                     ((Uint32)(y + yy) * (Uint32)surface->pitch) +
+                     ((Uint32)x * 4u);
+        for (int xx = 0; xx < w; xx++){
+            Uint8* p = row + ((Uint32)xx * 4u);
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+            p[3] = a;
+        }
+    }
+    return 0;
 }
 
 static void apply_surface_color_key(SDL_Surface* surface){
@@ -1407,12 +1619,12 @@ int SDL_GetSurfaceColorKey(SDL_Surface* surface, Uint32* key){
     return surface->color_key_enabled ? 0 : -1;
 }
 
-Uint32 SDL_MapRGB(Uint32 format, Uint8 r, Uint8 g, Uint8 b){
+Uint32 SDL_MapRGB(const SDL_PixelFormat* format, Uint8 r, Uint8 g, Uint8 b){
     (void)format;
     return rgba_to_color(r, g, b, 255u);
 }
 
-Uint32 SDL_MapRGBA(Uint32 format, Uint8 r, Uint8 g, Uint8 b, Uint8 a){
+Uint32 SDL_MapRGBA(const SDL_PixelFormat* format, Uint8 r, Uint8 g, Uint8 b, Uint8 a){
     (void)format;
     return rgba_to_color(r, g, b, a);
 }
