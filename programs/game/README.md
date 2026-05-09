@@ -8,6 +8,9 @@ How it works:
 - QOS enters user programs through `program_main(void)`.
 - Desktop SDL code usually enters through `main(int argc, char** argv)`.
 - The Makefile compiles private game sources with `-Dmain=qf2d_main`.
+- The QOS entrypoint is explicit: `GAME_ENTRY=gui_main.c` by default.
+  `test_main.c` is excluded by default so an older SDL test entrypoint cannot
+  accidentally become the QOS game.
 - `program_main.c` calls `qf2d_main(1, argv)` and then exits through QOS.
 - The Makefile force-includes `qos_stdio.h` for private game C sources,
   mapping `printf`, `fprintf`, and `snprintf` to QOS-safe userspace
@@ -36,6 +39,11 @@ make -C programs/game SIGN_KEY=../../keys/dev_ed25519.pem PQ_SIGN_KEY=../../keys
 Full SD build with the private source outside this public repo:
 ```sh
 QF2D_ROOT=/path/to/QuantumFront2D SD_MOUNT=/media/sd bash tools/build_and_copy_sd.sh
+```
+
+If the game entrypoint is renamed later:
+```sh
+QF2D_ROOT=/path/to/QuantumFront2D GAME_ENTRY=new_gui_entry.c SD_MOUNT=/media/sd bash tools/build_and_copy_sd.sh
 ```
 
 The script stages private source under ignored `build/private_game_src`, builds

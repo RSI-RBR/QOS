@@ -10,6 +10,8 @@ extern int qf2d_main(int argc, char** argv);
 void program_main(void){
     char arg0[] = "QF2D";
     char* argv[] = { arg0, 0 };
+
+    qos_puts("QOS game entry: gui_main.c\n");
     int rc = qf2d_main(1, argv);
 
     qos_exit(rc);

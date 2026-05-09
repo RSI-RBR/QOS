@@ -5,8 +5,14 @@ OBJCOPY = $(CROSS)objcopy
 
 PROGRAM_MEMORY_BYTES ?= 16777216
 GAME_SRC_DIR ?= src
-GAME_SOURCES ?= $(wildcard $(GAME_SRC_DIR)/*.c)
+GAME_ENTRY ?= gui_main.c
+GAME_EXCLUDE ?= test_main.c
+GAME_ENTRY_SOURCE = $(GAME_SRC_DIR)/$(GAME_ENTRY)
+GAME_ALL_SOURCES = $(wildcard $(GAME_SRC_DIR)/*.c)
+GAME_EXCLUDE_PATHS = $(addprefix $(GAME_SRC_DIR)/,$(GAME_ENTRY) $(GAME_EXCLUDE))
+GAME_SOURCES ?= $(filter-out $(GAME_EXCLUDE_PATHS),$(GAME_ALL_SOURCES))
 GAME_BUILD_OBJS = $(patsubst $(GAME_SRC_DIR)/%.c,game_%.o,$(GAME_SOURCES))
+GAME_ENTRY_OBJ = game_entry.o
 USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o qos_random.o
 SDL_OBJS = sdl_shim.o
 SIGN_KEY ?=
@@ -14,7 +20,8 @@ PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 
 COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -DQOS_USERSPACE -DQF_QOS_BUILD -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR)
-GAME_CFLAGS = $(COMMON_CFLAGS) -include qos_stdio.h -Dmain=qf2d_main
+GAME_CFLAGS = $(COMMON_CFLAGS) -include qos_stdio.h
+GAME_ENTRY_CFLAGS = $(GAME_CFLAGS) -Dmain=qf2d_main
 QOS_LIB_CFLAGS = $(COMMON_CFLAGS) -DQOS_STDIO_NO_MACROS
 
 all: game.bin
@@ -40,12 +47,16 @@ qos_random.o: ../lib/qos_random.c
 sdl_shim.o: ../sdl_compat/sdl_shim.c
 	$(CC) $(COMMON_CFLAGS) -c ../sdl_compat/sdl_shim.c -o sdl_shim.o
 
+$(GAME_ENTRY_OBJ): $(GAME_ENTRY_SOURCE)
+	$(CC) $(GAME_ENTRY_CFLAGS) -c $< -o $@
+
 game_%.o: $(GAME_SRC_DIR)/%.c
 	$(CC) $(GAME_CFLAGS) -c $< -o $@
 
-game.elf: start.o program_main.o $(USER_LIB_OBJS) $(SDL_OBJS) $(GAME_BUILD_OBJS)
-	@if [ -z "$(GAME_SOURCES)" ]; then echo "No private game sources found in $(GAME_SRC_DIR). Copy QuantumFront2D sources there or pass GAME_SOURCES=..."; exit 1; fi
-	$(LD) -pie -T ../hello/linker.ld start.o program_main.o $(USER_LIB_OBJS) $(SDL_OBJS) $(GAME_BUILD_OBJS) -o game.elf
+game.elf: start.o program_main.o $(USER_LIB_OBJS) $(SDL_OBJS) $(GAME_ENTRY_OBJ) $(GAME_BUILD_OBJS)
+	@if [ ! -f "$(GAME_ENTRY_SOURCE)" ]; then echo "Game entry source not found: $(GAME_ENTRY_SOURCE). Set GAME_ENTRY=... or GAME_SRC_DIR=..."; exit 1; fi
+	@if [ -z "$(GAME_ALL_SOURCES)" ]; then echo "No private game sources found in $(GAME_SRC_DIR). Copy QuantumFront2D sources there or pass GAME_SRC_DIR=..."; exit 1; fi
+	$(LD) -pie -T ../hello/linker.ld start.o program_main.o $(USER_LIB_OBJS) $(SDL_OBJS) $(GAME_ENTRY_OBJ) $(GAME_BUILD_OBJS) -o game.elf
 
 game.raw: game.elf
 	$(OBJCOPY) game.elf -O binary game.raw

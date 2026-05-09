@@ -140,9 +140,9 @@ if [[ -d programs/game && -f programs/game/Makefile ]]; then
     rm -rf "$GAME_BUILD_SRC_DIR"
     mkdir -p "$GAME_BUILD_SRC_DIR/src"
     cp -a "$GAME_SRC_DIR"/. "$GAME_BUILD_SRC_DIR/src/"
-    make -C programs/game clean all GAME_SRC_DIR="../../$GAME_BUILD_SRC_DIR/src" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+    make -C programs/game clean all GAME_SRC_DIR="../../$GAME_BUILD_SRC_DIR/src" GAME_ENTRY="${GAME_ENTRY:-gui_main.c}" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
   else
-    make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+    make -C programs/game clean all GAME_ENTRY="${GAME_ENTRY:-gui_main.c}" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
   fi
 else
   echo "programs/game not present; skipping private game build."
