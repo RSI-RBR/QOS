@@ -10,6 +10,13 @@ keys/
 *.img
 *.dat
 
+AUTH.BIN
+AUTH.SIG
+AUTH.PQS
+
+__pycache__/
+*.pyc
+
 build/
 
 # Private/local game source. Keep commercial game code out of the public QOS repo.
