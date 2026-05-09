@@ -1,5 +1,6 @@
 #include "usb_host.h"
 #include "uart.h"
+#include "terminal.h"
 
 #define USBHOST_VERBOSE 0
 #if USBHOST_VERBOSE == 0
@@ -154,6 +155,10 @@
 #define USB_HID_ACTIVE_POLL_MS 4u
 #define USB_HID_IDLE_POLL_MS 32u
 #define USB_HID_ACTIVE_HOLD_MS 250u
+#define USB_HID_MOD_LEFT_ALT  0x04u
+#define USB_HID_MOD_RIGHT_ALT 0x40u
+#define USB_HID_KEY_RIGHT_ARROW 0x4Fu
+#define USB_HID_KEY_LEFT_ARROW  0x50u
 
 // USB 2.0 Hub class requests/features.
 #define HUB_REQ_GET_STATUS      0x00u
@@ -408,6 +413,7 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
     }
 
     int shift = (report[0] & 0x22u) ? 1 : 0;
+    int alt = (report[0] & (USB_HID_MOD_LEFT_ALT | USB_HID_MOD_RIGHT_ALT)) ? 1 : 0;
     for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
         unsigned char key = report[i];
         if (key == 0u){
@@ -417,6 +423,14 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
             continue;
         }
         if (g_kbd.have_prev_report && usb_hid_key_present(g_kbd.prev_report, key)){
+            continue;
+        }
+        if (alt && key == USB_HID_KEY_LEFT_ARROW){
+            (void)terminal_cycle_display_session(-1);
+            continue;
+        }
+        if (alt && key == USB_HID_KEY_RIGHT_ARROW){
+            (void)terminal_cycle_display_session(1);
             continue;
         }
         unsigned char ascii = usb_hid_keycode_to_ascii(key, shift);

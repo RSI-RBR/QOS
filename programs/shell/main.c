@@ -585,11 +585,15 @@ static void cmd_chvt(unsigned int id){
         qos_puts("Usage: chvt <0-3>\n");
         return;
     }
-    if (qos_term_switch((int)id) != 0){
+    if (qos_display_switch_session(id) != 0){
         qos_puts("chvt failed.\n");
         return;
     }
-    qos_puts("Switched to tty");
+    if (id == 0u){
+        qos_puts("Switched to tty0.\n");
+        return;
+    }
+    qos_puts("Switched to gfx");
     print_uint(id);
     qos_puts(".\n");
 }

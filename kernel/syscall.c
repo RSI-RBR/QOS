@@ -286,6 +286,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_RUN_PROGRAM_NAMED:
         case SYS_DISPLAY_CREATE_GRAPHICS:
         case SYS_DISPLAY_SWITCH_GRAPHICS:
+        case SYS_DISPLAY_SWITCH_SESSION:
         case SYS_TTY_SET_OWNER:
         case SYS_TTY_RELEASE:
         case SYS_TTY_GET_OWNER:
@@ -520,6 +521,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             frame[TF_X0] = (unsigned long)display_set_active_for_pid(target);
+            return frame_sp;
+        }
+
+        case SYS_DISPLAY_SWITCH_SESSION: {
+            int pid = process_current_pid();
+            int session_id = (int)frame[TF_X0];
+            int rc = terminal_switch_display_session(session_id);
+            if (rc == 0 && session_id == DISPLAY_TEXT_SESSION_ID && pid >= 0){
+                (void)terminal_attach_pid(pid, 0);
+                (void)terminal_set_foreground_pid(0, pid);
+                (void)console_set_owner(pid, pid);
+            }
+            frame[TF_X0] = (unsigned long)rc;
             return frame_sp;
         }
 

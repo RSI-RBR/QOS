@@ -91,7 +91,8 @@ enum {
     SYS_DMA_LAST_DEBUG = 74,
     SYS_SECURITY_LOG_DUMP = 75,
     SYS_DISPLAY_CREATE_GRAPHICS = 76,
-    SYS_DISPLAY_SWITCH_GRAPHICS = 77
+    SYS_DISPLAY_SWITCH_GRAPHICS = 77,
+    SYS_DISPLAY_SWITCH_SESSION = 78
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -246,6 +247,10 @@ static inline int qos_display_create_graphics(int pid){
 
 static inline int qos_display_switch_graphics(int pid){
     return (int)qos_syscall1(SYS_DISPLAY_SWITCH_GRAPHICS, (unsigned long)pid);
+}
+
+static inline int qos_display_switch_session(unsigned int session_id){
+    return (int)qos_syscall1(SYS_DISPLAY_SWITCH_SESSION, (unsigned long)session_id);
 }
 
 static inline int qos_tty_set_owner(int pid){

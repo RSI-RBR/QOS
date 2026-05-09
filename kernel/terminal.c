@@ -590,6 +590,46 @@ int terminal_set_active(int id){
     return 0;
 }
 
+int terminal_switch_display_session(int id){
+    if (id == DISPLAY_TEXT_SESSION_ID){
+        return terminal_set_active(0);
+    }
+
+    display_session_t info;
+    if (display_get_info(id, &info) != 0 || info.type != DISPLAY_GRAPHICS){
+        return -1;
+    }
+    return display_set_active(id);
+}
+
+int terminal_cycle_display_session(int direction){
+    int active = display_get_active();
+    int dir = (direction < 0) ? -1 : 1;
+    if (active < 0 || active >= DISPLAY_MAX_SESSIONS){
+        active = DISPLAY_TEXT_SESSION_ID;
+    }
+
+    for (int i = 0; i < DISPLAY_MAX_SESSIONS; i++){
+        int next = active + dir;
+        if (next < 0){
+            next = DISPLAY_MAX_SESSIONS - 1;
+        } else if (next >= DISPLAY_MAX_SESSIONS){
+            next = 0;
+        }
+        active = next;
+
+        if (next == DISPLAY_TEXT_SESSION_ID){
+            return terminal_switch_display_session(next);
+        }
+
+        display_session_t info;
+        if (display_get_info(next, &info) == 0 && info.type == DISPLAY_GRAPHICS){
+            return display_set_active(next);
+        }
+    }
+    return -1;
+}
+
 unsigned int terminal_get_active_output(void){
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(g_active_term);

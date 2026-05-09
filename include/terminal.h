@@ -26,6 +26,8 @@ int terminal_try_getc_for_pid(int pid, char* out);
 int terminal_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source);
 int terminal_get_active(void);
 int terminal_set_active(int id);
+int terminal_switch_display_session(int id);
+int terminal_cycle_display_session(int direction);
 unsigned int terminal_get_active_output(void);
 int terminal_set_active_output(unsigned int flags);
 
