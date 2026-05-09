@@ -484,6 +484,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
 void terminal_poll_inputs(void){
     int term_id = -1;
     int pid = -1;
+    int owner = console_get_owner();
     char c = 0;
     unsigned int src = 0;
 
@@ -491,6 +492,13 @@ void terminal_poll_inputs(void){
     term_id = g_active_term;
     if (terminal_valid_id(term_id)){
         pid = g_terms[term_id].foreground_pid;
+        if (owner >= 0 &&
+            owner < TERM_PID_MAP_MAX &&
+            g_pid_term[owner] == (signed char)term_id &&
+            pid != owner){
+            g_terms[term_id].foreground_pid = owner;
+            pid = owner;
+        }
     }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
 
@@ -515,8 +523,17 @@ int terminal_read(int term_id, int pid, char* out, unsigned int* out_source){
 
     terminal_poll_inputs();
 
+    int owner = console_get_owner();
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
+    if (term &&
+        pid >= 0 &&
+        pid < TERM_PID_MAP_MAX &&
+        owner == pid &&
+        g_pid_term[pid] == (signed char)term_id &&
+        term->foreground_pid != pid){
+        term->foreground_pid = pid;
+    }
     if (!term ||
         pid < 0 ||
         pid >= TERM_PID_MAP_MAX ||
