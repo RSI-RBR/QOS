@@ -9,8 +9,9 @@ How it works:
 - Desktop SDL code usually enters through `main(int argc, char** argv)`.
 - The Makefile compiles private game sources with `-Dmain=qf2d_main`.
 - `program_main.c` calls `qf2d_main(1, argv)` and then exits through QOS.
-- The Makefile force-includes `qos_stdio.h`, mapping `printf`, `fprintf`,
-  and `snprintf` to QOS-safe userspace logging/formatting functions.
+- The Makefile force-includes `qos_stdio.h` for private game C sources,
+  mapping `printf`, `fprintf`, and `snprintf` to QOS-safe userspace
+  logging/formatting functions.
 - Desktop `FILE*` reads are stubbed for now. Missing text files behave like
   EOF, while `/dev/urandom` returns lightweight pseudo-random bytes so early map
   generation code does not read uninitialized data.
