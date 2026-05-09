@@ -13,6 +13,7 @@ enum {
 
 static int g_backend = BACKEND_NONE;
 static int g_emmc_reserved_for_wifi = 0;
+static int g_emmc_multiblock_disabled = 0;
 
 const char* blockdev_name(void){
     if (g_backend == BACKEND_EMMC) return "emmc";
@@ -25,6 +26,7 @@ int blockdev_init(void){
         gpio_init_emmc();
         if (emmc_init() == 0){
             g_backend = BACKEND_EMMC;
+            g_emmc_multiblock_disabled = 0;
             uart_puts("Blockdev: EMMC active\n");
             return 0;
         }
@@ -69,7 +71,11 @@ int blockdev_reinit(void){
 
     if (g_backend == BACKEND_EMMC){
         gpio_init_emmc();
-        return emmc_init();
+        if (emmc_init() == 0){
+            g_emmc_multiblock_disabled = 0;
+            return 0;
+        }
+        return -1;
     }
     if (g_backend == BACKEND_SDHOST){
         gpio_init_sd();
@@ -84,6 +90,7 @@ int blockdev_reinit_emmc(void){
     gpio_init_emmc();
     if (emmc_init() == 0){
         g_backend = BACKEND_EMMC;
+        g_emmc_multiblock_disabled = 0;
         return 0;
     }
     g_backend = BACKEND_NONE;
@@ -105,4 +112,31 @@ int blockdev_read_block(unsigned int lba, unsigned char *buffer){
         return sdhost_read_block(lba, buffer);
     }
     return -1;
+}
+
+int blockdev_read_blocks(unsigned int lba, unsigned int count, unsigned char *buffer){
+    if (!buffer || count == 0u){
+        return -1;
+    }
+    if (count == 1u){
+        return blockdev_read_block(lba, buffer);
+    }
+
+    if (g_backend == BACKEND_EMMC){
+        if (!g_emmc_multiblock_disabled){
+            if (emmc_read_blocks(lba, count, buffer) == 0){
+                return 0;
+            }
+            g_emmc_multiblock_disabled = 1;
+        }
+        // Hardware multi-block is an optimization; preserve the known-good
+        // single-block path if a card/controller rejects CMD18.
+    }
+
+    for (unsigned int i = 0u; i < count; i++){
+        if (blockdev_read_block(lba + i, buffer + (i * 512u)) != 0){
+            return -1;
+        }
+    }
+    return 0;
 }

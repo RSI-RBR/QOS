@@ -7,15 +7,66 @@
 #define MAX_CLUSTER_SIZE (64 * 1024)
 #define FAT_LFN_ATTR 0x0F
 #define FAT_LFN_MAX_CHARS 128
+#define FAT_SECTOR_CACHE_ENTRIES 128
 
 
 static unsigned int fat_start;
 static unsigned int data_start;
 static unsigned int sectors_per_cluster;
 static unsigned int root_cluster;
+static int fat_initialized;
 
 static unsigned char sector[SECTOR_SIZE] __attribute__((aligned(4096)));
 static unsigned char cluster_buf[MAX_CLUSTER_SIZE];
+
+typedef struct fat_sector_cache_entry {
+    unsigned int valid;
+    unsigned int lba;
+    unsigned char data[SECTOR_SIZE];
+} fat_sector_cache_entry_t;
+
+static fat_sector_cache_entry_t sector_cache[FAT_SECTOR_CACHE_ENTRIES] __attribute__((aligned(64)));
+
+static void fat_cache_reset(void){
+    for (unsigned int i = 0u; i < FAT_SECTOR_CACHE_ENTRIES; i++){
+        sector_cache[i].valid = 0u;
+        sector_cache[i].lba = 0u;
+    }
+}
+
+static void fat_copy(unsigned char* dst, const unsigned char* src, unsigned int len){
+    for (unsigned int i = 0u; i < len; i++){
+        dst[i] = src[i];
+    }
+}
+
+static int fat_read_sector_cached(unsigned int lba, unsigned char* out){
+    fat_sector_cache_entry_t* slot;
+
+    if (!out){
+        return -1;
+    }
+
+    for (unsigned int i = 0u; i < FAT_SECTOR_CACHE_ENTRIES; i++){
+        if (sector_cache[i].valid && sector_cache[i].lba == lba){
+            fat_copy(out, sector_cache[i].data, SECTOR_SIZE);
+            return 0;
+        }
+    }
+
+    slot = &sector_cache[lba % FAT_SECTOR_CACHE_ENTRIES];
+    if (blockdev_read_block(lba, slot->data)){
+        slot->valid = 0u;
+        return -1;
+    }
+    barrier();
+
+    slot->lba = lba;
+    slot->valid = 1u;
+    fat_copy(out, slot->data, SECTOR_SIZE);
+    return 0;
+}
+
 static void fat_spin_delay(unsigned int count){
     while (count--){
         asm volatile("nop");
@@ -31,6 +82,12 @@ static unsigned short read16(unsigned char *p){
 }
 
 int fat32_init(void){
+    if (fat_initialized){
+        return 0;
+    }
+
+    fat_cache_reset();
+
     // Read MBR
     if (blockdev_read_block(0, sector)){
         uart_puts("FAT: failed to read MBR\n");
@@ -119,6 +176,7 @@ int fat32_init(void){
 
         fat_start = partition_lba + reserved;
         data_start = fat_start + (fats * sectors_per_fat);
+        fat_initialized = 1;
         return 0;
     }
 
@@ -351,7 +409,7 @@ static void lfn_apply_entry(const unsigned char* entry, char* lfn, int* valid){
 static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
     for (unsigned int i = 0; i < sectors_per_cluster; i++){
-        if (blockdev_read_block(lba + i, buffer + i * SECTOR_SIZE)){
+        if (fat_read_sector_cached(lba + i, buffer + i * SECTOR_SIZE)){
             uart_puts("FAT read_cluster fail cl=");
             uart_puthex(cluster);
             uart_puts(" lba=");
@@ -368,7 +426,7 @@ static unsigned int fat_next(unsigned int cluster){
     unsigned int fat_sector = fat_start + (fat_offset / SECTOR_SIZE);
     unsigned int offset = fat_offset % SECTOR_SIZE;
 
-    if (blockdev_read_block(fat_sector, sector)){
+    if (fat_read_sector_cached(fat_sector, sector)){
         uart_puts("FAT fat_next read fail cl=");
         uart_puthex(cluster);
         uart_puts(" fatsec=");
@@ -378,6 +436,107 @@ static unsigned int fat_next(unsigned int cluster){
     }
 
     return read32(&sector[offset]) & 0x0FFFFFFF;
+}
+
+static unsigned int cluster_lba(unsigned int cluster){
+    return data_start + (cluster - 2u) * sectors_per_cluster;
+}
+
+static int read_cluster_run_to_buffer(unsigned int first_cluster,
+                                      unsigned int run_clusters,
+                                      unsigned char* buffer,
+                                      unsigned int bytes){
+    unsigned int lba;
+    unsigned int full_sectors;
+    unsigned int tail;
+
+    if (!buffer || first_cluster < 2u || run_clusters == 0u || bytes == 0u){
+        return -1;
+    }
+
+    lba = cluster_lba(first_cluster);
+    full_sectors = bytes / SECTOR_SIZE;
+    tail = bytes % SECTOR_SIZE;
+
+    if (full_sectors > 0u){
+        if (blockdev_read_blocks(lba, full_sectors, buffer) != 0){
+            return -1;
+        }
+    }
+    if (tail > 0u){
+        if (fat_read_sector_cached(lba + full_sectors, sector) != 0){
+            return -1;
+        }
+        fat_copy(buffer + (full_sectors * SECTOR_SIZE), sector, tail);
+    }
+
+    return 0;
+}
+
+static int read_file_cluster_chain(unsigned int first_cluster,
+                                   unsigned int size,
+                                   unsigned char* buffer,
+                                   int max_size){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = first_cluster;
+    unsigned int copied = 0u;
+
+    if (!buffer || first_cluster < 2u || max_size <= 0 || size > (unsigned int)max_size){
+        return -1;
+    }
+    if (cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        uart_puts("Cluster too big.\n");
+        return -1;
+    }
+
+    while (cluster < 0x0FFFFFF8u && copied < size){
+        unsigned int remaining = size - copied;
+        unsigned int max_clusters = (remaining + cluster_size - 1u) / cluster_size;
+        unsigned int run_clusters = 1u;
+        unsigned int next_after_run = 0x0FFFFFFFu;
+
+        while (run_clusters < max_clusters){
+            unsigned int current = cluster + run_clusters - 1u;
+            unsigned int next = fat_next(current);
+            if (next == cluster + run_clusters){
+                run_clusters++;
+                continue;
+            }
+            next_after_run = next;
+            break;
+        }
+
+        unsigned int run_bytes = run_clusters * cluster_size;
+        if (run_bytes > remaining){
+            run_bytes = remaining;
+        }
+
+        if (read_cluster_run_to_buffer(cluster, run_clusters, buffer + copied, run_bytes) != 0){
+            uart_puts("FAT file run read fail cl=");
+            uart_puthex(cluster);
+            uart_puts(" copied=");
+            uart_puthex(copied);
+            uart_puts("\n");
+            return -1;
+        }
+        copied += run_bytes;
+
+        if (copied >= size){
+            break;
+        }
+
+        if (next_after_run >= 0x0FFFFFF8u){
+            uart_puts("FAT file chain ended early copied=");
+            uart_puthex(copied);
+            uart_puts(" size=");
+            uart_puthex(size);
+            uart_puts("\n");
+            return -1;
+        }
+        cluster = next_after_run;
+    }
+
+    return (copied == size) ? (int)copied : -1;
 }
 
 static int find_entry_in_dir(unsigned int start_cluster,
@@ -540,40 +699,7 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
                     return -1;
                 }
 
-                unsigned int copied = 0;
-
-                while (first_cluster < 0x0FFFFFF8 && copied < size){
-                    if (read_cluster(first_cluster, cluster_buf)){
-                        uart_puts("FAT file cluster read fail cl=");
-                        uart_puthex(first_cluster);
-                        uart_puts(" copied=");
-                        uart_puthex(copied);
-                        uart_puts("\n");
-                        return -1;
-                    }
-                    unsigned int to_copy = cluster_size;
-                    if (to_copy > (size - copied)){
-                        to_copy = size - copied;
-                    }
-                    if (to_copy > ((unsigned int)max_size - copied)){
-                        to_copy = (unsigned int)max_size - copied;
-                    }
-                    for (int j = 0; j < to_copy; j++){
-                        buffer[copied++] = cluster_buf[j];
-                    }
-                    if (copied < size){
-                        first_cluster = fat_next(first_cluster);
-                        if (first_cluster >= 0x0FFFFFF8 && copied < size){
-                            uart_puts("FAT file chain ended early copied=");
-                            uart_puthex(copied);
-                            uart_puts(" size=");
-                            uart_puthex(size);
-                            uart_puts("\n");
-                        }
-                    }
-                }
-
-                return copied;
+                return read_file_cluster_chain(first_cluster, size, buffer, max_size);
             }
         }
 
@@ -671,33 +797,10 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
         }
 
         unsigned int file_cluster = entry_first_cluster(entry);
-        unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
-        unsigned int copied = 0;
         if (file_cluster < 2){
             return -1;
         }
-        if (cluster_size > MAX_CLUSTER_SIZE){
-            uart_puts("Cluster too big.\n");
-            return -1;
-        }
-
-        while (file_cluster < 0x0FFFFFF8 && copied < size){
-            if (read_cluster(file_cluster, cluster_buf)){
-                return -1;
-            }
-            unsigned int to_copy = cluster_size;
-            if (to_copy > (size - copied)){
-                to_copy = size - copied;
-            }
-            for (unsigned int j = 0; j < to_copy; j++){
-                buffer[copied++] = cluster_buf[j];
-            }
-            if (copied < size){
-                file_cluster = fat_next(file_cluster);
-            }
-        }
-
-        return (copied == size) ? (int)copied : -1;
+        return read_file_cluster_chain(file_cluster, size, buffer, max_size);
     }
 
     return -1;

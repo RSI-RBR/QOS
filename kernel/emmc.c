@@ -53,7 +53,9 @@
 #define CMD_TYPE_ABORT    (3u << 22)
 
 #define TM_BLKCNT_EN      (1u << 1)
+#define TM_AUTO_CMD12     (1u << 2)
 #define TM_DAT_DIR_CH     (1u << 4)
+#define TM_MULTI_BLOCK    (1u << 5)
 
 static unsigned int g_rca = 0;
 static int g_sdhc = 0;
@@ -387,6 +389,83 @@ int emmc_read_block(unsigned int lba, unsigned char *buffer){
         }
 
         return 0;
+    }
+
+    return -1;
+}
+
+int emmc_read_blocks(unsigned int lba, unsigned int count, unsigned char *buffer){
+    unsigned int addr;
+    unsigned int irpt;
+
+    if (!buffer || count == 0u){
+        return -1;
+    }
+    if (count == 1u){
+        return emmc_read_block(lba, buffer);
+    }
+    if (count > 0xFFFFu){
+        return -1;
+    }
+
+    for (int attempt = 0; attempt < 3; attempt++){
+        if (emmc_ensure_data_mode() != 0){
+            emmc_reset_cmd_line();
+            emmc_reset_dat_line();
+            continue;
+        }
+
+        addr = g_sdhc ? lba : (lba * 512u);
+        EMMC_BLKSIZECNT = (count << 16) | 512u;
+
+        if (emmc_cmd(18, addr,
+                     CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN |
+                     CMD_ISDATA | TM_DAT_DIR_CH | TM_BLKCNT_EN |
+                     TM_MULTI_BLOCK | TM_AUTO_CMD12,
+                     500) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+
+        for (unsigned int block = 0u; block < count; block++){
+            if (wait_irq(INT_READ_RDY, 500, &irpt) != 0){
+                emmc_stop_transmission();
+                goto retry;
+            }
+            EMMC_INTERRUPT = (irpt & (INT_READ_RDY | INT_ERROR_MASK | INT_ERR));
+            if (irpt & (INT_ERROR_MASK | INT_ERR)){
+                emmc_stop_transmission();
+                goto retry;
+            }
+
+            unsigned char* out = buffer + (block * 512u);
+            for (int i = 0; i < 128; i++){
+                unsigned int d = EMMC_DATA;
+                out[i * 4 + 0] = (unsigned char)(d & 0xFFu);
+                out[i * 4 + 1] = (unsigned char)((d >> 8) & 0xFFu);
+                out[i * 4 + 2] = (unsigned char)((d >> 16) & 0xFFu);
+                out[i * 4 + 3] = (unsigned char)((d >> 24) & 0xFFu);
+            }
+        }
+
+        if (wait_irq(INT_DATA_DONE, 500, &irpt) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+        EMMC_INTERRUPT = (irpt & (INT_DATA_DONE | INT_ERROR_MASK | INT_ERR));
+        if (irpt & (INT_ERROR_MASK | INT_ERR)){
+            emmc_stop_transmission();
+            continue;
+        }
+        if (wait_status_clear(SR_DAT_INHIBIT, 500) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+
+        return 0;
+
+retry:
+        continue;
     }
 
     return -1;
