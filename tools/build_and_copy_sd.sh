@@ -13,6 +13,7 @@ CA_BUNDLE_SRC="${CA_BUNDLE_SRC:-build/ca/ca_roots_consensus.pem}"
 CA_REPORT_SRC="${CA_REPORT_SRC:-build/ca/ca_roots_consensus_report.json}"
 CA_SIGNER_KEY_ID="${CA_SIGNER_KEY_ID:-0x1}"
 AUTH_SRC="${AUTH_SRC:-AUTH.BIN}"
+REQUIRE_AUTH="${REQUIRE_AUTH:-1}"
 AUTH_SIGNER_KEY_ID="${AUTH_SIGNER_KEY_ID:-0x00010001}"
 AUTH_SIGN_KEY="${AUTH_SIGN_KEY:-}"
 AUTH_PQ_SIGN_KEY="${AUTH_PQ_SIGN_KEY:-}"
@@ -63,6 +64,14 @@ if [[ -z "$AUTH_SIGN_KEY" ]]; then
 fi
 if [[ -z "$AUTH_PQ_SIGN_KEY" ]]; then
   AUTH_PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY"
+fi
+if [[ ! -f "$AUTH_SRC" && "$REQUIRE_AUTH" != "0" ]]; then
+  echo "Required AUTH.BIN not found: $AUTH_SRC"
+  echo "Create it first, for example:"
+  echo "  python3 tools/gen_auth_blob.py --username admin --password 'change-me' --out AUTH.BIN"
+  echo "Then rerun this build/copy script so AUTH.BIN, AUTH.SIG, and AUTH.PQS are copied."
+  echo "Set REQUIRE_AUTH=0 only for explicit recovery/debug builds."
+  exit 1
 fi
 if [[ -f "$AUTH_SRC" ]]; then
   if [[ ! -f "$AUTH_SIGN_KEY" ]]; then

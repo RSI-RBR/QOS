@@ -304,7 +304,11 @@ void kernel_main(void){
     }
 
     if (auth_init() != 0){
-        klog_puts("AUTH init failed; remote login disabled.\n");
+        klog_puts("AUTH init failed; local shell + remote login disabled.\n");
+        klog_puts("Boot security policy: signed AUTH.BIN/AUTH.SIG/AUTH.PQS required.\n");
+        while (1){
+            asm volatile("wfi");
+        }
     } else{
         (void)remote_login_init();
     }
