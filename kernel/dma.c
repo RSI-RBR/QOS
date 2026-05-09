@@ -58,7 +58,7 @@ static void dma_barrier(void){
 
 static unsigned int dma_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
-    return (unsigned int)((addr & ~0xC0000000UL) | DMA_BUS_UNCACHED_BASE);
+    return (unsigned int)((addr & 0x3FFFFFFFUL) | DMA_BUS_UNCACHED_BASE);
 }
 
 static void dma_reset_channel(void){
@@ -100,8 +100,11 @@ void dma_set_enabled(int enabled){
     dma_init();
     unsigned long irq = spin_lock_irqsave(&g_dma_lock);
     if (enabled){
+        dma_reset_channel();
         g_dma_disabled = 0;
         g_dma_enabled = 1;
+        g_dma_last_cs = 0;
+        g_dma_last_debug = 0;
     } else{
         g_dma_enabled = 0;
         dma_reset_channel();
