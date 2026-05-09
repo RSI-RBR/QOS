@@ -47,6 +47,160 @@ static void print_ms_3(unsigned long us){
     print_u32(ms_frac);
 }
 
+static unsigned char hud_glyph_row(char c, unsigned int row){
+    if (row >= 5u){
+        return 0;
+    }
+
+    switch (c){
+        case '0': { static const unsigned char r[5] = {7, 5, 5, 5, 7}; return r[row]; }
+        case '1': { static const unsigned char r[5] = {2, 6, 2, 2, 7}; return r[row]; }
+        case '2': { static const unsigned char r[5] = {7, 1, 7, 4, 7}; return r[row]; }
+        case '3': { static const unsigned char r[5] = {7, 1, 7, 1, 7}; return r[row]; }
+        case '4': { static const unsigned char r[5] = {5, 5, 7, 1, 1}; return r[row]; }
+        case '5': { static const unsigned char r[5] = {7, 4, 7, 1, 7}; return r[row]; }
+        case '6': { static const unsigned char r[5] = {7, 4, 7, 5, 7}; return r[row]; }
+        case '7': { static const unsigned char r[5] = {7, 1, 1, 2, 2}; return r[row]; }
+        case '8': { static const unsigned char r[5] = {7, 5, 7, 5, 7}; return r[row]; }
+        case '9': { static const unsigned char r[5] = {7, 5, 7, 1, 7}; return r[row]; }
+        case 'F': { static const unsigned char r[5] = {7, 4, 6, 4, 4}; return r[row]; }
+        case 'P': { static const unsigned char r[5] = {6, 5, 6, 4, 4}; return r[row]; }
+        case 'S': { static const unsigned char r[5] = {7, 4, 7, 1, 7}; return r[row]; }
+        case 'M': { static const unsigned char r[5] = {5, 7, 7, 5, 5}; return r[row]; }
+        case 'O': { static const unsigned char r[5] = {7, 5, 5, 5, 7}; return r[row]; }
+        case 'U': { static const unsigned char r[5] = {5, 5, 5, 5, 7}; return r[row]; }
+        case 'E': { static const unsigned char r[5] = {7, 4, 6, 4, 7}; return r[row]; }
+        case ':': { static const unsigned char r[5] = {0, 2, 0, 2, 0}; return r[row]; }
+        case '.': { static const unsigned char r[5] = {0, 0, 0, 0, 2}; return r[row]; }
+        default:
+            return 0;
+    }
+}
+
+#define HUD_W 300u
+#define HUD_H 32u
+
+static unsigned char g_hud_rgba[HUD_W * HUD_H * 4u] = {1u};
+
+static void hud_put_pixel(unsigned int x,
+                          unsigned int y,
+                          unsigned int r,
+                          unsigned int g,
+                          unsigned int b,
+                          unsigned int a){
+    if (x >= HUD_W || y >= HUD_H){
+        return;
+    }
+    unsigned int i = ((y * HUD_W) + x) * 4u;
+    g_hud_rgba[i + 0u] = (unsigned char)r;
+    g_hud_rgba[i + 1u] = (unsigned char)g;
+    g_hud_rgba[i + 2u] = (unsigned char)b;
+    g_hud_rgba[i + 3u] = (unsigned char)a;
+}
+
+static void hud_fill_rect(unsigned int x,
+                          unsigned int y,
+                          unsigned int w,
+                          unsigned int h,
+                          unsigned int r,
+                          unsigned int g,
+                          unsigned int b,
+                          unsigned int a){
+    for (unsigned int py = 0; py < h; py++){
+        for (unsigned int px = 0; px < w; px++){
+            hud_put_pixel(x + px, y + py, r, g, b, a);
+        }
+    }
+}
+
+static void hud_clear_buffer(void){
+    for (unsigned int i = 0; i < sizeof(g_hud_rgba); i += 4u){
+        g_hud_rgba[i + 0u] = 0u;
+        g_hud_rgba[i + 1u] = 0u;
+        g_hud_rgba[i + 2u] = 0u;
+        g_hud_rgba[i + 3u] = 255u;
+    }
+}
+
+static unsigned int hud_draw_char_to_buffer(unsigned int x,
+                                            unsigned int y,
+                                            char c,
+                                            unsigned int scale){
+    if (c == ' '){
+        return 4u * scale;
+    }
+    for (unsigned int row = 0; row < 5u; row++){
+        unsigned char bits = hud_glyph_row(c, row);
+        for (unsigned int col = 0; col < 3u; col++){
+            if (bits & (1u << (2u - col))){
+                hud_fill_rect(x + (col * scale),
+                              y + (row * scale),
+                              scale,
+                              scale,
+                              0u,
+                              255u,
+                              102u,
+                              255u);
+            }
+        }
+    }
+    return 4u * scale;
+}
+
+static unsigned int hud_draw_text(unsigned int x,
+                                  unsigned int y,
+                                  const char* s,
+                                  unsigned int scale){
+    while (*s){
+        x += hud_draw_char_to_buffer(x, y, *s, scale);
+        s++;
+    }
+    return x;
+}
+
+static unsigned int hud_draw_u32(unsigned int x,
+                                 unsigned int y,
+                                 unsigned long v,
+                                 unsigned int scale){
+    char tmp[16];
+    int n = 0;
+    if (v == 0){
+        return x + hud_draw_char_to_buffer(x, y, '0', scale);
+    }
+    while (v > 0 && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10UL));
+        v /= 10UL;
+    }
+    while (n > 0){
+        x += hud_draw_char_to_buffer(x, y, tmp[--n], scale);
+    }
+    return x;
+}
+
+static unsigned int hud_draw_fixed_1(unsigned int x,
+                                     unsigned int y,
+                                     unsigned long value_x10,
+                                     unsigned int scale){
+    x = hud_draw_u32(x, y, value_x10 / 10UL, scale);
+    x += hud_draw_char_to_buffer(x, y, '.', scale);
+    x = hud_draw_u32(x, y, value_x10 % 10UL, scale);
+    return x;
+}
+
+static void hud_draw(unsigned long fps_x10, unsigned long mouse_hz){
+    const unsigned int scale = 4u;
+    const unsigned int x = 4u;
+    const unsigned int y = 4u;
+    unsigned int cx;
+
+    hud_clear_buffer();
+    cx = hud_draw_text(x, y, "FPS:", scale);
+    cx = hud_draw_fixed_1(cx, y, fps_x10, scale);
+    cx = hud_draw_text(cx + (2u * scale), y, "MOUSE:", scale);
+    (void)hud_draw_u32(cx, y, mouse_hz, scale);
+    (void)qos_fb_blit_rgba(4u, 4u, HUD_W, HUD_H, g_hud_rgba);
+}
+
 void program_main(void){
 //    qos_puts("Hello from external program!\n");
 
@@ -82,9 +236,20 @@ void program_main(void){
     unsigned long max_frame_us = 0;
     const unsigned long report_every = 120;
     int reporter = (pid == 1);
+    unsigned long hud_start_us = qos_get_time_us();
+    unsigned long hud_frames = 0;
+    unsigned long hud_mouse_moves = 0;
+    unsigned long hud_fps_x10 = 0;
+    unsigned long hud_mouse_hz = 0;
 
     while (running){
         unsigned long t0 = qos_get_counter_cycles();
+        qos_event_t ev;
+        while (qos_poll_event(&ev) > 0){
+            if (ev.type == QOS_EVENT_MOUSE_MOVE){
+                hud_mouse_moves++;
+            }
+        }
 //        api->clear(0x00000000);
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
         int nx = cube.lx + cube.vx;
@@ -111,6 +276,18 @@ void program_main(void){
 
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
         unsigned long t2 = qos_get_counter_cycles();
+
+        hud_frames++;
+        unsigned long hud_now_us = qos_get_time_us();
+        unsigned long hud_window_us = hud_now_us - hud_start_us;
+        if (hud_window_us >= 500000UL){
+            hud_fps_x10 = (hud_frames * 10000000UL) / hud_window_us;
+            hud_mouse_hz = (hud_mouse_moves * 1000000UL) / hud_window_us;
+            hud_frames = 0;
+            hud_mouse_moves = 0;
+            hud_start_us = hud_now_us;
+        }
+        hud_draw(hud_fps_x10, hud_mouse_hz);
 
         qos_fb_present();
         unsigned long t3 = qos_get_counter_cycles();
