@@ -9,6 +9,7 @@ static FILE g_stdout_file = {1, 0, 0};
 static FILE g_stderr_file = {2, 0, 0};
 static FILE g_urandom_file = {3, 0, 0};
 static unsigned int g_prng_state = 0x514F5331u;
+static char g_printf_buf[QOS_STDIO_PRINTF_BUF];
 
 FILE* const qos_stdin = QOS_STDIN_HANDLE;
 FILE* const qos_stdout = QOS_STDOUT_HANDLE;
@@ -370,9 +371,8 @@ int qos_snprintf(char* out, size_t cap, const char* fmt, ...){
 }
 
 int qos_vprintf(const char* fmt, va_list ap){
-    char buf[QOS_STDIO_PRINTF_BUF];
-    int n = qos_vsnprintf(buf, sizeof(buf), fmt, ap);
-    qos_puts(buf);
+    int n = qos_vsnprintf(g_printf_buf, sizeof(g_printf_buf), fmt, ap);
+    qos_puts(g_printf_buf);
     return n;
 }
 

@@ -307,7 +307,6 @@ static int lfn_copy_char(char* lfn, unsigned int offset, unsigned short ch){
         return -1;
     }
     lfn[offset] = (char)(ch & 0xFFu);
-    lfn[offset + 1u] = 0;
     return 0;
 }
 
