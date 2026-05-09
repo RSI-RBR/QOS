@@ -538,6 +538,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_INPUT_POLL_EVENT: {
             qos_event_t ev;
             int pid = process_current_pid();
+            static unsigned int input_poll_round_robin = 0u;
             if (!frame[TF_X0] || !display_is_active_graphics_pid(pid)){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
@@ -550,8 +551,28 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
 
-            usb_host_poll();
+            int mouse_first = ((input_poll_round_robin++ & 1u) == 0u) ? 1 : 0;
+            if (!mouse_first){
+                usb_host_poll();
+                if (usb_host_poll_event(&ev)){
+                    frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
+                                                         &ev,
+                                                         sizeof(ev)) == 0) ? 1ul : (unsigned long)-1;
+                    return frame_sp;
+                }
+            }
+
             usb_host_poll_mouse();
+            if (usb_host_poll_event(&ev)){
+                frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
+                                                     &ev,
+                                                     sizeof(ev)) == 0) ? 1ul : (unsigned long)-1;
+                return frame_sp;
+            }
+
+            if (mouse_first){
+                usb_host_poll();
+            }
             if (!usb_host_poll_event(&ev)){
                 frame[TF_X0] = 0;
                 return frame_sp;

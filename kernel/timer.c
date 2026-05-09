@@ -11,9 +11,20 @@
 void timer_init(void){
     unsigned int core = cpu_get_id();
     unsigned long freq;
+    unsigned long cntkctl;
     asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
 
     unsigned long interval = freq / 1000;
+
+    /*
+     * User programs use the architectural counter for high-resolution frame
+     * pacing. Let EL0 read CNTPCT_EL0 directly so game loops do not need a
+     * syscall for every sub-millisecond timing check.
+     */
+    asm volatile("mrs %0, cntkctl_el1" : "=r"(cntkctl));
+    cntkctl |= 1u; // EL0PCTEN: allow EL0 physical counter reads.
+    asm volatile("msr cntkctl_el1, %0" : : "r"(cntkctl) : "memory");
+    asm volatile("isb");
 
     // Route EL1 physical timer interrupt to this core's IRQ path.
     CORE_TIMER_IRQCNTL(core) |= CORE_CNTPNSIRQ;

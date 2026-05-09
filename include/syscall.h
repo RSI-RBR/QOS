@@ -360,11 +360,15 @@ static inline unsigned long qos_get_ticks(void){
 }
 
 static inline unsigned long qos_get_counter_hz(void){
-    return qos_syscall0(SYS_GET_COUNTER_HZ);
+    unsigned long hz;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+    return hz;
 }
 
 static inline unsigned long qos_get_counter_cycles(void){
-    return qos_syscall0(SYS_GET_COUNTER_CYCLES);
+    unsigned long cycles;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(cycles));
+    return cycles;
 }
 
 static inline unsigned long long qos_cycles_to_us(unsigned long long cycles, unsigned long long hz){
@@ -394,11 +398,13 @@ static inline unsigned long long qos_cycles_to_ns(unsigned long long cycles, uns
 }
 
 static inline unsigned long long qos_get_time_us(void){
-    return (unsigned long long)qos_syscall0(SYS_GET_TIME_US);
+    return qos_cycles_to_us((unsigned long long)qos_get_counter_cycles(),
+                            (unsigned long long)qos_get_counter_hz());
 }
 
 static inline unsigned long long qos_get_time_ns(void){
-    return (unsigned long long)qos_syscall0(SYS_GET_TIME_NS);
+    return qos_cycles_to_ns((unsigned long long)qos_get_counter_cycles(),
+                            (unsigned long long)qos_get_counter_hz());
 }
 
 static inline void qos_sleep_us(unsigned long long us){

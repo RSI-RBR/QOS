@@ -2,6 +2,8 @@
 #include "uart.h"
 #include "terminal.h"
 #include "framebuffer.h"
+#include "spinlock.h"
+#include "interrupt.h"
 
 #define USBHOST_VERBOSE 0
 #if USBHOST_VERBOSE == 0
@@ -155,10 +157,10 @@
 #define USB_HID_CHAR_QUEUE_LEN 128u
 #define USB_INPUT_EVENT_QUEUE_LEN 128u
 #define USB_HID_MOUSE_REPORT_LEN 4u
-#define USB_HID_ACTIVE_POLL_MS 4u
-#define USB_HID_IDLE_POLL_MS 8u
-#define USB_HID_MOUSE_ACTIVE_POLL_MS 4u
-#define USB_HID_MOUSE_IDLE_POLL_MS 16u
+#define USB_HID_ACTIVE_POLL_MS 12u
+#define USB_HID_IDLE_POLL_MS 32u
+#define USB_HID_MOUSE_ACTIVE_POLL_MS 16u
+#define USB_HID_MOUSE_IDLE_POLL_MS 32u
 #define USB_HID_ACTIVE_HOLD_MS 250u
 #define USB_HID_MOD_LEFT_ALT  0x04u
 #define USB_HID_MOD_RIGHT_ALT 0x40u
@@ -186,6 +188,9 @@
 #define HUB_PORT_STAT_HIGH_SPEED (1u << 10)
 
 static int g_usb_ready = 0;
+static spinlock_t g_usb_xfer_lock;
+static spinlock_t g_usb_input_lock;
+static int g_usb_locks_ready = 0;
 static unsigned int g_port_speed = HPRT0_SPD_FULL;
 static unsigned int g_ep0_mps = USB_CTRL_EP_MPS_DEFAULT;
 static usb_root_device_info_t g_root_info;
@@ -226,6 +231,37 @@ static unsigned short g_port_vid[USB_HOST_MAX_TRACKED_PORTS];
 static unsigned short g_port_pid[USB_HOST_MAX_TRACKED_PORTS];
 static unsigned short g_port_intr_in_mps[USB_HOST_MAX_TRACKED_PORTS];
 extern volatile unsigned long system_ticks;
+
+static void usb_locks_init_once(void){
+    if (g_usb_locks_ready){
+        return;
+    }
+    spinlock_init(&g_usb_xfer_lock);
+    spinlock_init(&g_usb_input_lock);
+    asm volatile("dmb ish" : : : "memory");
+    g_usb_locks_ready = 1;
+}
+
+static void usb_xfer_begin(void){
+    usb_locks_init_once();
+    kernel_preempt_enter();
+    spin_lock(&g_usb_xfer_lock);
+}
+
+static int usb_xfer_try_begin(void){
+    usb_locks_init_once();
+    kernel_preempt_enter();
+    if (!spin_trylock(&g_usb_xfer_lock)){
+        kernel_preempt_exit();
+        return 0;
+    }
+    return 1;
+}
+
+static void usb_xfer_end(void){
+    spin_unlock(&g_usb_xfer_lock);
+    kernel_preempt_exit();
+}
 
 typedef struct {
     int present;
@@ -404,28 +440,62 @@ static void usb_input_event_queue_reset(void){
 }
 
 static int usb_hid_queue_push(unsigned char c){
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     if (g_kbd.q_count >= USB_HID_CHAR_QUEUE_LEN){
+        spin_unlock_irqrestore(&g_usb_input_lock, irq);
         return -1;
     }
     g_kbd.q[g_kbd.q_tail] = c;
     g_kbd.q_tail = (g_kbd.q_tail + 1u) % USB_HID_CHAR_QUEUE_LEN;
     g_kbd.q_count++;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 0;
 }
 
 static int usb_hid_queue_pop(char* out){
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     if (!out || g_kbd.q_count == 0u){
+        spin_unlock_irqrestore(&g_usb_input_lock, irq);
         return 0;
     }
     *out = (char)g_kbd.q[g_kbd.q_head];
     g_kbd.q_head = (g_kbd.q_head + 1u) % USB_HID_CHAR_QUEUE_LEN;
     g_kbd.q_count--;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 1;
 }
 
 static int usb_input_event_push(const qos_event_t* ev){
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     if (!ev){
+        spin_unlock_irqrestore(&g_usb_input_lock, irq);
         return -1;
+    }
+    if (ev->type == QOS_EVENT_MOUSE_MOVE && g_input_event_count > 0u){
+        unsigned int last = (g_input_event_tail + USB_INPUT_EVENT_QUEUE_LEN - 1u) %
+                            USB_INPUT_EVENT_QUEUE_LEN;
+        qos_event_t* prev = &g_input_event_q[last];
+        if (prev->type == QOS_EVENT_MOUSE_MOVE &&
+            prev->source == QOS_EVENT_SOURCE_MOUSE){
+            /*
+             * Mouse motion can arrive faster than a graphics app wants to
+             * consume it. Coalesce adjacent motion events so the queue carries
+             * the latest absolute cursor position plus accumulated relative
+             * motion, instead of turning movement into an FPS tax.
+             */
+            prev->x = ev->x;
+            prev->y = ev->y;
+            prev->dx += ev->dx;
+            prev->dy += ev->dy;
+            prev->buttons = ev->buttons;
+            prev->tick = ev->tick;
+            prev->seq = ++g_input_event_seq;
+            spin_unlock_irqrestore(&g_usb_input_lock, irq);
+            return 0;
+        }
     }
     if (g_input_event_count >= USB_INPUT_EVENT_QUEUE_LEN){
         g_input_event_head = (g_input_event_head + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
@@ -436,16 +506,21 @@ static int usb_input_event_push(const qos_event_t* ev){
     g_input_event_q[g_input_event_tail].seq = ++g_input_event_seq;
     g_input_event_tail = (g_input_event_tail + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
     g_input_event_count++;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 0;
 }
 
 static int usb_input_event_pop(qos_event_t* out){
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     if (!out || g_input_event_count == 0u){
+        spin_unlock_irqrestore(&g_usb_input_lock, irq);
         return 0;
     }
     *out = g_input_event_q[g_input_event_head];
     g_input_event_head = (g_input_event_head + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
     g_input_event_count--;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 1;
 }
 
@@ -523,16 +598,22 @@ static void usb_hid_push_key_event(unsigned int type,
     }
 
     int shift = (mod_byte & 0x22u) ? 1 : 0;
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
+    unsigned int mouse_buttons = g_mouse.buttons;
+    int mouse_x = g_mouse.x;
+    int mouse_y = g_mouse.y;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     qos_event_t ev;
     ev.type = type;
     ev.source = QOS_EVENT_SOURCE_KEYBOARD;
     ev.keycode = key;
     ev.ascii = (unsigned int)usb_hid_keycode_to_ascii(key, shift);
     ev.modifiers = usb_hid_modifiers(mod_byte);
-    ev.buttons = g_mouse.buttons;
+    ev.buttons = mouse_buttons;
     ev.button = 0u;
-    ev.x = g_mouse.x;
-    ev.y = g_mouse.y;
+    ev.x = mouse_x;
+    ev.y = mouse_y;
     ev.dx = 0;
     ev.dy = 0;
     ev.wheel = 0;
@@ -901,7 +982,12 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
     dx = (dx * 3) / 2;
     dy = (dy * 3) / 2;
     int moved = (dx != 0 || dy != 0);
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     unsigned int old_buttons = g_mouse.buttons;
+    int mouse_x = g_mouse.x;
+    int mouse_y = g_mouse.y;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     int changed = moved || wheel != 0 || (buttons != old_buttons);
 
     if (changed){
@@ -909,15 +995,20 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
         int h = (int)fb_get_height();
         if (w <= 0){ w = 1920; }
         if (h <= 0){ h = 1080; }
-        g_mouse.x += dx;
-        g_mouse.y += dy;
-        if (g_mouse.x < 0){ g_mouse.x = 0; }
-        if (g_mouse.y < 0){ g_mouse.y = 0; }
-        if (g_mouse.x >= w){ g_mouse.x = w - 1; }
-        if (g_mouse.y >= h){ g_mouse.y = h - 1; }
+        mouse_x += dx;
+        mouse_y += dy;
+        if (mouse_x < 0){ mouse_x = 0; }
+        if (mouse_y < 0){ mouse_y = 0; }
+        if (mouse_x >= w){ mouse_x = w - 1; }
+        if (mouse_y >= h){ mouse_y = h - 1; }
+
+        irq = spin_lock_irqsave(&g_usb_input_lock);
+        g_mouse.x = mouse_x;
+        g_mouse.y = mouse_y;
         g_mouse.buttons = buttons;
         g_mouse.seq++;
         g_mouse_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
+        spin_unlock_irqrestore(&g_usb_input_lock, irq);
 
         if (moved){
             qos_event_t ev;
@@ -928,8 +1019,8 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
             ev.modifiers = 0u;
             ev.buttons = buttons;
             ev.button = 0u;
-            ev.x = g_mouse.x;
-            ev.y = g_mouse.y;
+            ev.x = mouse_x;
+            ev.y = mouse_y;
             ev.dx = dx;
             ev.dy = dy;
             ev.wheel = 0;
@@ -947,8 +1038,8 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
             ev.modifiers = 0u;
             ev.buttons = buttons;
             ev.button = 0u;
-            ev.x = g_mouse.x;
-            ev.y = g_mouse.y;
+            ev.x = mouse_x;
+            ev.y = mouse_y;
             ev.dx = 0;
             ev.dy = 0;
             ev.wheel = wheel;
@@ -971,8 +1062,8 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
             ev.modifiers = 0u;
             ev.buttons = buttons;
             ev.button = mask;
-            ev.x = g_mouse.x;
-            ev.y = g_mouse.y;
+            ev.x = mouse_x;
+            ev.y = mouse_y;
             ev.dx = dx;
             ev.dy = dy;
             ev.wheel = 0;
@@ -2515,6 +2606,7 @@ int usb_host_reset_root_port(void){
 }
 
 int usb_host_init(void){
+    usb_locks_init_once();
     g_usb_ready = 0;
     for (unsigned int i = 0; i < sizeof(g_root_info); i++){
         ((unsigned char*)&g_root_info)[i] = 0;
@@ -2661,8 +2753,10 @@ int usb_host_control_transfer(unsigned char dev_addr,
     if (!g_usb_ready || !setup){
         return -1;
     }
+    usb_xfer_begin();
     if (!(HPRT0 & HPRT0_ENA)){
         uart_puts("USB: control xfer while port disabled\n");
+        usb_xfer_end();
         return -1;
     }
 
@@ -2742,6 +2836,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
         }
 
         if (failed_stage == 0){
+            usb_xfer_end();
             return 0;
         }
 
@@ -2753,6 +2848,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
             } else{
                 uart_puts("USB: STATUS stage failed\n");
             }
+            usb_xfer_end();
             return -1;
         }
 
@@ -2767,6 +2863,7 @@ int usb_host_control_transfer(unsigned char dev_addr,
         spin_delay(120000);
     }
 
+    usb_xfer_end();
     return -1;
 }
 
@@ -2779,14 +2876,18 @@ int usb_host_bulk_transfer(unsigned char dev_addr,
     if (!g_usb_ready || !data || len == 0){
         return -1;
     }
+    usb_xfer_begin();
     if (!(HPRT0 & HPRT0_ENA)){
+        usb_xfer_end();
         return -1;
     }
 
     unsigned int actual = 0;
     if (hc_transfer_bulk(dev_addr, ep_addr, ep_mps, data, len, in_transfer, &actual) != 0){
+        usb_xfer_end();
         return -1;
     }
+    usb_xfer_end();
     return (int)actual;
 }
 
@@ -3086,7 +3187,12 @@ void usb_host_poll(void){
 
     unsigned long now = system_ticks;
     if (g_kbd.present && (long)(now - g_kbd_next_poll_tick) >= 0){
+        if (!usb_xfer_try_begin()){
+            g_kbd_next_poll_tick = now + 2u;
+            return;
+        }
         (void)usb_hid_poll_once();
+        usb_xfer_end();
         now = system_ticks;
         // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
         // transactions. Poll slowly while idle, then briefly speed up after any
@@ -3105,7 +3211,12 @@ void usb_host_poll_mouse(void){
 
     unsigned long now = system_ticks;
     if (g_mouse.present && (long)(now - g_mouse_next_poll_tick) >= 0){
+        if (!usb_xfer_try_begin()){
+            g_mouse_next_poll_tick = now + 2u;
+            return;
+        }
         (void)usb_hid_mouse_poll_once();
+        usb_xfer_end();
         now = system_ticks;
         unsigned int mouse_interval = ((long)(now - g_mouse_active_until_tick) < 0) ?
                                       USB_HID_MOUSE_ACTIVE_POLL_MS :
@@ -3123,8 +3234,11 @@ int usb_host_poll_event(qos_event_t* out){
 }
 
 void usb_host_flush_input(void){
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     usb_hid_queue_reset();
     usb_input_event_queue_reset();
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
 }
 
 int usb_host_get_mouse_state(usb_mouse_state_t* out){
@@ -3132,11 +3246,14 @@ int usb_host_get_mouse_state(usb_mouse_state_t* out){
         return -1;
     }
 
+    usb_locks_init_once();
+    unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     out->present = g_mouse.present ? 1 : 0;
     out->x = g_mouse.x;
     out->y = g_mouse.y;
     out->buttons = g_mouse.buttons;
     out->seq = g_mouse.seq;
+    spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 0;
 }
 
