@@ -1,6 +1,10 @@
 #ifndef QOS_SDL_H
 #define QOS_SDL_H
 
+#ifdef QOS_USERSPACE
+#include "syscall.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -8,6 +12,7 @@ extern "C" {
 typedef unsigned char Uint8;
 typedef unsigned short Uint16;
 typedef unsigned int Uint32;
+typedef unsigned long long Uint64;
 
 typedef struct SDL_Window {
     int w;
@@ -79,6 +84,11 @@ const char* SDL_GetError(void);
 
 Uint32 SDL_GetTicks(void);
 void SDL_Delay(Uint32 ms);
+#ifndef QOS_USERSPACE
+Uint64 SDL_GetTicksNS(void);
+Uint64 SDL_GetPerformanceCounter(void);
+Uint64 SDL_GetPerformanceFrequency(void);
+#endif
 
 SDL_Window* SDL_CreateWindow(const char* title, int x, int y, int w, int h, Uint32 flags);
 void SDL_DestroyWindow(SDL_Window* window);
@@ -99,6 +109,20 @@ const Uint8* SDL_GetKeyboardState(int* numkeys);
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 void SDL_DestroyTexture(SDL_Texture* texture);
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
+
+#ifdef QOS_USERSPACE
+static inline Uint64 SDL_GetTicksNS(void){
+    return (Uint64)qos_get_time_ns();
+}
+
+static inline Uint64 SDL_GetPerformanceCounter(void){
+    return (Uint64)qos_get_counter_cycles();
+}
+
+static inline Uint64 SDL_GetPerformanceFrequency(void){
+    return (Uint64)qos_get_counter_hz();
+}
+#endif
 
 #ifdef __cplusplus
 }

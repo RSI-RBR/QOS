@@ -80,6 +80,42 @@ static unsigned int cstr_bytes_with_nul(const char* s, unsigned int cap){
     return n + 1u;
 }
 
+static unsigned long counter_cycles_to_us(unsigned long cycles, unsigned long hz){
+    if (hz == 0ul){
+        return 0ul;
+    }
+#if defined(__SIZEOF_INT128__)
+    {
+        __uint128_t num = (__uint128_t)cycles * 1000000ull;
+        return (unsigned long)(num / hz);
+    }
+#else
+    {
+        unsigned long whole = (unsigned long)(((unsigned long long)(cycles / hz)) * 1000000ull);
+        unsigned long rem = cycles % hz;
+        return whole + (unsigned long)(((unsigned long long)rem * 1000000ull) / hz);
+    }
+#endif
+}
+
+static unsigned long counter_cycles_to_ns(unsigned long cycles, unsigned long hz){
+    if (hz == 0ul){
+        return 0ul;
+    }
+#if defined(__SIZEOF_INT128__)
+    {
+        __uint128_t num = (__uint128_t)cycles * 1000000000ull;
+        return (unsigned long)(num / hz);
+    }
+#else
+    {
+        unsigned long whole = (unsigned long)(((unsigned long long)(cycles / hz)) * 1000000000ull);
+        unsigned long rem = cycles % hz;
+        return whole + (unsigned long)(((unsigned long long)rem * 1000000000ull) / hz);
+    }
+#endif
+}
+
 static void syscall_poll_background_io(void){
     static unsigned long next_net_poll_tick = 0;
     static unsigned long next_remote_poll_tick = 0;
@@ -252,6 +288,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
         case SYS_GET_COUNTER_CYCLES:
+        case SYS_GET_TIME_US:
+        case SYS_GET_TIME_NS:
             req_scope_any = TRUST_SCOPE_USER_APP | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB;
             break;
 
@@ -909,6 +947,24 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             unsigned long cyc = 0;
             asm volatile("mrs %0, cntpct_el0" : "=r"(cyc));
             frame[TF_X0] = cyc;
+            return frame_sp;
+        }
+
+        case SYS_GET_TIME_US: {
+            unsigned long hz = 0;
+            unsigned long cyc = 0;
+            asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+            asm volatile("mrs %0, cntpct_el0" : "=r"(cyc));
+            frame[TF_X0] = counter_cycles_to_us(cyc, hz);
+            return frame_sp;
+        }
+
+        case SYS_GET_TIME_NS: {
+            unsigned long hz = 0;
+            unsigned long cyc = 0;
+            asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+            asm volatile("mrs %0, cntpct_el0" : "=r"(cyc));
+            frame[TF_X0] = counter_cycles_to_ns(cyc, hz);
             return frame_sp;
         }
 

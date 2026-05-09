@@ -100,7 +100,9 @@ enum {
     SYS_DISPLAY_SWITCH_GRAPHICS = 77,
     SYS_DISPLAY_SWITCH_SESSION = 78,
     SYS_PROCESS_KILL = 79,
-    SYS_PROCESS_STATE = 80
+    SYS_PROCESS_STATE = 80,
+    SYS_GET_TIME_US = 81,
+    SYS_GET_TIME_NS = 82
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -343,6 +345,70 @@ static inline unsigned long qos_get_counter_hz(void){
 
 static inline unsigned long qos_get_counter_cycles(void){
     return qos_syscall0(SYS_GET_COUNTER_CYCLES);
+}
+
+static inline unsigned long long qos_cycles_to_us(unsigned long long cycles, unsigned long long hz){
+    if (hz == 0ull){
+        return 0ull;
+    }
+#if defined(__SIZEOF_INT128__)
+    {
+        __uint128_t num = (__uint128_t)cycles * 1000000ull;
+        return (unsigned long long)(num / hz);
+    }
+#else
+    {
+        unsigned long long whole = (cycles / hz) * 1000000ull;
+        unsigned long long rem = cycles % hz;
+        return whole + ((rem * 1000000ull) / hz);
+    }
+#endif
+}
+
+static inline unsigned long long qos_cycles_to_ns(unsigned long long cycles, unsigned long long hz){
+    if (hz == 0ull){
+        return 0ull;
+    }
+#if defined(__SIZEOF_INT128__)
+    {
+        __uint128_t num = (__uint128_t)cycles * 1000000000ull;
+        return (unsigned long long)(num / hz);
+    }
+#else
+    {
+        unsigned long long whole = (cycles / hz) * 1000000000ull;
+        unsigned long long rem = cycles % hz;
+        return whole + ((rem * 1000000000ull) / hz);
+    }
+#endif
+}
+
+static inline unsigned long long qos_get_time_us(void){
+    return (unsigned long long)qos_syscall0(SYS_GET_TIME_US);
+}
+
+static inline unsigned long long qos_get_time_ns(void){
+    return (unsigned long long)qos_syscall0(SYS_GET_TIME_NS);
+}
+
+static inline void qos_sleep_us(unsigned long long us){
+    unsigned long long start;
+    unsigned long long deadline;
+    if (us == 0ull){
+        return;
+    }
+    // Use cooperative sleep for the coarse portion, then busy-wait the tail.
+    if (us >= 2000ull){
+        unsigned int coarse_ms = (unsigned int)((us - 1000ull) / 1000ull);
+        if (coarse_ms > 0u){
+            qos_sleep(coarse_ms);
+        }
+    }
+    start = qos_get_time_us();
+    deadline = start + us;
+    while ((long long)(qos_get_time_us() - deadline) < 0){
+        asm volatile("yield");
+    }
 }
 
 static inline void qos_net_dump_stats(void){
