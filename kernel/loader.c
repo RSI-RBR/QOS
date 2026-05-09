@@ -10,6 +10,7 @@
 
 
 #define PROGRAM_MAX (512 * 1024)
+#define PROGRAM_FILE_MAX (768 * 1024)
 #define PROGRAM_POOL_START QOS_PROGRAM_POOL_START
 #define PROGRAM_POOL_SIZE  QOS_PROGRAM_POOL_SIZE
 #define PROGRAM_ALLOC_GRANULE QOS_PROGRAM_ALLOC_GRANULE_BYTES
@@ -23,7 +24,7 @@ static unsigned char program_unit_span[PROGRAM_UNIT_COUNT];
 static spinlock_t g_program_alloc_lock;
 
 
-static unsigned char buffer[PROGRAM_MAX];
+static unsigned char buffer[PROGRAM_FILE_MAX];
 static volatile int loader_busy = 0;
 static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
 static const char GAME_PROGRAM_83[11] = {'G','A','M','E',' ',' ',' ',' ','B','I','N'};
@@ -90,6 +91,65 @@ static int fat83_equal11(const char* a, const char* b){
         }
     }
     return 1;
+}
+
+static unsigned int get_u32_le_local(const unsigned char* p){
+    return (unsigned int)p[0] |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
+}
+
+static unsigned long long get_u64_le_local(const unsigned char* p){
+    return (unsigned long long)p[0] |
+           ((unsigned long long)p[1] << 8) |
+           ((unsigned long long)p[2] << 16) |
+           ((unsigned long long)p[3] << 24) |
+           ((unsigned long long)p[4] << 32) |
+           ((unsigned long long)p[5] << 40) |
+           ((unsigned long long)p[6] << 48) |
+           ((unsigned long long)p[7] << 56);
+}
+
+static void put_u64_le_local(unsigned char* p, unsigned long long v){
+    p[0] = (unsigned char)(v & 0xFFULL);
+    p[1] = (unsigned char)((v >> 8) & 0xFFULL);
+    p[2] = (unsigned char)((v >> 16) & 0xFFULL);
+    p[3] = (unsigned char)((v >> 24) & 0xFFULL);
+    p[4] = (unsigned char)((v >> 32) & 0xFFULL);
+    p[5] = (unsigned char)((v >> 40) & 0xFFULL);
+    p[6] = (unsigned char)((v >> 48) & 0xFFULL);
+    p[7] = (unsigned char)((v >> 56) & 0xFFULL);
+}
+
+static int loader_apply_relative_relocs(unsigned char* image,
+                                        unsigned long reservation_size,
+                                        const unsigned char* reloc_entries,
+                                        unsigned int reloc_count){
+    if (!image){
+        return -1;
+    }
+    if (reloc_count == 0u){
+        return 0;
+    }
+    if (!reloc_entries || reloc_count > QOS_PROGRAM_MAX_RELOCS){
+        return -1;
+    }
+
+    unsigned long base = (unsigned long)image;
+    for (unsigned int i = 0; i < reloc_count; i++){
+        const unsigned char* e = reloc_entries + ((unsigned long)i * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES);
+        unsigned int target_off = get_u32_le_local(e);
+        unsigned long long addend = get_u64_le_local(e + 4u);
+        if ((target_off & 7u) != 0u ||
+            target_off + 8u < target_off ||
+            (unsigned long)target_off + 8UL > reservation_size ||
+            addend >= reservation_size){
+            return -1;
+        }
+        put_u64_le_local(image + target_off, (unsigned long long)(base + (unsigned long)addend));
+    }
+    return 0;
 }
 
 static void loader_assign_file_sandbox(loaded_program_t* prog, const char* file_83){
@@ -291,9 +351,9 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
 
     if (fat32_init() == 0){
-        size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
+        size = fat32_read_file(file_83, buffer, PROGRAM_FILE_MAX);
         if (size <= 0){
-            size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
+            size = fat32_read_file(file_83, buffer, PROGRAM_FILE_MAX);
         }
     }
 
@@ -301,7 +361,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         // One-time resync path.
         blockdev_reinit();
         if (fat32_init() == 0){
-            size = fat32_read_file(file_83, buffer, PROGRAM_MAX);
+            size = fat32_read_file(file_83, buffer, PROGRAM_FILE_MAX);
         }
     }
 
@@ -361,6 +421,8 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
     unsigned int user_rw_offset = 0;
     unsigned int user_rw_size = 0;
+    unsigned int reloc_count = 0;
+    const unsigned char* reloc_entries = 0;
     {
         const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
         const program_sec_header_t* cand = (const program_sec_header_t*)(buffer + sizeof(program_header_t));
@@ -369,9 +431,17 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
             uart_puts("Program missing SEC1 header.\n");
             return prog;
         }
-        if (cand->header_size < (sec_min + PROGRAM_SEC_LAYOUT_V1_BYTES) || cand->header_size > 256u){
+        if (cand->header_size < (sec_min + PROGRAM_SEC_LAYOUT_V1_BYTES) ||
+            cand->header_size > QOS_PROGRAM_SEC_MAX_HEADER_BYTES){
             loader_unlock();
             uart_puts("Bad security header size.\n");
+            return prog;
+        }
+        if ((cand->flags & ~(QOS_PROG_FLAG_SHA256 |
+                             QOS_PROG_FLAG_MEM_LAYOUT_V1 |
+                             QOS_PROG_FLAG_RELOC_RELATIVE_V1)) != 0u){
+            loader_unlock();
+            uart_puts("Program has unsupported security flags.\n");
             return prog;
         }
         if (code_off > ((unsigned int)size - cand->header_size)){
@@ -393,6 +463,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
         }
         {
             const unsigned char* ext = (const unsigned char*)cand + sec_min;
+            unsigned int ext_used = PROGRAM_SEC_LAYOUT_V1_BYTES;
             user_rw_offset = (unsigned int)ext[0] |
                              ((unsigned int)ext[1] << 8) |
                              ((unsigned int)ext[2] << 16) |
@@ -422,6 +493,56 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
                 (requested_size & (PROGRAM_ALLOC_GRANULE - 1UL)) != 0UL){
                 loader_unlock();
                 uart_puts("Program memory reservation invalid.\n");
+                return prog;
+            }
+            if ((cand->flags & QOS_PROG_FLAG_RELOC_RELATIVE_V1) != 0u){
+                const unsigned int reloc_hdr_bytes = (unsigned int)sizeof(program_sec_reloc_v1_t);
+                const unsigned int reloc_header_off = sec_min + ext_used;
+                if (cand->header_size < reloc_header_off + reloc_hdr_bytes){
+                    loader_unlock();
+                    uart_puts("Program relocation header truncated.\n");
+                    return prog;
+                }
+                const unsigned char* reloc = (const unsigned char*)cand + reloc_header_off;
+                reloc_count = get_u32_le_local(reloc);
+                unsigned int reloc_entry_size = get_u32_le_local(reloc + 4u);
+                if (reloc_entry_size != QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES ||
+                    reloc_count > QOS_PROGRAM_MAX_RELOCS){
+                    loader_unlock();
+                    uart_puts("Program relocation table invalid.\n");
+                    return prog;
+                }
+                if (reloc_count > ((QOS_PROGRAM_SEC_MAX_HEADER_BYTES - reloc_header_off - reloc_hdr_bytes) /
+                                   QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES)){
+                    loader_unlock();
+                    uart_puts("Program relocation count invalid.\n");
+                    return prog;
+                }
+                unsigned int reloc_bytes = reloc_hdr_bytes +
+                    (reloc_count * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES);
+                if (cand->header_size != reloc_header_off + reloc_bytes){
+                    loader_unlock();
+                    uart_puts("Program relocation header size mismatch.\n");
+                    return prog;
+                }
+                reloc_entries = reloc + reloc_hdr_bytes;
+                for (unsigned int r = 0; r < reloc_count; r++){
+                    const unsigned char* e = reloc_entries +
+                        ((unsigned long)r * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES);
+                    unsigned int target_off = get_u32_le_local(e);
+                    unsigned long long addend = get_u64_le_local(e + 4u);
+                    if ((target_off & 7u) != 0u ||
+                        target_off + 8u < target_off ||
+                        (unsigned long)target_off + 8UL > requested_size ||
+                        addend >= requested_size){
+                        loader_unlock();
+                        uart_puts("Program relocation entry invalid.\n");
+                        return prog;
+                    }
+                }
+            } else if (cand->header_size != sec_min + ext_used){
+                loader_unlock();
+                uart_puts("Program has unsigned security extension bytes.\n");
                 return prog;
             }
         }
@@ -463,6 +584,16 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
 
     for (unsigned int i = 0; i < code_size; i++){
         d[i] = src[i];
+    }
+
+    if (loader_apply_relative_relocs(d,
+                                     program_reservation_size,
+                                     reloc_entries,
+                                     reloc_count) != 0){
+        loader_free_program_memory(dst, program_reservation_size);
+        loader_unlock();
+        uart_puts("Program relocation apply failed.\n");
+        return prog;
     }
 
     // W^X policy: code is copied while this slot is kernel-private RW+XN.

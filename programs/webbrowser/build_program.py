@@ -19,6 +19,7 @@ QOS_PQ_SIG_MAGIC = 0x51505331  # "QPS1"
 QOS_PQ_SIG_VERSION = 0x00000001
 QOS_PROG_FLAG_SHA256 = 0x00000001
 QOS_PROG_FLAG_MEM_LAYOUT_V1 = 0x00000002
+QOS_PROG_FLAG_RELOC_RELATIVE_V1 = 0x00000004
 QOS_SIG_ALG_DIGEST_ONLY = 0x00000001
 QOS_SIG_ALG_ED25519 = 0x00000002
 QOS_SIG_ALG_MLDSA65 = 0x00000003
@@ -27,7 +28,13 @@ MLDSA65_SIG_BYTES = 3309
 DEFAULT_SIGNER_KEY_ID = 0x00010001  # dev-main
 PROGRAM_ALLOC_GRANULE_BYTES = 2 * 1024 * 1024
 PROGRAM_MAX_MEMORY_BYTES = 16 * 1024 * 1024
+PROGRAM_MAX_RELOCS = 4096
+PROGRAM_RELOC_RELATIVE_ENTRY_BYTES = 12
 PAGE_SIZE = 4096
+R_AARCH64_NONE = 0
+R_AARCH64_RELATIVE = 1027
+SHT_RELA = 4
+SHT_REL = 9
 
 
 def parse_size(value):
@@ -58,6 +65,125 @@ def parse_nm_symbol(nm_bin, elf_path, sym):
         if len(parts) >= 3 and parts[2] == sym:
             return int(parts[0], 16)
     raise RuntimeError(f"symbol not found: {sym}")
+
+
+def read_cstr(buf, off):
+    end = off
+    while end < len(buf) and buf[end] != 0:
+        end += 1
+    return buf[off:end].decode("ascii", errors="replace")
+
+
+def extract_relative_relocations(elf_path, program_memory_bytes):
+    if not elf_path:
+        return []
+
+    with open(elf_path, "rb") as f:
+        elf = f.read()
+
+    if len(elf) < 64 or elf[:4] != b"\x7fELF":
+        raise RuntimeError("invalid ELF file")
+    if elf[4] != 2 or elf[5] != 1:
+        raise RuntimeError("expected ELF64 little-endian program")
+
+    e_shoff = struct.unpack_from("<Q", elf, 40)[0]
+    e_shentsize = struct.unpack_from("<H", elf, 58)[0]
+    e_shnum = struct.unpack_from("<H", elf, 60)[0]
+    e_shstrndx = struct.unpack_from("<H", elf, 62)[0]
+    if e_shoff == 0 or e_shnum == 0 or e_shentsize < 64:
+        return []
+    if e_shoff + (e_shentsize * e_shnum) > len(elf):
+        raise RuntimeError("ELF section headers out of range")
+
+    sections = []
+    for i in range(e_shnum):
+        off = e_shoff + (i * e_shentsize)
+        sh = struct.unpack_from("<IIQQQQIIQQ", elf, off)
+        sections.append({
+            "name_off": sh[0],
+            "type": sh[1],
+            "offset": sh[4],
+            "size": sh[5],
+            "entsize": sh[9],
+            "name": "",
+        })
+
+    if e_shstrndx < e_shnum:
+        shstr = sections[e_shstrndx]
+        start = shstr["offset"]
+        end = start + shstr["size"]
+        if end <= len(elf):
+            names = elf[start:end]
+            for s in sections:
+                if s["name_off"] < len(names):
+                    s["name"] = read_cstr(names, s["name_off"])
+
+    relocs = []
+    unsupported = []
+    for s in sections:
+        if s["type"] == SHT_REL and s["size"] != 0:
+            unsupported.append(f"{s['name'] or '<unnamed>'}: SHT_REL without explicit addends")
+            continue
+        if s["type"] != SHT_RELA or s["size"] == 0:
+            continue
+        entsize = s["entsize"] or 24
+        if entsize < 24 or (s["size"] % entsize) != 0:
+            raise RuntimeError(f"bad RELA section entry size: {s['name']}")
+        if s["offset"] + s["size"] > len(elf):
+            raise RuntimeError(f"RELA section out of range: {s['name']}")
+        count = s["size"] // entsize
+        for i in range(count):
+            off = s["offset"] + (i * entsize)
+            r_offset, r_info, r_addend = struct.unpack_from("<QQq", elf, off)
+            r_type = r_info & 0xFFFFFFFF
+            if r_type == R_AARCH64_NONE:
+                continue
+            if r_type != R_AARCH64_RELATIVE:
+                unsupported.append(f"{s['name'] or '<unnamed>'}: type {r_type} at 0x{r_offset:x}")
+                continue
+            if r_offset & 7:
+                raise RuntimeError(f"unaligned relative relocation target: 0x{r_offset:x}")
+            if r_offset + 8 > program_memory_bytes:
+                raise RuntimeError(f"relative relocation target outside reservation: 0x{r_offset:x}")
+            if r_addend < 0 or r_addend >= program_memory_bytes:
+                raise RuntimeError(f"relative relocation addend outside reservation: 0x{r_addend:x}")
+            relocs.append((r_offset, r_addend))
+
+    if unsupported:
+        raise RuntimeError("unsupported ELF relocations:\n  " + "\n  ".join(unsupported[:32]))
+    if len(relocs) > PROGRAM_MAX_RELOCS:
+        raise RuntimeError(f"too many relative relocations: {len(relocs)} > {PROGRAM_MAX_RELOCS}")
+
+    relocs.sort()
+    return relocs
+
+
+def pack_relative_relocations(relocs):
+    if not relocs:
+        return b""
+    out = bytearray()
+    out.extend(struct.pack("<II", len(relocs), PROGRAM_RELOC_RELATIVE_ENTRY_BYTES))
+    for off, addend in relocs:
+        out.extend(struct.pack("<IQ", off, addend))
+    return bytes(out)
+
+
+def build_sig_message(fat_name_83, flags, signer_key_id, sig_alg,
+                      size, user_rw_offset, user_rw_size, digest,
+                      reloc_blob):
+    msg = bytearray()
+    msg.extend(b"QOS-PROG-SIG-V1\x00")
+    msg.extend(fat_name_83.encode("ascii"))
+    msg.extend(struct.pack("<I", flags))
+    msg.extend(struct.pack("<I", signer_key_id))
+    msg.extend(struct.pack("<I", sig_alg))
+    msg.extend(struct.pack("<I", size))
+    msg.extend(struct.pack("<I", user_rw_offset))
+    msg.extend(struct.pack("<I", user_rw_size))
+    msg.extend(digest)
+    if flags & QOS_PROG_FLAG_RELOC_RELATIVE_V1:
+        msg.extend(reloc_blob)
+    return bytes(msg)
 
 
 def sign_ed25519(openssl_bin, key_pem, message):
@@ -133,26 +259,22 @@ if entry_offset >= user_rw_offset:
     print("Invalid layout: entry_offset must be inside RX region")
     sys.exit(1)
 user_rw_size = PROGRAM_MEMORY_BYTES - user_rw_offset
+relocs = extract_relative_relocations(elf_path, PROGRAM_MEMORY_BYTES) if elf_path else []
+reloc_blob = pack_relative_relocations(relocs)
 
 header = struct.pack("<III", QOS_MAGIC, size, entry_offset)
 digest = hashlib.sha256(code).digest()
 flags = QOS_PROG_FLAG_SHA256 | QOS_PROG_FLAG_MEM_LAYOUT_V1
+if relocs:
+    flags |= QOS_PROG_FLAG_RELOC_RELATIVE_V1
 
 sig_alg = QOS_SIG_ALG_DIGEST_ONLY
 sig_len = 0
 sig = bytes(QOS_MAX_SIGNATURE_BYTES)
 if sign_key_pem:
-    msg = bytearray()
-    msg.extend(b"QOS-PROG-SIG-V1\x00")
-    msg.extend(fat_name_83.encode("ascii"))
-    msg.extend(struct.pack("<I", flags))
-    msg.extend(struct.pack("<I", signer_key_id))
-    msg.extend(struct.pack("<I", QOS_SIG_ALG_ED25519))
-    msg.extend(struct.pack("<I", size))
-    msg.extend(struct.pack("<I", user_rw_offset))
-    msg.extend(struct.pack("<I", user_rw_size))
-    msg.extend(digest)
-    s = sign_ed25519(openssl_bin, sign_key_pem, bytes(msg))
+    msg = build_sig_message(fat_name_83, flags, signer_key_id, QOS_SIG_ALG_ED25519,
+                            size, user_rw_offset, user_rw_size, digest, reloc_blob)
+    s = sign_ed25519(openssl_bin, sign_key_pem, msg)
     if len(s) != 64:
         print("Ed25519 signature length was not 64 bytes")
         sys.exit(1)
@@ -163,7 +285,7 @@ if sign_key_pem:
 sec_core = struct.pack(
     "<IIIIII32s64s",
     QOS_SEC_MAGIC,
-    struct.calcsize("<IIIIII32s64s") + struct.calcsize("<II"),
+    struct.calcsize("<IIIIII32s64s") + struct.calcsize("<II") + len(reloc_blob),
     flags,
     signer_key_id,
     sig_alg,
@@ -177,19 +299,12 @@ with open(sys.argv[2], "wb") as f:
     f.write(header)
     f.write(sec_core)
     f.write(sec_layout)
+    f.write(reloc_blob)
     f.write(code)
 
 if pq_sign_key:
-    msg = bytearray()
-    msg.extend(b"QOS-PROG-SIG-V1\x00")
-    msg.extend(fat_name_83.encode("ascii"))
-    msg.extend(struct.pack("<I", flags))
-    msg.extend(struct.pack("<I", signer_key_id))
-    msg.extend(struct.pack("<I", sig_alg))
-    msg.extend(struct.pack("<I", size))
-    msg.extend(struct.pack("<I", user_rw_offset))
-    msg.extend(struct.pack("<I", user_rw_size))
-    msg.extend(digest)
+    msg = build_sig_message(fat_name_83, flags, signer_key_id, sig_alg,
+                            size, user_rw_offset, user_rw_size, digest, reloc_blob)
     # ML-DSA sidecar signs SHA-256(canonical program-sign message).
     msg_digest = hashlib.sha256(bytes(msg)).digest()
     pq_sig = sign_mldsa65(pq_sign_key, msg_digest)
@@ -202,4 +317,5 @@ if pq_sign_key:
 else:
     print("PQ sidecar not generated (no pq_sign_key_bin provided).")
 
-print("Built program.bin (size:", size, "reservation:", PROGRAM_MEMORY_BYTES, ")")
+print("Built program.bin (size:", size, "reservation:", PROGRAM_MEMORY_BYTES,
+      "relocs:", len(relocs), ")")

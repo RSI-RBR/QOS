@@ -42,6 +42,7 @@ static const trust_key_t g_keys[] = {
 };
 
 static unsigned char g_pq_sidecar_buf[TRUST_PQ_SIDECAR_MAX];
+static unsigned char g_program_sig_msg[QOS_PROGRAM_SIG_MSG_MAX];
 static int g_warned_digest_only = 0;
 static int g_warned_missing_program_pq = 0;
 static const int g_require_ed25519 = 1;
@@ -59,6 +60,17 @@ static unsigned int get_u32_le(const unsigned char* p){
            ((unsigned int)p[1] << 8) |
            ((unsigned int)p[2] << 16) |
            ((unsigned int)p[3] << 24);
+}
+
+static unsigned long long get_u64_le(const unsigned char* p){
+    return (unsigned long long)p[0] |
+           ((unsigned long long)p[1] << 8) |
+           ((unsigned long long)p[2] << 16) |
+           ((unsigned long long)p[3] << 24) |
+           ((unsigned long long)p[4] << 32) |
+           ((unsigned long long)p[5] << 40) |
+           ((unsigned long long)p[6] << 48) |
+           ((unsigned long long)p[7] << 56);
 }
 
 static int read_program_layout_v1(const program_sec_header_t* sec,
@@ -93,6 +105,69 @@ static int read_program_layout_v1(const program_sec_header_t* sec,
     return 0;
 }
 
+static int read_program_reloc_v1(const program_sec_header_t* sec,
+                                 unsigned int* out_count,
+                                 const unsigned char** out_blob,
+                                 unsigned int* out_blob_len){
+    const unsigned int sec_min = (unsigned int)sizeof(program_sec_header_t);
+    const unsigned int reloc_off = sec_min + (unsigned int)sizeof(program_sec_layout_v1_t);
+    unsigned int count = 0;
+    unsigned int entry_size = 0;
+    unsigned int blob_len = 0;
+    const unsigned char* blob = 0;
+
+    if (!sec || !out_count || !out_blob || !out_blob_len){
+        return -1;
+    }
+
+    *out_count = 0;
+    *out_blob = 0;
+    *out_blob_len = 0;
+
+    if ((sec->flags & QOS_PROG_FLAG_RELOC_RELATIVE_V1) == 0u){
+        if (sec->header_size != reloc_off){
+            return -1;
+        }
+        return 0;
+    }
+
+    if (sec->header_size < reloc_off + (unsigned int)sizeof(program_sec_reloc_v1_t)){
+        return -1;
+    }
+
+    blob = (const unsigned char*)sec + reloc_off;
+    count = get_u32_le(blob);
+    entry_size = get_u32_le(blob + 4u);
+    if (entry_size != QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES ||
+        count > QOS_PROGRAM_MAX_RELOCS){
+        return -1;
+    }
+    if (count > ((QOS_PROGRAM_SEC_MAX_HEADER_BYTES - reloc_off - 8u) /
+                 QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES)){
+        return -1;
+    }
+    blob_len = 8u + (count * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES);
+    if (sec->header_size != reloc_off + blob_len){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < count; i++){
+        const unsigned char* e = blob + 8u + (i * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES);
+        unsigned int target_off = get_u32_le(e);
+        unsigned long long addend = get_u64_le(e + 4u);
+        if ((target_off & 7u) != 0u ||
+            target_off + 8u < target_off ||
+            addend > 0xFFFFFFFFULL){
+            return -1;
+        }
+    }
+
+    *out_count = count;
+    *out_blob = blob;
+    *out_blob_len = blob_len;
+    return 0;
+}
+
 static int build_program_sig_message(const char* fat_name_83,
                                      const program_sec_header_t* sec,
                                      unsigned int code_size,
@@ -103,12 +178,25 @@ static int build_program_sig_message(const char* fat_name_83,
     };
     unsigned int rw_off = 0;
     unsigned int rw_size = 0;
-    const unsigned int need = 16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u;
+    unsigned int reloc_count = 0;
+    const unsigned char* reloc_blob = 0;
+    unsigned int reloc_blob_len = 0;
+    unsigned int need = 16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u;
     if (!out || out_cap < need || !fat_name_83 || !sec){
         return -1;
     }
     if (read_program_layout_v1(sec, code_size, &rw_off, &rw_size) != 0){
         return -1;
+    }
+    if (read_program_reloc_v1(sec, &reloc_count, &reloc_blob, &reloc_blob_len) != 0){
+        return -1;
+    }
+    (void)reloc_count;
+    if ((sec->flags & QOS_PROG_FLAG_RELOC_RELATIVE_V1) != 0u){
+        if (reloc_blob_len > (out_cap - need)){
+            return -1;
+        }
+        need += reloc_blob_len;
     }
 
     unsigned int o = 0;
@@ -121,6 +209,9 @@ static int build_program_sig_message(const char* fat_name_83,
     put_u32_le(out + o, rw_off); o += 4u;
     put_u32_le(out + o, rw_size); o += 4u;
     for (unsigned int i = 0; i < 32u; i++) out[o++] = sec->sha256[i];
+    if ((sec->flags & QOS_PROG_FLAG_RELOC_RELATIVE_V1) != 0u){
+        for (unsigned int i = 0; i < reloc_blob_len; i++) out[o++] = reloc_blob[i];
+    }
     return (int)o;
 }
 
@@ -195,7 +286,6 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
                                      unsigned int code_size,
                                      const trust_key_t* key,
                                      int required){
-    unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u];
     unsigned char msg_digest[32];
     char pq_name[12];
 
@@ -261,12 +351,14 @@ static int verify_program_pq_sidecar(const char* fat_name_83,
         return -1;
     }
 
-    int msg_len = build_program_sig_message(fat_name_83, sec, code_size, msg, sizeof(msg));
+    int msg_len = build_program_sig_message(fat_name_83, sec, code_size,
+                                             g_program_sig_msg,
+                                             sizeof(g_program_sig_msg));
     if (msg_len <= 0){
         uart_puts("Trust: failed to build PQ signature payload.\n");
         return -1;
     }
-    sha256_digest(msg, (unsigned int)msg_len, msg_digest);
+    sha256_digest(g_program_sig_msg, (unsigned int)msg_len, msg_digest);
 
     if (pq_sig_verify_digest_sha256(sig_alg,
                                     msg_digest,
@@ -289,6 +381,9 @@ int trust_verify_program_image(const char* fat_name_83,
                                unsigned int code_size){
     unsigned int rw_off = 0;
     unsigned int rw_size = 0;
+    unsigned int reloc_count = 0;
+    const unsigned char* reloc_blob = 0;
+    unsigned int reloc_blob_len = 0;
     if (!sec){
         uart_puts("Trust: missing security header.\n");
         return -1;
@@ -297,8 +392,15 @@ int trust_verify_program_image(const char* fat_name_83,
         uart_puts("Trust: bad security header magic.\n");
         return -1;
     }
-    if (sec->header_size < sizeof(program_sec_header_t)){
+    if (sec->header_size < sizeof(program_sec_header_t) ||
+        sec->header_size > QOS_PROGRAM_SEC_MAX_HEADER_BYTES){
         uart_puts("Trust: bad security header size.\n");
+        return -1;
+    }
+    if ((sec->flags & ~(QOS_PROG_FLAG_SHA256 |
+                        QOS_PROG_FLAG_MEM_LAYOUT_V1 |
+                        QOS_PROG_FLAG_RELOC_RELATIVE_V1)) != 0u){
+        uart_puts("Trust: unsupported program security flags.\n");
         return -1;
     }
     if (sec->sig_alg != QOS_SIG_ALG_DIGEST_ONLY && sec->sig_alg != QOS_SIG_ALG_ED25519){
@@ -321,6 +423,13 @@ int trust_verify_program_image(const char* fat_name_83,
         uart_puts("Trust: invalid MEM_LAYOUT_V1.\n");
         return -1;
     }
+    if (read_program_reloc_v1(sec, &reloc_count, &reloc_blob, &reloc_blob_len) != 0){
+        uart_puts("Trust: invalid RELOC_RELATIVE_V1.\n");
+        return -1;
+    }
+    (void)reloc_count;
+    (void)reloc_blob;
+    (void)reloc_blob_len;
 
     const trust_key_t* key = trust_find_key(sec->signer_key_id);
     if (!key){
@@ -382,13 +491,17 @@ int trust_verify_program_image(const char* fat_name_83,
             uart_puts("Trust: Ed25519 signature must be 64 bytes.\n");
             return -1;
         }
-        unsigned char msg[16u + 11u + 4u + 4u + 4u + 4u + 4u + 4u + 32u];
-        int msg_len = build_program_sig_message(fat_name_83, sec, code_size, msg, sizeof(msg));
+        int msg_len = build_program_sig_message(fat_name_83, sec, code_size,
+                                                g_program_sig_msg,
+                                                sizeof(g_program_sig_msg));
         if (msg_len <= 0){
             uart_puts("Trust: failed to build signature payload.\n");
             return -1;
         }
-        if (!qos_ed25519_verify(sec->signature, msg, (unsigned int)msg_len, key->ed25519_pubkey)){
+        if (!qos_ed25519_verify(sec->signature,
+                                g_program_sig_msg,
+                                (unsigned int)msg_len,
+                                key->ed25519_pubkey)){
             uart_puts("Trust: Ed25519 signature verify failed.\n");
             return -1;
         }

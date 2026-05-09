@@ -7,6 +7,7 @@
 #define QOS_PQ_SIG_VERSION 1u
 #define QOS_PROG_FLAG_SHA256 0x00000001u
 #define QOS_PROG_FLAG_MEM_LAYOUT_V1 0x00000002u
+#define QOS_PROG_FLAG_RELOC_RELATIVE_V1 0x00000004u
 #define QOS_SIG_ALG_DIGEST_ONLY 1u
 #define QOS_SIG_ALG_ED25519 2u
 #define QOS_SIG_ALG_MLDSA65 3u
@@ -18,6 +19,10 @@
 #define QOS_PROGRAM_ALLOC_GRANULE_BYTES (2UL * 1024UL * 1024UL)
 #define QOS_PROGRAM_MAX_MEMORY_BYTES (16UL * 1024UL * 1024UL)
 #define QOS_PROGRAM_DEFAULT_MEMORY_BYTES QOS_PROGRAM_MAX_MEMORY_BYTES
+#define QOS_PROGRAM_SEC_MAX_HEADER_BYTES 65536u
+#define QOS_PROGRAM_MAX_RELOCS 4096u
+#define QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES 12u
+#define QOS_PROGRAM_SIG_MSG_MAX (16u + 11u + 28u + 32u + 8u + (QOS_PROGRAM_MAX_RELOCS * QOS_PROGRAM_RELOC_RELATIVE_ENTRY_BYTES))
 // Backward-compat alias for code that still uses "slot" to mean one 2 MiB MMU chunk.
 #define QOS_PROGRAM_SLOT_SIZE QOS_PROGRAM_ALLOC_GRANULE_BYTES
 #ifndef QOS_PROGRAM_MEMORY_BYTES
@@ -47,5 +52,10 @@ typedef struct{
     unsigned int user_rw_offset;
     unsigned int user_rw_size;
 } program_sec_layout_v1_t;
+
+typedef struct{
+    unsigned int reloc_count;
+    unsigned int reloc_entry_size;
+} program_sec_reloc_v1_t;
 
 #endif
