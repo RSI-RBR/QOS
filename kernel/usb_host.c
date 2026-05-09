@@ -341,6 +341,7 @@ static int hc_transfer_interrupt_in(unsigned char dev_addr,
                                     int low_speed,
                                     unsigned char hub_addr,
                                     unsigned char hub_port,
+                                    unsigned char* data_toggle,
                                     unsigned int* actual_out);
 static void usb_snapshot_hub_diag_to_root_info(void);
 
@@ -763,8 +764,9 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
 
     const unsigned char* r = report;
     unsigned int n = len;
-    // Report-ID-prefixed packet.
-    if (n >= 4u && r[0] != 0u){
+    // Non-boot HID reports can be report-ID-prefixed. Boot mouse reports use
+    // byte 0 for buttons, so do not strip it there.
+    if (!g_mouse.boot_mouse && n >= 4u && r[0] != 0u){
         r++;
         n--;
         if (n < 3u){
@@ -823,6 +825,7 @@ static int usb_hid_mouse_poll_once(void){
                                       g_mouse.low_speed,
                                       g_mouse.hub_addr,
                                       g_mouse.hub_port,
+                                      &g_mouse.in_toggle,
                                       &actual);
     if (rc != 0){
         return -1;
@@ -863,6 +866,7 @@ static int usb_hid_poll_once(void){
                                       g_kbd.low_speed,
                                       g_kbd.hub_addr,
                                       g_kbd.hub_port,
+                                      &g_kbd.in_toggle,
                                       &actual);
     if (rc != 0){
         g_root_info.hid_error_count++;
@@ -2060,6 +2064,7 @@ static int hc_transfer_interrupt_in(unsigned char dev_addr,
                                     int low_speed,
                                     unsigned char hub_addr,
                                     unsigned char hub_port,
+                                    unsigned char* data_toggle,
                                     unsigned int* actual_out){
     if (actual_out){
         *actual_out = 0;
@@ -2076,7 +2081,7 @@ static int hc_transfer_interrupt_in(unsigned char dev_addr,
         ep_mps = USB_HID_REPORT_LEN;
     }
 
-    unsigned int pid = g_kbd.in_toggle ? HCTSIZ_PID_DATA1 : HCTSIZ_PID_DATA0;
+    unsigned int pid = (data_toggle && *data_toggle) ? HCTSIZ_PID_DATA1 : HCTSIZ_PID_DATA0;
     unsigned int actual = 0;
     int rc;
 
@@ -2122,8 +2127,8 @@ static int hc_transfer_interrupt_in(unsigned char dev_addr,
     }
     if (actual > 0u){
         unsigned int packets = div_round_up(actual, ep_mps ? ep_mps : 1u);
-        if (packets & 1u){
-            g_kbd.in_toggle ^= 1u;
+        if ((packets & 1u) && data_toggle){
+            *data_toggle ^= 1u;
         }
     }
     if (actual_out){
