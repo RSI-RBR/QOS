@@ -545,12 +545,6 @@ int terminal_read(int term_id, int pid, char* out, unsigned int* out_source){
     if (terminal_active_graphics_pid() == pid){
         return console_try_getc_for_pid_ex(pid, out, out_source);
     }
-    if (display_get_active() == DISPLAY_TEXT_SESSION_ID &&
-        term_id == 0 &&
-        pid == TERM_TEXT_SHELL_PID &&
-        console_try_getc_for_pid_ex(pid, out, out_source)){
-        return 1;
-    }
 
     terminal_poll_inputs();
 
@@ -621,7 +615,7 @@ int terminal_switch_display_session(int id){
             (void)terminal_set_foreground_pid(0, TERM_TEXT_SHELL_PID);
             int fg = terminal_get_foreground_pid(0);
             if (fg >= 0){
-                (void)console_set_owner(fg, fg);
+                (void)console_focus_owner(fg);
             }
             usb_host_flush_input();
         }

@@ -9,7 +9,6 @@
 #define CONSOLE_INPUT_SRC_UART   1u
 #define CONSOLE_INPUT_SRC_REMOTE 2u
 #define CONSOLE_INPUT_SRC_USB    3u
-#define CONSOLE_TEXT_SHELL_PID   0
 
 static volatile int g_console_owner_pid = -1;
 static volatile int g_console_prev_owner_pid = -1;
@@ -82,16 +81,6 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         return 0;
     }
 
-    if (active_gfx_pid < 0 && console_text_display_active() && pid == CONSOLE_TEXT_SHELL_PID){
-        usb_host_poll();
-        if (usb_host_try_getc(out)){
-            if (out_source){
-                *out_source = CONSOLE_INPUT_SRC_USB;
-            }
-            return 1;
-        }
-    }
-
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
     if (owner >= 0 && !process_is_alive_locked(owner)){
@@ -126,12 +115,14 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         }
         return 1;
     }
-    usb_host_poll();
-    if (active_gfx_pid < 0 && console_text_display_active() && usb_host_try_getc(out)){
-        if (out_source){
-            *out_source = CONSOLE_INPUT_SRC_USB;
+    if (active_gfx_pid < 0 && console_text_display_active()){
+        usb_host_poll();
+        if (usb_host_try_getc(out)){
+            if (out_source){
+                *out_source = CONSOLE_INPUT_SRC_USB;
+            }
+            return 1;
         }
-        return 1;
     }
     return 0;
 }
@@ -176,6 +167,21 @@ int console_set_owner(int requester_pid, int target_pid){
         g_console_prev_owner_pid = -1;
     }
     g_console_owner_pid = target_pid;
+    spin_unlock_irqrestore(&g_console_lock, irq);
+    return 0;
+}
+
+int console_focus_owner(int target_pid){
+    if (target_pid < 0 || target_pid >= MAX_PROCESSES){
+        return -1;
+    }
+    if (!process_is_alive_locked(target_pid)){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_console_lock);
+    g_console_owner_pid = target_pid;
+    g_console_prev_owner_pid = -1;
     spin_unlock_irqrestore(&g_console_lock, irq);
     return 0;
 }
