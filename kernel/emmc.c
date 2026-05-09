@@ -342,10 +342,10 @@ int emmc_init(void){
     /*
      * Identification is intentionally slow, but keeping that divider for
      * normal file IO makes asset loads crawl. With the mailbox clock at
-     * 50 MHz, divider 4 is a safer first fast-transfer clock for Pi 3 SD
+     * 50 MHz, divider 2 gives the faster transfer clock for Pi 3 SD
      * cards while still being far faster than ID mode.
      */
-    if (emmc_set_clock_divider(4u) != 0){
+    if (emmc_set_clock_divider(2u) != 0){
         uart_puts("EMMC: fast clock failed\n");
         return -1;
     }
