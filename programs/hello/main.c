@@ -248,10 +248,30 @@ void program_main(void){
         unsigned long long frame_start_us = qos_get_time_us();
         unsigned long t0 = qos_get_counter_cycles();
         qos_event_t ev;
-        while (qos_poll_event(&ev) > 0){
+        for (unsigned int ev_budget = 0u; ev_budget < 8u && qos_poll_event(&ev) > 0; ev_budget++){
             if (ev.type == QOS_EVENT_MOUSE_MOVE){
                 hud_mouse_moves++;
             }
+        }
+        hud_frames++;
+        unsigned long hud_now_us = qos_get_time_us();
+        unsigned long hud_window_us = hud_now_us - hud_start_us;
+        if (hud_window_us >= 500000UL){
+            hud_fps_x10 = (hud_frames * 10000000UL) / hud_window_us;
+            hud_mouse_hz = (hud_mouse_moves * 1000000UL) / hud_window_us;
+            hud_frames = 0;
+            hud_mouse_moves = 0;
+            hud_start_us = hud_now_us;
+            hud_dirty = 1;
+        }
+        if (hud_dirty){
+            hud_draw(hud_fps_x10, hud_mouse_hz);
+            /*
+             * Present the HUD separately so its top-left dirty rect does not
+             * union with the moving cube and force a huge copy twice a second.
+             */
+            qos_fb_present();
+            hud_dirty = 0;
         }
 //        api->clear(0x00000000);
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, 0x00000000);
@@ -279,22 +299,6 @@ void program_main(void){
 
         qos_fb_rect(cube.lx, cube.ly, cube.sx, cube.sy, cube.c);
         unsigned long t2 = qos_get_counter_cycles();
-
-        hud_frames++;
-        unsigned long hud_now_us = qos_get_time_us();
-        unsigned long hud_window_us = hud_now_us - hud_start_us;
-        if (hud_window_us >= 500000UL){
-            hud_fps_x10 = (hud_frames * 10000000UL) / hud_window_us;
-            hud_mouse_hz = (hud_mouse_moves * 1000000UL) / hud_window_us;
-            hud_frames = 0;
-            hud_mouse_moves = 0;
-            hud_start_us = hud_now_us;
-            hud_dirty = 1;
-        }
-        if (hud_dirty){
-            hud_draw(hud_fps_x10, hud_mouse_hz);
-            hud_dirty = 0;
-        }
 
         qos_fb_present();
         unsigned long t3 = qos_get_counter_cycles();

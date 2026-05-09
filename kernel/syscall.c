@@ -544,6 +544,13 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
 
+            if (usb_host_poll_event(&ev)){
+                frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
+                                                     &ev,
+                                                     sizeof(ev)) == 0) ? 1ul : (unsigned long)-1;
+                return frame_sp;
+            }
+
             usb_host_poll();
             usb_host_poll_mouse();
             if (!usb_host_poll_event(&ev)){
