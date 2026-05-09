@@ -9,7 +9,9 @@
 #define FB_CONSOLE_MAX_ROWS (1080u / FB_CONSOLE_CELL_H)
 #define FB_CONSOLE_MAX_PIXEL_W (FB_CONSOLE_MAX_COLS * FB_CONSOLE_CELL_W)
 #define FB_CONSOLE_MAX_PIXEL_H (FB_CONSOLE_MAX_ROWS * FB_CONSOLE_CELL_H)
-#define FB_CONSOLE_DMA_MIN_BYTES (2u * 1024u * 1024u)
+// DMA setup is slower than CPU copy for current terminal redraw patterns.
+// Keep the hook available, but avoid using it for normal/full-HD console text.
+#define FB_CONSOLE_DMA_MIN_BYTES (16u * 1024u * 1024u)
 
 static unsigned char g_cells[FB_CONSOLE_MAX_ROWS][FB_CONSOLE_MAX_COLS];
 static unsigned int g_pixels[FB_CONSOLE_MAX_PIXEL_H][FB_CONSOLE_MAX_PIXEL_W] __attribute__((aligned(64)));

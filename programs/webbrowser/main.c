@@ -4,6 +4,7 @@
 #define INPUT_CAP 192
 #define REQ_CAP 1024
 #define RESP_CAP 786432
+#define DECODE_CAP (1024 * 1024)
 #define DNS_TIMEOUT_MS 3000u
 #define RECV_TIMEOUT_MS 3000u
 #define HOST_CAP 128
@@ -1539,11 +1540,13 @@ static void cmd_gzip(const char* arg){
 
 static void cmd_open(char* host, const char* path){
     static unsigned char resp[RESP_CAP];
-    static unsigned char work[RESP_CAP];
+    static unsigned char work[DECODE_CAP];
     char req_host[HOST_CAP];
     char req_path[PATH_CAP];
     char target[URL_CAP];
     char header_value[64];
+    char content_encoding[64];
+    int has_content_encoding = 0;
     int use_https = 0;
     int n;
     unsigned long decode_chunked_ms = 0;
@@ -1615,24 +1618,31 @@ static void cmd_open(char* host, const char* path){
 
     const unsigned char* body_ptr = &resp[body];
     int body_len = n - body;
+    if (extract_header_value(resp, n, "Content-Encoding", content_encoding, sizeof(content_encoding)) == 0){
+        has_content_encoding = 1;
+    }
+
     if (extract_header_value(resp, n, "Transfer-Encoding", header_value, sizeof(header_value)) == 0 &&
         str_contains_ci(header_value, "chunked")){
         unsigned long t_decode = qos_get_ticks();
-        int decoded = decode_chunked_body(body_ptr, body_len, work, (int)sizeof(work));
+        // Decode chunked bodies downward into resp. The destination begins
+        // before the source body, so forward copying is safe and keeps the
+        // 1 MiB work buffer free for gzip output.
+        int decoded = decode_chunked_body(body_ptr, body_len, resp, (int)sizeof(resp));
         decode_chunked_ms = qos_get_ticks() - t_decode;
         if (decoded > 0){
-            body_ptr = work;
+            body_ptr = resp;
             body_len = decoded;
         } else{
             qos_puts("Chunked response decode failed; showing raw body.\n");
         }
     }
 
-    if (extract_header_value(resp, n, "Content-Encoding", header_value, sizeof(header_value)) == 0){
-        if (str_contains_ci(header_value, "gzip")){
-            unsigned char* out_buf = (body_ptr == work) ? resp : work;
+    if (has_content_encoding){
+        if (str_contains_ci(content_encoding, "gzip")){
+            unsigned char* out_buf = work;
             unsigned long t_decode = qos_get_ticks();
-            int decoded = gzip_decompress_local(body_ptr, body_len, out_buf, RESP_CAP);
+            int decoded = gzip_decompress_local(body_ptr, body_len, out_buf, DECODE_CAP);
             decode_gzip_ms = qos_get_ticks() - t_decode;
             if (decoded > 0){
                 body_ptr = out_buf;
@@ -1643,9 +1653,9 @@ static void cmd_open(char* host, const char* path){
             } else{
                 qos_puts("Gzip decode failed; showing raw body.\n");
             }
-        } else if (!str_contains_ci(header_value, "identity")){
+        } else if (!str_contains_ci(content_encoding, "identity")){
             qos_puts("Unsupported Content-Encoding=");
-            qos_puts(header_value);
+            qos_puts(content_encoding);
             qos_puts(" (showing raw body)\n");
         }
     }
