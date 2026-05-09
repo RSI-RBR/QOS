@@ -34,6 +34,8 @@ make -C programs/game SIGN_KEY=../../keys/dev_ed25519.pem PQ_SIGN_KEY=../../keys
 
 Notes:
 - `programs/game/src`, `programs/game/img`, and build outputs are ignored.
+- The default game reservation is 16 MiB, matching the current kernel
+  `QOS_PROGRAM_MAX_MEMORY_BYTES` limit.
 - The wrapper expects exactly one desktop entrypoint after preprocessing:
   `qf2d_main(int argc, char** argv)`.
 - If the private tree has multiple source folders, override `GAME_SOURCES`.
