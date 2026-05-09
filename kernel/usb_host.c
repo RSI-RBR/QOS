@@ -887,6 +887,8 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
     int dx = (int)((signed char)r[1]);
     int dy = (int)((signed char)r[2]);
     int wheel = (n >= 4u) ? (int)((signed char)r[3]) : 0;
+    dx = (dx * 3) / 2;
+    dy = (dy * 3) / 2;
     int moved = (dx != 0 || dy != 0);
     unsigned int old_buttons = g_mouse.buttons;
     int changed = moved || wheel != 0 || (buttons != old_buttons);
