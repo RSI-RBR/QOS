@@ -36,5 +36,14 @@ void* display_get_framebuffer_for_pid(int owner_pid);
 unsigned long display_get_framebuffer_size_for_pid(int owner_pid);
 int display_mark_dirty_for_pid(int owner_pid);
 int display_is_active_graphics_pid(int owner_pid);
+int display_clear_for_pid(int owner_pid, unsigned int color);
+int display_rect_for_pid(int owner_pid,
+                         unsigned int x,
+                         unsigned int y,
+                         unsigned int w,
+                         unsigned int h,
+                         unsigned int color);
+int display_present_for_pid(int owner_pid);
+int display_present_active(void);
 
 #endif

@@ -4,6 +4,7 @@
 #include "console.h"
 #include "remote_login.h"
 #include "spinlock.h"
+#include "display.h"
 
 #define TERM_FLAG_UART QOS_TERM_OUTPUT_UART
 #define TERM_FLAG_FB   QOS_TERM_OUTPUT_FB
@@ -75,6 +76,9 @@ static void terminal_render_rows_unlocked(int term_id,
                                           unsigned int start_row,
                                           unsigned int end_row){
     if (!terminal_valid_id(term_id)){
+        return;
+    }
+    if (display_get_active() != DISPLAY_TEXT_SESSION_ID){
         return;
     }
 
@@ -294,7 +298,8 @@ void terminal_clear_active(void){
     terminal_t* term = terminal_get_locked(g_active_term);
     if (term){
         terminal_clear_buffer_locked(term);
-        if (term->flags & TERM_FLAG_FB){
+        if ((term->flags & TERM_FLAG_FB) &&
+            display_get_active() == DISPLAY_TEXT_SESSION_ID){
             term_id = g_active_term;
         }
     }
@@ -386,7 +391,8 @@ void terminal_putc(int term_id, int pid, char c){
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
     int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
-    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB);
+    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) &&
+                    display_get_active() == DISPLAY_TEXT_SESSION_ID;
     int mirror_remote = (pid >= 0 && owner == pid);
 
     if (term){
@@ -432,7 +438,8 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     terminal_t* term = terminal_get_locked(term_id);
     int active = (term_id == g_active_term);
     int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
-    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB);
+    int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) &&
+                    display_get_active() == DISPLAY_TEXT_SESSION_ID;
     int mirror_remote = (pid >= 0 && owner == pid);
     unsigned int dirty_start = term ? term->cursor_row : 0u;
     unsigned int dirty_end = dirty_start;
@@ -574,6 +581,7 @@ int terminal_set_active(int id){
     if (!terminal_valid_id(id)){
         return -1;
     }
+    (void)display_set_active(DISPLAY_TEXT_SESSION_ID);
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     g_active_term = id;
     g_terms[g_active_term].flags |= TERM_FLAG_FB;
@@ -606,6 +614,7 @@ int terminal_set_active_output(unsigned int flags){
     term->flags = flags;
     spin_unlock_irqrestore(&g_terminal_lock, irq);
     if (flags & TERM_FLAG_FB){
+        (void)display_set_active(DISPLAY_TEXT_SESSION_ID);
         terminal_render_all_unlocked(term_id);
     }
     return 0;

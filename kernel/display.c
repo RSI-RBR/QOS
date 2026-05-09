@@ -12,6 +12,19 @@ static int display_valid_id(int session_id){
     return session_id >= 0 && session_id < DISPLAY_MAX_SESSIONS;
 }
 
+static int display_find_graphics_for_pid_locked(int owner_pid){
+    if (owner_pid < 0){
+        return -1;
+    }
+    for (int i = 1; i < DISPLAY_MAX_SESSIONS; i++){
+        if (g_display_sessions[i].type == DISPLAY_GRAPHICS &&
+            g_display_sessions[i].owner_pid == owner_pid){
+            return i;
+        }
+    }
+    return -1;
+}
+
 static unsigned long display_fb_size(void){
     unsigned int width = fb_get_width();
     unsigned int height = fb_get_height();
@@ -27,6 +40,16 @@ static unsigned long display_fb_size(void){
         return 0UL;
     }
     return (unsigned long)pitch * (unsigned long)height;
+}
+
+static void display_memset(void* ptr, unsigned char value, unsigned long len){
+    unsigned char* p = (unsigned char*)ptr;
+    if (!p){
+        return;
+    }
+    for (unsigned long i = 0; i < len; i++){
+        p[i] = value;
+    }
 }
 
 static void display_clear_session_locked(int session_id){
@@ -60,6 +83,29 @@ static void display_init_text_locked(void){
     g_display_active = DISPLAY_TEXT_SESSION_ID;
 }
 
+static int display_get_or_create_graphics_for_pid(int owner_pid){
+    if (owner_pid < 0){
+        return -1;
+    }
+
+    display_init();
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int session_id = display_find_graphics_for_pid_locked(owner_pid);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    if (session_id >= 0){
+        return session_id;
+    }
+
+    session_id = display_create_graphics_session(owner_pid);
+    if (session_id >= 0){
+        // A newly-launched graphics app should become visible immediately,
+        // but once created it will not steal focus on every later draw.
+        (void)display_set_active(session_id);
+    }
+    return session_id;
+}
+
 void display_init(void){
     if (g_display_ready){
         return;
@@ -91,12 +137,10 @@ int display_create_graphics_session(int owner_pid){
     display_init();
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
-    for (int i = 1; i < DISPLAY_MAX_SESSIONS; i++){
-        if (g_display_sessions[i].type == DISPLAY_GRAPHICS &&
-            g_display_sessions[i].owner_pid == owner_pid){
-            spin_unlock_irqrestore(&g_display_lock, irq);
-            return i;
-        }
+    int existing = display_find_graphics_for_pid_locked(owner_pid);
+    if (existing >= 0){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return existing;
     }
     spin_unlock_irqrestore(&g_display_lock, irq);
 
@@ -109,19 +153,14 @@ int display_create_graphics_session(int owner_pid){
     if (!fb){
         return -1;
     }
-    volatile unsigned char* wipe = (volatile unsigned char*)fb;
-    for (unsigned long i = 0; i < size; i++){
-        wipe[i] = 0;
-    }
+    display_memset(fb, 0, size);
 
     irq = spin_lock_irqsave(&g_display_lock);
-    for (int i = 1; i < DISPLAY_MAX_SESSIONS; i++){
-        if (g_display_sessions[i].type == DISPLAY_GRAPHICS &&
-            g_display_sessions[i].owner_pid == owner_pid){
-            spin_unlock_irqrestore(&g_display_lock, irq);
-            kfree_secure(fb, size);
-            return i;
-        }
+    existing = display_find_graphics_for_pid_locked(owner_pid);
+    if (existing >= 0){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        kfree_secure(fb, size);
+        return existing;
     }
 
     int slot = -1;
@@ -224,6 +263,9 @@ int display_set_active(int session_id){
     g_display_sessions[session_id].dirty = 1u;
     g_display_active = session_id;
     spin_unlock_irqrestore(&g_display_lock, irq);
+    if (session_id != DISPLAY_TEXT_SESSION_ID){
+        (void)display_present_active();
+    }
     return 0;
 }
 
@@ -318,4 +360,141 @@ int display_is_active_graphics_pid(int owner_pid){
               g_display_sessions[session_id].type == DISPLAY_GRAPHICS);
     spin_unlock_irqrestore(&g_display_lock, irq);
     return ok;
+}
+
+int display_clear_for_pid(int owner_pid, unsigned int color){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS || !s->framebuffer || s->pitch == 0u ||
+        s->pitch < (s->width * sizeof(unsigned int))){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    for (unsigned int y = 0; y < s->height; y++){
+        unsigned int* row = (unsigned int*)((unsigned char*)s->framebuffer +
+                                            ((unsigned long)y * s->pitch));
+        for (unsigned int x = 0; x < s->width; x++){
+            row[x] = color;
+        }
+    }
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
+int display_rect_for_pid(int owner_pid,
+                         unsigned int x,
+                         unsigned int y,
+                         unsigned int w,
+                         unsigned int h,
+                         unsigned int color){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0 || w == 0u || h == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS || !s->framebuffer || s->pitch == 0u ||
+        s->pitch < (s->width * sizeof(unsigned int)) ||
+        x >= s->width || y >= s->height){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    if (x + w < x || x + w > s->width){
+        w = s->width - x;
+    }
+    if (y + h < y || y + h > s->height){
+        h = s->height - y;
+    }
+
+    for (unsigned int py = y; py < y + h; py++){
+        unsigned int* row = (unsigned int*)((unsigned char*)s->framebuffer +
+                                            ((unsigned long)py * s->pitch));
+        for (unsigned int px = x; px < x + w; px++){
+            row[px] = color;
+        }
+    }
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
+int display_present_for_pid(int owner_pid){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    if (g_display_sessions[session_id].type != DISPLAY_GRAPHICS){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+    g_display_sessions[session_id].dirty = 1u;
+    int active = (g_display_active == session_id);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+
+    if (!active){
+        return 0;
+    }
+    return display_present_active();
+}
+
+int display_present_active(void){
+    display_init();
+
+    unsigned long dst_base = fb_get_base();
+    unsigned int dst_pitch = fb_get_pitch();
+    unsigned int dst_width = fb_get_width();
+    unsigned int dst_height = fb_get_height();
+    if (!dst_base || dst_pitch == 0u || dst_width == 0u || dst_height == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int session_id = g_display_active;
+    if (!display_valid_id(session_id) ||
+        g_display_sessions[session_id].type != DISPLAY_GRAPHICS ||
+        !g_display_sessions[session_id].framebuffer ||
+        g_display_sessions[session_id].pitch == 0u ||
+        g_display_sessions[session_id].dirty == 0u){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return 0;
+    }
+
+    display_session_t* s = &g_display_sessions[session_id];
+    unsigned int copy_width = s->width;
+    unsigned int copy_height = s->height;
+    if (copy_width > dst_width){
+        copy_width = dst_width;
+    }
+    if (copy_height > dst_height){
+        copy_height = dst_height;
+    }
+    if (copy_width == 0u || copy_height == 0u){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    unsigned int row_bytes = copy_width * sizeof(unsigned int);
+    if (dst_pitch < row_bytes || s->pitch < row_bytes){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+    for (unsigned int y = 0; y < copy_height; y++){
+        unsigned char* src = (unsigned char*)s->framebuffer + ((unsigned long)y * s->pitch);
+        unsigned char* dst = (unsigned char*)dst_base + ((unsigned long)y * dst_pitch);
+        for (unsigned int i = 0; i < row_bytes; i++){
+            dst[i] = src[i];
+        }
+    }
+    s->dirty = 0u;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
 }

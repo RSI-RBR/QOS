@@ -21,6 +21,7 @@
 #include "terminal.h"
 #include "dma.h"
 #include "klog.h"
+#include "display.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -375,8 +376,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_FB_CLEAR:
-            fb_clear((unsigned int)frame[TF_X0]);
-            frame[TF_X0] = 0;
+            frame[TF_X0] = (unsigned long)display_clear_for_pid(process_current_pid(),
+                                                                 (unsigned int)frame[TF_X0]);
             return frame_sp;
 
         case SYS_FB_GET_WIDTH:
@@ -388,17 +389,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_FB_RECT:
-            fb_edit_buffer_rect_fast((unsigned int)frame[TF_X0],
-                                     (unsigned int)frame[TF_X1],
-                                     (unsigned int)frame[TF_X2],
-                                     (unsigned int)frame[TF_X3],
-                                     (unsigned int)frame[TF_X4]);
-            frame[TF_X0] = 0;
+            frame[TF_X0] = (unsigned long)display_rect_for_pid(process_current_pid(),
+                                                               (unsigned int)frame[TF_X0],
+                                                               (unsigned int)frame[TF_X1],
+                                                               (unsigned int)frame[TF_X2],
+                                                               (unsigned int)frame[TF_X3],
+                                                               (unsigned int)frame[TF_X4]);
             return frame_sp;
 
         case SYS_FB_PRESENT:
-            fb_update_buffer_pixels_fast();
-            frame[TF_X0] = 0;
+            frame[TF_X0] = (unsigned long)display_present_for_pid(process_current_pid());
             return frame_sp;
 
         case SYS_TRY_GETC: {
