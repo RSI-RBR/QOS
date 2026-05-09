@@ -14,6 +14,9 @@ How it works:
 - Desktop `FILE*` reads are stubbed for now. Missing text files behave like
   EOF, while `/dev/urandom` returns lightweight pseudo-random bytes so early map
   generation code does not read uninitialized data.
+- `qos_isqrt_u64()` is linked for deterministic fixed-point distance math.
+- A small `sqrt(double)` compatibility wrapper is present so the current desktop
+  code can link while hot paths are migrated away from double.
 
 Expected local layout:
 - `programs/game/src/*.c`
@@ -39,3 +42,5 @@ Notes:
 - Real game file I/O should use QOS sandboxed asset APIs later. The current
   `FILE*` layer is only a compile/runtime safety shim for developer-only init
   text files.
+- For range checks, prefer squared-distance compares. Use `qos_isqrt_u64()` only
+  when the actual distance value is needed, such as normalizing movement.

@@ -365,6 +365,9 @@ The game wrapper force-includes QOS stdio compatibility:
 - `snprintf(...)` is provided for asset path construction.
 - `FILE*` calls are compatibility stubs for now: developer-only text files read
   as EOF, and `/dev/urandom` returns lightweight pseudo-random bytes.
+- `qos_isqrt_u64()` is available for deterministic fixed-point distance math.
+- `sqrt(double)` exists as a small compatibility wrapper while the game is being
+  migrated away from desktop floating-point hot paths.
 - Floating-point format specifiers are consumed safely but currently print as
   `<float>`; keep important numeric gameplay diagnostics integer-based until the
   formatter grows real float conversion.
