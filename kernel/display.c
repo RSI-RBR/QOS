@@ -153,11 +153,6 @@ static int display_get_or_create_graphics_for_pid(int owner_pid){
     }
 
     session_id = display_create_graphics_session(owner_pid);
-    if (session_id >= 0){
-        // A newly-launched graphics app should become visible immediately,
-        // but once created it will not steal focus on every later draw.
-        (void)display_set_active(session_id);
-    }
     return session_id;
 }
 
@@ -331,6 +326,22 @@ int display_set_active(int session_id){
         (void)display_present_active();
     }
     return 0;
+}
+
+int display_set_active_for_pid(int owner_pid){
+    if (owner_pid < 0){
+        return -1;
+    }
+
+    display_init();
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int session_id = display_find_graphics_for_pid_locked(owner_pid);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    if (session_id < 0){
+        return -1;
+    }
+    return display_set_active(session_id);
 }
 
 int display_get_active(void){

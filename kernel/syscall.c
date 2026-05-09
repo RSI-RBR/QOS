@@ -284,6 +284,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
 
         case SYS_RUN_PROGRAM:
         case SYS_RUN_PROGRAM_NAMED:
+        case SYS_DISPLAY_CREATE_GRAPHICS:
+        case SYS_DISPLAY_SWITCH_GRAPHICS:
         case SYS_TTY_SET_OWNER:
         case SYS_TTY_RELEASE:
         case SYS_TTY_GET_OWNER:
@@ -492,6 +494,25 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             (void)terminal_attach_pid(pid, terminal_get_for_pid(process_current_pid()));
             kernel_preempt_exit();
             frame[TF_X0] = (unsigned long)pid;
+            return frame_sp;
+        }
+
+        case SYS_DISPLAY_CREATE_GRAPHICS: {
+            int target = (int)frame[TF_X0];
+            process_t* target_proc = get_process(target);
+            if (!target_proc ||
+                target_proc->state == PROC_DEAD ||
+                target_proc->state == PROC_REAPING){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)display_create_graphics_session(target);
+            return frame_sp;
+        }
+
+        case SYS_DISPLAY_SWITCH_GRAPHICS: {
+            int target = (int)frame[TF_X0];
+            frame[TF_X0] = (unsigned long)display_set_active_for_pid(target);
             return frame_sp;
         }
 

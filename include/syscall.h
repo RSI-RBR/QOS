@@ -89,7 +89,9 @@ enum {
     SYS_DMA_STATUS = 72,
     SYS_DMA_LAST_CS = 73,
     SYS_DMA_LAST_DEBUG = 74,
-    SYS_SECURITY_LOG_DUMP = 75
+    SYS_SECURITY_LOG_DUMP = 75,
+    SYS_DISPLAY_CREATE_GRAPHICS = 76,
+    SYS_DISPLAY_SWITCH_GRAPHICS = 77
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -236,6 +238,14 @@ static inline int qos_run_program(void){
 
 static inline int qos_run_program_named(const char* fat_name_83){
     return (int)qos_syscall1(SYS_RUN_PROGRAM_NAMED, (unsigned long)fat_name_83);
+}
+
+static inline int qos_display_create_graphics(int pid){
+    return (int)qos_syscall1(SYS_DISPLAY_CREATE_GRAPHICS, (unsigned long)pid);
+}
+
+static inline int qos_display_switch_graphics(int pid){
+    return (int)qos_syscall1(SYS_DISPLAY_SWITCH_GRAPHICS, (unsigned long)pid);
 }
 
 static inline int qos_tty_set_owner(int pid){

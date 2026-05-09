@@ -33,6 +33,7 @@ int display_create_graphics_session(int owner_pid);
 int display_destroy_session(int session_id);
 void display_destroy_for_pid(int owner_pid);
 int display_set_active(int session_id);
+int display_set_active_for_pid(int owner_pid);
 int display_get_active(void);
 int display_get_for_pid(int owner_pid);
 int display_get_info(int session_id, display_session_t* out);

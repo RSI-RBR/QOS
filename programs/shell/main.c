@@ -398,6 +398,7 @@ static void cmd_help(void){
     qos_puts("Commands:\n");
     qos_puts(" help\n");
     qos_puts(" run\n");
+    qos_puts(" runbg\n");
     qos_puts(" game\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
@@ -436,8 +437,32 @@ static void cmd_run(void){
         qos_puts("Program load failed.\n");
         return;
     }
+    int gfx = qos_display_create_graphics(pid);
     qos_puts("Program queued as PID ");
     print_uint((unsigned int)pid);
+    if (gfx >= 0){
+        qos_puts(" on gfx");
+        print_uint((unsigned int)gfx);
+    }
+    qos_puts("\n");
+    if (gfx >= 0){
+        (void)qos_display_switch_graphics(pid);
+    }
+}
+
+static void cmd_runbg(void){
+    int pid = qos_run_program();
+    if (pid < 0){
+        qos_puts("Program load failed.\n");
+        return;
+    }
+    int gfx = qos_display_create_graphics(pid);
+    qos_puts("Program queued in background as PID ");
+    print_uint((unsigned int)pid);
+    if (gfx >= 0){
+        qos_puts(" on gfx");
+        print_uint((unsigned int)gfx);
+    }
     qos_puts("\n");
 }
 
@@ -467,14 +492,22 @@ static void cmd_game(void){
         qos_puts("GAME.BIN load failed.\n");
         return;
     }
+    int gfx = qos_display_create_graphics(pid);
+    qos_puts("Game queued as PID ");
+    print_uint((unsigned int)pid);
+    if (gfx >= 0){
+        qos_puts(" on gfx");
+        print_uint((unsigned int)gfx);
+    }
+    qos_puts("\n");
+    if (gfx >= 0){
+        (void)qos_display_switch_graphics(pid);
+    }
     if (qos_tty_set_owner(pid) != 0){
         qos_puts("Warning: could not transfer TTY ownership.\n");
     } else{
         g_tty_owned = 0;
     }
-    qos_puts("Game queued as PID ");
-    print_uint((unsigned int)pid);
-    qos_puts("\n");
 }
 
 static void cmd_fbinfo(void){
@@ -1058,6 +1091,8 @@ static void execute_line(void){
         cmd_help();
     } else if (str_eq(g_buf, "run")){
         cmd_run();
+    } else if (str_eq(g_buf, "runbg")){
+        cmd_runbg();
     } else if (str_eq(g_buf, "game")){
         cmd_game();
     } else if (str_eq(g_buf, "web")){
