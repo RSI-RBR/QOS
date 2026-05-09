@@ -60,6 +60,41 @@
 static unsigned int g_rca = 0;
 static int g_sdhc = 0;
 
+static void short_delay(unsigned int c);
+
+static int emmc_set_clock_divider(unsigned int div){
+    unsigned int c1;
+
+    if (div > 0x3FFu){
+        return -1;
+    }
+
+    c1 = EMMC_CONTROL1;
+    c1 &= ~C1_CLK_EN;
+    EMMC_CONTROL1 = c1;
+    short_delay(1000);
+
+    c1 &= ~(C1_CLK_DIV_MASK | C1_DATA_TOUNIT_MASK);
+    c1 |= C1_CLK_INTLEN | C1_DATA_TOUNIT_MAX;
+    c1 |= ((div & 0xFFu) << 8);
+    c1 |= (((div >> 8) & 0x3u) << 6);
+    EMMC_CONTROL1 = c1;
+
+    {
+        unsigned long start = system_ticks;
+        unsigned int spin = 20000000;
+        while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
+            if ((system_ticks - start) > 200 || --spin == 0){
+                return -1;
+            }
+        }
+    }
+
+    EMMC_CONTROL1 |= C1_CLK_EN;
+    short_delay(1000);
+    return 0;
+}
+
 static void short_delay(unsigned int c){
     while (c--) asm volatile("nop");
 }
@@ -242,28 +277,10 @@ int emmc_init(void){
     EMMC_CONTROL0 = C0_SD_BUS_VOLT_33 | C0_SD_BUS_POWER;
     short_delay(10000);
 
-    {
-        unsigned int div = 128u; // keep identification clock conservative
-        unsigned int c1 = EMMC_CONTROL1;
-        c1 &= ~(C1_CLK_DIV_MASK | C1_DATA_TOUNIT_MASK | C1_CLK_EN);
-        c1 |= C1_CLK_INTLEN | C1_DATA_TOUNIT_MAX;
-        c1 |= ((div & 0xFFu) << 8);
-        c1 |= (((div >> 8) & 0x3u) << 6);
-        EMMC_CONTROL1 = c1;
+    if (emmc_set_clock_divider(128u) != 0){
+        uart_puts("EMMC: clk stable timeout\n");
+        return -1;
     }
-
-    {
-        unsigned long start = system_ticks;
-        unsigned int spin = 20000000;
-        while (!(EMMC_CONTROL1 & C1_CLK_STABLE)){
-            if ((system_ticks - start) > 200 || --spin == 0){
-                uart_puts("EMMC: clk stable timeout\n");
-                return -1;
-            }
-        }
-    }
-
-    EMMC_CONTROL1 |= C1_CLK_EN;
 
     if (emmc_reset_cmd_line() != 0 || emmc_reset_dat_line() != 0){
         uart_puts("EMMC: line reset fail\n");
@@ -320,6 +337,16 @@ int emmc_init(void){
 
     if (emmc_cmd_app(6, 2, CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN, 120) == 0){
         EMMC_CONTROL0 |= C0_HCTL_DWIDTH;
+    }
+
+    /*
+     * Identification is intentionally slow, but keeping that divider for
+     * normal file IO makes asset loads crawl. With the mailbox clock at
+     * 50 MHz, divider 2 is conservative and still far faster than ID mode.
+     */
+    if (emmc_set_clock_divider(2u) != 0){
+        uart_puts("EMMC: fast clock failed\n");
+        return -1;
     }
 
     uart_puts("EMMC init OK\n");
