@@ -20,6 +20,7 @@
 #include "trust.h"
 #include "terminal.h"
 #include "dma.h"
+#include "klog.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -295,6 +296,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_DMA_STATUS:
         case SYS_DMA_LAST_CS:
         case SYS_DMA_LAST_DEBUG:
+        case SYS_SECURITY_LOG_DUMP:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
         case SYS_NET_SET_LOCAL_IP:
@@ -801,6 +803,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_DMA_LAST_DEBUG:
             frame[TF_X0] = (unsigned long)dma_last_debug();
+            return frame_sp;
+
+        case SYS_SECURITY_LOG_DUMP:
+            klog_dump_to_terminal_for_pid(process_current_pid());
+            frame[TF_X0] = 0;
             return frame_sp;
 
         case SYS_PROCESS_DUMP:

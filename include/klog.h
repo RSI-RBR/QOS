@@ -6,5 +6,6 @@ void klog_send(char c);
 void klog_puts(const char* s);
 void klog_puthex(unsigned int val);
 void klog_putdec(unsigned long val);
+void klog_dump_to_terminal_for_pid(int pid);
 
 #endif

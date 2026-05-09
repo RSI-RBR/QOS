@@ -678,6 +678,16 @@ static void inflate_align_byte(inflate_reader_t* r){
     }
 }
 
+static int inflate_partial_or_error(inflate_reader_t* r, int out_pos, int* truncated){
+    if (r && r->in_pos >= r->in_len && out_pos > 0){
+        if (truncated){
+            *truncated = 1;
+        }
+        return out_pos;
+    }
+    return -1;
+}
+
 static int inflate_huff_build(inflate_huff_t* h, const unsigned char* lens, int n){
     unsigned short offs[17];
     int left = 1;
@@ -805,7 +815,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
         unsigned int bfinal = 0u;
         unsigned int btype = 0u;
         if (inflate_bits(&r, 1, &bfinal) != 0 || inflate_bits(&r, 2, &btype) != 0){
-            return -1;
+            return inflate_partial_or_error(&r, out_pos, truncated);
         }
         last = (int)bfinal;
 
@@ -814,7 +824,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
             unsigned int nlen = 0u;
             inflate_align_byte(&r);
             if (inflate_bits(&r, 16, &len) != 0 || inflate_bits(&r, 16, &nlen) != 0){
-                return -1;
+                return inflate_partial_or_error(&r, out_pos, truncated);
             }
             if (((len ^ 0xFFFFu) & 0xFFFFu) != (nlen & 0xFFFFu)){
                 return -1;
@@ -822,7 +832,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
             while (len--){
                 unsigned int byte = 0u;
                 if (inflate_bits(&r, 8, &byte) != 0){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 if (out_pos >= out_cap){
                     if (truncated){
@@ -855,7 +865,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
             if (inflate_bits(&r, 5, &hlit) != 0 ||
                 inflate_bits(&r, 5, &hdist) != 0 ||
                 inflate_bits(&r, 4, &hclen) != 0){
-                return -1;
+                return inflate_partial_or_error(&r, out_pos, truncated);
             }
             hlit += 257u;
             hdist += 1u;
@@ -867,7 +877,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
             for (i = 0; i < (int)hclen; i++){
                 unsigned int v = 0u;
                 if (inflate_bits(&r, 3, &v) != 0){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 clen_lens[order[i]] = (unsigned char)v;
             }
@@ -879,7 +889,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
             idx = 0;
             while (idx < total){
                 if (inflate_huff_decode(&r, &clen, &sym) != 0){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 if (sym >= 0 && sym <= 15){
                     lens[idx++] = (unsigned char)sym;
@@ -887,7 +897,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                     unsigned int rep = 0u;
                     unsigned char prev;
                     if (idx == 0 || inflate_bits(&r, 2, &rep) != 0){
-                        return -1;
+                        return inflate_partial_or_error(&r, out_pos, truncated);
                     }
                     prev = lens[idx - 1];
                     rep += 3u;
@@ -897,7 +907,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                 } else if (sym == 17){
                     unsigned int rep = 0u;
                     if (inflate_bits(&r, 3, &rep) != 0){
-                        return -1;
+                        return inflate_partial_or_error(&r, out_pos, truncated);
                     }
                     rep += 3u;
                     while (rep-- && idx < total){
@@ -906,7 +916,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                 } else if (sym == 18){
                     unsigned int rep = 0u;
                     if (inflate_bits(&r, 7, &rep) != 0){
-                        return -1;
+                        return inflate_partial_or_error(&r, out_pos, truncated);
                     }
                     rep += 11u;
                     while (rep-- && idx < total){
@@ -932,7 +942,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
         while (1){
             int sym = 0;
             if (inflate_huff_decode(&r, &ll, &sym) != 0){
-                return -1;
+                return inflate_partial_or_error(&r, out_pos, truncated);
             }
             if (sym < 256){
                 if (out_pos >= out_cap){
@@ -952,16 +962,16 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                 unsigned int len = len_base[len_idx];
                 unsigned int dist;
                 if (len_extra[len_idx] && inflate_bits(&r, len_extra[len_idx], &extra) != 0){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 len += extra;
                 if (inflate_huff_decode(&r, &dd, &dist_sym) != 0 || dist_sym < 0 || dist_sym > 29){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 dist = dist_base[dist_sym];
                 if (dist_extra[dist_sym] &&
                     inflate_bits(&r, dist_extra[dist_sym], &dist_extra_v) != 0){
-                    return -1;
+                    return inflate_partial_or_error(&r, out_pos, truncated);
                 }
                 dist += dist_extra_v;
                 if (dist == 0u || (int)dist > out_pos){
@@ -1023,12 +1033,17 @@ static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned c
     if (flags & 0x02u){
         pos += 2;
     }
-    if (pos >= in_len - 8){
+    if (pos >= in_len){
         return -1;
     }
 
     {
-        int out_n = inflate_raw_deflate_local(&in[pos], in_len - pos - 8, out, out_cap, &truncated);
+        int deflate_len = in_len - pos;
+        int out_n;
+        if (deflate_len <= 0){
+            return -1;
+        }
+        out_n = inflate_raw_deflate_local(&in[pos], deflate_len, out, out_cap, &truncated);
         if (out_n <= 0){
             return -1;
         }
@@ -1088,8 +1103,11 @@ static int decode_chunked_body(const unsigned char* in, int len, unsigned char* 
         if (chunk_len == 0){
             return o;
         }
-        if (chunk_len > (unsigned int)(len - i) || chunk_len > (unsigned int)(out_cap - o)){
-            return -1;
+        if (chunk_len > (unsigned int)(len - i)){
+            return (o > 0) ? o : -1;
+        }
+        if (chunk_len > (unsigned int)(out_cap - o)){
+            return (o > 0) ? o : -1;
         }
         for (unsigned int c = 0; c < chunk_len; c++){
             out[o++] = in[i + (int)c];

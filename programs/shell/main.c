@@ -404,6 +404,7 @@ static void cmd_help(void){
     qos_puts(" chvt <0-3>\n");
     qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" dma on|off|status\n");
+    qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
     qos_puts(" clear\n");
@@ -636,6 +637,10 @@ static void cmd_dma(const char* mode){
         return;
     }
     qos_puts("Usage: dma on|off|status\n");
+}
+
+static void cmd_securitylog(void){
+    qos_security_log_dump();
 }
 
 static void cmd_ping(void){
@@ -1088,6 +1093,8 @@ static void execute_line(void){
         cmd_dma(p);
     } else if (str_eq(g_buf, "dma")){
         cmd_dma("status");
+    } else if (str_eq(g_buf, "securitylog")){
+        cmd_securitylog();
     } else if (str_eq(g_buf, "clear")){
         qos_term_clear();
     } else if (str_eq(g_buf, "fbinfo")){
