@@ -407,6 +407,8 @@ static inline void qos_sleep_us(unsigned long long us){
     if (us == 0ull){
         return;
     }
+    start = qos_get_time_us();
+    deadline = start + us;
     // Use cooperative sleep for the coarse portion, then busy-wait the tail.
     if (us >= 2000ull){
         unsigned int coarse_ms = (unsigned int)((us - 1000ull) / 1000ull);
@@ -414,8 +416,6 @@ static inline void qos_sleep_us(unsigned long long us){
             qos_sleep(coarse_ms);
         }
     }
-    start = qos_get_time_us();
-    deadline = start + us;
     while ((long long)(qos_get_time_us() - deadline) < 0){
         asm volatile("yield");
     }
