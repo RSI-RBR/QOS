@@ -85,6 +85,10 @@ static void syscall_poll_background_io(void){
     static unsigned long next_remote_poll_tick = 0;
     unsigned long now = system_ticks;
 
+    // Poll HID globally so reserved display-switch shortcuts work even when
+    // the visible graphics task is not actively reading keyboard input. Normal
+    // characters still remain gated by console/terminal ownership.
+    usb_host_poll();
     terminal_poll_inputs();
 
     if ((long)(now - next_net_poll_tick) >= 0){
@@ -401,6 +405,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_FB_PRESENT:
+            usb_host_poll();
             frame[TF_X0] = (unsigned long)display_present_for_pid(process_current_pid());
             return frame_sp;
 
