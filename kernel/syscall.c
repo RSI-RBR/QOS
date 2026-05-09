@@ -512,6 +512,13 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_DISPLAY_SWITCH_GRAPHICS: {
             int target = (int)frame[TF_X0];
+            process_t* target_proc = get_process(target);
+            if (!target_proc ||
+                target_proc->state == PROC_DEAD ||
+                target_proc->state == PROC_REAPING){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
             frame[TF_X0] = (unsigned long)display_set_active_for_pid(target);
             return frame_sp;
         }

@@ -399,6 +399,7 @@ static void cmd_help(void){
     qos_puts(" help\n");
     qos_puts(" run\n");
     qos_puts(" runbg\n");
+    qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
@@ -437,16 +438,11 @@ static void cmd_run(void){
         qos_puts("Program load failed.\n");
         return;
     }
-    int gfx = qos_display_create_graphics(pid);
     qos_puts("Program queued as PID ");
     print_uint((unsigned int)pid);
-    if (gfx >= 0){
-        qos_puts(" on gfx");
-        print_uint((unsigned int)gfx);
-    }
     qos_puts("\n");
-    if (gfx >= 0){
-        (void)qos_display_switch_graphics(pid);
+    if (qos_display_switch_graphics(pid) != 0){
+        qos_puts("Warning: graphics switch request failed.\n");
     }
 }
 
@@ -456,13 +452,8 @@ static void cmd_runbg(void){
         qos_puts("Program load failed.\n");
         return;
     }
-    int gfx = qos_display_create_graphics(pid);
     qos_puts("Program queued in background as PID ");
     print_uint((unsigned int)pid);
-    if (gfx >= 0){
-        qos_puts(" on gfx");
-        print_uint((unsigned int)gfx);
-    }
     qos_puts("\n");
 }
 
@@ -492,16 +483,11 @@ static void cmd_game(void){
         qos_puts("GAME.BIN load failed.\n");
         return;
     }
-    int gfx = qos_display_create_graphics(pid);
     qos_puts("Game queued as PID ");
     print_uint((unsigned int)pid);
-    if (gfx >= 0){
-        qos_puts(" on gfx");
-        print_uint((unsigned int)gfx);
-    }
     qos_puts("\n");
-    if (gfx >= 0){
-        (void)qos_display_switch_graphics(pid);
+    if (qos_display_switch_graphics(pid) != 0){
+        qos_puts("Warning: graphics switch request failed.\n");
     }
     if (qos_tty_set_owner(pid) != 0){
         qos_puts("Warning: could not transfer TTY ownership.\n");
@@ -605,6 +591,16 @@ static void cmd_chvt(unsigned int id){
     }
     qos_puts("Switched to tty");
     print_uint(id);
+    qos_puts(".\n");
+}
+
+static void cmd_gfx(unsigned int pid){
+    if (qos_display_switch_graphics((int)pid) != 0){
+        qos_puts("gfx switch failed.\n");
+        return;
+    }
+    qos_puts("Switched HDMI to graphics PID ");
+    print_uint(pid);
     qos_puts(".\n");
 }
 
@@ -1093,6 +1089,19 @@ static void execute_line(void){
         cmd_run();
     } else if (str_eq(g_buf, "runbg")){
         cmd_runbg();
+    } else if (str_starts_with(g_buf, "gfx ")){
+        const char* p = g_buf + 4;
+        unsigned int pid = 0;
+        while (*p == ' '){
+            p++;
+        }
+        if (parse_uint(p, &pid) != 0){
+            qos_puts("Usage: gfx <pid>\n");
+        } else{
+            cmd_gfx(pid);
+        }
+    } else if (str_eq(g_buf, "gfx")){
+        qos_puts("Usage: gfx <pid>\n");
     } else if (str_eq(g_buf, "game")){
         cmd_game();
     } else if (str_eq(g_buf, "web")){

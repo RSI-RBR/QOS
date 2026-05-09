@@ -7,6 +7,7 @@ static display_session_t g_display_sessions[DISPLAY_MAX_SESSIONS];
 static spinlock_t g_display_lock;
 static int g_display_ready = 0;
 static int g_display_active = DISPLAY_TEXT_SESSION_ID;
+static int g_display_pending_switch_pid = -1;
 
 static int display_valid_id(int session_id){
     return session_id >= 0 && session_id < DISPLAY_MAX_SESSIONS;
@@ -166,6 +167,7 @@ void display_init(void){
     for (int i = 0; i < DISPLAY_MAX_SESSIONS; i++){
         display_clear_session_locked(i);
     }
+    g_display_pending_switch_pid = -1;
     display_init_text_locked();
     g_display_ready = 1;
     spin_unlock_irqrestore(&g_display_lock, irq);
@@ -285,6 +287,9 @@ void display_destroy_for_pid(int owner_pid){
     if (g_display_sessions[DISPLAY_TEXT_SESSION_ID].owner_pid == owner_pid){
         g_display_sessions[DISPLAY_TEXT_SESSION_ID].owner_pid = -1;
     }
+    if (g_display_pending_switch_pid == owner_pid){
+        g_display_pending_switch_pid = -1;
+    }
     spin_unlock_irqrestore(&g_display_lock, irq);
 
     for (int i = 1; i < DISPLAY_MAX_SESSIONS; i++){
@@ -321,6 +326,7 @@ int display_set_active(int session_id){
         g_display_sessions[session_id].dirty = 1u;
     }
     g_display_active = session_id;
+    g_display_pending_switch_pid = -1;
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (session_id != DISPLAY_TEXT_SESSION_ID){
         (void)display_present_active();
@@ -337,9 +343,14 @@ int display_set_active_for_pid(int owner_pid){
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     int session_id = display_find_graphics_for_pid_locked(owner_pid);
+    if (session_id < 0){
+        // The process may not have issued its first framebuffer syscall yet.
+        // Remember the requested owner and switch on its first present().
+        g_display_pending_switch_pid = owner_pid;
+    }
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (session_id < 0){
-        return -1;
+        return 0;
     }
     return display_set_active(session_id);
 }
@@ -512,6 +523,15 @@ int display_present_for_pid(int owner_pid){
     if (g_display_sessions[session_id].type != DISPLAY_GRAPHICS){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -1;
+    }
+    if (g_display_pending_switch_pid == owner_pid){
+        for (int i = 0; i < DISPLAY_MAX_SESSIONS; i++){
+            g_display_sessions[i].active = 0;
+        }
+        g_display_sessions[session_id].active = 1;
+        g_display_active = session_id;
+        g_display_pending_switch_pid = -1;
+        display_mark_full_dirty_locked(&g_display_sessions[session_id]);
     }
     int active = (g_display_active == session_id);
     spin_unlock_irqrestore(&g_display_lock, irq);
