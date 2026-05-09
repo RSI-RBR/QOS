@@ -7,7 +7,13 @@
 extern "C" {
 #endif
 
+#ifndef RAND_MAX
+#define RAND_MAX 2147483647
+#endif
+
 void exit(int status);
+void srand(unsigned int seed);
+int rand(void);
 
 #ifdef __cplusplus
 }

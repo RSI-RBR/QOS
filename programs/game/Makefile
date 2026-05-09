@@ -7,7 +7,7 @@ PROGRAM_MEMORY_BYTES ?= 16777216
 GAME_SRC_DIR ?= src
 GAME_SOURCES ?= $(wildcard $(GAME_SRC_DIR)/*.c)
 GAME_BUILD_OBJS = $(patsubst $(GAME_SRC_DIR)/%.c,game_%.o,$(GAME_SOURCES))
-USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o
+USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o qos_random.o
 SDL_OBJS = sdl_shim.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
@@ -33,6 +33,9 @@ qos_stdio.o: ../lib/qos_stdio.c
 
 qos_math.o: ../lib/qos_math.c
 	$(CC) $(COMMON_CFLAGS) -c ../lib/qos_math.c -o qos_math.o
+
+qos_random.o: ../lib/qos_random.c
+	$(CC) $(COMMON_CFLAGS) -c ../lib/qos_random.c -o qos_random.o
 
 sdl_shim.o: ../sdl_compat/sdl_shim.c
 	$(CC) $(COMMON_CFLAGS) -c ../sdl_compat/sdl_shim.c -o sdl_shim.o
