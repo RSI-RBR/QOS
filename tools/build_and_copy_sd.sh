@@ -17,6 +17,10 @@ AUTH_SIGNER_KEY_ID="${AUTH_SIGNER_KEY_ID:-0x00010001}"
 AUTH_SIGN_KEY="${AUTH_SIGN_KEY:-}"
 AUTH_PQ_SIGN_KEY="${AUTH_PQ_SIGN_KEY:-}"
 KERNEL_FILE_SIGNER_KEY_ID="${KERNEL_FILE_SIGNER_KEY_ID:-0x1}"
+QF2D_ROOT="${QF2D_ROOT:-}"
+GAME_SRC_DIR="${GAME_SRC_DIR:-}"
+GAME_IMG_DIR="${GAME_IMG_DIR:-}"
+GAME_BUILD_SRC_DIR=""
 
 TMP_CA_DIR=""
 cleanup_tmp_ca() {
@@ -70,6 +74,26 @@ if [[ -f "$AUTH_SRC" ]]; then
     exit 1
   fi
 fi
+if [[ -n "$QF2D_ROOT" ]]; then
+  if [[ ! -d "$QF2D_ROOT" ]]; then
+    echo "QF2D_ROOT not found: $QF2D_ROOT"
+    exit 1
+  fi
+  if [[ -z "$GAME_SRC_DIR" ]]; then
+    GAME_SRC_DIR="$QF2D_ROOT/src"
+  fi
+  if [[ -z "$GAME_IMG_DIR" ]]; then
+    GAME_IMG_DIR="$QF2D_ROOT/img"
+  fi
+fi
+if [[ -n "$GAME_SRC_DIR" && ! -d "$GAME_SRC_DIR" ]]; then
+  echo "GAME_SRC_DIR not found: $GAME_SRC_DIR"
+  exit 1
+fi
+if [[ -n "$GAME_IMG_DIR" && ! -d "$GAME_IMG_DIR" ]]; then
+  echo "GAME_IMG_DIR not found: $GAME_IMG_DIR"
+  exit 1
+fi
 
 # Preserve CA artifacts across "make clean" (which removes build/ by default).
 if [[ -f "$CA_BUNDLE_SRC" || -f "$CA_REPORT_SRC" ]]; then
@@ -111,7 +135,15 @@ make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY
 make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 if [[ -d programs/game && -f programs/game/Makefile ]]; then
-  make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+  if [[ -n "$GAME_SRC_DIR" ]]; then
+    GAME_BUILD_SRC_DIR="build/private_game_src"
+    rm -rf "$GAME_BUILD_SRC_DIR"
+    mkdir -p "$GAME_BUILD_SRC_DIR/src"
+    cp -a "$GAME_SRC_DIR"/. "$GAME_BUILD_SRC_DIR/src/"
+    make -C programs/game clean all GAME_SRC_DIR="../../$GAME_BUILD_SRC_DIR/src" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+  else
+    make -C programs/game clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+  fi
 else
   echo "programs/game not present; skipping private game build."
 fi
@@ -179,8 +211,13 @@ if [[ -f programs/hello/program.pqs ]]; then cp -f programs/hello/program.pqs "$
 if [[ -f programs/game/game.bin ]]; then
   cp -f programs/game/game.bin "$SD_MOUNT/GAME.BIN"
   if [[ -f programs/game/game.pqs ]]; then cp -f programs/game/game.pqs "$SD_MOUNT/GAME.PQS"; fi
+  if [[ -n "$GAME_IMG_DIR" && -d "$GAME_IMG_DIR" ]]; then
+    mkdir -p "$SD_MOUNT/QF2D/IMG"
+    cp -a "$GAME_IMG_DIR"/. "$SD_MOUNT/QF2D/IMG/"
+  fi
 else
-  echo "Private game binary not found; skipping GAME.BIN copy."
+  echo "Private game binary not found; removing stale GAME.BIN/GAME.PQS from SD."
+  rm -f "$SD_MOUNT/GAME.BIN" "$SD_MOUNT/GAME.PQS"
 fi
 if [[ -f "$AUTH_SRC" && -n "$AUTH_SIG" && -f "$AUTH_SIG" && -n "$AUTH_PQS" && -f "$AUTH_PQS" ]]; then
   cp -f "$AUTH_SRC" "$SD_MOUNT/AUTH.BIN"

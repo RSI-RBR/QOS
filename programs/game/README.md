@@ -20,9 +20,10 @@ How it works:
   code can link while hot paths are migrated away from double.
 
 Expected local layout:
-- `programs/game/src/*.c`
-- `programs/game/src/*.h`
-- `programs/game/img/*.bmp` or the matching sandbox asset folder copied to SD.
+- Either `programs/game/src/*.c` and `programs/game/src/*.h` locally, or an
+  external private checkout passed with `QF2D_ROOT=/path/to/QuantumFront2D`.
+- `programs/game/img/*.bmp` locally, or `QF2D_ROOT/img` copied by the full SD
+  build script.
 
 Example:
 ```sh
@@ -31,6 +32,17 @@ cp /path/to/QuantumFront2D/src/* programs/game/src/
 cp /path/to/QuantumFront2D/img/* programs/game/img/
 make -C programs/game SIGN_KEY=../../keys/dev_ed25519.pem PQ_SIGN_KEY=../../keys/dev_mldsa.key
 ```
+
+Full SD build with the private source outside this public repo:
+```sh
+QF2D_ROOT=/path/to/QuantumFront2D SD_MOUNT=/media/sd bash tools/build_and_copy_sd.sh
+```
+
+The script stages private source under ignored `build/private_game_src`, builds
+`GAME.BIN`, copies `GAME.BIN`/`GAME.PQS`, and copies BMP assets into
+`QF2D/IMG` on the SD card. If a fresh game binary is not produced, it removes
+stale `GAME.BIN` from the SD card so the shell cannot accidentally launch an
+older build.
 
 Notes:
 - `programs/game/src`, `programs/game/img`, and build outputs are ignored.
