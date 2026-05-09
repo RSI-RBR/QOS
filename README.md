@@ -1,60 +1,121 @@
 # QOS - Quantum OS for Raspberry Pi
 
-Quantum OS is a bare-metal AArch64 operating system for Raspberry Pi, currently
-developed and tested primarily on Raspberry Pi 3. It is still a research/dev OS,
-but it now has enough kernel, user program, security, networking, and SMP
-foundation to run real signed user programs and keep iterating toward larger
-applications.
+Quantum OS is a bare-metal AArch64 operating system for Raspberry Pi. It is
+currently developed and tested primarily on Raspberry Pi 3, with Raspberry Pi
+Zero 2 W and Raspberry Pi 5 support planned.
 
-## Current Project Status
+The project is still a research/development OS, but it now has a real kernel
+foundation: preemptive SMP scheduling, per-process MMU isolation, signed user
+program loading, local and remote login, basic graphics/session management,
+Ethernet, experimental Wi-Fi, and a growing TCP/HTTPS stack.
 
-QOS currently boots into a signed, scheduled user-mode shell instead of a
-permanent privileged kernel shell. The kernel now has:
+## Current Capabilities
 
-- EL1 bare-metal boot with UART, framebuffer, timer IRQs, and exception vectors
-- preemptive process scheduling with `sleep()`, `exit()`, process cleanup, and secure memory wipe
-- SMP bring-up for cores 1-3 with per-core scheduler state and core-aware run queues
-- per-process MMU address spaces using TTBR0/ASIDs
-- user/kernel separation, user pointer validation, guard pages, W^X user mappings, and TLB shootdown plumbing
-- FAT32 program loading from the SD card using signed 8.3 `*.BIN` program files
-- capability-gated syscalls based on signer role/scope
-- local login and remote encrypted shell login backed by `AUTH.BIN`
-- Ed25519 signatures plus ML-DSA-65 post-quantum sidecar signatures for trusted artifacts
-- Ethernet networking through the Raspberry Pi 3 LAN9514/SMSC95xx path
-- experimental CYW43438 Wi-Fi path for Pi 3 / Pi Zero 2 W style hardware
-- ARP, IPv4, ICMP ping, UDP, DNS, minimal TCP, and an experimental HTTPS client path
-- kernel socket syscalls for user programs
-- a text-mode user web browser demo and SDL-like game scaffold
+Kernel and process model:
 
-The biggest recent architectural milestones are SMP scheduling, stronger MMU
-isolation, signed/PQ-verified program loading, Argon2id login support, and the
-first working Ethernet/Wi-Fi networking paths.
+- EL1 bare-metal boot with UART, framebuffer, timer IRQs, exception vectors, and SMP core bring-up.
+- Scheduled user-mode shell instead of a permanent privileged kernel shell.
+- Preemptive process scheduling with `sleep()`, `exit()`, cleanup, and secure memory wipe.
+- Cores 1-3 are released and used by the per-core scheduler.
+- Per-core run queues, sleep/wakeup handling, simple load balancing, and IPI reschedule pokes.
+- Fixed process table today: `MAX_PROCESSES=8`.
 
-## Current User Programs
+MMU and isolation:
 
-- `programs/shell`: signed user shell, local login, program launcher, diagnostics, network commands
-- `programs/hello`: cube/demo graphics program, performance instrumentation scaffold
-- `programs/webbrowser`: text web browser using DNS/socket/TCP/HTTPS syscalls
-- `programs/game`: early game/SDL compatibility scaffold for future ports
+- Per-process TTBR0 address spaces with ASIDs.
+- Kernel mappings are EL1-only; EL0 gets only its own process slot.
+- Program code is user RX.
+- Program data, stack, and heap are user RW + NX.
+- W^X is enforced for user mappings.
+- User stack guard pages are unmapped.
+- User pointer validation is used for syscalls through `copy_from_user`, `copy_to_user`, and bounded C-string copies.
+- SMP TLB shootdown plumbing exists for page table changes.
 
-Programs are built as position-independent user binaries, wrapped with a QOS
-program header, signed with Ed25519, and paired with an ML-DSA-65 `.PQS`
-sidecar when PQ signing keys are available.
+Display, terminal, and input:
+
+- `tty0` is the shell text terminal.
+- Graphics apps get separate `gfxN` sessions.
+- HDMI shows only the active session.
+- Shell output can mirror to UART, HDMI, or both with `termout`.
+- USB HID keyboard input works, including Alt+Left/Alt+Right session switching.
+- UART remains useful as a debug console.
+- Remote shell input is routed through terminal plumbing after authentication.
+
+Program loading:
+
+- FAT32 loader uses 8.3 filenames from the SD card.
+- Programs are QOS-wrapped binaries with a security header.
+- Program signatures are required.
+- Program memory is wiped on allocation/free.
+- Program slots are fixed today: 8 slots, 2 MiB each, from a 16 MiB user pool.
+
+Networking:
+
+- LAN9514/SMSC95xx Ethernet path on Raspberry Pi 3.
+- Experimental CYW43438 SDIO Wi-Fi path.
+- ARP, IPv4, ICMP ping, UDP, DNS, TCP, and socket syscalls.
+- DNS supports normal UDP and a secure-DNS path where available.
+- HTTPS fetch path exists in the kernel socket layer.
+- User programs can use a BSD-like socket API from `include/syscall.h`.
+
+Security and crypto:
+
+- Admin/developer trust store compiled into the kernel.
+- Admin-signed kernel, shell, browser, and privileged artifacts.
+- Developer-signed user application support.
+- Ed25519 signatures for kernel/program artifacts.
+- ML-DSA-65 post-quantum sidecar signatures for programs.
+- Kernel ML-DSA-65 sidecar verification support.
+- ML-KEM-768 + X25519 hybrid HTTPS key exchange support.
+- ML-DSA signature algorithms are advertised for TLS where supported by servers.
+- AES-GCM, SHA-256, HKDF, X25519, ML-KEM-768, ML-DSA-65, RSA verify, and ECDSA verify are present.
+- Argon2id-compatible local/remote password file format.
+- Remote login uses encrypted transport, replay sequencing, rate limiting, and lockout.
+- Stack canaries and panic-on-detected-corruption are enabled for kernel builds.
+
+## User Programs
+
+Current programs:
+
+- `programs/shell`: signed user shell, login, launcher, diagnostics, network commands, session commands.
+- `programs/hello`: cube/demo graphics program and performance test scaffold.
+- `programs/webbrowser`: text-mode web browser using DNS/socket/TCP/HTTPS syscalls.
+- `programs/game`: early SDL-like compatibility scaffold for future game ports.
+
+SD filenames:
+
+- `SHELL.BIN` and `SHELL.PQS`
+- `WEBBROWS.BIN` and `WEBBROWS.PQS`
+- `PROGRAM.BIN` and `PROGRAM.PQS`
+- `GAME.BIN` and `GAME.PQS`
 
 ## Shell Commands
 
-Common shell commands:
+Core commands:
 
 ```text
 help
 run
+runbg
+exit [pid]
+gfx <pid>
 game
 web
+tty
+chvt <0-3>
+termout both|uart|hdmi|status
+dma on|off|status
+securitylog
 ps
 validate
 clear
 fbinfo
 usbstat
+```
+
+Networking commands:
+
+```text
 netstat
 rloginstat
 ip
@@ -64,6 +125,11 @@ ping
 dnscheck <domain>
 httpget <host> [path]
 tlstest
+```
+
+Wi-Fi commands:
+
+```text
 wifiinit
 wifiload [fw83 nv83]
 wifiup
@@ -75,76 +141,67 @@ wifiscanx [passes]
 wifijoin <ssid> <password>
 ```
 
-`run` loads `PROGRAM.BIN`, `web` loads `WEBBROWS.BIN`, and `game` loads
-`GAME.BIN` from the FAT32 SD root.
+Graphics/session behavior:
 
-## Security Status
+- `run` loads `PROGRAM.BIN`, creates a graphics session, and switches HDMI to it.
+- `runbg` loads `PROGRAM.BIN` without switching away from `tty0`.
+- `game` loads `GAME.BIN`.
+- `web` loads `WEBBROWS.BIN`.
+- `chvt 0` switches to the shell text terminal.
+- `chvt 1`, `chvt 2`, and `chvt 3` switch to graphics sessions.
+- `gfx <pid>` switches to the graphics session owned by a PID.
+- `exit` kills the foreground graphics process from the shell.
+- `exit <pid>` kills a specific process.
+- USB Alt+Left and Alt+Right cycle display sessions.
 
-Implemented:
+## Web Browser
 
-- kernel trust store with admin/developer roles and scope masks
-- admin-only signing requirement for `SHELL.BIN` and `WEBBROWS.BIN`
-- developer-signed user application support
-- required Ed25519 program signatures
-- required ML-DSA-65 PQ sidecar signatures for programs
-- kernel manifest verification for in-memory and on-SD `KERNEL8.IMG`
-- kernel ML-DSA-65 PQ sidecar verification support
-- local shell login using `AUTH.BIN`
-- Argon2id-compatible password hash format
-- encrypted remote login tunnel using X25519 + AES-GCM
-- remote login rate limiting, lockout status, and replay sequencing
-- boot policy disables shell/remote login if kernel trust is not established
+Start the browser:
 
-Important limitation:
+```text
+web
+```
 
-- Raspberry Pi 3 does not provide a full hardware root-of-trust for this custom
-  kernel. Kernel verification is valuable, but true secure boot depends on board
-  support or an external boot trust mechanism.
+Browser commands:
 
-## Networking Status
+```text
+help
+open <url|host> [path]
+gzip on|off|status
+exit
+```
 
-Implemented:
+Examples:
 
-- Ethernet frame TX/RX through the LAN9514/SMSC95xx USB Ethernet path
-- CYW43438 SDIO firmware load/up/version/scan/join path, still experimental
-- ARP gateway learning
-- IPv4 packet handling
-- ICMP gateway ping with RTT display
-- UDP send/receive and DNS A-record queries
-- minimal TCP connect/send/receive path
-- user socket API with blocking/non-blocking and receive timeout support
-- experimental HTTPS fetch path using TLS-style crypto building blocks
+```text
+open https://example.com/
+open https://en.wikipedia.org/wiki/Main_Page
+gzip status
+exit
+```
 
-TLS/HTTPS note:
+HTTPS behavior:
 
-- TLS record crypto, X25519, AES-GCM, key schedule tests, and HTTPS fetching are present.
-- Certificate-chain validation is not complete/enforced yet. CA root sync/copy tooling exists as preparation for that step.
-- Current HTTPS key exchange is X25519. ML-DSA-65 is available for artifact signatures, not as a TLS key exchange replacement.
+- Port 443 sockets are upgraded through the kernel HTTPS/TLS path.
+- X.509 hostname and chain-anchor validation are implemented.
+- CA roots are loaded from signed `CA_ROOTS.PEM` artifacts on the SD card.
+- Certificate chain signatures are verified with RSA/ECDSA backends.
+- The client prefers hybrid `X25519+ML-KEM-768` when the server supports it.
+- The client advertises ML-DSA signatures, but most public sites still negotiate classic RSA/ECDSA signatures.
+- Browser output strips HTML tags and supports gzip decoding.
 
-## Known Limitations
+## Build Requirements
 
-- The loader uses FAT 8.3 filenames.
-- Process count and user-memory slots are still fixed-size kernel tables.
-- Wi-Fi is useful but still a bring-up path, not a polished driver.
-- HTTPS works for some sites but does not yet provide browser-grade validation or compatibility.
-- No DHCP yet; IP/gateway are configured manually or by current defaults.
-- No full USB keyboard/mouse stack yet.
-- No GPU acceleration yet; graphics are framebuffer based.
-- Pi 5 and Pi Zero 2 W compatibility are planned but not completed.
+Build host:
 
-## Requirements
-
-- Raspberry Pi 3 B/B+ for current main testing
-- FAT32 microSD card
-- Linux build machine
+- Linux
 - `aarch64-linux-gnu` cross toolchain
 - OpenSSL
 - Python 3
-- Python packages for host tooling:
-  - `argon2-cffi`
-  - `cryptography`
+- Python virtual environment recommended
+- Python packages: `argon2-cffi`, `cryptography`
 
-Example Linux setup:
+Example:
 
 ```bash
 sudo apt update
@@ -154,7 +211,7 @@ python3 -m venv .venv
 pip install argon2-cffi cryptography
 ```
 
-## First-Time Key Setup
+## Key Setup
 
 Generate Ed25519 admin/developer keys:
 
@@ -162,7 +219,7 @@ Generate Ed25519 admin/developer keys:
 bash tools/gen_ed25519_keys.sh keys
 ```
 
-Generate ML-DSA-65 admin/developer PQ keys:
+Generate ML-DSA-65 admin/developer keys:
 
 ```bash
 python3 tools/gen_mldsa65_keypair.py keys/admin_mldsa65_sk.bin keys/admin_mldsa65_pk.bin
@@ -177,17 +234,33 @@ Default key IDs:
 Admin scope includes kernel, shell, web, and user apps. Developer scope is for
 normal user apps.
 
-## Create Login Password File
+## Login Password File
 
-Create `AUTH.BIN` with Argon2id password hashing:
+Create `AUTH.BIN` with Argon2id:
 
 ```bash
 python3 tools/gen_auth_blob.py --username admin --password 'change-me' --out AUTH.BIN
 cp AUTH.BIN /media/sd/AUTH.BIN
 ```
 
-Use your real password instead of `change-me`. The default shell username is
-whatever username you place into `AUTH.BIN`; most current testing uses `admin`.
+Use a real password instead of `change-me`. The username is whatever you place
+in `AUTH.BIN`; current testing usually uses `admin`.
+
+## CA Root Sync
+
+CA root sync is intentionally manual. Run it only when you want to refresh the
+local CA bundle:
+
+```bash
+make ca-roots-sync
+```
+
+This writes:
+
+- `build/ca/ca_roots_consensus.pem`
+- `build/ca/ca_roots_consensus_report.json`
+
+The build/copy script signs and copies these artifacts if they exist.
 
 ## Build And Copy To SD
 
@@ -205,7 +278,7 @@ Defaults:
 - admin PQ key: `keys/admin_mldsa65_sk.bin`
 - developer PQ key: `keys/dev_mldsa65_sk.bin`
 
-Override paths if needed:
+Override paths:
 
 ```bash
 SD_MOUNT=/media/sd \
@@ -216,43 +289,17 @@ DEV_PQ_SIGN_KEY=keys/dev_mldsa65_sk.bin \
 bash tools/build_and_copy_sd.sh
 ```
 
-The script builds and copies:
-
-- `KERNEL8.IMG`
-- `KERNEL8.PQS`
-- `SHELL.BIN` / `SHELL.PQS`
-- `WEBBROWS.BIN` / `WEBBROWS.PQS`
-- `PROGRAM.BIN` / `PROGRAM.PQS`
-- `GAME.BIN` / `GAME.PQS`
-- signed CA root artifacts if they already exist under `build/ca`
-
-Also copy boot config if needed:
+Copy boot config if needed:
 
 ```bash
 cp boot/config.txt /media/sd/config.txt
 ```
 
-## Manual CA Root Sync
-
-CA root sync is intentionally manual. Run it only when you want to refresh the
-local root bundle:
-
-```bash
-make ca-roots-sync
-```
-
-It cross-checks Mozilla NSS, curl, and Debian sources, then writes:
-
-- `build/ca/ca_roots_consensus.pem`
-- `build/ca/ca_roots_consensus_report.json`
-
-The build/copy script signs and copies these to SD if present.
-
 ## Build A User Program
 
 Use `programs/hello` or `programs/game` as a starting point.
 
-Example developer-signed app:
+Developer-signed app:
 
 ```bash
 make -C programs/hello clean all \
@@ -262,7 +309,7 @@ cp programs/hello/program.bin /media/sd/PROGRAM.BIN
 cp programs/hello/program.pqs /media/sd/PROGRAM.PQS
 ```
 
-Admin-only examples:
+Admin-only programs:
 
 ```bash
 make -C programs/shell clean all \
@@ -276,16 +323,23 @@ make -C programs/webbrowser clean all \
 
 ## Remote Login
 
-Remote login uses UDP port `2222`, X25519 key exchange, AES-GCM transport
-encryption, and the same `AUTH.BIN` password material as local login.
+Remote login uses UDP port `2222`.
 
-Example client:
+Current properties:
+
+- password material comes from `AUTH.BIN`
+- Argon2id is supported
+- X25519, ML-KEM-768, and hybrid ML-KEM-768+X25519 modes are supported
+- AES-GCM protects the remote shell stream after the key exchange
+- replay window, 5 second failure delay, and lockout are implemented
+
+Example:
 
 ```bash
 python3 tools/rlogin_client.py --host 10.0.0.88 --username admin --password 'change-me'
 ```
 
-Broadcast discovery mode:
+Discovery example:
 
 ```bash
 python3 tools/rlogin_client.py --host 255.255.255.255 --broadcast --username admin --password 'change-me'
@@ -293,13 +347,12 @@ python3 tools/rlogin_client.py --host 255.255.255.255 --broadcast --username adm
 
 ## Wi-Fi Firmware Notes
 
-The current CYW43438 path expects firmware/NVRAM blobs on the SD card using
-8.3-compatible names:
+The CYW43438 path expects 8.3-compatible firmware/NVRAM names on the SD card:
 
 - `4343WIFI.BIN`
 - `4343NVRM.TXT`
 
-Typical sequence from the shell:
+Typical sequence:
 
 ```text
 wifiload
@@ -310,22 +363,62 @@ wifijoin "SSID" "password"
 ping
 ```
 
-`wifiinit` is a low-level SDIO probe helper. In normal use, prefer `wifiload`
+`wifiinit` is a low-level SDIO probe helper. For normal use, prefer `wifiload`
 first because it handles the current SDIO/storage handoff path.
+
+## Security Status And Remaining Risks
+
+Implemented security foundations:
+
+- signed kernel/program trust model with role and scope checks
+- required program Ed25519 signatures
+- required program ML-DSA-65 sidecar signatures
+- admin-only shell/browser signing
+- capability-gated syscalls tied to signer scope
+- per-process MMU address spaces and ASIDs
+- strict EL0/EL1 memory separation
+- W^X user pages
+- user stack guard pages
+- syscall user-pointer validation
+- stack canaries and panic-on-corruption
+- local and remote password login
+- remote-login replay/rate-limit/lockout controls
+- signed CA root bundle for HTTPS validation
+- X.509 hostname, anchor, and chain-signature checks
+
+Important remaining security work:
+
+- Raspberry Pi 3 does not provide a complete secure-boot root of trust for this custom kernel.
+- Kernel ML-DSA-65 sidecar verification is supported, but kernel PQ enforcement is not mandatory yet.
+- `AUTH.BIN` is password-hashed but not currently signed as an admin artifact.
+- CA root bundle PQ sidecar verification is supported, but the PQ sidecar is optional today.
+- The entropy source is still early-stage and should be replaced or strengthened with hardware/jitter/persistent entropy before relying on secrets.
+- Remote login still needs explicit long-term server identity authentication or a real PAKE-style protocol to resist active MITM/offline guessing risks.
+- X.509 revocation checking is local/optional; there is no live OCSP/CRL fetch policy yet.
+- Certificate validation time falls back to build time unless explicitly set; a trusted clock/NTP path is still needed.
+- TLS, X.509, DNS, gzip, FAT, Wi-Fi, and USB parsers are hand-rolled and should be fuzzed heavily.
+- Networking global state is still mostly single-stack/single-connection oriented and should be further locked/audited for SMP.
+- `wifijoin <ssid> <password>` accepts the password on the visible command line; a hidden prompt should replace it.
+- Debug/status prints can leak kernel/program addresses and should be reduced for release builds.
+- Process, socket, display, and memory tables are fixed-size and need resource quotas/DoS policy.
+- DMA is experimental and should remain off unless a specific path is verified.
 
 ## Roadmap
 
 Near-term priorities:
 
-- finish certificate-chain validation for HTTPS
-- harden TCP/socket behavior for real user programs and future servers
+- sign and enforce `AUTH.BIN`
+- make kernel PQ signature enforcement mandatory
+- strengthen entropy collection
+- add trusted time and stricter certificate revocation policy
+- harden/fuzz TLS, X.509, DNS, FAT, gzip, USB, and Wi-Fi parsers
 - expand process/user memory limits beyond fixed tables
 - add DHCP
 - improve Wi-Fi reliability and Pi Zero 2 W portability
-- add USB keyboard/mouse input
+- add USB mouse support
 - continue Pi 5 compatibility work
-- improve graphics performance and explore acceleration options
-- evolve PQ crypto from artifact signatures toward network/session use where practical
+- improve graphics performance and session/window ergonomics
+- evolve PQ crypto from artifact signatures and hybrid KEX toward broader network/session use where interoperable
 
 ## License
 
