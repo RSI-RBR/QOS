@@ -241,8 +241,11 @@ void program_main(void){
     unsigned long hud_mouse_moves = 0;
     unsigned long hud_fps_x10 = 0;
     unsigned long hud_mouse_hz = 0;
+    int hud_dirty = 1;
+    const unsigned long long target_frame_us = 16667ull;
 
     while (running){
+        unsigned long long frame_start_us = qos_get_time_us();
         unsigned long t0 = qos_get_counter_cycles();
         qos_event_t ev;
         while (qos_poll_event(&ev) > 0){
@@ -286,13 +289,20 @@ void program_main(void){
             hud_frames = 0;
             hud_mouse_moves = 0;
             hud_start_us = hud_now_us;
+            hud_dirty = 1;
         }
-        hud_draw(hud_fps_x10, hud_mouse_hz);
+        if (hud_dirty){
+            hud_draw(hud_fps_x10, hud_mouse_hz);
+            hud_dirty = 0;
+        }
 
         qos_fb_present();
         unsigned long t3 = qos_get_counter_cycles();
 
-        qos_sleep(16);
+        unsigned long long frame_elapsed_us = qos_get_time_us() - frame_start_us;
+        if (frame_elapsed_us < target_frame_us){
+            qos_sleep_us(target_frame_us - frame_elapsed_us);
+        }
         unsigned long t4 = qos_get_counter_cycles();
 
         unsigned long update_us = cycles_to_us(t1 - t0, counter_hz);
