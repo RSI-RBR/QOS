@@ -56,6 +56,9 @@ Notes:
 - `programs/game/src`, `programs/game/img`, and build outputs are ignored.
 - The default game reservation is 16 MiB, matching the current kernel
   `QOS_PROGRAM_MAX_MEMORY_BYTES` limit.
+- QOS fault reports now print `PROG_BASE` and `ELR_OFF`. On the Linux build
+  machine, resolve a game crash with:
+  `python3 tools/qos_fault_addr2line.py programs/game/game.elf <ELR> --base <PROG_BASE>`.
 - The wrapper expects exactly one desktop entrypoint after preprocessing:
   `qf2d_main(int argc, char** argv)`.
 - If the private tree has multiple source folders, override `GAME_SOURCES`.

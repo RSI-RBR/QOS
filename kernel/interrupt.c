@@ -34,6 +34,83 @@ static void (*g_bank2_irq_handlers[MAX_BANK2_IRQ_HANDLERS])(void);
 #define SPSR_MODE_MASK 0xFUL
 #define SPSR_MODE_EL0T 0x0UL
 
+static const char* data_fault_name(unsigned long dfsc){
+    switch (dfsc & 0x3FUL){
+        case 0x04UL: return "translation fault L0";
+        case 0x05UL: return "translation fault L1";
+        case 0x06UL: return "translation fault L2";
+        case 0x07UL: return "translation fault L3";
+        case 0x09UL: return "access flag fault L1";
+        case 0x0AUL: return "access flag fault L2";
+        case 0x0BUL: return "access flag fault L3";
+        case 0x0DUL: return "permission fault L1";
+        case 0x0EUL: return "permission fault L2";
+        case 0x0FUL: return "permission fault L3";
+        case 0x10UL: return "synchronous external abort";
+        case 0x21UL: return "alignment fault";
+        default: return "unknown data fault";
+    }
+}
+
+static const char* instr_fault_name(unsigned long ifsc){
+    switch (ifsc & 0x3FUL){
+        case 0x04UL: return "translation fault L0";
+        case 0x05UL: return "translation fault L1";
+        case 0x06UL: return "translation fault L2";
+        case 0x07UL: return "translation fault L3";
+        case 0x09UL: return "access flag fault L1";
+        case 0x0AUL: return "access flag fault L2";
+        case 0x0BUL: return "access flag fault L3";
+        case 0x0DUL: return "permission fault L1";
+        case 0x0EUL: return "permission fault L2";
+        case 0x0FUL: return "permission fault L3";
+        case 0x10UL: return "synchronous external abort";
+        default: return "unknown instruction fault";
+    }
+}
+
+static void dump_user_fault_layout(unsigned long elr, unsigned long far){
+    process_t* p = get_current_process();
+    if (!p || !p->program_memory){
+        return;
+    }
+
+    unsigned long base = (unsigned long)p->program_memory;
+    unsigned long size = p->program_size;
+    unsigned long rw_start = base + p->user_rw_offset;
+    unsigned long rw_end = rw_start + p->user_rw_size;
+
+    uart_puts("PROG_BASE=");
+    uart_puthex((unsigned int)base);
+    uart_puts(" PROG_SIZE=");
+    uart_puthex((unsigned int)size);
+    uart_puts("\n");
+
+    uart_puts("ELR_OFF=");
+    if (elr >= base && elr < base + size){
+        uart_puthex((unsigned int)(elr - base));
+    } else{
+        uart_puts("OUTSIDE");
+    }
+    uart_puts(" FAR_OFF=");
+    if (far >= base && far < base + size){
+        uart_puthex((unsigned int)(far - base));
+    } else{
+        uart_puts("OUTSIDE");
+    }
+    uart_puts("\n");
+
+    uart_puts("USER_RX=[");
+    uart_puthex((unsigned int)base);
+    uart_puts(",");
+    uart_puthex((unsigned int)rw_start);
+    uart_puts(") USER_RW=[");
+    uart_puthex((unsigned int)rw_start);
+    uart_puts(",");
+    uart_puthex((unsigned int)rw_end);
+    uart_puts(")\n");
+}
+
 static unsigned int preempt_core_id(void){
     unsigned int core = cpu_get_id();
     if (core >= MAX_CPU_CORES){
@@ -250,17 +327,26 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
     uart_puthex((unsigned int)far);
     uart_puts("\n");
     if (ec == 0x24UL || ec == 0x25UL){
+        unsigned long dfsc = esr & 0x3FUL;
         uart_puts("DFSC=");
-        uart_puthex((unsigned int)(esr & 0x3FUL));
+        uart_puthex((unsigned int)dfsc);
         uart_puts(" WnR=");
         uart_puthex((unsigned int)((esr >> 6) & 1UL));
+        uart_puts(" (");
+        uart_puts(data_fault_name(dfsc));
+        uart_puts(")");
         uart_puts("\n");
     }
     if (ec == 0x20UL || ec == 0x21UL){
+        unsigned long ifsc = esr & 0x3FUL;
         uart_puts("IFSC=");
-        uart_puthex((unsigned int)(esr & 0x3FUL));
+        uart_puthex((unsigned int)ifsc);
+        uart_puts(" (");
+        uart_puts(instr_fault_name(ifsc));
+        uart_puts(")");
         uart_puts("\n");
     }
+    dump_user_fault_layout(elr, far);
     if (ec == 0x00UL){
         uart_puts("INSN@ELR=");
         unsigned long insn_addr = (elr & ~0x3UL);

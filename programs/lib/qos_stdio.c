@@ -10,9 +10,9 @@ static FILE g_stderr_file = {2, 0, 0};
 static FILE g_urandom_file = {3, 0, 0};
 static unsigned int g_prng_state = 0x514F5331u;
 
-FILE* const qos_stdin = &g_stdin_file;
-FILE* const qos_stdout = &g_stdout_file;
-FILE* const qos_stderr = &g_stderr_file;
+FILE* const qos_stdin = QOS_STDIN_HANDLE;
+FILE* const qos_stdout = QOS_STDOUT_HANDLE;
+FILE* const qos_stderr = QOS_STDERR_HANDLE;
 
 typedef struct qos_fmt_out {
     char* buf;
@@ -73,6 +73,38 @@ static int str_eq(const char* a, const char* b){
         b++;
     }
     return *a == 0 && *b == 0;
+}
+
+static FILE* resolve_stream(FILE* stream){
+    if (stream == QOS_STDIN_HANDLE || stream == qos_stdin){
+        return &g_stdin_file;
+    }
+    if (stream == QOS_STDOUT_HANDLE || stream == qos_stdout){
+        return &g_stdout_file;
+    }
+    if (stream == QOS_STDERR_HANDLE || stream == qos_stderr){
+        return &g_stderr_file;
+    }
+    return stream;
+}
+
+static int stream_fd(FILE* stream){
+    FILE* s = resolve_stream(stream);
+    return s ? s->fd : -1;
+}
+
+static void stream_set_eof(FILE* stream){
+    FILE* s = resolve_stream(stream);
+    if (s){
+        s->eof = 1;
+    }
+}
+
+static void stream_set_error(FILE* stream){
+    FILE* s = resolve_stream(stream);
+    if (s){
+        s->error = 1;
+    }
 }
 
 static unsigned char pseudo_random_byte(void){
@@ -385,21 +417,20 @@ int qos_fclose(FILE* stream){
 size_t qos_fread(void* ptr, size_t size, size_t nmemb, FILE* stream){
     unsigned char* out = (unsigned char*)ptr;
     size_t total;
+    int fd = stream_fd(stream);
 
-    if (!ptr || !stream || size == 0u || nmemb == 0u){
-        if (stream){
-            stream->eof = 1;
-        }
+    if (!ptr || fd < 0 || size == 0u || nmemb == 0u){
+        stream_set_eof(stream);
         return 0u;
     }
 
-    if (stream->fd != 3){
-        stream->eof = 1;
+    if (fd != 3){
+        stream_set_eof(stream);
         return 0u;
     }
 
     if (nmemb > ((size_t)-1) / size){
-        stream->error = 1;
+        stream_set_error(stream);
         return 0u;
     }
 
@@ -413,16 +444,17 @@ size_t qos_fread(void* ptr, size_t size, size_t nmemb, FILE* stream){
 size_t qos_fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream){
     const char* p = (const char*)ptr;
     size_t total;
+    int fd = stream_fd(stream);
 
-    if (!ptr || !stream || size == 0u || nmemb == 0u){
+    if (!ptr || fd < 0 || size == 0u || nmemb == 0u){
         return 0u;
     }
-    if (stream->fd != 1 && stream->fd != 2){
-        stream->error = 1;
+    if (fd != 1 && fd != 2){
+        stream_set_error(stream);
         return 0u;
     }
     if (nmemb > ((size_t)-1) / size){
-        stream->error = 1;
+        stream_set_error(stream);
         return 0u;
     }
     total = size * nmemb;
@@ -433,9 +465,7 @@ size_t qos_fwrite(const void* ptr, size_t size, size_t nmemb, FILE* stream){
 }
 
 char* qos_fgets(char* s, int size, FILE* stream){
-    if (stream){
-        stream->eof = 1;
-    }
+    stream_set_eof(stream);
     if (s && size > 0){
         s[0] = 0;
     }
@@ -443,10 +473,9 @@ char* qos_fgets(char* s, int size, FILE* stream){
 }
 
 int qos_fputs(const char* s, FILE* stream){
-    if (!stream || (stream->fd != 1 && stream->fd != 2)){
-        if (stream){
-            stream->error = 1;
-        }
+    int fd = stream_fd(stream);
+    if (fd != 1 && fd != 2){
+        stream_set_error(stream);
         return EOF;
     }
     qos_puts(s ? s : "(null)");
@@ -454,17 +483,14 @@ int qos_fputs(const char* s, FILE* stream){
 }
 
 int qos_fgetc(FILE* stream){
-    if (stream){
-        stream->eof = 1;
-    }
+    stream_set_eof(stream);
     return EOF;
 }
 
 int qos_fputc(int c, FILE* stream){
-    if (!stream || (stream->fd != 1 && stream->fd != 2)){
-        if (stream){
-            stream->error = 1;
-        }
+    int fd = stream_fd(stream);
+    if (fd != 1 && fd != 2){
+        stream_set_error(stream);
         return EOF;
     }
     qos_putc((char)c);
@@ -478,39 +504,39 @@ int qos_putline(const char* s){
 }
 
 int qos_feof(FILE* stream){
-    return stream ? stream->eof : 1;
+    FILE* s = resolve_stream(stream);
+    return s ? s->eof : 1;
 }
 
 int qos_ferror(FILE* stream){
-    return stream ? stream->error : 1;
+    FILE* s = resolve_stream(stream);
+    return s ? s->error : 1;
 }
 
 void qos_clearerr(FILE* stream){
-    if (stream){
-        stream->eof = 0;
-        stream->error = 0;
+    FILE* s = resolve_stream(stream);
+    if (s){
+        s->eof = 0;
+        s->error = 0;
     }
 }
 
 int qos_fseek(FILE* stream, long offset, int whence){
     (void)offset;
     (void)whence;
-    if (stream){
-        stream->error = 1;
-    }
+    stream_set_error(stream);
     return -1;
 }
 
 long qos_ftell(FILE* stream){
-    if (stream){
-        stream->error = 1;
-    }
+    stream_set_error(stream);
     return -1L;
 }
 
 void qos_rewind(FILE* stream){
-    if (stream){
-        stream->eof = 0;
-        stream->error = 0;
+    FILE* s = resolve_stream(stream);
+    if (s){
+        s->eof = 0;
+        s->error = 0;
     }
 }

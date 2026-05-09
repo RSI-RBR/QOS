@@ -18,6 +18,10 @@ typedef struct qos_FILE {
     int error;
 } FILE;
 
+#define QOS_STDIN_HANDLE ((FILE*)0x514F5000UL)
+#define QOS_STDOUT_HANDLE ((FILE*)0x514F5001UL)
+#define QOS_STDERR_HANDLE ((FILE*)0x514F5002UL)
+
 extern FILE* const qos_stdin;
 extern FILE* const qos_stdout;
 extern FILE* const qos_stderr;
@@ -33,13 +37,13 @@ extern FILE* const qos_stderr;
 #endif
 
 #ifndef stdin
-#define stdin qos_stdin
+#define stdin QOS_STDIN_HANDLE
 #endif
 #ifndef stdout
-#define stdout qos_stdout
+#define stdout QOS_STDOUT_HANDLE
 #endif
 #ifndef stderr
-#define stderr qos_stderr
+#define stderr QOS_STDERR_HANDLE
 #endif
 
 int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap);
@@ -66,7 +70,7 @@ void qos_rewind(FILE* stream);
 
 #ifndef QOS_STDIO_NO_MACROS
 #define QOS_LOG(...) qos_printf(__VA_ARGS__)
-#define QOS_ERR(...) qos_fprintf(qos_stderr, __VA_ARGS__)
+#define QOS_ERR(...) qos_fprintf(stderr, __VA_ARGS__)
 #define printf qos_printf
 #define fprintf qos_fprintf
 #define snprintf qos_snprintf
