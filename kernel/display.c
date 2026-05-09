@@ -18,6 +18,9 @@ static int g_cursor_session_id = -1;
 static int g_cursor_x = 0;
 static int g_cursor_y = 0;
 static unsigned int g_cursor_seq = 0u;
+static unsigned long g_cursor_poll_next_tick = 0UL;
+
+extern volatile unsigned long system_ticks;
 
 static int display_valid_id(int session_id){
     return session_id >= 0 && session_id < DISPLAY_MAX_SESSIONS;
@@ -801,6 +804,11 @@ int display_present_active_graphics(void){
     unsigned int dst_height = fb_get_height();
     if (!dst_base || dst_pitch == 0u || dst_width == 0u || dst_height == 0u){
         return -1;
+    }
+
+    if ((long)(system_ticks - g_cursor_poll_next_tick) >= 0){
+        usb_host_poll_mouse();
+        g_cursor_poll_next_tick = system_ticks + 16UL;
     }
 
     usb_mouse_state_t mouse;
