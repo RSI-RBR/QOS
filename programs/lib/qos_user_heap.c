@@ -58,7 +58,7 @@ static int ptr_in_heap(unsigned long p){
 static unsigned long current_program_base(void){
     unsigned long pc;
     asm volatile("adr %0, ." : "=r"(pc));
-    return pc & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
+    return pc & ~(QOS_PROGRAM_MEMORY_BYTES - 1UL);
 }
 
 static unsigned long runtime_image_end(void){
