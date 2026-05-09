@@ -362,6 +362,8 @@ Uint32 SDL_GetMouseState(int* x, int* y);
 Uint32 SDL_GetRelativeMouseState(int* x, int* y);
 Uint32 SDL_GetGlobalMouseState(int* x, int* y);
 int SDL_QOS_GetMouseWheel(int* x, int* y);
+void SDL_QOS_ProfileReset(void);
+void SDL_QOS_ProfileDump(void);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);

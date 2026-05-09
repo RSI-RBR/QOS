@@ -106,7 +106,9 @@ enum {
     SYS_GET_TIME_NS = 82,
     SYS_FB_BLIT_RGBA = 83,
     SYS_INPUT_POLL_EVENT = 84,
-    SYS_FILE_READ_BMP = 85
+    SYS_FILE_READ_BMP = 85,
+    SYS_FILE_PROFILE_RESET = 86,
+    SYS_FILE_PROFILE_DUMP = 87
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -269,6 +271,14 @@ static inline int qos_file_read_bmp(const char* relative_path, unsigned char* ou
                              (unsigned long)relative_path,
                              (unsigned long)out,
                              (unsigned long)out_cap);
+}
+
+static inline void qos_file_profile_reset(void){
+    (void)qos_syscall0(SYS_FILE_PROFILE_RESET);
+}
+
+static inline void qos_file_profile_dump(void){
+    (void)qos_syscall0(SYS_FILE_PROFILE_DUMP);
 }
 
 static inline int qos_run_program(void){

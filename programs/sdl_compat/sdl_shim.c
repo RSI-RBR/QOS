@@ -48,6 +48,121 @@ static unsigned int g_pending_fill_w = 0u;
 static unsigned int g_pending_fill_h = 0u;
 static unsigned int g_pending_fill_color = 0u;
 
+typedef struct sdl_qos_profile {
+    Uint64 bmp_calls;
+    Uint64 bmp_ok;
+    Uint64 bmp_fail;
+    Uint64 bmp_bytes;
+    Uint64 bmp_read_us;
+    Uint64 bmp_decode_us;
+    Uint64 bmp_total_us;
+    Uint64 bmp_max_us;
+    Uint64 texture_calls;
+    Uint64 texture_bytes;
+    Uint64 texture_us;
+    Uint64 rendercopy_calls;
+    Uint64 rendercopy_us;
+    Uint64 present_calls;
+    Uint64 present_us;
+} sdl_qos_profile_t;
+
+static sdl_qos_profile_t g_sdl_profile;
+
+static void sdl_profile_put_u64(Uint64 v){
+    char tmp[32];
+    unsigned int n = 0u;
+    if (v == 0ull){
+        qos_putc('0');
+        return;
+    }
+    while (v && n < (unsigned int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10ull));
+        v /= 10ull;
+    }
+    while (n > 0u){
+        qos_putc(tmp[--n]);
+    }
+}
+
+static void sdl_profile_note_bmp(int ok, int bytes, Uint64 read_us, Uint64 decode_us, Uint64 total_us){
+    g_sdl_profile.bmp_calls++;
+    if (ok){
+        g_sdl_profile.bmp_ok++;
+        if (bytes > 0){
+            g_sdl_profile.bmp_bytes += (Uint64)bytes;
+        }
+    } else{
+        g_sdl_profile.bmp_fail++;
+    }
+    g_sdl_profile.bmp_read_us += read_us;
+    g_sdl_profile.bmp_decode_us += decode_us;
+    g_sdl_profile.bmp_total_us += total_us;
+    if (total_us > g_sdl_profile.bmp_max_us){
+        g_sdl_profile.bmp_max_us = total_us;
+    }
+}
+
+void SDL_QOS_ProfileReset(void){
+    g_sdl_profile.bmp_calls = 0ull;
+    g_sdl_profile.bmp_ok = 0ull;
+    g_sdl_profile.bmp_fail = 0ull;
+    g_sdl_profile.bmp_bytes = 0ull;
+    g_sdl_profile.bmp_read_us = 0ull;
+    g_sdl_profile.bmp_decode_us = 0ull;
+    g_sdl_profile.bmp_total_us = 0ull;
+    g_sdl_profile.bmp_max_us = 0ull;
+    g_sdl_profile.texture_calls = 0ull;
+    g_sdl_profile.texture_bytes = 0ull;
+    g_sdl_profile.texture_us = 0ull;
+    g_sdl_profile.rendercopy_calls = 0ull;
+    g_sdl_profile.rendercopy_us = 0ull;
+    g_sdl_profile.present_calls = 0ull;
+    g_sdl_profile.present_us = 0ull;
+    qos_file_profile_reset();
+}
+
+void SDL_QOS_ProfileDump(void){
+    qos_puts("SDL profile: bmp calls=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_calls);
+    qos_puts(" ok=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_ok);
+    qos_puts(" fail=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_fail);
+    qos_puts(" bytes=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_bytes);
+    qos_puts("\n");
+
+    qos_puts("SDL profile us: bmp_read=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_read_us);
+    qos_puts(" bmp_decode=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_decode_us);
+    qos_puts(" bmp_total=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_total_us);
+    qos_puts(" bmp_max=");
+    sdl_profile_put_u64(g_sdl_profile.bmp_max_us);
+    qos_puts("\n");
+
+    qos_puts("SDL profile us: texture calls=");
+    sdl_profile_put_u64(g_sdl_profile.texture_calls);
+    qos_puts(" bytes=");
+    sdl_profile_put_u64(g_sdl_profile.texture_bytes);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.texture_us);
+    qos_puts("\n");
+
+    qos_puts("SDL profile us: rendercopy calls=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_calls);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_us);
+    qos_puts(" present calls=");
+    sdl_profile_put_u64(g_sdl_profile.present_calls);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.present_us);
+    qos_puts("\n");
+
+    qos_file_profile_dump();
+}
+
 static Uint32 rgb_to_color(Uint8 r, Uint8 g, Uint8 b){
     return ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
 }
@@ -684,6 +799,7 @@ static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* 
 
 int SDL_Init(Uint32 flags){
     (void)flags;
+    SDL_QOS_ProfileReset();
     sdl_event_queue_reset();
     for (int i = 0; i < SDL_NUM_SCANCODES; i++){
         g_keyboard_state[i] = 0u;
@@ -1026,8 +1142,11 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y){
 
 void SDL_RenderPresent(SDL_Renderer* renderer){
     (void)renderer;
+    Uint64 t0 = qos_get_time_us();
     sdl_flush_pending_fill();
     qos_fb_present();
+    g_sdl_profile.present_calls++;
+    g_sdl_profile.present_us += qos_get_time_us() - t0;
 }
 
 int SDL_RenderSetIntegerScale(SDL_Renderer* renderer, int enabled){
@@ -1221,6 +1340,7 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
 
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface){
     SDL_Texture* t;
+    Uint64 t0 = qos_get_time_us();
     if (!renderer || !renderer->alive){
         set_error("renderer not alive");
         return 0;
@@ -1263,6 +1383,9 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
+    g_sdl_profile.texture_calls++;
+    g_sdl_profile.texture_bytes += (Uint64)t->capacity;
+    g_sdl_profile.texture_us += qos_get_time_us() - t0;
     return t;
 }
 
@@ -1465,26 +1588,36 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     unsigned long long sum_b = 0ull;
     unsigned int sum_count = 0u;
     Uint8* bmp = 0;
+    Uint64 profile_total0 = qos_get_time_us();
+    Uint64 profile_read_us = 0ull;
+    Uint64 profile_decode_us = 0ull;
+    Uint64 profile_t0;
 
     if (!file || !*file){
+        sdl_profile_note_bmp(0, 0, 0ull, 0ull, qos_get_time_us() - profile_total0);
         set_error("bad BMP filename");
         return 0;
     }
 
     bmp = (Uint8*)malloc(SDL_SHIM_BMP_FILE_MAX);
     if (!bmp){
+        sdl_profile_note_bmp(0, 0, 0ull, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP temp heap exhausted");
         return 0;
     }
 
+    profile_t0 = qos_get_time_us();
     n = qos_file_read_bmp(file, bmp, SDL_SHIM_BMP_FILE_MAX);
+    profile_read_us = qos_get_time_us() - profile_t0;
     if (n < 54){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP read failed");
         return 0;
     }
     if (bmp[0] != 'B' || bmp[1] != 'M'){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("not a BMP");
         return 0;
     }
@@ -1493,6 +1626,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     dib_size = read_le32(&bmp[14]);
     if (dib_size < 40u || pixel_offset >= (Uint32)n){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("unsupported BMP header");
         return 0;
     }
@@ -1506,6 +1640,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     if (width <= 0 || height_signed == 0 || planes != 1u ||
         (bpp != 24u && bpp != 32u) || compression != 0u){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("unsupported BMP format");
         return 0;
     }
@@ -1517,6 +1652,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     }
     if (height <= 0 || width > 2048 || height > 2048){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP dimensions unsupported");
         return 0;
     }
@@ -1525,16 +1661,19 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     if (row_stride == 0u ||
         (Uint32)height > (0xFFFFFFFFu - pixel_offset) / row_stride){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP row overflow");
         return 0;
     }
     if (pixel_offset + ((Uint32)height * row_stride) > (Uint32)n){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP truncated");
         return 0;
     }
     if ((Uint32)width > (0xFFFFFFFFu / (Uint32)height) / 4u){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("BMP size overflow");
         return 0;
     }
@@ -1543,12 +1682,14 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     s = alloc_surface_slot();
     if (!s){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("surface slots exhausted");
         return 0;
     }
     s->pixels = sdl_alloc_pixels(pixel_bytes);
     if (!s->pixels){
         free(bmp);
+        sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("surface heap exhausted");
         return 0;
     }
@@ -1572,6 +1713,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     s->owns_pixels = 1;
     s->alive = 1;
 
+    profile_t0 = qos_get_time_us();
     for (int y = 0; y < height; y++){
         int src_y = top_down ? y : (height - 1 - y);
         const Uint8* src_row = bmp + pixel_offset + ((Uint32)src_y * row_stride);
@@ -1609,8 +1751,10 @@ SDL_Surface* SDL_LoadBMP(const char* file){
                                     (Uint8)(sum_g / sum_count),
                                     (Uint8)(sum_b / sum_count));
     s->opaque = opaque;
+    profile_decode_us = qos_get_time_us() - profile_t0;
 
     free(bmp);
+    sdl_profile_note_bmp(1, n, profile_read_us, profile_decode_us, qos_get_time_us() - profile_total0);
     return s;
 }
 
@@ -2004,7 +2148,11 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
 }
 
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){
-    return sdl_render_copy_internal(renderer, texture, src, dst, SDL_FLIP_NONE);
+    Uint64 t0 = qos_get_time_us();
+    int rc = sdl_render_copy_internal(renderer, texture, src, dst, SDL_FLIP_NONE);
+    g_sdl_profile.rendercopy_calls++;
+    g_sdl_profile.rendercopy_us += qos_get_time_us() - t0;
+    return rc;
 }
 
 int SDL_RenderCopyEx(SDL_Renderer* renderer,
@@ -2016,7 +2164,11 @@ int SDL_RenderCopyEx(SDL_Renderer* renderer,
                      SDL_RendererFlip flip){
     (void)angle_degrees;
     (void)center;
-    return sdl_render_copy_internal(renderer, texture, src, dst, flip);
+    Uint64 t0 = qos_get_time_us();
+    int rc = sdl_render_copy_internal(renderer, texture, src, dst, flip);
+    g_sdl_profile.rendercopy_calls++;
+    g_sdl_profile.rendercopy_us += qos_get_time_us() - t0;
+    return rc;
 }
 
 int SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){

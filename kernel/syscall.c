@@ -109,6 +109,98 @@ static unsigned long counter_cycles_to_ns(unsigned long cycles, unsigned long hz
     }
 }
 
+typedef struct file_profile_stats {
+    unsigned long calls;
+    unsigned long ok;
+    unsigned long fail;
+    unsigned long bytes;
+    unsigned long cstr_us;
+    unsigned long alloc_us;
+    unsigned long fat_init_us;
+    unsigned long fat_read_us;
+    unsigned long copy_us;
+    unsigned long total_us;
+    unsigned long max_total_us;
+} file_profile_stats_t;
+
+static file_profile_stats_t g_file_profile;
+
+static unsigned long profile_time_us(void){
+    unsigned long cycles;
+    unsigned long hz;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(cycles));
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+    return counter_cycles_to_us(cycles, hz);
+}
+
+static void file_profile_reset(void){
+    g_file_profile.calls = 0;
+    g_file_profile.ok = 0;
+    g_file_profile.fail = 0;
+    g_file_profile.bytes = 0;
+    g_file_profile.cstr_us = 0;
+    g_file_profile.alloc_us = 0;
+    g_file_profile.fat_init_us = 0;
+    g_file_profile.fat_read_us = 0;
+    g_file_profile.copy_us = 0;
+    g_file_profile.total_us = 0;
+    g_file_profile.max_total_us = 0;
+}
+
+static void file_profile_note(int ok,
+                              unsigned long bytes,
+                              unsigned long cstr_us,
+                              unsigned long alloc_us,
+                              unsigned long fat_init_us,
+                              unsigned long fat_read_us,
+                              unsigned long copy_us,
+                              unsigned long total_us){
+    g_file_profile.calls++;
+    if (ok){
+        g_file_profile.ok++;
+        g_file_profile.bytes += bytes;
+    } else{
+        g_file_profile.fail++;
+    }
+    g_file_profile.cstr_us += cstr_us;
+    g_file_profile.alloc_us += alloc_us;
+    g_file_profile.fat_init_us += fat_init_us;
+    g_file_profile.fat_read_us += fat_read_us;
+    g_file_profile.copy_us += copy_us;
+    g_file_profile.total_us += total_us;
+    if (total_us > g_file_profile.max_total_us){
+        g_file_profile.max_total_us = total_us;
+    }
+}
+
+static void file_profile_dump(void){
+    uart_puts("FILE BMP profile: calls=");
+    uart_putdec(g_file_profile.calls);
+    uart_puts(" ok=");
+    uart_putdec(g_file_profile.ok);
+    uart_puts(" fail=");
+    uart_putdec(g_file_profile.fail);
+    uart_puts(" bytes=");
+    uart_putdec(g_file_profile.bytes);
+    uart_puts("\n");
+
+    uart_puts("FILE BMP us: cstr=");
+    uart_putdec(g_file_profile.cstr_us);
+    uart_puts(" alloc=");
+    uart_putdec(g_file_profile.alloc_us);
+    uart_puts(" fat_init=");
+    uart_putdec(g_file_profile.fat_init_us);
+    uart_puts(" fat_read=");
+    uart_putdec(g_file_profile.fat_read_us);
+    uart_puts(" copy=");
+    uart_putdec(g_file_profile.copy_us);
+    uart_puts(" total=");
+    uart_putdec(g_file_profile.total_us);
+    uart_puts(" max=");
+    uart_putdec(g_file_profile.max_total_us);
+    uart_puts("\n");
+}
+
 static void syscall_poll_background_io(void){
     static unsigned long next_net_poll_tick = 0;
     static unsigned long next_remote_poll_tick = 0;
@@ -304,6 +396,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
         case SYS_FILE_READ_BMP:
+        case SYS_FILE_PROFILE_RESET:
+        case SYS_FILE_PROFILE_DUMP:
         case SYS_GETPID:
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
@@ -595,48 +689,85 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             unsigned int out_cap = (unsigned int)frame[TF_X2];
             unsigned char* kbuf = 0;
             int n = -1;
+            unsigned long t_total = profile_time_us();
+            unsigned long t0;
+            unsigned long cstr_us = 0;
+            unsigned long alloc_us = 0;
+            unsigned long fat_init_us = 0;
+            unsigned long fat_read_us = 0;
+            unsigned long copy_us = 0;
 
             if (!frame[TF_X0] || !user_out || out_cap == 0u || out_cap > USER_BMP_FILE_MAX){
+                file_profile_note(0, 0, 0, 0, 0, 0, 0, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
             if (process_current_file_sandbox(sandbox83) != 0){
+                file_profile_note(0, 0, 0, 0, 0, 0, 0, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
             for (unsigned int i = 0; i < sizeof(path); i++){
                 path[i] = 0;
             }
+            t0 = profile_time_us();
             if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                cstr_us = profile_time_us() - t0;
+                file_profile_note(0, 0, cstr_us, 0, 0, 0, 0, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
+            cstr_us = profile_time_us() - t0;
 
+            t0 = profile_time_us();
             kbuf = (unsigned char*)kmalloc((unsigned long)out_cap);
+            alloc_us = profile_time_us() - t0;
             if (!kbuf){
+                file_profile_note(0, 0, cstr_us, alloc_us, 0, 0, 0, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
 
             kernel_preempt_enter();
-            if (fat32_init() == 0){
+            t0 = profile_time_us();
+            int fat_init_rc = fat32_init();
+            fat_init_us = profile_time_us() - t0;
+            if (fat_init_rc == 0){
+                t0 = profile_time_us();
                 n = fat32_read_file_in_dir_path(sandbox83, path, kbuf, (int)out_cap);
+                fat_read_us = profile_time_us() - t0;
             }
             kernel_preempt_exit();
             if (n < 0 || n > (int)out_cap){
                 kfree(kbuf);
+                file_profile_note(0, 0, cstr_us, alloc_us, fat_init_us, fat_read_us, 0, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
+            t0 = profile_time_us();
             if (process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                copy_us = profile_time_us() - t0;
                 kfree(kbuf);
+                file_profile_note(0, 0, cstr_us, alloc_us, fat_init_us, fat_read_us, copy_us, profile_time_us() - t_total);
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
+            copy_us = profile_time_us() - t0;
             kfree(kbuf);
+            file_profile_note(1, (unsigned long)n, cstr_us, alloc_us, fat_init_us, fat_read_us, copy_us, profile_time_us() - t_total);
             frame[TF_X0] = (unsigned long)n;
             return frame_sp;
         }
+
+        case SYS_FILE_PROFILE_RESET:
+            file_profile_reset();
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_FILE_PROFILE_DUMP:
+            file_profile_dump();
+            frame[TF_X0] = 0;
+            return frame_sp;
 
         case SYS_RUN_PROGRAM: {
             kernel_preempt_enter();
