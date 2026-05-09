@@ -647,6 +647,8 @@ typedef struct {
 } inflate_huff_t;
 
 typedef int (*inflate_emit_fn)(void* ctx, unsigned char byte);
+typedef struct html_stream_s html_stream_t;
+static int html_stream_emit_byte(void* ctx, unsigned char byte);
 
 static int inflate_bits(inflate_reader_t* r, int n, unsigned int* out){
     if (!r || !out || n < 0 || n > 16){
@@ -702,6 +704,9 @@ static int inflate_output_byte(unsigned char* out,
         return -1;
     }
     if (emit){
+        if (out && out_cap > 0){
+            out[*out_pos % out_cap] = byte;
+        }
         if (emit(emit_ctx, byte) != 0){
             return -1;
         }
@@ -1012,10 +1017,12 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                     return -1;
                 }
                 while (len--){
-                    unsigned char byte = out ? out[out_pos - (int)dist] : 0u;
                     if (!out){
                         return -1;
                     }
+                    unsigned char byte = emit
+                                             ? out[(out_pos - (int)dist) % out_cap]
+                                             : out[out_pos - (int)dist];
                     int wr = inflate_output_byte(out, out_cap, &out_pos, byte,
                                                  truncated, emit, emit_ctx);
                     if (wr > 0){
@@ -1088,6 +1095,65 @@ static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned c
         g_gzip_truncated = truncated ? 1 : 0;
         return out_n;
     }
+}
+
+static int gzip_stream_html_local(const unsigned char* in,
+                                  int in_len,
+                                  unsigned char* history,
+                                  int history_cap,
+                                  html_stream_t* stream){
+    int pos;
+    unsigned int flags;
+    int truncated = 0;
+    g_gzip_truncated = 0;
+    if (!in || in_len < 18 || !history || history_cap < 32768 || !stream){
+        return -1;
+    }
+    if (in[0] != 0x1Fu || in[1] != 0x8Bu || in[2] != 8u){
+        return -1;
+    }
+    flags = in[3];
+    pos = 10;
+
+    if (flags & 0x04u){
+        int xlen;
+        if (pos + 2 > in_len){
+            return -1;
+        }
+        xlen = (int)in[pos] | ((int)in[pos + 1] << 8);
+        pos += 2 + xlen;
+    }
+    if (flags & 0x08u){
+        while (pos < in_len && in[pos] != 0){
+            pos++;
+        }
+        pos++;
+    }
+    if (flags & 0x10u){
+        while (pos < in_len && in[pos] != 0){
+            pos++;
+        }
+        pos++;
+    }
+    if (flags & 0x02u){
+        pos += 2;
+    }
+    if (pos >= in_len){
+        return -1;
+    }
+
+    int out_n = inflate_raw_deflate_local(&in[pos],
+                                          in_len - pos,
+                                          history,
+                                          history_cap,
+                                          &truncated,
+                                          html_stream_emit_byte,
+                                          stream);
+    if (out_n <= 0){
+        return -1;
+    }
+    g_gzip_truncated = truncated ? 1 : 0;
+    return out_n;
 }
 
 static int decode_chunked_body(const unsigned char* in, int len, unsigned char* out, int out_cap){
@@ -1205,6 +1271,18 @@ typedef struct {
     int len;
 } html_out_t;
 
+struct html_stream_s {
+    html_out_t out;
+    int in_tag;
+    int last_space;
+    int suppress_style;
+    int suppress_script;
+    int suppress_head;
+    int visible;
+    unsigned char tag[64];
+    int tag_len;
+};
+
 static void html_out_flush(html_out_t* out){
     if (!out || out->len <= 0){
         return;
@@ -1222,6 +1300,115 @@ static void html_out_putc(html_out_t* out, char c){
         html_out_flush(out);
     }
     out->data[out->len++] = c;
+}
+
+static void html_stream_init(html_stream_t* st){
+    if (!st){
+        return;
+    }
+    st->out.len = 0;
+    st->in_tag = 0;
+    st->last_space = 1;
+    st->suppress_style = 0;
+    st->suppress_script = 0;
+    st->suppress_head = 0;
+    st->visible = 0;
+    st->tag_len = 0;
+}
+
+static void html_stream_finish(html_stream_t* st){
+    if (!st){
+        return;
+    }
+    html_out_flush(&st->out);
+    qos_puts("\n");
+}
+
+static void html_stream_process_tag(html_stream_t* st){
+    int ts = 0;
+    int te;
+    int closing = 0;
+    int nlen;
+    if (!st){
+        return;
+    }
+    te = st->tag_len;
+    while (ts < te && (st->tag[ts] == ' ' || st->tag[ts] == '\t' ||
+                       st->tag[ts] == '\r' || st->tag[ts] == '\n')){
+        ts++;
+    }
+    if (ts < te && st->tag[ts] == '/'){
+        closing = 1;
+        ts++;
+    }
+    while (ts < te && (st->tag[ts] == ' ' || st->tag[ts] == '\t' ||
+                       st->tag[ts] == '\r' || st->tag[ts] == '\n')){
+        ts++;
+    }
+    nlen = te - ts;
+    if (nlen <= 0){
+        return;
+    }
+    if (tag_name_is(&st->tag[ts], nlen, "style")){
+        st->suppress_style = closing ? 0 : 1;
+    } else if (tag_name_is(&st->tag[ts], nlen, "script")){
+        st->suppress_script = closing ? 0 : 1;
+    } else if (tag_name_is(&st->tag[ts], nlen, "head")){
+        st->suppress_head = closing ? 0 : 1;
+    }
+}
+
+static int html_stream_emit_byte(void* ctx, unsigned char c){
+    html_stream_t* st = (html_stream_t*)ctx;
+    if (!st){
+        return -1;
+    }
+
+    if (st->in_tag){
+        if (c == '>'){
+            html_stream_process_tag(st);
+            st->in_tag = 0;
+            st->tag_len = 0;
+            if (!st->last_space){
+                html_out_putc(&st->out, ' ');
+                st->last_space = 1;
+            }
+            return 0;
+        }
+        if (st->tag_len < (int)sizeof(st->tag)){
+            st->tag[st->tag_len++] = c;
+        }
+        return 0;
+    }
+
+    if (c == '<'){
+        st->in_tag = 1;
+        st->tag_len = 0;
+        return 0;
+    }
+
+    if (st->suppress_style || st->suppress_script || st->suppress_head){
+        return 0;
+    }
+
+    if (c == '\r'){
+        return 0;
+    }
+    if (c == '\n' || c == '\t' || c == ' '){
+        if (!st->last_space){
+            html_out_putc(&st->out, ' ');
+            st->last_space = 1;
+        }
+        return 0;
+    }
+    if (c < 32u || c > 126u){
+        return 0;
+    }
+
+    html_out_putc(&st->out, (char)c);
+    st->visible++;
+    st->last_space = 0;
+    return 0;
 }
 
 static int print_html_text(const unsigned char* html, int len){
@@ -1549,6 +1736,8 @@ static void cmd_open(char* host, const char* path){
     int has_content_encoding = 0;
     int use_https = 0;
     int n;
+    int visible = 0;
+    int rendered_streaming = 0;
     unsigned long decode_chunked_ms = 0;
     unsigned long decode_gzip_ms = 0;
     unsigned long render_ms = 0;
@@ -1640,17 +1829,21 @@ static void cmd_open(char* host, const char* path){
 
     if (has_content_encoding){
         if (str_contains_ci(content_encoding, "gzip")){
-            unsigned char* out_buf = work;
+            html_stream_t stream;
             unsigned long t_decode = qos_get_ticks();
-            int decoded = gzip_decompress_local(body_ptr, body_len, out_buf, DECODE_CAP);
+            qos_puts("\n");
+            html_stream_init(&stream);
+            int decoded = gzip_stream_html_local(body_ptr, body_len, work, DECODE_CAP, &stream);
+            html_stream_finish(&stream);
             decode_gzip_ms = qos_get_ticks() - t_decode;
-            if (decoded > 0){
-                body_ptr = out_buf;
-                body_len = decoded;
-                if (g_gzip_truncated){
-                    qos_puts("Gzip output reached browser buffer limit; page text may be truncated.\n");
+            if (decoded > 0 || stream.visible > 0){
+                visible = stream.visible;
+                rendered_streaming = 1;
+                if (decoded <= 0 || g_gzip_truncated){
+                    qos_puts("Gzip stream ended early; page text may be truncated.\n");
                 }
             } else{
+                rendered_streaming = 0;
                 qos_puts("Gzip decode failed; showing raw body.\n");
             }
         } else if (!str_contains_ci(content_encoding, "identity")){
@@ -1660,10 +1853,12 @@ static void cmd_open(char* host, const char* path){
         }
     }
 
-    qos_puts("\n");
-    unsigned long t_render = qos_get_ticks();
-    int visible = print_html_text(body_ptr, body_len);
-    render_ms = qos_get_ticks() - t_render;
+    if (!rendered_streaming){
+        qos_puts("\n");
+        unsigned long t_render = qos_get_ticks();
+        visible = print_html_text(body_ptr, body_len);
+        render_ms = qos_get_ticks() - t_render;
+    }
     qos_puts("Decode/render timing ms: chunked=");
     print_uint((unsigned int)decode_chunked_ms);
     qos_puts(" gzip=");
