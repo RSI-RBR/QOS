@@ -2904,7 +2904,14 @@ void usb_host_poll(void){
                                     USB_HID_IDLE_POLL_MS;
         g_kbd_next_poll_tick = now + kbd_interval;
     }
+}
 
+void usb_host_poll_mouse(void){
+    if (!g_usb_ready || !g_mouse.present){
+        return;
+    }
+
+    unsigned long now = system_ticks;
     if (g_mouse.present && (long)(now - g_mouse_next_poll_tick) >= 0){
         (void)usb_hid_mouse_poll_once();
         now = system_ticks;
