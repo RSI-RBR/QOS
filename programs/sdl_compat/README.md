@@ -22,6 +22,6 @@ Notes:
 - The current pool is 1 MiB, enough for four full 256x256 RGBA sprites.
 - Pixel format currently supports `SDL_PIXELFORMAT_RGBA8888`.
 - BMP loading supports uncompressed 24-bit and 32-bit BMP files, including 256x256 sprites.
-- Asset paths are sandbox-relative. `GAME.BIN` is currently mapped to the `QF2D` folder, so `img/unit.bmp` is read as `QF2D/IMG/UNIT.BMP`.
-- The FAT driver currently resolves short 8.3 names only; keep asset folders/files at 8 or fewer basename chars plus 3-char extensions.
+- Asset paths are sandbox-relative. `GAME.BIN` is currently mapped to the `QF2D` folder, so `img/tile_grass.bmp` is read inside `QF2D/IMG/`.
+- The FAT driver resolves short 8.3 names and ASCII FAT long filenames for sandboxed BMP assets.
 - `SDL_RenderCopy` uses software nearest-neighbor scaling and alpha blending.

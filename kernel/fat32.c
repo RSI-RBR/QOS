@@ -5,6 +5,8 @@
 
 #define SECTOR_SIZE 512
 #define MAX_CLUSTER_SIZE (64 * 1024)
+#define FAT_LFN_ATTR 0x0F
+#define FAT_LFN_MAX_CHARS 128
 
 
 static unsigned int fat_start;
@@ -228,6 +230,125 @@ static int path_component_to_83(const char* start,
     return 0;
 }
 
+static int path_component_is_dot_or_dotdot(const char* start, int len){
+    if (!start){
+        return 1;
+    }
+    return (len == 1 && start[0] == '.') ||
+           (len == 2 && start[0] == '.' && start[1] == '.');
+}
+
+static int path_component_has_ext_ci(const char* start, int len, const char* ext){
+    int dot = -1;
+    int ext_len = 0;
+    if (!start || !ext || len <= 0){
+        return 0;
+    }
+    for (int i = 0; i < len; i++){
+        if (start[i] == '.'){
+            dot = i;
+        }
+    }
+    if (dot < 0 || dot == len - 1){
+        return 0;
+    }
+    while (ext[ext_len]){
+        ext_len++;
+    }
+    if ((len - dot - 1) != ext_len){
+        return 0;
+    }
+    for (int i = 0; i < ext_len; i++){
+        if (fat_ascii_upper(start[dot + 1 + i]) != fat_ascii_upper(ext[i])){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int ascii_equal_ci_n(const char* a, int a_len, const char* b){
+    if (!a || !b || a_len < 0){
+        return 0;
+    }
+    for (int i = 0; i < a_len; i++){
+        if (!b[i]){
+            return 0;
+        }
+        if (fat_ascii_upper(a[i]) != fat_ascii_upper(b[i])){
+            return 0;
+        }
+    }
+    return b[a_len] == 0;
+}
+
+static void lfn_reset(char* lfn, int* valid){
+    if (valid){
+        *valid = 0;
+    }
+    if (lfn){
+        for (int i = 0; i < FAT_LFN_MAX_CHARS; i++){
+            lfn[i] = 0;
+        }
+    }
+}
+
+static int lfn_copy_char(char* lfn, unsigned int offset, unsigned short ch){
+    if (!lfn || offset + 1u >= FAT_LFN_MAX_CHARS){
+        return -1;
+    }
+    if (ch == 0x0000u){
+        lfn[offset] = 0;
+        return 1;
+    }
+    if (ch == 0xFFFFu){
+        return 0;
+    }
+    if (ch < 0x20u || ch > 0x7Eu){
+        return -1;
+    }
+    lfn[offset] = (char)(ch & 0xFFu);
+    lfn[offset + 1u] = 0;
+    return 0;
+}
+
+static void lfn_apply_entry(const unsigned char* entry, char* lfn, int* valid){
+    static const unsigned char lfn_pos[13] = {
+        1, 3, 5, 7, 9,
+        14, 16, 18, 20, 22, 24,
+        28, 30
+    };
+    if (!entry || !lfn || !valid){
+        return;
+    }
+
+    unsigned int ord = entry[0] & 0x1Fu;
+    if (ord == 0u || ord > 20u){
+        lfn_reset(lfn, valid);
+        return;
+    }
+
+    if (entry[0] & 0x40u){
+        lfn_reset(lfn, valid);
+        *valid = 1;
+    } else if (!*valid){
+        return;
+    }
+
+    unsigned int base = (ord - 1u) * 13u;
+    for (unsigned int i = 0; i < 13u; i++){
+        unsigned int p = lfn_pos[i];
+        unsigned short ch = (unsigned short)entry[p] | ((unsigned short)entry[p + 1u] << 8);
+        int rc = lfn_copy_char(lfn, base + i, ch);
+        if (rc < 0){
+            lfn_reset(lfn, valid);
+            return;
+        }
+        if (rc > 0){
+            break;
+        }
+    }
+}
+
 static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
     for (unsigned int i = 0; i < sectors_per_cluster; i++){
@@ -290,6 +411,66 @@ static int find_entry_in_dir(unsigned int start_cluster,
                 copy_entry(out_entry, entry);
                 return 0;
             }
+        }
+        cluster = fat_next(cluster);
+    }
+    return -1;
+}
+
+static int find_entry_in_dir_by_component(unsigned int start_cluster,
+                                          const char* name,
+                                          int name_len,
+                                          unsigned char out_entry[32]){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = start_cluster;
+    char short83[11];
+    int short_valid = 0;
+    char lfn[FAT_LFN_MAX_CHARS];
+    int lfn_valid = 0;
+
+    if (!name || name_len <= 0 || !out_entry || start_cluster < 2){
+        return -1;
+    }
+    if (path_component_is_dot_or_dotdot(name, name_len)){
+        return -1;
+    }
+    if (cluster_size > MAX_CLUSTER_SIZE){
+        uart_puts("Cluster too big.\n");
+        return -1;
+    }
+
+    short_valid = (path_component_to_83(name, name_len, 0, short83) == 0) ? 1 : 0;
+    lfn_reset(lfn, &lfn_valid);
+
+    while (cluster < 0x0FFFFFF8){
+        if (read_cluster(cluster, cluster_buf)){
+            return -1;
+        }
+
+        for (int i = 0; i < (int)cluster_size; i += 32){
+            unsigned char *entry = &cluster_buf[i];
+            if (entry[0] == 0x00){
+                return -1;
+            }
+            if (entry[0] == 0xE5){
+                lfn_reset(lfn, &lfn_valid);
+                continue;
+            }
+            if (entry[11] == FAT_LFN_ATTR){
+                lfn_apply_entry(entry, lfn, &lfn_valid);
+                continue;
+            }
+            if (entry[11] & 0x08u){
+                lfn_reset(lfn, &lfn_valid);
+                continue;
+            }
+
+            if ((short_valid && name_match(entry, short83)) ||
+                (lfn_valid && ascii_equal_ci_n(name, name_len, lfn))){
+                copy_entry(out_entry, entry);
+                return 0;
+            }
+            lfn_reset(lfn, &lfn_valid);
         }
         cluster = fat_next(cluster);
     }
@@ -446,13 +627,12 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
         const char* comp = p;
         int comp_len = 0;
         int last = 0;
-        char name83[11];
 
         while (*p && *p != '/' && *p != '\\'){
             p++;
             comp_len++;
         }
-        if (comp_len <= 0){
+        if (comp_len <= 0 || path_component_is_dot_or_dotdot(comp, comp_len)){
             return -1;
         }
         while (*p == '/' || *p == '\\'){
@@ -463,11 +643,7 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
         }
         last = (*p == 0) ? 1 : 0;
 
-        if (path_component_to_83(comp, comp_len, last, name83) != 0){
-            return -1;
-        }
-
-        if (find_entry_in_dir(dir_cluster, name83, entry) != 0){
+        if (find_entry_in_dir_by_component(dir_cluster, comp, comp_len, entry) != 0){
             return -1;
         }
 
@@ -485,7 +661,7 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
         if (entry_is_directory(entry)){
             return -1;
         }
-        if (name83[8] != 'B' || name83[9] != 'M' || name83[10] != 'P'){
+        if (!path_component_has_ext_ci(comp, comp_len, "BMP")){
             return -1;
         }
 
