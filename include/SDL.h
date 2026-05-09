@@ -58,6 +58,9 @@ typedef struct SDL_Texture {
     Uint8 color_b;
     Uint8 alpha_mod;
     SDL_BlendMode blend_mode;
+    Uint32 average_color;
+    int opaque;
+    int render_hint;
     int owns_pixels;
     int locked;
     int alive;
@@ -84,7 +87,10 @@ typedef struct SDL_Surface {
     Uint8* pixels;
     Uint32 capacity;
     Uint32 color_key;
+    Uint32 average_color;
     int color_key_enabled;
+    int opaque;
+    int render_hint;
     int owns_pixels;
     int alive;
 } SDL_Surface;

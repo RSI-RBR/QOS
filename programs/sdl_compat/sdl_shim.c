@@ -6,10 +6,12 @@
 #define SDL_SHIM_MAX_TEXTURES 128
 #define SDL_SHIM_MAX_SURFACES 32
 #define SDL_SHIM_ROWBUF_PIXELS 2048
-#define SDL_SHIM_BMP_FILE_MAX (4u * 1024u * 1024u)
+#define SDL_SHIM_BLITBUF_BYTES (64u * 1024u)
+#define SDL_SHIM_BMP_FILE_MAX (1024u * 1024u)
 #define SDL_SHIM_EVENT_QUEUE_SIZE 64
 #define SDL_SHIM_REPEAT_DELAY_MS 400u
 #define SDL_SHIM_REPEAT_INTERVAL_MS 33u
+#define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -37,6 +39,13 @@ static int g_mouse_wheel_y = 0;
 static Uint32 g_mouse_buttons = 0u;
 static char g_last_error[96] = "OK";
 static Uint8 g_rowbuf[SDL_SHIM_ROWBUF_PIXELS * 4u];
+static Uint8 g_blitbuf[SDL_SHIM_BLITBUF_BYTES];
+static int g_pending_fill_valid = 0;
+static unsigned int g_pending_fill_x = 0u;
+static unsigned int g_pending_fill_y = 0u;
+static unsigned int g_pending_fill_w = 0u;
+static unsigned int g_pending_fill_h = 0u;
+static unsigned int g_pending_fill_color = 0u;
 
 static Uint32 rgb_to_color(Uint8 r, Uint8 g, Uint8 b){
     return ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
@@ -89,6 +98,45 @@ static void set_error(const char* msg){
         i++;
     }
     g_last_error[i] = 0;
+}
+
+static void sdl_flush_pending_fill(void){
+    if (!g_pending_fill_valid){
+        return;
+    }
+    qos_fb_rect(g_pending_fill_x,
+                g_pending_fill_y,
+                g_pending_fill_w,
+                g_pending_fill_h,
+                g_pending_fill_color);
+    g_pending_fill_valid = 0;
+}
+
+static int sdl_queue_fill_rect(unsigned int x,
+                               unsigned int y,
+                               unsigned int w,
+                               unsigned int h,
+                               unsigned int color){
+    if (w == 0u || h == 0u){
+        return 0;
+    }
+    if (g_pending_fill_valid &&
+        g_pending_fill_y == y &&
+        g_pending_fill_h == h &&
+        g_pending_fill_color == color &&
+        g_pending_fill_x + g_pending_fill_w == x){
+        g_pending_fill_w += w;
+        return 0;
+    }
+
+    sdl_flush_pending_fill();
+    g_pending_fill_valid = 1;
+    g_pending_fill_x = x;
+    g_pending_fill_y = y;
+    g_pending_fill_w = w;
+    g_pending_fill_h = h;
+    g_pending_fill_color = color;
+    return 0;
 }
 
 static int sdl_i_min(int a, int b){
@@ -551,6 +599,29 @@ static int read_s32_le(const Uint8* p){
     return (int)read_le32(p);
 }
 
+static char sdl_ascii_lower(char c){
+    if (c >= 'A' && c <= 'Z'){
+        return (char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int sdl_path_has_tile_hint(const char* path){
+    if (!path){
+        return 0;
+    }
+    for (const char* p = path; p[0] && p[1] && p[2] && p[3] && p[4]; p++){
+        if (sdl_ascii_lower(p[0]) == 't' &&
+            sdl_ascii_lower(p[1]) == 'i' &&
+            sdl_ascii_lower(p[2]) == 'l' &&
+            sdl_ascii_lower(p[3]) == 'e' &&
+            p[4] == '_'){
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* sh){
     if (!t || !sx || !sy || !sw || !sh){
         return -1;
@@ -597,6 +668,9 @@ int SDL_Init(Uint32 flags){
         g_textures[i].color_b = 255u;
         g_textures[i].alpha_mod = 255u;
         g_textures[i].blend_mode = SDL_BLENDMODE_BLEND;
+        g_textures[i].average_color = 0u;
+        g_textures[i].opaque = 0;
+        g_textures[i].render_hint = 0;
         g_textures[i].owns_pixels = 0;
         g_textures[i].locked = 0;
     }
@@ -611,7 +685,10 @@ int SDL_Init(Uint32 flags){
         g_surfaces[i].format_storage.format = 0u;
         g_surfaces[i].format_storage.bytes_per_pixel = 0u;
         g_surfaces[i].color_key = 0u;
+        g_surfaces[i].average_color = 0u;
         g_surfaces[i].color_key_enabled = 0;
+        g_surfaces[i].opaque = 0;
+        g_surfaces[i].render_hint = 0;
         g_surfaces[i].owns_pixels = 0;
     }
     g_window.alive = 0;
@@ -629,6 +706,7 @@ int SDL_Init(Uint32 flags){
     g_mouse_wheel_x = 0;
     g_mouse_wheel_y = 0;
     g_mouse_buttons = 0u;
+    g_pending_fill_valid = 0;
     set_error("OK");
     return 0;
 }
@@ -646,6 +724,9 @@ void SDL_Quit(void){
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
+        g_textures[i].average_color = 0u;
+        g_textures[i].opaque = 0;
+        g_textures[i].render_hint = 0;
         g_textures[i].owns_pixels = 0;
         g_textures[i].locked = 0;
     }
@@ -659,6 +740,9 @@ void SDL_Quit(void){
         g_surfaces[i].format = 0;
         g_surfaces[i].format_storage.format = 0u;
         g_surfaces[i].format_storage.bytes_per_pixel = 0u;
+        g_surfaces[i].average_color = 0u;
+        g_surfaces[i].opaque = 0;
+        g_surfaces[i].render_hint = 0;
         g_surfaces[i].owns_pixels = 0;
     }
     g_renderer.alive = 0;
@@ -682,6 +766,7 @@ void SDL_Quit(void){
     g_mouse_wheel_x = 0;
     g_mouse_wheel_y = 0;
     g_mouse_buttons = 0u;
+    g_pending_fill_valid = 0;
 }
 
 const char* SDL_GetError(void){
@@ -819,6 +904,7 @@ int SDL_RenderClear(SDL_Renderer* renderer){
         set_error("renderer/window not alive");
         return -1;
     }
+    sdl_flush_pending_fill();
     qos_fb_rect(0u, 0u,
                 (unsigned int)renderer->window->w,
                 (unsigned int)renderer->window->h,
@@ -864,8 +950,11 @@ int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_Rect* rect){
     if (renderer->draw_blend_mode == SDL_BLENDMODE_BLEND && renderer->draw_alpha == 0u){
         return 0;
     }
-    qos_fb_rect((unsigned int)x, (unsigned int)y, (unsigned int)w, (unsigned int)h, renderer->draw_color);
-    return 0;
+    return sdl_queue_fill_rect((unsigned int)x,
+                               (unsigned int)y,
+                               (unsigned int)w,
+                               (unsigned int)h,
+                               renderer->draw_color);
 }
 
 int SDL_RenderDrawRect(SDL_Renderer* renderer, const SDL_Rect* rect){
@@ -901,6 +990,7 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y){
 
 void SDL_RenderPresent(SDL_Renderer* renderer){
     (void)renderer;
+    sdl_flush_pending_fill();
     qos_fb_present();
 }
 
@@ -1083,6 +1173,9 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->color_b = 255u;
     t->alpha_mod = 255u;
     t->blend_mode = SDL_BLENDMODE_BLEND;
+    t->average_color = 0u;
+    t->opaque = 0;
+    t->render_hint = 0;
     t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
@@ -1128,6 +1221,36 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->color_b = 255u;
     t->alpha_mod = 255u;
     t->blend_mode = SDL_BLENDMODE_BLEND;
+    {
+        unsigned long long sr = 0ull;
+        unsigned long long sg = 0ull;
+        unsigned long long sb = 0ull;
+        unsigned int count = 0u;
+        int opaque = 1;
+        for (int y = 0; y < surface->h; y++){
+            const Uint8* row = surface->pixels + ((Uint32)y * (Uint32)surface->pitch);
+            for (int x = 0; x < surface->w; x++){
+                const Uint8* p = row + ((Uint32)x * 4u);
+                if (p[3] != 255u){
+                    opaque = 0;
+                }
+                if (p[3] != 0u){
+                    sr += p[0];
+                    sg += p[1];
+                    sb += p[2];
+                    count++;
+                }
+            }
+        }
+        if (count == 0u){
+            count = 1u;
+        }
+        t->average_color = rgb_to_color((Uint8)(sr / count),
+                                        (Uint8)(sg / count),
+                                        (Uint8)(sb / count));
+        t->opaque = opaque;
+    }
+    t->render_hint = surface->render_hint;
     t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
@@ -1145,6 +1268,9 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     texture->locked = 0;
     texture->pixels = 0;
     texture->capacity = 0u;
+    texture->average_color = 0u;
+    texture->opaque = 0;
+    texture->render_hint = 0;
     texture->owns_pixels = 0;
 }
 
@@ -1324,6 +1450,11 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     Uint32 pixel_bytes;
     SDL_Surface* s;
     int alpha_nonzero = 0;
+    int opaque = 1;
+    unsigned long long sum_r = 0ull;
+    unsigned long long sum_g = 0ull;
+    unsigned long long sum_b = 0ull;
+    unsigned int sum_count = 0u;
     Uint8* bmp = 0;
 
     if (!file || !*file){
@@ -1419,7 +1550,10 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     surface_set_format(s, SDL_PIXELFORMAT_RGBA8888);
     s->capacity = pixel_bytes;
     s->color_key = 0u;
+    s->average_color = 0u;
     s->color_key_enabled = 0;
+    s->opaque = 1;
+    s->render_hint = sdl_path_has_tile_hint(file) ? SDL_SHIM_RENDER_HINT_TILE_FILL : 0;
     s->owns_pixels = 1;
     s->alive = 1;
 
@@ -1434,8 +1568,15 @@ SDL_Surface* SDL_LoadBMP(const char* file){
             dp[1] = sp[1];
             dp[2] = sp[0];
             dp[3] = (bpp == 32u) ? sp[3] : 255u;
+            if (dp[3] != 255u){
+                opaque = 0;
+            }
             if (dp[3] != 0u){
                 alpha_nonzero = 1;
+                sum_r += dp[0];
+                sum_g += dp[1];
+                sum_b += dp[2];
+                sum_count++;
             }
         }
     }
@@ -1444,7 +1585,15 @@ SDL_Surface* SDL_LoadBMP(const char* file){
         for (Uint32 i = 0u; i < pixel_bytes; i += 4u){
             s->pixels[i + 3u] = 255u;
         }
+        opaque = 1;
     }
+    if (sum_count == 0u){
+        sum_count = 1u;
+    }
+    s->average_color = rgb_to_color((Uint8)(sum_r / sum_count),
+                                    (Uint8)(sum_g / sum_count),
+                                    (Uint8)(sum_b / sum_count));
+    s->opaque = opaque;
 
     free(bmp);
     return s;
@@ -1463,6 +1612,9 @@ void SDL_FreeSurface(SDL_Surface* surface){
     surface->format = 0;
     surface->format_storage.format = 0u;
     surface->format_storage.bytes_per_pixel = 0u;
+    surface->average_color = 0u;
+    surface->opaque = 0;
+    surface->render_hint = 0;
     surface->owns_pixels = 0;
 }
 
@@ -1509,7 +1661,10 @@ SDL_Surface* SDL_CreateRGBSurfaceWithFormat(Uint32 flags, int w, int h, int dept
     surface_set_format(s, format);
     s->capacity = bytes;
     s->color_key = 0u;
+    s->average_color = 0u;
     s->color_key_enabled = 0;
+    s->opaque = 1;
+    s->render_hint = 0;
     s->owns_pixels = 1;
     s->alive = 1;
     sdl_zero_bytes(s->pixels, bytes);
@@ -1571,6 +1726,10 @@ int SDL_FillRect(SDL_Surface* surface, const SDL_Rect* rect, Uint32 color){
             p[3] = a;
         }
     }
+    if (x == 0 && y == 0 && w == surface->w && h == surface->h){
+        surface->average_color = rgb_to_color(r, g, b);
+        surface->opaque = (a == 255u) ? 1 : 0;
+    }
     return 0;
 }
 
@@ -1602,6 +1761,7 @@ int SDL_SetSurfaceColorKey(SDL_Surface* surface, int enabled, Uint32 key){
     surface->color_key_enabled = enabled ? 1 : 0;
     if (surface->color_key_enabled){
         apply_surface_color_key(surface);
+        surface->opaque = 0;
     }
     return 0;
 }
@@ -1676,6 +1836,82 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         return 0;
     }
 
+    int visible_x0 = 0;
+    int visible_y0 = 0;
+    int visible_x1 = dw;
+    int visible_y1 = dh;
+    if (dx < 0){
+        visible_x0 = -dx;
+    }
+    if (dy < 0){
+        visible_y0 = -dy;
+    }
+    if (dx + visible_x1 > screen_w){
+        visible_x1 = screen_w - dx;
+    }
+    if (dy + visible_y1 > screen_h){
+        visible_y1 = screen_h - dy;
+    }
+    if (visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
+        return 0;
+    }
+
+    if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
+        texture->opaque &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        texture->color_b == 255u &&
+        sx == 0 && sy == 0 && sw == texture->w && sh == texture->h &&
+        dw <= 64 && dh <= 64){
+        return sdl_queue_fill_rect((unsigned int)(dx + visible_x0),
+                                   (unsigned int)(dy + visible_y0),
+                                   (unsigned int)(visible_x1 - visible_x0),
+                                   (unsigned int)(visible_y1 - visible_y0),
+                                   texture->average_color);
+    }
+
+    {
+        unsigned int out_w = (unsigned int)(visible_x1 - visible_x0);
+        unsigned int out_h = (unsigned int)(visible_y1 - visible_y0);
+        unsigned long total_bytes = (unsigned long)out_w * (unsigned long)out_h * 4ul;
+        if (total_bytes > 0ul && total_bytes <= (unsigned long)SDL_SHIM_BLITBUF_BYTES){
+            sdl_flush_pending_fill();
+            for (unsigned int by = 0u; by < out_h; by++){
+                int oy = visible_y0 + (int)by;
+                for (unsigned int bx = 0u; bx < out_w; bx++){
+                    int ox = visible_x0 + (int)bx;
+                    int src_ox = (flip & SDL_FLIP_HORIZONTAL) ? (dw - 1 - ox) : ox;
+                    int src_oy = (flip & SDL_FLIP_VERTICAL) ? (dh - 1 - oy) : oy;
+                    int tx_x = sx + (int)(((unsigned long long)src_ox * (unsigned long long)sw) / (unsigned long long)dw);
+                    int tx_y = sy + (int)(((unsigned long long)src_oy * (unsigned long long)sh) / (unsigned long long)dh);
+                    const Uint8* sp = texture->pixels +
+                                      ((Uint32)tx_y * (Uint32)texture->pitch) +
+                                      ((Uint32)tx_x * 4u);
+                    Uint8* dp = &g_blitbuf[((by * out_w) + bx) * 4u];
+                    dp[0] = (Uint8)(((Uint32)sp[0] * (Uint32)texture->color_r) / 255u);
+                    dp[1] = (Uint8)(((Uint32)sp[1] * (Uint32)texture->color_g) / 255u);
+                    dp[2] = (Uint8)(((Uint32)sp[2] * (Uint32)texture->color_b) / 255u);
+                    if (texture->blend_mode == SDL_BLENDMODE_NONE){
+                        dp[3] = 255u;
+                    } else{
+                        dp[3] = (Uint8)(((Uint32)sp[3] * (Uint32)texture->alpha_mod) / 255u);
+                    }
+                }
+            }
+            if (qos_fb_blit_rgba((unsigned int)(dx + visible_x0),
+                                 (unsigned int)(dy + visible_y0),
+                                 out_w,
+                                 out_h,
+                                 g_blitbuf) != 0){
+                set_error("fb blit failed");
+                return -1;
+            }
+            return 0;
+        }
+    }
+
+    sdl_flush_pending_fill();
     for (int oy = 0; oy < dh; oy++){
         int py = dy + oy;
         int tx_y;
