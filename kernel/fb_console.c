@@ -9,6 +9,7 @@
 #define FB_CONSOLE_MAX_ROWS (1080u / FB_CONSOLE_CELL_H)
 #define FB_CONSOLE_MAX_PIXEL_W (FB_CONSOLE_MAX_COLS * FB_CONSOLE_CELL_W)
 #define FB_CONSOLE_MAX_PIXEL_H (FB_CONSOLE_MAX_ROWS * FB_CONSOLE_CELL_H)
+#define FB_CONSOLE_DMA_MIN_BYTES (2u * 1024u * 1024u)
 
 static unsigned char g_cells[FB_CONSOLE_MAX_ROWS][FB_CONSOLE_MAX_COLS];
 static unsigned int g_pixels[FB_CONSOLE_MAX_PIXEL_H][FB_CONSOLE_MAX_PIXEL_W] __attribute__((aligned(64)));
@@ -100,7 +101,8 @@ static void present_pixel_rows_locked(unsigned int start_y, unsigned int height)
     unsigned int* src0 = &g_pixels[start_y][0];
     unsigned long fb_bus = fb_get_bus_base();
 
-    if (pitch >= row_bytes && fb_bus != 0u){
+    if (pitch >= row_bytes && fb_bus != 0u &&
+        ((unsigned long)row_bytes * (unsigned long)height) >= FB_CONSOLE_DMA_MIN_BYTES){
         unsigned int dst_bus = (unsigned int)(fb_bus + ((unsigned long)start_y * pitch));
         if (src_stride == 0u && dst_stride == 0u){
             if (dma_memcpy_to_bus(dst_bus, src0, row_bytes * height) == 0){

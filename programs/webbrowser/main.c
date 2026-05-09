@@ -3,7 +3,7 @@
 
 #define INPUT_CAP 192
 #define REQ_CAP 1024
-#define RESP_CAP 524288
+#define RESP_CAP 786432
 #define DNS_TIMEOUT_MS 3000u
 #define RECV_TIMEOUT_MS 3000u
 #define HOST_CAP 128
@@ -645,6 +645,8 @@ typedef struct {
     unsigned short symbol[320];
 } inflate_huff_t;
 
+typedef int (*inflate_emit_fn)(void* ctx, unsigned char byte);
+
 static int inflate_bits(inflate_reader_t* r, int n, unsigned int* out){
     if (!r || !out || n < 0 || n > 16){
         return -1;
@@ -686,6 +688,33 @@ static int inflate_partial_or_error(inflate_reader_t* r, int out_pos, int* trunc
         return out_pos;
     }
     return -1;
+}
+
+static int inflate_output_byte(unsigned char* out,
+                               int out_cap,
+                               int* out_pos,
+                               unsigned char byte,
+                               int* truncated,
+                               inflate_emit_fn emit,
+                               void* emit_ctx){
+    if (!out_pos){
+        return -1;
+    }
+    if (emit){
+        if (emit(emit_ctx, byte) != 0){
+            return -1;
+        }
+        (*out_pos)++;
+        return 0;
+    }
+    if (!out || *out_pos >= out_cap){
+        if (truncated){
+            *truncated = 1;
+        }
+        return 1;
+    }
+    out[(*out_pos)++] = byte;
+    return 0;
 }
 
 static int inflate_huff_build(inflate_huff_t* h, const unsigned char* lens, int n){
@@ -778,7 +807,9 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                                      int in_len,
                                      unsigned char* out,
                                      int out_cap,
-                                     int* truncated){
+                                     int* truncated,
+                                     inflate_emit_fn emit,
+                                     void* emit_ctx){
     static const unsigned short len_base[29] = {
         3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
         35,43,51,59,67,83,99,115,131,163,195,227,258
@@ -802,7 +833,7 @@ static int inflate_raw_deflate_local(const unsigned char* in,
     int out_pos = 0;
     int last = 0;
 
-    if (!in || in_len <= 0 || !out || out_cap <= 0){
+    if (!in || in_len <= 0 || (!out && !emit) || (out_cap <= 0 && !emit)){
         return -1;
     }
     r.in = in;
@@ -834,13 +865,14 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                 if (inflate_bits(&r, 8, &byte) != 0){
                     return inflate_partial_or_error(&r, out_pos, truncated);
                 }
-                if (out_pos >= out_cap){
-                    if (truncated){
-                        *truncated = 1;
-                    }
+                int wr = inflate_output_byte(out, out_cap, &out_pos, (unsigned char)byte,
+                                             truncated, emit, emit_ctx);
+                if (wr > 0){
                     return out_pos;
                 }
-                out[out_pos++] = (unsigned char)byte;
+                if (wr < 0){
+                    return -1;
+                }
             }
             continue;
         }
@@ -945,13 +977,14 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                 return inflate_partial_or_error(&r, out_pos, truncated);
             }
             if (sym < 256){
-                if (out_pos >= out_cap){
-                    if (truncated){
-                        *truncated = 1;
-                    }
+                int wr = inflate_output_byte(out, out_cap, &out_pos, (unsigned char)sym,
+                                             truncated, emit, emit_ctx);
+                if (wr > 0){
                     return out_pos;
                 }
-                out[out_pos++] = (unsigned char)sym;
+                if (wr < 0){
+                    return -1;
+                }
             } else if (sym == 256){
                 break;
             } else if (sym >= 257 && sym <= 285){
@@ -978,14 +1011,18 @@ static int inflate_raw_deflate_local(const unsigned char* in,
                     return -1;
                 }
                 while (len--){
-                    if (out_pos >= out_cap){
-                        if (truncated){
-                            *truncated = 1;
-                        }
+                    unsigned char byte = out ? out[out_pos - (int)dist] : 0u;
+                    if (!out){
+                        return -1;
+                    }
+                    int wr = inflate_output_byte(out, out_cap, &out_pos, byte,
+                                                 truncated, emit, emit_ctx);
+                    if (wr > 0){
                         return out_pos;
                     }
-                    out[out_pos] = out[out_pos - (int)dist];
-                    out_pos++;
+                    if (wr < 0){
+                        return -1;
+                    }
                 }
             } else{
                 return -1;
@@ -1043,7 +1080,7 @@ static int gzip_decompress_local(const unsigned char* in, int in_len, unsigned c
         if (deflate_len <= 0){
             return -1;
         }
-        out_n = inflate_raw_deflate_local(&in[pos], deflate_len, out, out_cap, &truncated);
+        out_n = inflate_raw_deflate_local(&in[pos], deflate_len, out, out_cap, &truncated, 0, 0);
         if (out_n <= 0){
             return -1;
         }
