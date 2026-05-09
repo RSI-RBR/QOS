@@ -20,6 +20,8 @@ typedef struct{
     unsigned int signer_key_id;
     unsigned int signer_role_mask;
     unsigned int signer_scope_mask;
+    int file_sandbox_enabled;
+    char file_sandbox_83[11];
 } loaded_program_t;
 
 

@@ -30,6 +30,8 @@ typedef struct{
     unsigned int signer_key_id;
     unsigned int signer_role_mask;
     unsigned int signer_scope_mask;
+    int file_sandbox_enabled;
+    char file_sandbox_83[11];
     int user_mode;
     unsigned int owner_core;
     process_state_t state;
@@ -77,5 +79,6 @@ int process_user_range_writable(void* user_ptr, unsigned long len);
 int process_copy_from_user(void* dst, const void* user_src, unsigned long len);
 int process_copy_to_user(void* user_dst, const void* src, unsigned long len);
 int process_copy_cstr_from_user(char* dst, unsigned long dst_cap, const char* user_src);
+int process_current_file_sandbox(char out83[11]);
 
 #endif

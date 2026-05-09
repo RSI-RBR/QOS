@@ -154,68 +154,6 @@ static int read_s32_le(const Uint8* p){
     return (int)read_le32(p);
 }
 
-static char ascii_upper(char c){
-    if (c >= 'a' && c <= 'z'){
-        return (char)(c - ('a' - 'A'));
-    }
-    return c;
-}
-
-static int make_bmp_fat_name_83(const char* path, char out83[11]){
-    const char* base = path;
-    const char* dot = 0;
-    int base_len = 0;
-    int ext_len = 0;
-
-    if (!path || !out83){
-        return -1;
-    }
-    for (const char* p = path; *p; p++){
-        if (*p == '/' || *p == '\\' || *p == ':'){
-            base = p + 1;
-        }
-    }
-    if (!*base){
-        return -1;
-    }
-    for (const char* p = base; *p; p++){
-        if (*p == '.'){
-            dot = p;
-        }
-    }
-    if (!dot || dot == base){
-        return -1;
-    }
-
-    for (int i = 0; i < 11; i++){
-        out83[i] = ' ';
-    }
-
-    for (const char* p = base; p < dot; p++){
-        char c = ascii_upper(*p);
-        if (c == ' '){
-            continue;
-        }
-        if (base_len >= 8){
-            return -1;
-        }
-        out83[base_len++] = c;
-    }
-    for (const char* p = dot + 1; *p; p++){
-        char c = ascii_upper(*p);
-        if (ext_len >= 3){
-            return -1;
-        }
-        out83[8 + ext_len++] = c;
-    }
-
-    if (base_len == 0 || ext_len != 3 ||
-        out83[8] != 'B' || out83[9] != 'M' || out83[10] != 'P'){
-        return -1;
-    }
-    return 0;
-}
-
 static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* sh){
     if (!t || !sx || !sy || !sw || !sh){
         return -1;
@@ -711,7 +649,6 @@ int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pi
 }
 
 SDL_Surface* SDL_LoadBMP(const char* file){
-    char fat83[11];
     int n;
     Uint32 pixel_offset;
     Uint32 dib_size;
@@ -727,12 +664,12 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     SDL_Surface* s;
     int alpha_nonzero = 0;
 
-    if (make_bmp_fat_name_83(file, fat83) != 0){
+    if (!file || !*file){
         set_error("bad BMP filename");
         return 0;
     }
 
-    n = qos_file_read_bmp(fat83, g_bmp_file_buf, SDL_SHIM_BMP_FILE_MAX);
+    n = qos_file_read_bmp(file, g_bmp_file_buf, SDL_SHIM_BMP_FILE_MAX);
     if (n < 54){
         set_error("BMP read failed");
         return 0;

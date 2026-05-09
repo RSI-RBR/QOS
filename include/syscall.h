@@ -264,9 +264,9 @@ static inline int qos_poll_event(qos_event_t* out_ev){
     return (int)qos_syscall1(SYS_INPUT_POLL_EVENT, (unsigned long)out_ev);
 }
 
-static inline int qos_file_read_bmp(const char* fat_name_83, unsigned char* out, unsigned int out_cap){
+static inline int qos_file_read_bmp(const char* relative_path, unsigned char* out, unsigned int out_cap){
     return (int)qos_syscall3(SYS_FILE_READ_BMP,
-                             (unsigned long)fat_name_83,
+                             (unsigned long)relative_path,
                              (unsigned long)out,
                              (unsigned long)out_cap);
 }

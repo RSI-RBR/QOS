@@ -32,6 +32,7 @@
 #define USER_IO_MAX   16384u
 #define USER_WIFI_SCAN_MAX 64u
 #define USER_BMP_FILE_MAX (512u * 1024u)
+#define USER_BMP_PATH_MAX 96u
 
 // Trap frame layout in vectors.S
 #define TF_X0   0
@@ -80,41 +81,6 @@ static unsigned int cstr_bytes_with_nul(const char* s, unsigned int cap){
         n++;
     }
     return n + 1u;
-}
-
-static int fat83_char_allowed(char c){
-    if (c == ' ' || c == '_' || c == '-' || c == '$' || c == '~'){
-        return 1;
-    }
-    if (c >= 'A' && c <= 'Z'){
-        return 1;
-    }
-    if (c >= '0' && c <= '9'){
-        return 1;
-    }
-    return 0;
-}
-
-static int validate_bmp_fat83_name(const char* name){
-    int base_nonspace = 0;
-    if (!name){
-        return -1;
-    }
-    for (unsigned int i = 0; i < 11u; i++){
-        if (!fat83_char_allowed(name[i])){
-            return -1;
-        }
-        if (i < 8u && name[i] != ' '){
-            base_nonspace = 1;
-        }
-    }
-    if (!base_nonspace){
-        return -1;
-    }
-    if (name[8] != 'B' || name[9] != 'M' || name[10] != 'P'){
-        return -1;
-    }
-    return 0;
 }
 
 static unsigned long counter_cycles_to_us(unsigned long cycles, unsigned long hz){
@@ -623,7 +589,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         }
 
         case SYS_FILE_READ_BMP: {
-            char name83[12];
+            char sandbox83[11];
+            char path[USER_BMP_PATH_MAX];
             unsigned char* user_out = (unsigned char*)frame[TF_X1];
             unsigned int out_cap = (unsigned int)frame[TF_X2];
             unsigned char* kbuf = 0;
@@ -633,11 +600,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-            for (unsigned int i = 0; i < sizeof(name83); i++){
-                name83[i] = 0;
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
             }
-            if (process_copy_from_user(name83, (const void*)frame[TF_X0], 11u) != 0 ||
-                validate_bmp_fat83_name(name83) != 0){
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -650,7 +620,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
             kernel_preempt_enter();
             if (fat32_init() == 0){
-                n = fat32_read_file(name83, kbuf, (int)out_cap);
+                n = fat32_read_file_in_dir_path(sandbox83, path, kbuf, (int)out_cap);
             }
             kernel_preempt_exit();
             if (n < 0 || n > (int)out_cap){

@@ -22,6 +22,8 @@ static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
 static unsigned char buffer[PROGRAM_MAX];
 static volatile int loader_busy = 0;
 static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
+static const char GAME_PROGRAM_83[11] = {'G','A','M','E',' ',' ',' ',' ','B','I','N'};
+static const char GAME_SANDBOX_83[11] = {'Q','F','2','D',' ',' ',' ',' ',' ',' ',' '};
 
 static unsigned long daif_read(void){
     unsigned long v;
@@ -69,6 +71,35 @@ static void loader_unlock(void){
     asm volatile("msr daifset, #2");
     loader_busy = 0;
     daif_write(daif_prev);
+}
+
+static int fat83_equal11(const char* a, const char* b){
+    if (!a || !b){
+        return 0;
+    }
+    for (unsigned int i = 0; i < 11u; i++){
+        if (a[i] != b[i]){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void loader_assign_file_sandbox(loaded_program_t* prog, const char* file_83){
+    if (!prog){
+        return;
+    }
+    prog->file_sandbox_enabled = 0;
+    for (unsigned int i = 0; i < 11u; i++){
+        prog->file_sandbox_83[i] = ' ';
+    }
+
+    if (fat83_equal11(file_83, GAME_PROGRAM_83)){
+        prog->file_sandbox_enabled = 1;
+        for (unsigned int i = 0; i < 11u; i++){
+            prog->file_sandbox_83[i] = GAME_SANDBOX_83[i];
+        }
+    }
 }
 
 
@@ -176,6 +207,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     uart_puts("Loading program from SD...\n");
     loaded_program_t prog = {0};
     const char* file_83 = fat_name_83 ? fat_name_83 : DEFAULT_PROGRAM_83;
+    loader_assign_file_sandbox(&prog, file_83);
 
     if (!loader_try_lock()){
         uart_puts("Loader busy.\n");

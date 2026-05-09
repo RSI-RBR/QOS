@@ -13,6 +13,7 @@ static unsigned int sectors_per_cluster;
 static unsigned int root_cluster;
 
 static unsigned char sector[SECTOR_SIZE] __attribute__((aligned(4096)));
+static unsigned char cluster_buf[MAX_CLUSTER_SIZE];
 static void fat_spin_delay(unsigned int count){
     while (count--){
         asm volatile("nop");
@@ -134,6 +135,98 @@ static int name_match(unsigned char *entry, const char *name){
     return 1;
 }
 
+static void copy_entry(unsigned char dst[32], const unsigned char* src){
+    for (int i = 0; i < 32; i++){
+        dst[i] = src[i];
+    }
+}
+
+static int entry_is_directory(const unsigned char* entry){
+    return entry && ((entry[11] & 0x10u) != 0u);
+}
+
+static unsigned int entry_first_cluster(const unsigned char* entry){
+    return ((unsigned int)read16((unsigned char*)&entry[20]) << 16) |
+           (unsigned int)read16((unsigned char*)&entry[26]);
+}
+
+static char fat_ascii_upper(char c){
+    if (c >= 'a' && c <= 'z'){
+        return (char)(c - ('a' - 'A'));
+    }
+    return c;
+}
+
+static int fat83_component_char_allowed(char c){
+    if (c == '_' || c == '-' || c == '$' || c == '~'){
+        return 1;
+    }
+    if (c >= 'A' && c <= 'Z'){
+        return 1;
+    }
+    if (c >= '0' && c <= '9'){
+        return 1;
+    }
+    return 0;
+}
+
+static int path_component_to_83(const char* start,
+                                int len,
+                                int require_ext,
+                                char out83[11]){
+    int base_len = 0;
+    int ext_len = 0;
+    int dot = -1;
+
+    if (!start || !out83 || len <= 0){
+        return -1;
+    }
+    if (len == 1 && start[0] == '.'){
+        return -1;
+    }
+    if (len == 2 && start[0] == '.' && start[1] == '.'){
+        return -1;
+    }
+
+    for (int i = 0; i < 11; i++){
+        out83[i] = ' ';
+    }
+    for (int i = 0; i < len; i++){
+        if (start[i] == '.'){
+            if (dot >= 0){
+                return -1;
+            }
+            dot = i;
+        }
+    }
+
+    int base_end = (dot >= 0) ? dot : len;
+    if (base_end <= 0){
+        return -1;
+    }
+    for (int i = 0; i < base_end; i++){
+        char c = fat_ascii_upper(start[i]);
+        if (!fat83_component_char_allowed(c) || base_len >= 8){
+            return -1;
+        }
+        out83[base_len++] = c;
+    }
+
+    if (dot >= 0){
+        for (int i = dot + 1; i < len; i++){
+            char c = fat_ascii_upper(start[i]);
+            if (!fat83_component_char_allowed(c) || ext_len >= 3){
+                return -1;
+            }
+            out83[8 + ext_len++] = c;
+        }
+    }
+
+    if (require_ext && ext_len == 0){
+        return -1;
+    }
+    return 0;
+}
 
 static int read_cluster(unsigned int cluster, unsigned char *buffer){
     unsigned int lba = data_start + (cluster - 2) * sectors_per_cluster;
@@ -167,8 +260,43 @@ static unsigned int fat_next(unsigned int cluster){
     return read32(&sector[offset]) & 0x0FFFFFFF;
 }
 
+static int find_entry_in_dir(unsigned int start_cluster,
+                             const char name83[11],
+                             unsigned char out_entry[32]){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = start_cluster;
+
+    if (!name83 || !out_entry || start_cluster < 2){
+        return -1;
+    }
+    if (cluster_size > MAX_CLUSTER_SIZE){
+        uart_puts("Cluster too big.\n");
+        return -1;
+    }
+
+    while (cluster < 0x0FFFFFF8){
+        if (read_cluster(cluster, cluster_buf)){
+            return -1;
+        }
+
+        for (int i = 0; i < (int)cluster_size; i += 32){
+            unsigned char *entry = &cluster_buf[i];
+            if (entry[0] == 0x00){
+                return -1;
+            }
+            if (entry[0] == 0xE5) continue;
+            if (entry[11] == 0x0F) continue;
+            if (name_match(entry, name83)){
+                copy_entry(out_entry, entry);
+                return 0;
+            }
+        }
+        cluster = fat_next(cluster);
+    }
+    return -1;
+}
+
 int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
-    static unsigned char cluster_buf[MAX_CLUSTER_SIZE]; // assume <=8 sectors
     unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
     unsigned int cluster = root_cluster;
     int retried_root_once = 0;
@@ -277,3 +405,125 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     return -1;
 }
 
+int fat32_read_file_in_dir_path(const char root_dir_83[11],
+                                const char *relative_path,
+                                unsigned char *buffer,
+                                int max_size){
+    unsigned char entry[32];
+    unsigned int dir_cluster;
+    const char* p = relative_path;
+    int path_len = 0;
+
+    if (!root_dir_83 || !relative_path || !buffer || max_size <= 0){
+        return -1;
+    }
+    if (relative_path[0] == '/' || relative_path[0] == '\\'){
+        return -1;
+    }
+    for (const char* q = relative_path; *q; q++){
+        path_len++;
+        if (path_len > 96){
+            return -1;
+        }
+        if (*q == ':' || *q < 32 || *q == 127){
+            return -1;
+        }
+    }
+    if (path_len == 0){
+        return -1;
+    }
+
+    if (find_entry_in_dir(root_cluster, root_dir_83, entry) != 0 ||
+        !entry_is_directory(entry)){
+        return -1;
+    }
+    dir_cluster = entry_first_cluster(entry);
+    if (dir_cluster < 2){
+        return -1;
+    }
+
+    while (*p){
+        const char* comp = p;
+        int comp_len = 0;
+        int last = 0;
+        char name83[11];
+
+        while (*p && *p != '/' && *p != '\\'){
+            p++;
+            comp_len++;
+        }
+        if (comp_len <= 0){
+            return -1;
+        }
+        while (*p == '/' || *p == '\\'){
+            p++;
+            if (*p == '/' || *p == '\\' || *p == 0){
+                return -1;
+            }
+        }
+        last = (*p == 0) ? 1 : 0;
+
+        if (path_component_to_83(comp, comp_len, last, name83) != 0){
+            return -1;
+        }
+
+        if (find_entry_in_dir(dir_cluster, name83, entry) != 0){
+            return -1;
+        }
+
+        if (!last){
+            if (!entry_is_directory(entry)){
+                return -1;
+            }
+            dir_cluster = entry_first_cluster(entry);
+            if (dir_cluster < 2){
+                return -1;
+            }
+            continue;
+        }
+
+        if (entry_is_directory(entry)){
+            return -1;
+        }
+        if (name83[8] != 'B' || name83[9] != 'M' || name83[10] != 'P'){
+            return -1;
+        }
+
+        unsigned int size = read32(&entry[28]);
+        if (size > (unsigned int)max_size){
+            uart_puts("FAT sandbox file exceeds buffer\n");
+            return -1;
+        }
+
+        unsigned int file_cluster = entry_first_cluster(entry);
+        unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+        unsigned int copied = 0;
+        if (file_cluster < 2){
+            return -1;
+        }
+        if (cluster_size > MAX_CLUSTER_SIZE){
+            uart_puts("Cluster too big.\n");
+            return -1;
+        }
+
+        while (file_cluster < 0x0FFFFFF8 && copied < size){
+            if (read_cluster(file_cluster, cluster_buf)){
+                return -1;
+            }
+            unsigned int to_copy = cluster_size;
+            if (to_copy > (size - copied)){
+                to_copy = size - copied;
+            }
+            for (unsigned int j = 0; j < to_copy; j++){
+                buffer[copied++] = cluster_buf[j];
+            }
+            if (copied < size){
+                file_cluster = fat_next(file_cluster);
+            }
+        }
+
+        return (copied == size) ? (int)copied : -1;
+    }
+
+    return -1;
+}

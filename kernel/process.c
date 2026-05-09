@@ -440,6 +440,10 @@ static void clear_process_descriptor(int pid){
     processes[pid].signer_key_id = 0;
     processes[pid].signer_role_mask = 0;
     processes[pid].signer_scope_mask = 0;
+    processes[pid].file_sandbox_enabled = 0;
+    for (unsigned int i = 0; i < sizeof(processes[pid].file_sandbox_83); i++){
+        processes[pid].file_sandbox_83[i] = ' ';
+    }
     processes[pid].user_mode = 0;
     processes[pid].owner_core = 0;
     processes[pid].wake_tick = 0;
@@ -510,6 +514,8 @@ static int process_create_common_locked(program_entry_t entry,
                                         unsigned int signer_key_id,
                                         unsigned int signer_role_mask,
                                         unsigned int signer_scope_mask,
+                                        int file_sandbox_enabled,
+                                        const char* file_sandbox_83,
                                         unsigned int preferred_core){
     if (!entry){
         return -1;
@@ -545,6 +551,10 @@ static int process_create_common_locked(program_entry_t entry,
         processes[i].signer_key_id = 0;
         processes[i].signer_role_mask = 0;
         processes[i].signer_scope_mask = 0;
+        processes[i].file_sandbox_enabled = 0;
+        for (unsigned int sb = 0; sb < sizeof(processes[i].file_sandbox_83); sb++){
+            processes[i].file_sandbox_83[sb] = ' ';
+        }
         processes[i].user_mode = 0;
         processes[i].user_sp = 0;
 
@@ -557,6 +567,12 @@ static int process_create_common_locked(program_entry_t entry,
             processes[i].signer_key_id = signer_key_id;
             processes[i].signer_role_mask = signer_role_mask;
             processes[i].signer_scope_mask = signer_scope_mask;
+            processes[i].file_sandbox_enabled = file_sandbox_enabled ? 1 : 0;
+            if (file_sandbox_enabled && file_sandbox_83){
+                for (unsigned int sb = 0; sb < sizeof(processes[i].file_sandbox_83); sb++){
+                    processes[i].file_sandbox_83[sb] = file_sandbox_83[sb];
+                }
+            }
             processes[i].user_mode = 1;
             processes[i].user_sp = user_sp;
             processes[i].sp = build_initial_context_el0(stack, (unsigned long)entry, user_sp);
@@ -838,6 +854,8 @@ int process_create(program_entry_t entry){
                                            0u,
                                            TRUST_ROLE_ADMIN,
                                            TRUST_SCOPE_KERNEL | TRUST_SCOPE_SHELL | TRUST_SCOPE_WEB | TRUST_SCOPE_USER_APP,
+                                           0,
+                                           0,
                                            preferred_core);
     if (pid < 0){
         uart_puts("No stack available.\n");
@@ -865,6 +883,8 @@ int process_create_loaded(loaded_program_t prog){
                                            prog.signer_key_id,
                                            prog.signer_role_mask,
                                            prog.signer_scope_mask,
+                                           prog.file_sandbox_enabled,
+                                           prog.file_sandbox_83,
                                            preferred_core);
     spin_unlock_irqrestore(&g_process_lock, irq);
     return pid;
@@ -966,6 +986,20 @@ process_t* get_current_process(void){
         return 0;
     }
     return &processes[pid];
+}
+
+int process_current_file_sandbox(char out83[11]){
+    if (!out83){
+        return -1;
+    }
+    process_t* p = get_current_process();
+    if (!p || !p->user_mode || !p->file_sandbox_enabled){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 11u; i++){
+        out83[i] = p->file_sandbox_83[i];
+    }
+    return 0;
 }
 
 static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable){
