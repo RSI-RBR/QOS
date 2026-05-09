@@ -614,14 +614,8 @@ static int usb_hid_poll_once(void){
     g_root_info.hid_last_actual = actual;
     if (actual < 3u){
         g_root_info.hid_nodata_count++;
-        if (g_kbd.have_prev_report && (long)(system_ticks - g_kbd.last_report_tick) > 30){
-            for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
-                g_kbd.prev_report[i] = 0;
-            }
-            g_kbd.have_prev_report = 0;
-            g_kbd.last_report_tick = system_ticks;
-            g_root_info.hid_stale_clear_count++;
-        }
+        // No-data/NAK is not a key-release report. Clearing prev_report here
+        // makes held keys look newly pressed after another key changes.
         return 0;
     }
     g_root_info.hid_report_count++;

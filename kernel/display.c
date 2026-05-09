@@ -329,7 +329,7 @@ int display_set_active(int session_id){
     g_display_pending_switch_pid = -1;
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (session_id != DISPLAY_TEXT_SESSION_ID){
-        (void)display_present_active();
+        (void)display_present_active_graphics();
     }
     return 0;
 }
@@ -539,10 +539,10 @@ int display_present_for_pid(int owner_pid){
     if (!active){
         return 0;
     }
-    return display_present_active();
+    return display_present_active_graphics();
 }
 
-int display_present_active(void){
+int display_present_active_graphics(void){
     display_init();
 
     unsigned long dst_base = fb_get_base();
@@ -622,4 +622,8 @@ int display_present_active(void){
     s->dirty_y1 = 0u;
     spin_unlock_irqrestore(&g_display_lock, irq);
     return 0;
+}
+
+int display_present_active(void){
+    return display_present_active_graphics();
 }

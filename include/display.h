@@ -49,6 +49,7 @@ int display_rect_for_pid(int owner_pid,
                          unsigned int h,
                          unsigned int color);
 int display_present_for_pid(int owner_pid);
+int display_present_active_graphics(void);
 int display_present_active(void);
 
 #endif

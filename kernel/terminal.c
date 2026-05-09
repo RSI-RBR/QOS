@@ -595,6 +595,10 @@ int terminal_get_active(void){
     return active;
 }
 
+void terminal_render_active(void){
+    terminal_render_all_unlocked(terminal_get_active());
+}
+
 int terminal_set_active(int id){
     if (!terminal_valid_id(id)){
         return -1;
@@ -604,7 +608,7 @@ int terminal_set_active(int id){
     g_active_term = id;
     g_terms[g_active_term].flags |= TERM_FLAG_FB;
     spin_unlock_irqrestore(&g_terminal_lock, irq);
-    terminal_render_all_unlocked(id);
+    terminal_render_active();
     return 0;
 }
 
@@ -655,7 +659,7 @@ int terminal_cycle_display_session(int direction){
 
         display_session_t info;
         if (display_get_info(next, &info) == 0 && info.type == DISPLAY_GRAPHICS){
-            return display_set_active(next);
+            return terminal_switch_display_session(next);
         }
     }
     return -1;
