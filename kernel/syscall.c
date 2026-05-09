@@ -461,7 +461,6 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
 
         case SYS_FB_PRESENT:
-            usb_host_poll();
             frame[TF_X0] = (unsigned long)display_present_for_pid(process_current_pid());
             return frame_sp;
 
