@@ -69,18 +69,6 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         return 0;
     }
 
-    int active_gfx_pid = console_active_graphics_pid();
-    if (active_gfx_pid == pid){
-        usb_host_poll();
-        if (usb_host_try_getc(out)){
-            if (out_source){
-                *out_source = CONSOLE_INPUT_SRC_USB;
-            }
-            return 1;
-        }
-        return 0;
-    }
-
     unsigned long irq = spin_lock_irqsave(&g_console_lock);
     int owner = g_console_owner_pid;
     if (owner >= 0 && !process_is_alive_locked(owner)){
@@ -103,6 +91,12 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
     if (owner < 0 || owner != pid){
         return 0;
     }
+
+    /*
+     * UART is intentionally kept as the recovery/debug transport for whichever
+     * process owns the console. Check it before the active graphics gate so a
+     * bad display-session state cannot strand the login prompt.
+     */
     if (uart_try_getc(out)){
         if (out_source){
             *out_source = CONSOLE_INPUT_SRC_UART;
@@ -115,6 +109,19 @@ int console_try_getc_for_pid_ex(int pid, char* out, unsigned int* out_source){
         }
         return 1;
     }
+
+    int active_gfx_pid = console_active_graphics_pid();
+    if (active_gfx_pid == pid){
+        usb_host_poll();
+        if (usb_host_try_getc(out)){
+            if (out_source){
+                *out_source = CONSOLE_INPUT_SRC_USB;
+            }
+            return 1;
+        }
+        return 0;
+    }
+
     if (active_gfx_pid < 0 && console_text_display_active()){
         usb_host_poll();
         if (usb_host_try_getc(out)){
