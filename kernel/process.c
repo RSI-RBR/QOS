@@ -10,6 +10,7 @@
 #include "trust.h"
 #include "panic.h"
 #include "terminal.h"
+#include "display.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -622,6 +623,7 @@ static void release_process_resources(process_cleanup_t* c){
     }
     console_owner_on_process_exit(pid);
     terminal_detach_pid(pid);
+    display_destroy_for_pid(pid);
     socket_close_all_for_pid(pid);
     tls_session_close_all_for_pid(pid);
     mmu_process_space_destroy(pid);

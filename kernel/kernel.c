@@ -36,6 +36,7 @@
 #include "panic.h"
 #include "terminal.h"
 #include "klog.h"
+#include "display.h"
 
 
 //extern kernel_api_t kapi;
@@ -64,6 +65,8 @@ static int create_boot_shell_process(void){
             (void)terminal_attach_pid(pid, 0);
             (void)terminal_set_foreground_pid(0, pid);
             (void)console_set_owner(pid, pid);
+            (void)display_set_text_owner(pid);
+            (void)display_set_active(DISPLAY_TEXT_SESSION_ID);
             klog_puts("User shell started.\n");
             return pid;
         }
@@ -217,6 +220,7 @@ void kernel_main(void){
 
 //    kapi.clear(0x00000000);
     fb_clear(0x00000000);
+    display_init();
     terminal_init();
     klog_set_terminal_ready(1);
 //    kapi.draw_rect(100, 100, 500, 300, 0x00FFFFFF);

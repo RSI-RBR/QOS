@@ -46,6 +46,7 @@ kernel/process.c \
 kernel/smp.c \
 kernel/mailbox.c \
 kernel/framebuffer.c \
+kernel/display.c \
 kernel/fb_console.c \
 kernel/console.c \
 kernel/terminal.c \
