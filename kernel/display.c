@@ -803,8 +803,6 @@ int display_present_active_graphics(void){
         return -1;
     }
 
-    usb_host_poll_mouse();
-
     usb_mouse_state_t mouse;
     if (usb_host_get_mouse_state(&mouse) != 0){
         mouse.present = 0;

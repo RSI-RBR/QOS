@@ -157,6 +157,8 @@
 #define USB_HID_MOUSE_REPORT_LEN 4u
 #define USB_HID_ACTIVE_POLL_MS 4u
 #define USB_HID_IDLE_POLL_MS 8u
+#define USB_HID_MOUSE_ACTIVE_POLL_MS 4u
+#define USB_HID_MOUSE_IDLE_POLL_MS 16u
 #define USB_HID_ACTIVE_HOLD_MS 250u
 #define USB_HID_MOD_LEFT_ALT  0x04u
 #define USB_HID_MOD_RIGHT_ALT 0x40u
@@ -3093,8 +3095,8 @@ void usb_host_poll_mouse(void){
         (void)usb_hid_mouse_poll_once();
         now = system_ticks;
         unsigned int mouse_interval = ((long)(now - g_mouse_active_until_tick) < 0) ?
-                                      USB_HID_ACTIVE_POLL_MS :
-                                      USB_HID_IDLE_POLL_MS;
+                                      USB_HID_MOUSE_ACTIVE_POLL_MS :
+                                      USB_HID_MOUSE_IDLE_POLL_MS;
         g_mouse_next_poll_tick = now + mouse_interval;
     }
 }
