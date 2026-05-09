@@ -357,6 +357,16 @@ cp programs/game/game.bin /media/sd/GAME.BIN
 cp programs/game/game.pqs /media/sd/GAME.PQS
 ```
 
+The game wrapper force-includes QOS stdio compatibility:
+
+- `printf(...)` writes through the active QOS terminal.
+- `fprintf(stderr, ...)` writes through the same safe path for now.
+- `QOS_LOG(...)` and `QOS_ERR(...)` are available for new QOS-specific code.
+- `snprintf(...)` is provided for asset path construction.
+- Floating-point format specifiers are consumed safely but currently print as
+  `<float>`; keep important numeric gameplay diagnostics integer-based until the
+  formatter grows real float conversion.
+
 Admin-only programs:
 
 ```bash

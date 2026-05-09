@@ -9,6 +9,8 @@ How it works:
 - Desktop SDL code usually enters through `main(int argc, char** argv)`.
 - The Makefile compiles private game sources with `-Dmain=qf2d_main`.
 - `program_main.c` calls `qf2d_main(1, argv)` and then exits through QOS.
+- The Makefile force-includes `qos_stdio.h`, mapping `printf`, `fprintf`,
+  and `snprintf` to QOS-safe userspace logging/formatting functions.
 
 Expected local layout:
 - `programs/game/src/*.c`
@@ -28,3 +30,6 @@ Notes:
 - The wrapper expects exactly one desktop entrypoint after preprocessing:
   `qf2d_main(int argc, char** argv)`.
 - If the private tree has multiple source folders, override `GAME_SOURCES`.
+- The game build allows floating-point code because QuantumFront2D already uses
+  `double`. If we later run multiple FP-heavy apps at once, the scheduler should
+  grow full FP/SIMD context save/restore.

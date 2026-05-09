@@ -7,14 +7,15 @@ PROGRAM_MEMORY_BYTES ?= 67108864
 GAME_SRC_DIR ?= src
 GAME_SOURCES ?= $(wildcard $(GAME_SRC_DIR)/*.c)
 GAME_BUILD_OBJS = $(patsubst $(GAME_SRC_DIR)/%.c,game_%.o,$(GAME_SOURCES))
-USER_LIB_OBJS = qos_user_heap.o
+USER_LIB_OBJS = qos_user_heap.o qos_stdio.o
 SDL_OBJS = sdl_shim.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 
-COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -mgeneral-regs-only -DQOS_USERSPACE -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR)
+COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -DQOS_USERSPACE -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR) -include qos_stdio.h
 GAME_CFLAGS = $(COMMON_CFLAGS) -Dmain=qf2d_main
+QOS_LIB_CFLAGS = $(COMMON_CFLAGS) -DQOS_STDIO_NO_MACROS
 
 all: game.bin
 
@@ -26,6 +27,9 @@ start.o: ../hello/start.S
 
 qos_user_heap.o: ../lib/qos_user_heap.c
 	$(CC) $(COMMON_CFLAGS) -c ../lib/qos_user_heap.c -o qos_user_heap.o
+
+qos_stdio.o: ../lib/qos_stdio.c
+	$(CC) $(QOS_LIB_CFLAGS) -c ../lib/qos_stdio.c -o qos_stdio.o
 
 sdl_shim.o: ../sdl_compat/sdl_shim.c
 	$(CC) $(COMMON_CFLAGS) -c ../sdl_compat/sdl_shim.c -o sdl_shim.o
