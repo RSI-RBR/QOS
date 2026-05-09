@@ -365,36 +365,26 @@ static inline unsigned long long qos_cycles_to_us(unsigned long long cycles, uns
     if (hz == 0ull){
         return 0ull;
     }
-#if defined(__SIZEOF_INT128__)
     {
-        __uint128_t num = (__uint128_t)cycles * 1000000ull;
-        return (unsigned long long)(num / hz);
-    }
-#else
-    {
+        // Keep userspace helper 64-bit only in freestanding builds to avoid
+        // pulling compiler runtime helpers such as __udivti3.
         unsigned long long whole = (cycles / hz) * 1000000ull;
         unsigned long long rem = cycles % hz;
         return whole + ((rem * 1000000ull) / hz);
     }
-#endif
 }
 
 static inline unsigned long long qos_cycles_to_ns(unsigned long long cycles, unsigned long long hz){
     if (hz == 0ull){
         return 0ull;
     }
-#if defined(__SIZEOF_INT128__)
     {
-        __uint128_t num = (__uint128_t)cycles * 1000000000ull;
-        return (unsigned long long)(num / hz);
-    }
-#else
-    {
+        // Keep userspace helper 64-bit only in freestanding builds to avoid
+        // pulling compiler runtime helpers such as __udivti3.
         unsigned long long whole = (cycles / hz) * 1000000000ull;
         unsigned long long rem = cycles % hz;
         return whole + ((rem * 1000000000ull) / hz);
     }
-#endif
 }
 
 static inline unsigned long long qos_get_time_us(void){

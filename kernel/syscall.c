@@ -84,36 +84,26 @@ static unsigned long counter_cycles_to_us(unsigned long cycles, unsigned long hz
     if (hz == 0ul){
         return 0ul;
     }
-#if defined(__SIZEOF_INT128__)
     {
-        __uint128_t num = (__uint128_t)cycles * 1000000ull;
-        return (unsigned long)(num / hz);
-    }
-#else
-    {
+        // Keep this 64-bit only in freestanding builds to avoid compiler
+        // runtime helpers like __udivti3 from 128-bit division.
         unsigned long whole = (unsigned long)(((unsigned long long)(cycles / hz)) * 1000000ull);
         unsigned long rem = cycles % hz;
         return whole + (unsigned long)(((unsigned long long)rem * 1000000ull) / hz);
     }
-#endif
 }
 
 static unsigned long counter_cycles_to_ns(unsigned long cycles, unsigned long hz){
     if (hz == 0ul){
         return 0ul;
     }
-#if defined(__SIZEOF_INT128__)
     {
-        __uint128_t num = (__uint128_t)cycles * 1000000000ull;
-        return (unsigned long)(num / hz);
-    }
-#else
-    {
+        // Keep this 64-bit only in freestanding builds to avoid compiler
+        // runtime helpers like __udivti3 from 128-bit division.
         unsigned long whole = (unsigned long)(((unsigned long long)(cycles / hz)) * 1000000000ull);
         unsigned long rem = cycles % hz;
         return whole + (unsigned long)(((unsigned long long)rem * 1000000000ull) / hz);
     }
-#endif
 }
 
 static void syscall_poll_background_io(void){
