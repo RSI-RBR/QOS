@@ -3,20 +3,24 @@
 #include "mmu.h"
 #include "trust.h"
 #include "klog.h"
+#include "spinlock.h"
 
 #define uart_puts klog_puts
 #define uart_puthex klog_puthex
 
 
 #define PROGRAM_MAX (512 * 1024)
-#define PROGRAM_POOL_START 0x08000000UL
-#define PROGRAM_POOL_SIZE  (16UL * 1024UL * 1024UL)
-#define PROGRAM_SLOT_SIZE  QOS_PROGRAM_SLOT_SIZE
-#define PROGRAM_SLOT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_SLOT_SIZE)
+#define PROGRAM_POOL_START QOS_PROGRAM_POOL_START
+#define PROGRAM_POOL_SIZE  QOS_PROGRAM_POOL_SIZE
+#define PROGRAM_ALLOC_GRANULE QOS_PROGRAM_ALLOC_GRANULE_BYTES
+#define PROGRAM_MAX_MEMORY QOS_PROGRAM_MAX_MEMORY_BYTES
+#define PROGRAM_UNIT_COUNT (PROGRAM_POOL_SIZE / PROGRAM_ALLOC_GRANULE)
 #define PROGRAM_PAGE_SIZE  4096UL
 #define PROGRAM_SEC_LAYOUT_V1_BYTES (sizeof(program_sec_layout_v1_t))
 
-static unsigned char program_slot_used[PROGRAM_SLOT_COUNT];
+static unsigned char program_unit_used[PROGRAM_UNIT_COUNT];
+static unsigned char program_unit_span[PROGRAM_UNIT_COUNT];
+static spinlock_t g_program_alloc_lock;
 
 
 static unsigned char buffer[PROGRAM_MAX];
@@ -47,10 +51,13 @@ void loader_mmu_init_pool(void){
         while (1){}
     }
 
+    spinlock_init(&g_program_alloc_lock);
+
     // Keep pool inaccessible to EL0 until a program block is explicitly mapped.
     mmu_map_kernel_private_region(PROGRAM_POOL_START, PROGRAM_POOL_SIZE);
-    for (unsigned int i = 0; i < PROGRAM_SLOT_COUNT; i++){
-        program_slot_used[i] = 0;
+    for (unsigned int i = 0; i < PROGRAM_UNIT_COUNT; i++){
+        program_unit_used[i] = 0;
+        program_unit_span[i] = 0;
     }
 }
 
@@ -107,35 +114,60 @@ int loader_is_busy(void){
     return loader_busy;
 }
 
-void* alloc_program_memory(unsigned int size){
-    size = (size+15) & ~15;
+static unsigned long round_up_granule(unsigned long size){
+    return (size + PROGRAM_ALLOC_GRANULE - 1UL) & ~(PROGRAM_ALLOC_GRANULE - 1UL);
+}
 
-    if (size == 0 || size > PROGRAM_SLOT_SIZE){
+void* alloc_program_memory(unsigned long size){
+    if (size == 0 || size > PROGRAM_MAX_MEMORY){
         return 0;
     }
 
-    for (unsigned int i = 0; i < PROGRAM_SLOT_COUNT; i++){
-        if (program_slot_used[i]){
+    unsigned long alloc_size = round_up_granule(size);
+    if (alloc_size == 0 || alloc_size > PROGRAM_MAX_MEMORY){
+        return 0;
+    }
+
+    unsigned int units_needed = (unsigned int)(alloc_size / PROGRAM_ALLOC_GRANULE);
+    if (units_needed == 0u || units_needed > PROGRAM_UNIT_COUNT || units_needed > 255u){
+        return 0;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_program_alloc_lock);
+    for (unsigned int i = 0; i + units_needed <= PROGRAM_UNIT_COUNT; i++){
+        unsigned int ok = 1u;
+        for (unsigned int j = 0; j < units_needed; j++){
+            if (program_unit_used[i + j]){
+                ok = 0u;
+                i += j;
+                break;
+            }
+        }
+        if (!ok){
             continue;
         }
-        program_slot_used[i] = 1;
 
-        unsigned long base = PROGRAM_POOL_START + ((unsigned long)i * PROGRAM_SLOT_SIZE);
+        for (unsigned int j = 0; j < units_needed; j++){
+            program_unit_used[i + j] = 1u;
+            program_unit_span[i + j] = 0u;
+        }
+        program_unit_span[i] = (unsigned char)units_needed;
+
+        unsigned long base = PROGRAM_POOL_START + ((unsigned long)i * PROGRAM_ALLOC_GRANULE);
         void* addr = (void*)base;
+        spin_unlock_irqrestore(&g_program_alloc_lock, irq);
 
         // Raw binaries produced via objcopy do not carry .bss contents.
-        // Zero the whole slot at allocation time so globals/statics start at 0.
+        // Zero the whole reserved region so globals/statics and heap start at 0.
         volatile unsigned char* wipe = (volatile unsigned char*)base;
-        for (unsigned long j = 0; j < PROGRAM_SLOT_SIZE; j++){
+        for (unsigned long j = 0; j < alloc_size; j++){
             wipe[j] = 0;
         }
-
-        // Keep global kernel table private; EL0 access is granted per-process
-        // via its own TTBR0 page tables when the scheduler switches to that PID.
 
         return addr;
     }
 
+    spin_unlock_irqrestore(&g_program_alloc_lock, irq);
     return 0;
 }
 
@@ -151,23 +183,52 @@ void loader_free_program_memory(void* ptr, unsigned long size){
     }
 
     unsigned long off = addr - PROGRAM_POOL_START;
-    unsigned long slot = off / PROGRAM_SLOT_SIZE;
-    if (slot >= PROGRAM_SLOT_COUNT){
+    if ((off & (PROGRAM_ALLOC_GRANULE - 1UL)) != 0UL){
+        return;
+    }
+    unsigned long unit = off / PROGRAM_ALLOC_GRANULE;
+    if (unit >= PROGRAM_UNIT_COUNT){
         return;
     }
 
-    unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
-    volatile unsigned char* wipe = (volatile unsigned char*)slot_base;
-    for (unsigned long i = 0; i < PROGRAM_SLOT_SIZE; i++){
+    unsigned long irq = spin_lock_irqsave(&g_program_alloc_lock);
+    if (!program_unit_used[unit]){
+        spin_unlock_irqrestore(&g_program_alloc_lock, irq);
+        return;
+    }
+
+    unsigned int units = program_unit_span[unit];
+    if (units == 0u){
+        unsigned long rounded = round_up_granule(size);
+        units = (rounded > 0UL) ? (unsigned int)(rounded / PROGRAM_ALLOC_GRANULE) : 1u;
+    }
+    if (units == 0u || unit + units > PROGRAM_UNIT_COUNT){
+        spin_unlock_irqrestore(&g_program_alloc_lock, irq);
+        return;
+    }
+    spin_unlock_irqrestore(&g_program_alloc_lock, irq);
+
+    unsigned long alloc_size = (unsigned long)units * PROGRAM_ALLOC_GRANULE;
+    unsigned long base = PROGRAM_POOL_START + unit * PROGRAM_ALLOC_GRANULE;
+    volatile unsigned char* wipe = (volatile unsigned char*)base;
+    for (unsigned long i = 0; i < alloc_size; i++){
         wipe[i] = 0;
     }
 
-    // Re-lock slot to kernel-only/XN when process exits.
-    mmu_map_kernel_private_region(slot_base, PROGRAM_SLOT_SIZE);
-    program_slot_used[slot] = 0;
+    // Re-lock the whole reservation to kernel-only/XN when process exits.
+    mmu_map_kernel_private_region(base, alloc_size);
+    irq = spin_lock_irqsave(&g_program_alloc_lock);
+    for (unsigned int i = 0; i < units; i++){
+        program_unit_used[unit + i] = 0u;
+        program_unit_span[unit + i] = 0u;
+    }
+    spin_unlock_irqrestore(&g_program_alloc_lock, irq);
 }
 
-void* loader_user_stack_top(void* program_base, unsigned long user_rw_offset, unsigned long user_rw_size){
+void* loader_user_stack_top(void* program_base,
+                            unsigned long program_size,
+                            unsigned long user_rw_offset,
+                            unsigned long user_rw_size){
     if (!program_base){
         return 0;
     }
@@ -176,26 +237,33 @@ void* loader_user_stack_top(void* program_base, unsigned long user_rw_offset, un
         return 0;
     }
     unsigned long off = p - PROGRAM_POOL_START;
-    unsigned long slot = off / PROGRAM_SLOT_SIZE;
-    unsigned long slot_base = PROGRAM_POOL_START + slot * PROGRAM_SLOT_SIZE;
+    if ((off & (PROGRAM_ALLOC_GRANULE - 1UL)) != 0UL){
+        return 0;
+    }
+    unsigned long base = PROGRAM_POOL_START + off;
 
     if ((user_rw_offset & (PROGRAM_PAGE_SIZE - 1UL)) != 0UL){
         return 0;
     }
-    if (user_rw_offset >= PROGRAM_SLOT_SIZE || user_rw_size == 0UL){
+    if (program_size == 0UL ||
+        program_size > PROGRAM_MAX_MEMORY ||
+        (program_size & (PROGRAM_ALLOC_GRANULE - 1UL)) != 0UL){
         return 0;
     }
-    if (user_rw_size > (PROGRAM_SLOT_SIZE - user_rw_offset)){
+    if (user_rw_offset >= program_size || user_rw_size == 0UL){
+        return 0;
+    }
+    if (user_rw_size > (program_size - user_rw_offset)){
         return 0;
     }
     if (user_rw_size <= (QOS_USER_STACK_BYTES + QOS_USER_GUARD_PAGE_BYTES + PROGRAM_PAGE_SIZE)){
         return 0;
     }
 
-    unsigned long rw_end = slot_base + user_rw_offset + user_rw_size;
+    unsigned long rw_end = base + user_rw_offset + user_rw_size;
     unsigned long stack_start = rw_end - QOS_USER_STACK_BYTES;
     unsigned long guard_start = stack_start - QOS_USER_GUARD_PAGE_BYTES;
-    if (guard_start < (slot_base + user_rw_offset)){
+    if (guard_start < (base + user_rw_offset)){
         return 0;
     }
     unsigned long top = rw_end & ~0xFUL;
@@ -333,7 +401,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
                            ((unsigned int)ext[5] << 8) |
                            ((unsigned int)ext[6] << 16) |
                            ((unsigned int)ext[7] << 24);
-            if (user_rw_offset >= PROGRAM_SLOT_SIZE || user_rw_size == 0u){
+            if (user_rw_offset >= PROGRAM_MAX_MEMORY || user_rw_size == 0u){
                 loader_unlock();
                 uart_puts("Program memory layout invalid.\n");
                 return prog;
@@ -343,9 +411,17 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
                 uart_puts("Program RW offset must be page-aligned.\n");
                 return prog;
             }
-            if (user_rw_size > (PROGRAM_SLOT_SIZE - user_rw_offset)){
+            if (user_rw_size > (PROGRAM_MAX_MEMORY - user_rw_offset)){
                 loader_unlock();
                 uart_puts("Program RW size beyond slot bounds.\n");
+                return prog;
+            }
+            unsigned long requested_size = (unsigned long)user_rw_offset + (unsigned long)user_rw_size;
+            if (requested_size > PROGRAM_MAX_MEMORY ||
+                requested_size < (unsigned long)user_rw_offset ||
+                (requested_size & (PROGRAM_ALLOC_GRANULE - 1UL)) != 0UL){
+                loader_unlock();
+                uart_puts("Program memory reservation invalid.\n");
                 return prog;
             }
         }
@@ -372,9 +448,8 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     }
     uart_puts("Program trust verification OK.\n");
 
-//    unsigned char *dst = (unsigned char*)PROGRAM_ADDR;
-//    unsigned char* dst = (unsigned char*)alloc_program_memory(code_size);
-    void* dst = alloc_program_memory(code_size);
+    unsigned long program_reservation_size = (unsigned long)user_rw_offset + (unsigned long)user_rw_size;
+    void* dst = alloc_program_memory(program_reservation_size);
     unsigned char* d = (unsigned char*)dst;
     if (!dst){
         loader_unlock();
@@ -398,7 +473,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
 
     prog.entry = (program_entry_t)((unsigned long)dst + entry_offset);
     prog.memory = dst;
-    prog.size = code_size;
+    prog.size = program_reservation_size;
     prog.user_rw_offset = user_rw_offset;
     prog.user_rw_size = user_rw_size;
     prog.heap_allocated = 0;
@@ -406,7 +481,7 @@ loaded_program_t load_program_from_sd_named(const char* fat_name_83)
     {
         const trust_key_t* key = trust_find_key(sec->signer_key_id);
         if (!key){
-            loader_free_program_memory(dst, code_size);
+            loader_free_program_memory(dst, program_reservation_size);
             loader_unlock();
             uart_puts("Program signer key missing post-verify.\n");
             return (loaded_program_t){0};

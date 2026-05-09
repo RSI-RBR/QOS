@@ -5,6 +5,13 @@
 #define QOS_HEAP_ALIGN 16UL
 #define QOS_HEAP_MIN_SPLIT 32UL
 
+#if (QOS_PROGRAM_MEMORY_BYTES > QOS_PROGRAM_MAX_MEMORY_BYTES)
+#error "QOS_PROGRAM_MEMORY_BYTES exceeds QOS_PROGRAM_MAX_MEMORY_BYTES"
+#endif
+#if ((QOS_PROGRAM_MEMORY_BYTES % QOS_PROGRAM_ALLOC_GRANULE_BYTES) != 0)
+#error "QOS_PROGRAM_MEMORY_BYTES must be a 2 MiB multiple"
+#endif
+
 typedef struct qos_heap_block {
     unsigned long magic;
     unsigned long size;
@@ -54,9 +61,9 @@ static void heap_init(void){
     }
 
     unsigned long image_end = (unsigned long)__qos_image_end;
-    unsigned long slot_base = image_end & ~(QOS_PROGRAM_SLOT_SIZE - 1UL);
+    unsigned long slot_base = image_end & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
     unsigned long heap_start = align_up(image_end, QOS_HEAP_ALIGN);
-    unsigned long heap_end = slot_base + QOS_PROGRAM_SLOT_SIZE -
+    unsigned long heap_end = slot_base + QOS_PROGRAM_MEMORY_BYTES -
                              QOS_USER_STACK_BYTES -
                              QOS_USER_GUARD_PAGE_BYTES;
     unsigned long hdr = header_bytes();

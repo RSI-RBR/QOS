@@ -6,6 +6,9 @@ This folder contains reusable freestanding code for user programs.
 Userspace heap:
 - Link `../lib/qos_user_heap.c` into each program.
 - Include `<stdlib.h>` for `malloc`, `free`, `calloc`, and `realloc`.
+- Set `PROGRAM_MEMORY_BYTES` in the program Makefile to choose the signed
+  process reservation. It must be a numeric byte value, aligned to 2 MiB,
+  up to 16 MiB. Example: `PROGRAM_MEMORY_BYTES ?= 16777216`.
 - Optional debug helpers are declared in `qos_user_heap.h`:
   - `qos_heap_total()`
   - `qos_heap_used()`
@@ -13,5 +16,5 @@ Userspace heap:
   - `qos_heap_largest_free()`
 
 The heap starts after `__qos_image_end` and stops before the process stack guard
-page. It is private to the process address space and is wiped when the kernel
-destroys the program slot.
+page inside that reservation. It is private to the process address space and is
+wiped when the kernel destroys the program memory reservation.

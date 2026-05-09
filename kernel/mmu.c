@@ -36,11 +36,12 @@
 #define MMU_MAX_CORES       4U
 #define MMU_MAX_PROCESS_SPACES 8U
 #define MMU_PAGE_SIZE       4096UL
-#define MMU_SLOT_SIZE       (L3_ENTRIES * MMU_PAGE_SIZE)
+#define MMU_CHUNK_SIZE      (L3_ENTRIES * MMU_PAGE_SIZE)
 #define MMU_BLOCK_SIZE      (1UL << 21)
-#define MMU_USER_POOL_START 0x08000000UL
-#define MMU_USER_POOL_SIZE  (16UL * 1024UL * 1024UL)
+#define MMU_USER_POOL_START QOS_PROGRAM_POOL_START
+#define MMU_USER_POOL_SIZE  QOS_PROGRAM_POOL_SIZE
 #define MMU_USER_POOL_END   (MMU_USER_POOL_START + MMU_USER_POOL_SIZE)
+#define MMU_MAX_USER_CHUNKS (QOS_PROGRAM_MAX_MEMORY_BYTES / MMU_CHUNK_SIZE)
 #define MMU_ASID_BITS       8U
 #define MMU_ASID_MAX        ((1U << MMU_ASID_BITS) - 1U)
 #define MMU_ASID_KERNEL     0U
@@ -65,7 +66,7 @@ static unsigned long l2_table_1[L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l1_table[MMU_MAX_PROCESS_SPACES][L1_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l2_table[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l2_table_1[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
-static unsigned long proc_l3_user_slot[MMU_MAX_PROCESS_SPACES][L3_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l3_user_slot[MMU_MAX_PROCESS_SPACES][MMU_MAX_USER_CHUNKS][L3_ENTRIES] __attribute__((aligned(4096)));
 static unsigned char proc_space_active[MMU_MAX_PROCESS_SPACES];
 static int core_active_pid[MMU_MAX_CORES];
 static spinlock_t g_mmu_lock;
@@ -307,8 +308,10 @@ static void zero_tables(void){
         }
     }
     for (unsigned int p = 0; p < MMU_MAX_PROCESS_SPACES; p++){
-        for (unsigned int i = 0; i < L3_ENTRIES; i++){
-            proc_l3_user_slot[p][i] = 0;
+        for (unsigned int chunk = 0; chunk < MMU_MAX_USER_CHUNKS; chunk++){
+            for (unsigned int i = 0; i < L3_ENTRIES; i++){
+                proc_l3_user_slot[p][chunk][i] = 0;
+            }
         }
     }
 }
@@ -374,7 +377,7 @@ static void apply_region_attrs_all_spaces(unsigned long pa_start, unsigned long 
     mmu_tlb_shootdown_all_locked();
 }
 
-static void l3_fill_kernel_private(unsigned long* l3, unsigned long slot_base){
+static void l3_fill_kernel_private(unsigned long* l3, unsigned long chunk_base){
     static const mmu_block_attrs_t kernel_private = {
         .attridx = ATTRIDX_NORMAL,
         .sh = SH_INNER,
@@ -383,23 +386,23 @@ static void l3_fill_kernel_private(unsigned long* l3, unsigned long slot_base){
         .ng = 0
     };
     for (unsigned int i = 0; i < L3_ENTRIES; i++){
-        l3[i] = page_desc(slot_base + ((unsigned long)i * MMU_PAGE_SIZE), &kernel_private);
+        l3[i] = page_desc(chunk_base + ((unsigned long)i * MMU_PAGE_SIZE), &kernel_private);
     }
 }
 
-static void l3_map_range(unsigned long* l3,
-                         unsigned long slot_base,
-                         unsigned long off,
-                         unsigned long size,
-                         const mmu_block_attrs_t* attrs){
+static void l3_map_chunk_range(unsigned long* l3,
+                               unsigned long chunk_base,
+                               unsigned long off,
+                               unsigned long size,
+                               const mmu_block_attrs_t* attrs){
     if (size == 0u){
         return;
     }
-    if (off >= MMU_SLOT_SIZE){
+    if (off >= MMU_CHUNK_SIZE){
         return;
     }
-    if (size > (MMU_SLOT_SIZE - off)){
-        size = MMU_SLOT_SIZE - off;
+    if (size > (MMU_CHUNK_SIZE - off)){
+        size = MMU_CHUNK_SIZE - off;
     }
 
     unsigned long start = off & ~(MMU_PAGE_SIZE - 1UL);
@@ -409,21 +412,21 @@ static void l3_map_range(unsigned long* l3,
         if (idx >= L3_ENTRIES){
             break;
         }
-        l3[idx] = page_desc(slot_base + p, attrs);
+        l3[idx] = page_desc(chunk_base + p, attrs);
     }
 }
 
-static void l3_unmap_range(unsigned long* l3,
-                           unsigned long off,
-                           unsigned long size){
+static void l3_unmap_chunk_range(unsigned long* l3,
+                                 unsigned long off,
+                                 unsigned long size){
     if (size == 0u){
         return;
     }
-    if (off >= MMU_SLOT_SIZE){
+    if (off >= MMU_CHUNK_SIZE){
         return;
     }
-    if (size > (MMU_SLOT_SIZE - off)){
-        size = MMU_SLOT_SIZE - off;
+    if (size > (MMU_CHUNK_SIZE - off)){
+        size = MMU_CHUNK_SIZE - off;
     }
 
     unsigned long start = off & ~(MMU_PAGE_SIZE - 1UL);
@@ -437,7 +440,69 @@ static void l3_unmap_range(unsigned long* l3,
     }
 }
 
-static int l3_slot_is_wx_safe(const unsigned long* l3){
+static void proc_l3_map_range(int pid,
+                              unsigned long region_base,
+                              unsigned long off,
+                              unsigned long size,
+                              const mmu_block_attrs_t* attrs){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES || size == 0u){
+        return;
+    }
+
+    unsigned long end = off + size;
+    if (end < off){
+        return;
+    }
+
+    unsigned long p = off;
+    while (p < end){
+        unsigned int chunk = (unsigned int)(p / MMU_CHUNK_SIZE);
+        if (chunk >= MMU_MAX_USER_CHUNKS){
+            return;
+        }
+        unsigned long local = p % MMU_CHUNK_SIZE;
+        unsigned long n = MMU_CHUNK_SIZE - local;
+        if (n > (end - p)){
+            n = end - p;
+        }
+        l3_map_chunk_range(proc_l3_user_slot[pid][chunk],
+                           region_base + ((unsigned long)chunk * MMU_CHUNK_SIZE),
+                           local,
+                           n,
+                           attrs);
+        p += n;
+    }
+}
+
+static void proc_l3_unmap_range(int pid,
+                                unsigned long off,
+                                unsigned long size){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES || size == 0u){
+        return;
+    }
+
+    unsigned long end = off + size;
+    if (end < off){
+        return;
+    }
+
+    unsigned long p = off;
+    while (p < end){
+        unsigned int chunk = (unsigned int)(p / MMU_CHUNK_SIZE);
+        if (chunk >= MMU_MAX_USER_CHUNKS){
+            return;
+        }
+        unsigned long local = p % MMU_CHUNK_SIZE;
+        unsigned long n = MMU_CHUNK_SIZE - local;
+        if (n > (end - p)){
+            n = end - p;
+        }
+        l3_unmap_chunk_range(proc_l3_user_slot[pid][chunk], local, n);
+        p += n;
+    }
+}
+
+static int l3_chunk_is_wx_safe(const unsigned long* l3){
     if (!l3){
         return 0;
     }
@@ -460,11 +525,27 @@ static int l3_slot_is_wx_safe(const unsigned long* l3){
     return 1;
 }
 
-static int l2_is_el0_none_except_user_slot(const unsigned long* l2, unsigned long user_slot_index){
+static int l3_process_is_wx_safe(int pid, unsigned int chunk_count){
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES ||
+        chunk_count == 0u || chunk_count > MMU_MAX_USER_CHUNKS){
+        return 0;
+    }
+    for (unsigned int chunk = 0; chunk < chunk_count; chunk++){
+        if (!l3_chunk_is_wx_safe(proc_l3_user_slot[pid][chunk])){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int l2_is_el0_none_except_user_slots(const unsigned long* l2,
+                                            unsigned long first_user_slot,
+                                            unsigned long user_slot_count){
     if (!l2){
         return 0;
     }
-    if (user_slot_index > L2_ENTRIES){
+    if (first_user_slot > L2_ENTRIES || user_slot_count > L2_ENTRIES ||
+        first_user_slot + user_slot_count > L2_ENTRIES){
         return 0;
     }
 
@@ -474,9 +555,10 @@ static int l2_is_el0_none_except_user_slot(const unsigned long* l2, unsigned lon
             continue;
         }
 
-        // Only the designated user slot may point to an L3 table.
+        // Only the designated user chunks may point to per-process L3 tables.
         if ((desc & DESC_KIND_MASK) == (DESC_VALID | DESC_TABLE)){
-            if (user_slot_index >= L2_ENTRIES || (unsigned long)i != user_slot_index){
+            unsigned long idx = (unsigned long)i;
+            if (idx < first_user_slot || idx >= first_user_slot + user_slot_count){
                 return 0;
             }
             continue;
@@ -585,16 +667,23 @@ int mmu_process_space_create(int pid,
 
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
 
-    unsigned long slot_base = user_pa_start & ~(MMU_SLOT_SIZE - 1UL);
-    if (user_pa_start != slot_base || user_size > MMU_SLOT_SIZE){
+    unsigned long region_base = user_pa_start & ~(MMU_CHUNK_SIZE - 1UL);
+    if (user_pa_start != region_base ||
+        user_size > QOS_PROGRAM_MAX_MEMORY_BYTES ||
+        (user_size & (MMU_CHUNK_SIZE - 1UL)) != 0UL){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
-    if (!mmu_range_within_user_pool(slot_base, MMU_SLOT_SIZE)){
+    if (!mmu_range_within_user_pool(region_base, user_size)){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
-    if (user_rw_offset >= MMU_SLOT_SIZE || user_rw_size == 0u){
+    unsigned int chunk_count = (unsigned int)(user_size / MMU_CHUNK_SIZE);
+    if (chunk_count == 0u || chunk_count > MMU_MAX_USER_CHUNKS){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+    if (user_rw_offset >= user_size || user_rw_size == 0u){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
@@ -606,7 +695,7 @@ int mmu_process_space_create(int pid,
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
-    if (user_rw_size > (MMU_SLOT_SIZE - user_rw_offset)){
+    if (user_rw_size > (user_size - user_rw_offset)){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
@@ -620,6 +709,10 @@ int mmu_process_space_create(int pid,
         return -1;
     }
     unsigned long rw_end = user_rw_offset + user_rw_size;
+    if (rw_end < user_rw_offset || rw_end > user_size){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
     unsigned long stack_off = rw_end - stack_bytes;
     unsigned long guard_off = stack_off - guard_bytes;
     if (guard_off < user_rw_offset){
@@ -642,8 +735,18 @@ int mmu_process_space_create(int pid,
     proc_l1_table[pid][0] = ((unsigned long)proc_l2_table[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
     proc_l1_table[pid][1] = ((unsigned long)proc_l2_table_1[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
 
-    unsigned long l1_index = slot_base >> 30;
-    unsigned long l2_index = (slot_base >> 21) & 0x1FFUL;
+    unsigned long l1_index = region_base >> 30;
+    unsigned long l1_last_index = (region_base + user_size - 1UL) >> 30;
+    if (l1_index != l1_last_index){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+
+    unsigned long l2_index = (region_base >> 21) & 0x1FFUL;
+    if (l2_index + (unsigned long)chunk_count > L2_ENTRIES){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
     unsigned long* l2 = 0;
     if (l1_index == 0UL){
         l2 = proc_l2_table[pid];
@@ -654,21 +757,31 @@ int mmu_process_space_create(int pid,
         return -1;
     }
 
-    l2[l2_index] = ((unsigned long)proc_l3_user_slot[pid] & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
-    if (!l2_is_el0_none_except_user_slot(proc_l2_table[pid], (l1_index == 0UL) ? l2_index : L2_ENTRIES) ||
-        !l2_is_el0_none_except_user_slot(proc_l2_table_1[pid], (l1_index == 1UL) ? l2_index : L2_ENTRIES)){
+    for (unsigned int chunk = 0; chunk < chunk_count; chunk++){
+        unsigned long chunk_base = region_base + ((unsigned long)chunk * MMU_CHUNK_SIZE);
+        l2[l2_index + chunk] = ((unsigned long)proc_l3_user_slot[pid][chunk] & ~0xFFFUL) |
+                               DESC_VALID |
+                               DESC_TABLE;
+        l3_fill_kernel_private(proc_l3_user_slot[pid][chunk], chunk_base);
+    }
+
+    if (!l2_is_el0_none_except_user_slots(proc_l2_table[pid],
+                                          (l1_index == 0UL) ? l2_index : L2_ENTRIES,
+                                          (l1_index == 0UL) ? (unsigned long)chunk_count : 0UL) ||
+        !l2_is_el0_none_except_user_slots(proc_l2_table_1[pid],
+                                          (l1_index == 1UL) ? l2_index : L2_ENTRIES,
+                                          (l1_index == 1UL) ? (unsigned long)chunk_count : 0UL)){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }
 
-    l3_fill_kernel_private(proc_l3_user_slot[pid], slot_base);
-    l3_map_range(proc_l3_user_slot[pid], slot_base, 0u, user_rw_offset, &user_code_rx);
+    proc_l3_map_range(pid, region_base, 0u, user_rw_offset, &user_code_rx);
     // Heap/data are RW+NX up to the guard page below the stack.
-    l3_map_range(proc_l3_user_slot[pid], slot_base, user_rw_offset, heap_size, &user_data_rw_nx);
+    proc_l3_map_range(pid, region_base, user_rw_offset, heap_size, &user_data_rw_nx);
     // Leave one unmapped guard page between heap and stack.
-    l3_unmap_range(proc_l3_user_slot[pid], guard_off, guard_bytes);
-    l3_map_range(proc_l3_user_slot[pid], slot_base, stack_off, stack_bytes, &user_data_rw_nx);
-    if (!l3_slot_is_wx_safe(proc_l3_user_slot[pid])){
+    proc_l3_unmap_range(pid, guard_off, guard_bytes);
+    proc_l3_map_range(pid, region_base, stack_off, stack_bytes, &user_data_rw_nx);
+    if (!l3_process_is_wx_safe(pid, chunk_count)){
         spin_unlock_irqrestore(&g_mmu_lock, irq);
         return -1;
     }

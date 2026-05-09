@@ -2,13 +2,13 @@
 #include "uart.h"
 #include "mailbox.h"
 #include "spinlock.h"
+#include "program.h"
 
 #define HEAP_FALLBACK_SIZE (16UL * 1024UL * 1024UL)
 #define HEAP_MIN_SIZE      (2UL * 1024UL * 1024UL)
 #define HEAP_ALIGN         16UL
 #define BLOCK_MAGIC 0xB10CB10CUL
-// Keep in sync with loader PROGRAM_POOL_START.
-#define HEAP_HARD_STOP     0x08000000UL
+#define HEAP_HARD_STOP     QOS_PROGRAM_POOL_START
 
 static unsigned char heap_fallback[HEAP_FALLBACK_SIZE] __attribute__((aligned(16)));
 static unsigned char* heap_base = heap_fallback;

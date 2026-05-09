@@ -676,10 +676,6 @@ static void release_process_resources(process_cleanup_t* c){
         if (c->program_heap_alloc){
             kfree_secure(c->program_memory, c->program_size);
         } else{
-            volatile unsigned char* p = (volatile unsigned char*)c->program_memory;
-            for (unsigned long i = 0; i < c->program_size; i++){
-                p[i] = 0;
-            }
             loader_free_program_memory(c->program_memory, c->program_size);
         }
     }
@@ -865,7 +861,10 @@ int process_create(program_entry_t entry){
 }
 
 int process_create_loaded(loaded_program_t prog){
-    void* user_sp = loader_user_stack_top(prog.memory, prog.user_rw_offset, prog.user_rw_size);
+    void* user_sp = loader_user_stack_top(prog.memory,
+                                          prog.size,
+                                          prog.user_rw_offset,
+                                          prog.user_rw_size);
     if (!user_sp){
         return -1;
     }

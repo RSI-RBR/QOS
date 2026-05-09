@@ -3,7 +3,8 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -mgeneral-regs-only -DQOS_USERSPACE -I../../include
+PROGRAM_MEMORY_BYTES ?= 16777216
+CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -mgeneral-regs-only -DQOS_USERSPACE -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include
 USER_LIB_OBJS = qos_user_heap.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
@@ -28,7 +29,7 @@ program.raw: program.elf
 
 program.bin: program.raw program.elf
 	@if [ -z "$(SIGN_KEY)" ]; then echo "SIGN_KEY is required for signed build"; exit 1; fi
-	python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" program.pqs program.elf "$(CROSS)nm"
+	QOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) python3 build_program.py program.raw program.bin "PROGRAM BIN" 0x00010001 "$(SIGN_KEY)" "$(OPENSSL_BIN)" "$(PQ_SIGN_KEY)" program.pqs program.elf "$(CROSS)nm"
 
 clean:
 	rm -f *.o *.elf *.raw *.bin *.pqs

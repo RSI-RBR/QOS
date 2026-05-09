@@ -25,8 +25,30 @@ QOS_SIG_ALG_MLDSA65 = 0x00000003
 QOS_MAX_SIGNATURE_BYTES = 64
 MLDSA65_SIG_BYTES = 3309
 DEFAULT_SIGNER_KEY_ID = 0x00010001  # dev-main
-PROGRAM_SLOT_SIZE = 2 * 1024 * 1024
+PROGRAM_ALLOC_GRANULE_BYTES = 2 * 1024 * 1024
+PROGRAM_MAX_MEMORY_BYTES = 16 * 1024 * 1024
 PAGE_SIZE = 4096
+
+
+def parse_size(value):
+    s = str(value).strip()
+    mul = 1
+    if s.lower().endswith("m"):
+        mul = 1024 * 1024
+        s = s[:-1]
+    elif s.lower().endswith("k"):
+        mul = 1024
+        s = s[:-1]
+    return int(s, 0) * mul
+
+
+PROGRAM_MEMORY_BYTES = parse_size(os.environ.get("QOS_PROGRAM_MEMORY_BYTES", str(PROGRAM_MAX_MEMORY_BYTES)))
+
+if (PROGRAM_MEMORY_BYTES <= 0 or
+        PROGRAM_MEMORY_BYTES > PROGRAM_MAX_MEMORY_BYTES or
+        (PROGRAM_MEMORY_BYTES % PROGRAM_ALLOC_GRANULE_BYTES) != 0):
+    print("Invalid QOS_PROGRAM_MEMORY_BYTES; must be a 2 MiB multiple up to 16 MiB")
+    sys.exit(1)
 
 
 def parse_nm_symbol(nm_bin, elf_path, sym):
@@ -101,8 +123,8 @@ entry_offset = 0  # _start is at 0
 user_rw_offset = size
 if elf_path:
     user_rw_offset = parse_nm_symbol(nm_bin, elf_path, "__qos_data_start")
-if user_rw_offset >= PROGRAM_SLOT_SIZE:
-    print("Invalid layout: __qos_data_start beyond program slot")
+if user_rw_offset >= PROGRAM_MEMORY_BYTES:
+    print("Invalid layout: __qos_data_start beyond program memory reservation")
     sys.exit(1)
 if (user_rw_offset & (PAGE_SIZE - 1)) != 0:
     print("Invalid layout: __qos_data_start must be page-aligned")
@@ -110,7 +132,7 @@ if (user_rw_offset & (PAGE_SIZE - 1)) != 0:
 if entry_offset >= user_rw_offset:
     print("Invalid layout: entry_offset must be inside RX region")
     sys.exit(1)
-user_rw_size = PROGRAM_SLOT_SIZE - user_rw_offset
+user_rw_size = PROGRAM_MEMORY_BYTES - user_rw_offset
 
 header = struct.pack("<III", QOS_MAGIC, size, entry_offset)
 digest = hashlib.sha256(code).digest()
@@ -180,4 +202,4 @@ if pq_sign_key:
 else:
     print("PQ sidecar not generated (no pq_sign_key_bin provided).")
 
-print("Built program.bin (size:", size, ")")
+print("Built program.bin (size:", size, "reservation:", PROGRAM_MEMORY_BYTES, ")")
