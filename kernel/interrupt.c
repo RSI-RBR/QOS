@@ -163,7 +163,9 @@ void* irq_handler(void* irq_frame_sp){
         process_t* cur = get_current_process();
         int idle_kernel = (cur == 0);
         if (need_resched && (in_el0 || idle_kernel)){
-            return scheduler_on_irq(irq_frame_sp);
+            void* out = scheduler_on_irq(irq_frame_sp);
+            ensure_return_ttbr_for_frame(out);
+            return out;
         }
         ensure_return_ttbr_for_frame(irq_frame_sp);
         return irq_frame_sp;
@@ -179,7 +181,9 @@ void* irq_handler(void* irq_frame_sp){
         process_t* cur = get_current_process();
         int idle_kernel = (cur == 0);
         if (need_resched && (in_el0 || idle_kernel)){
-            return scheduler_on_irq(irq_frame_sp);
+            void* out = scheduler_on_irq(irq_frame_sp);
+            ensure_return_ttbr_for_frame(out);
+            return out;
         }
         ensure_return_ttbr_for_frame(irq_frame_sp);
         return irq_frame_sp;
@@ -250,6 +254,11 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         uart_puthex((unsigned int)(esr & 0x3FUL));
         uart_puts(" WnR=");
         uart_puthex((unsigned int)((esr >> 6) & 1UL));
+        uart_puts("\n");
+    }
+    if (ec == 0x20UL || ec == 0x21UL){
+        uart_puts("IFSC=");
+        uart_puthex((unsigned int)(esr & 0x3FUL));
         uart_puts("\n");
     }
     if (ec == 0x00UL){
