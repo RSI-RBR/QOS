@@ -262,6 +262,30 @@ static void syscall_dump_usb_info(void){
     } else{
         syscall_write_puts(-1, "USB HID kbd: none\n");
     }
+
+    if (info.child_hid_mouse_present){
+        syscall_write_puts(-1, "USB HID mouse addr=");
+        uart_puthex(info.child_hid_mouse_address);
+        syscall_write_puts(-1, " iface=");
+        uart_puthex(info.child_hid_mouse_iface);
+        syscall_write_puts(-1, " ep=");
+        uart_puthex(info.child_hid_mouse_ep);
+        syscall_write_puts(-1, " mps=");
+        uart_puthex(info.child_hid_mouse_mps);
+        syscall_write_puts(-1, "\n");
+    } else if (info.child_hid_mouse_address != 0u){
+        syscall_write_puts(-1, "USB HID mouse candidate addr=");
+        uart_puthex(info.child_hid_mouse_address);
+        syscall_write_puts(-1, " iface=");
+        uart_puthex(info.child_hid_mouse_iface);
+        syscall_write_puts(-1, " ep=");
+        uart_puthex(info.child_hid_mouse_ep);
+        syscall_write_puts(-1, " mps=");
+        uart_puthex(info.child_hid_mouse_mps);
+        syscall_write_puts(-1, " (not active)\n");
+    } else{
+        syscall_write_puts(-1, "USB HID mouse: none\n");
+    }
 }
 
 static int syscall_capability_allowed(const process_t* proc, unsigned long nr){

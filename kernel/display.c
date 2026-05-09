@@ -2,12 +2,22 @@
 #include "framebuffer.h"
 #include "memory.h"
 #include "spinlock.h"
+#include "usb_host.h"
 
 static display_session_t g_display_sessions[DISPLAY_MAX_SESSIONS];
 static spinlock_t g_display_lock;
 static int g_display_ready = 0;
 static int g_display_active = DISPLAY_TEXT_SESSION_ID;
 static int g_display_pending_switch_pid = -1;
+
+#define DISPLAY_CURSOR_RADIUS 7
+#define DISPLAY_CURSOR_PAD 2
+
+static int g_cursor_drawn = 0;
+static int g_cursor_session_id = -1;
+static int g_cursor_x = 0;
+static int g_cursor_y = 0;
+static unsigned int g_cursor_seq = 0u;
 
 static int display_valid_id(int session_id){
     return session_id >= 0 && session_id < DISPLAY_MAX_SESSIONS;
@@ -50,6 +60,160 @@ static void display_memset(void* ptr, unsigned char value, unsigned long len){
     }
     for (unsigned long i = 0; i < len; i++){
         p[i] = value;
+    }
+}
+
+static int display_cursor_rect(int x,
+                               int y,
+                               unsigned int max_w,
+                               unsigned int max_h,
+                               unsigned int* out_x0,
+                               unsigned int* out_y0,
+                               unsigned int* out_x1,
+                               unsigned int* out_y1){
+    if (!out_x0 || !out_y0 || !out_x1 || !out_y1 || max_w == 0u || max_h == 0u){
+        return -1;
+    }
+
+    int left = x - DISPLAY_CURSOR_RADIUS - DISPLAY_CURSOR_PAD;
+    int top = y - DISPLAY_CURSOR_RADIUS - DISPLAY_CURSOR_PAD;
+    int right = x + DISPLAY_CURSOR_RADIUS + DISPLAY_CURSOR_PAD + 1;
+    int bottom = y + DISPLAY_CURSOR_RADIUS + DISPLAY_CURSOR_PAD + 1;
+
+    if (left < 0){
+        left = 0;
+    }
+    if (top < 0){
+        top = 0;
+    }
+    if (right > (int)max_w){
+        right = (int)max_w;
+    }
+    if (bottom > (int)max_h){
+        bottom = (int)max_h;
+    }
+    if (left >= right || top >= bottom){
+        return -1;
+    }
+
+    *out_x0 = (unsigned int)left;
+    *out_y0 = (unsigned int)top;
+    *out_x1 = (unsigned int)right;
+    *out_y1 = (unsigned int)bottom;
+    return 0;
+}
+
+static int display_copy_rect_locked(const display_session_t* s,
+                                    unsigned long dst_base,
+                                    unsigned int dst_pitch,
+                                    unsigned int dst_width,
+                                    unsigned int dst_height,
+                                    unsigned int x0,
+                                    unsigned int y0,
+                                    unsigned int x1,
+                                    unsigned int y1){
+    if (!s || !s->framebuffer || !dst_base || s->pitch == 0u || dst_pitch == 0u){
+        return -1;
+    }
+    if (x0 >= x1 || y0 >= y1){
+        return -1;
+    }
+    if (x0 >= s->width || y0 >= s->height || x0 >= dst_width || y0 >= dst_height){
+        return -1;
+    }
+    if (x1 > s->width){
+        x1 = s->width;
+    }
+    if (y1 > s->height){
+        y1 = s->height;
+    }
+    if (x1 > dst_width){
+        x1 = dst_width;
+    }
+    if (y1 > dst_height){
+        y1 = dst_height;
+    }
+    if (x0 >= x1 || y0 >= y1){
+        return -1;
+    }
+
+    unsigned int copy_width = x1 - x0;
+    unsigned int copy_height = y1 - y0;
+    unsigned int row_bytes = copy_width * sizeof(unsigned int);
+    unsigned int row_offset = x0 * sizeof(unsigned int);
+    if (dst_pitch < row_offset || s->pitch < row_offset ||
+        dst_pitch - row_offset < row_bytes ||
+        s->pitch - row_offset < row_bytes){
+        return -1;
+    }
+
+    for (unsigned int y = 0; y < copy_height; y++){
+        unsigned int* src = (unsigned int*)((unsigned char*)s->framebuffer +
+                                            ((unsigned long)(y0 + y) * s->pitch) +
+                                            row_offset);
+        unsigned int* dst = (unsigned int*)((unsigned char*)dst_base +
+                                            ((unsigned long)(y0 + y) * dst_pitch) +
+                                            row_offset);
+        for (unsigned int x = 0; x < copy_width; x++){
+            dst[x] = src[x];
+        }
+    }
+    return 0;
+}
+
+static void display_draw_cursor_overlay(unsigned long dst_base,
+                                        unsigned int dst_pitch,
+                                        unsigned int dst_width,
+                                        unsigned int dst_height,
+                                        int x,
+                                        int y,
+                                        unsigned int buttons){
+    if (!dst_base || dst_pitch == 0u || dst_width == 0u || dst_height == 0u){
+        return;
+    }
+
+    unsigned int color = (buttons & 0x1u) ? 0x00FF7040u : 0x00FFFFFFu;
+    unsigned int outline = 0x00000000u;
+
+    for (int d = -DISPLAY_CURSOR_RADIUS; d <= DISPLAY_CURSOR_RADIUS; d++){
+        int px = x + d;
+        int py = y + d;
+        if (py >= 0 && py < (int)dst_height){
+            if (x >= 0 && x < (int)dst_width){
+                unsigned int* row = (unsigned int*)((unsigned char*)dst_base +
+                                                    ((unsigned long)py * dst_pitch));
+                row[x] = color;
+                if (x > 0){
+                    row[x - 1] = outline;
+                }
+                if (x + 1 < (int)dst_width){
+                    row[x + 1] = outline;
+                }
+            }
+        }
+        if (y >= 0 && y < (int)dst_height){
+            if (px >= 0 && px < (int)dst_width){
+                unsigned int* row = (unsigned int*)((unsigned char*)dst_base +
+                                                    ((unsigned long)y * dst_pitch));
+                row[px] = color;
+                if (y > 0){
+                    unsigned int* r0 = (unsigned int*)((unsigned char*)dst_base +
+                                                       ((unsigned long)(y - 1) * dst_pitch));
+                    r0[px] = outline;
+                }
+                if (y + 1 < (int)dst_height){
+                    unsigned int* r1 = (unsigned int*)((unsigned char*)dst_base +
+                                                       ((unsigned long)(y + 1) * dst_pitch));
+                    r1[px] = outline;
+                }
+            }
+        }
+    }
+
+    if (x >= 0 && x < (int)dst_width && y >= 0 && y < (int)dst_height){
+        unsigned int* row = (unsigned int*)((unsigned char*)dst_base +
+                                            ((unsigned long)y * dst_pitch));
+        row[x] = 0x0000FF00u;
     }
 }
 
@@ -625,68 +789,142 @@ int display_present_active_graphics(void){
         return -1;
     }
 
+    usb_mouse_state_t mouse;
+    if (usb_host_get_mouse_state(&mouse) != 0){
+        mouse.present = 0;
+    }
+
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     int session_id = g_display_active;
     if (!display_valid_id(session_id) ||
         g_display_sessions[session_id].type != DISPLAY_GRAPHICS ||
         !g_display_sessions[session_id].framebuffer ||
-        g_display_sessions[session_id].pitch == 0u ||
-        g_display_sessions[session_id].dirty == 0u){
+        g_display_sessions[session_id].pitch == 0u){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return 0;
     }
 
     display_session_t* s = &g_display_sessions[session_id];
-    unsigned int copy_x0 = s->dirty_x0;
-    unsigned int copy_y0 = s->dirty_y0;
-    unsigned int copy_x1 = s->dirty_x1;
-    unsigned int copy_y1 = s->dirty_y1;
-    if (copy_x1 > s->width){
-        copy_x1 = s->width;
-    }
-    if (copy_y1 > s->height){
-        copy_y1 = s->height;
-    }
-    if (copy_x0 >= dst_width || copy_y0 >= dst_height){
-        spin_unlock_irqrestore(&g_display_lock, irq);
-        return -1;
-    }
-    if (copy_x1 > dst_width){
-        copy_x1 = dst_width;
-    }
-    if (copy_y1 > dst_height){
-        copy_y1 = dst_height;
-    }
-    if (copy_x0 >= copy_x1 || copy_y0 >= copy_y1){
-        spin_unlock_irqrestore(&g_display_lock, irq);
-        return -1;
-    }
-    unsigned int copy_width = copy_x1 - copy_x0;
-    unsigned int copy_height = copy_y1 - copy_y0;
-    if (copy_width == 0u || copy_height == 0u){
-        spin_unlock_irqrestore(&g_display_lock, irq);
-        return -1;
-    }
 
-    unsigned int row_bytes = copy_width * sizeof(unsigned int);
-    unsigned int row_offset = copy_x0 * sizeof(unsigned int);
-    if (dst_pitch < row_offset || s->pitch < row_offset ||
-        dst_pitch - row_offset < row_bytes ||
-        s->pitch - row_offset < row_bytes){
-        spin_unlock_irqrestore(&g_display_lock, irq);
-        return -1;
-    }
-    for (unsigned int y = 0; y < copy_height; y++){
-        unsigned int* src = (unsigned int*)((unsigned char*)s->framebuffer +
-                                            ((unsigned long)(copy_y0 + y) * s->pitch) +
-                                            row_offset);
-        unsigned int* dst = (unsigned int*)((unsigned char*)dst_base +
-                                            ((unsigned long)(copy_y0 + y) * dst_pitch) +
-                                            row_offset);
-        for (unsigned int x = 0; x < copy_width; x++){
-            dst[x] = src[x];
+    unsigned int copy_x0 = 0u;
+    unsigned int copy_y0 = 0u;
+    unsigned int copy_x1 = 0u;
+    unsigned int copy_y1 = 0u;
+    int have_dirty = (s->dirty != 0u) ? 1 : 0;
+    if (have_dirty){
+        copy_x0 = s->dirty_x0;
+        copy_y0 = s->dirty_y0;
+        copy_x1 = s->dirty_x1;
+        copy_y1 = s->dirty_y1;
+        if (copy_x1 > s->width){
+            copy_x1 = s->width;
+        }
+        if (copy_y1 > s->height){
+            copy_y1 = s->height;
+        }
+        if (copy_x1 > dst_width){
+            copy_x1 = dst_width;
+        }
+        if (copy_y1 > dst_height){
+            copy_y1 = dst_height;
+        }
+        if (copy_x0 >= copy_x1 || copy_y0 >= copy_y1){
+            have_dirty = 0;
         }
     }
+
+    int had_cursor = (g_cursor_drawn && g_cursor_session_id == session_id) ? 1 : 0;
+    int want_cursor = mouse.present ? 1 : 0;
+    int cursor_changed = 0;
+    if (want_cursor){
+        cursor_changed = (!had_cursor ||
+                          g_cursor_seq != mouse.seq ||
+                          g_cursor_x != mouse.x ||
+                          g_cursor_y != mouse.y);
+    }
+    int cursor_removed = (had_cursor && !want_cursor) ? 1 : 0;
+
+    if (!have_dirty && !cursor_changed && !cursor_removed){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return 0;
+    }
+
+    if (have_dirty){
+        (void)display_copy_rect_locked(s,
+                                       dst_base,
+                                       dst_pitch,
+                                       dst_width,
+                                       dst_height,
+                                       copy_x0,
+                                       copy_y0,
+                                       copy_x1,
+                                       copy_y1);
+    }
+
+    if (had_cursor && (cursor_changed || cursor_removed)){
+        unsigned int ox0 = 0u, oy0 = 0u, ox1 = 0u, oy1 = 0u;
+        if (display_cursor_rect(g_cursor_x,
+                                g_cursor_y,
+                                dst_width,
+                                dst_height,
+                                &ox0,
+                                &oy0,
+                                &ox1,
+                                &oy1) == 0){
+            (void)display_copy_rect_locked(s,
+                                           dst_base,
+                                           dst_pitch,
+                                           dst_width,
+                                           dst_height,
+                                           ox0,
+                                           oy0,
+                                           ox1,
+                                           oy1);
+        }
+    }
+
+    if (want_cursor){
+        if (have_dirty || cursor_changed){
+            unsigned int nx0 = 0u, ny0 = 0u, nx1 = 0u, ny1 = 0u;
+            if (display_cursor_rect(mouse.x,
+                                    mouse.y,
+                                    dst_width,
+                                    dst_height,
+                                    &nx0,
+                                    &ny0,
+                                    &nx1,
+                                    &ny1) == 0){
+                (void)display_copy_rect_locked(s,
+                                               dst_base,
+                                               dst_pitch,
+                                               dst_width,
+                                               dst_height,
+                                               nx0,
+                                               ny0,
+                                               nx1,
+                                               ny1);
+            }
+            display_draw_cursor_overlay(dst_base,
+                                        dst_pitch,
+                                        dst_width,
+                                        dst_height,
+                                        mouse.x,
+                                        mouse.y,
+                                        mouse.buttons);
+            g_cursor_drawn = 1;
+            g_cursor_session_id = session_id;
+            g_cursor_x = mouse.x;
+            g_cursor_y = mouse.y;
+            g_cursor_seq = mouse.seq;
+        }
+    } else if (had_cursor){
+        g_cursor_drawn = 0;
+        g_cursor_session_id = -1;
+        g_cursor_x = 0;
+        g_cursor_y = 0;
+        g_cursor_seq = 0u;
+    }
+
     s->dirty = 0u;
     s->dirty_x0 = 0u;
     s->dirty_y0 = 0u;

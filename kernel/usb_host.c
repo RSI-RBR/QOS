@@ -1,6 +1,7 @@
 #include "usb_host.h"
 #include "uart.h"
 #include "terminal.h"
+#include "framebuffer.h"
 
 #define USBHOST_VERBOSE 0
 #if USBHOST_VERBOSE == 0
@@ -152,6 +153,7 @@
 #define USB_HID_REQ_SET_PROTOCOL 0x0Bu
 #define USB_HID_REPORT_LEN 8u
 #define USB_HID_CHAR_QUEUE_LEN 128u
+#define USB_HID_MOUSE_REPORT_LEN 4u
 #define USB_HID_ACTIVE_POLL_MS 4u
 #define USB_HID_IDLE_POLL_MS 8u
 #define USB_HID_ACTIVE_HOLD_MS 250u
@@ -199,6 +201,8 @@ static unsigned char g_bulk_in_toggle[16];
 static unsigned char g_bulk_out_toggle[16];
 static unsigned long g_kbd_next_poll_tick = 0;
 static unsigned long g_kbd_active_until_tick = 0;
+static unsigned long g_mouse_next_poll_tick = 0;
+static unsigned long g_mouse_active_until_tick = 0;
 static unsigned int g_hub_ports = 0;
 static unsigned int g_hub_connected_mask = 0;
 static unsigned int g_hub_enum_attempts = 0;
@@ -237,6 +241,26 @@ typedef struct {
 } usb_hid_keyboard_state_t;
 
 static usb_hid_keyboard_state_t g_kbd;
+
+typedef struct {
+    int present;
+    unsigned char addr;
+    unsigned char iface;
+    unsigned char in_ep;
+    unsigned short in_mps;
+    unsigned char hub_addr;
+    unsigned char hub_port;
+    int use_split;
+    int low_speed;
+    int boot_mouse;
+    unsigned char in_toggle;
+    unsigned int buttons;
+    int x;
+    int y;
+    unsigned int seq;
+} usb_hid_mouse_state_t;
+
+static usb_hid_mouse_state_t g_mouse;
 
 static int usb_std_request(unsigned char dev_addr,
                            unsigned char bmRequestType,
@@ -281,6 +305,12 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
                                               unsigned char* out_ep,
                                               unsigned short* out_mps,
                                               int* out_boot_kbd);
+static int usb_parse_hid_mouse_from_config(const unsigned char* cfg,
+                                           unsigned int len,
+                                           unsigned char* out_iface,
+                                           unsigned char* out_ep,
+                                           unsigned short* out_mps,
+                                           int* out_boot_mouse);
 static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
@@ -290,6 +320,17 @@ static int usb_hid_keyboard_configure(unsigned char addr,
                                       int low_speed,
                                       unsigned char hub_addr,
                                       unsigned char hub_port);
+static int usb_hid_mouse_configure(unsigned char addr,
+                                   unsigned char iface,
+                                   unsigned char in_ep,
+                                   unsigned short in_mps,
+                                   int boot_mouse,
+                                   int use_split,
+                                   int low_speed,
+                                   unsigned char hub_addr,
+                                   unsigned char hub_port);
+static void usb_hid_mouse_process_report(const unsigned char* report, unsigned int len);
+static int usb_hid_mouse_poll_once(void);
 static int usb_hid_poll_once(void);
 static int hc_transfer_interrupt_in(unsigned char dev_addr,
                                     unsigned char ep_addr,
@@ -517,6 +558,82 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
     return -1;
 }
 
+static int usb_parse_hid_mouse_from_config(const unsigned char* cfg,
+                                           unsigned int len,
+                                           unsigned char* out_iface,
+                                           unsigned char* out_ep,
+                                           unsigned short* out_mps,
+                                           int* out_boot_mouse){
+    unsigned char cur_iface = 0xFFu;
+    int iface_is_hid = 0;
+    int iface_is_mouse = 0;
+    int iface_is_boot_mouse = 0;
+    int best_score = -1;
+    unsigned char best_iface = 0u;
+    unsigned char best_ep = 0u;
+    unsigned short best_mps = 0u;
+    int best_boot = 0;
+
+    if (!cfg || !out_iface || !out_ep || !out_mps || !out_boot_mouse || len < 9u){
+        return -1;
+    }
+
+    *out_iface = 0u;
+    *out_ep = 0u;
+    *out_mps = 0u;
+    *out_boot_mouse = 0;
+
+    {
+        unsigned int off = 0;
+        while (off + 2u <= len){
+            unsigned int desc_len = cfg[off];
+            unsigned int desc_type = cfg[off + 1u];
+            if (desc_len < 2u || off + desc_len > len){
+                break;
+            }
+
+            if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9u){
+                unsigned char cls = cfg[off + 5u];
+                unsigned char sub = cfg[off + 6u];
+                unsigned char proto = cfg[off + 7u];
+                cur_iface = cfg[off + 2u];
+                iface_is_hid = (cls == 0x03u) ? 1 : 0;
+                iface_is_mouse = (cls == 0x03u && proto == 0x02u) ? 1 : 0;
+                iface_is_boot_mouse = (cls == 0x03u && sub == 0x01u && proto == 0x02u) ? 1 : 0;
+            } else if (iface_is_hid && iface_is_mouse &&
+                       desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
+                unsigned char ep_addr = cfg[off + 2u];
+                unsigned char attrs = cfg[off + 3u];
+                unsigned short mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
+                if ((attrs & 0x3u) == USB_ENDPOINT_XFER_INTERRUPT &&
+                    (ep_addr & 0x80u) &&
+                    mps >= 3u){
+                    int score = iface_is_boot_mouse ? 2 : 1;
+                    if (score > best_score){
+                        best_score = score;
+                        best_iface = cur_iface;
+                        best_ep = ep_addr;
+                        best_mps = mps;
+                        best_boot = iface_is_boot_mouse ? 1 : 0;
+                    }
+                }
+            }
+
+            off += desc_len;
+        }
+    }
+
+    if (best_score >= 0){
+        *out_iface = best_iface;
+        *out_ep = best_ep;
+        *out_mps = best_mps;
+        *out_boot_mouse = best_boot;
+        return 0;
+    }
+
+    return -1;
+}
+
 static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
@@ -574,6 +691,146 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     }
     g_kbd_next_poll_tick = 0;
     usb_hid_queue_reset();
+    return 0;
+}
+
+static int usb_hid_mouse_configure(unsigned char addr,
+                                   unsigned char iface,
+                                   unsigned char in_ep,
+                                   unsigned short in_mps,
+                                   int boot_mouse,
+                                   int use_split,
+                                   int low_speed,
+                                   unsigned char hub_addr,
+                                   unsigned char hub_port){
+    if (use_split){
+        usb_set_split_context(hub_addr, hub_port, 1, low_speed);
+    }
+
+    if (boot_mouse){
+        (void)usb_std_request(addr,
+                              0x21,
+                              USB_HID_REQ_SET_PROTOCOL,
+                              0u,
+                              iface,
+                              0,
+                              0);
+    }
+
+    // Accept async movement/button reports immediately.
+    (void)usb_std_request(addr,
+                          0x21,
+                          USB_HID_REQ_SET_IDLE,
+                          0u,
+                          iface,
+                          0,
+                          0);
+
+    if (use_split){
+        usb_clear_split_context();
+    }
+
+    g_mouse.present = 1;
+    g_mouse.addr = addr;
+    g_mouse.iface = iface;
+    g_mouse.in_ep = in_ep;
+    g_mouse.in_mps = (in_mps != 0u) ? in_mps : USB_HID_MOUSE_REPORT_LEN;
+    g_mouse.hub_addr = hub_addr;
+    g_mouse.hub_port = hub_port;
+    g_mouse.use_split = use_split ? 1 : 0;
+    g_mouse.low_speed = low_speed ? 1 : 0;
+    g_mouse.boot_mouse = boot_mouse ? 1 : 0;
+    g_mouse.in_toggle = 0;
+    g_mouse.buttons = 0u;
+    g_mouse.seq = 0u;
+    {
+        int w = (int)fb_get_width();
+        int h = (int)fb_get_height();
+        if (w <= 0){ w = 1920; }
+        if (h <= 0){ h = 1080; }
+        g_mouse.x = w / 2;
+        g_mouse.y = h / 2;
+    }
+    g_mouse_active_until_tick = 0;
+    g_mouse_next_poll_tick = 0;
+    return 0;
+}
+
+static void usb_hid_mouse_process_report(const unsigned char* report, unsigned int len){
+    if (!report || len < 3u){
+        return;
+    }
+
+    const unsigned char* r = report;
+    unsigned int n = len;
+    // Report-ID-prefixed packet.
+    if (n >= 4u && r[0] != 0u){
+        r++;
+        n--;
+        if (n < 3u){
+            return;
+        }
+    }
+
+    unsigned int buttons = (unsigned int)(r[0] & 0x07u);
+    int dx = (int)((signed char)r[1]);
+    int dy = (int)((signed char)r[2]);
+    int moved = (dx != 0 || dy != 0);
+    int changed = moved || (buttons != g_mouse.buttons);
+
+    if (changed){
+        int w = (int)fb_get_width();
+        int h = (int)fb_get_height();
+        if (w <= 0){ w = 1920; }
+        if (h <= 0){ h = 1080; }
+        g_mouse.x += dx;
+        g_mouse.y += dy;
+        if (g_mouse.x < 0){ g_mouse.x = 0; }
+        if (g_mouse.y < 0){ g_mouse.y = 0; }
+        if (g_mouse.x >= w){ g_mouse.x = w - 1; }
+        if (g_mouse.y >= h){ g_mouse.y = h - 1; }
+        g_mouse.buttons = buttons;
+        g_mouse.seq++;
+        g_mouse_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
+    }
+}
+
+static int usb_hid_mouse_poll_once(void){
+    if (!g_mouse.present || g_mouse.addr == 0u){
+        return 0;
+    }
+
+    unsigned int report_cap = g_mouse.in_mps;
+    if (report_cap < USB_HID_MOUSE_REPORT_LEN){
+        report_cap = USB_HID_MOUSE_REPORT_LEN;
+    }
+    if (report_cap > 16u){
+        report_cap = 16u;
+    }
+
+    unsigned char report[16];
+    for (unsigned int i = 0; i < report_cap; i++){
+        report[i] = 0;
+    }
+
+    unsigned int actual = 0;
+    int rc = hc_transfer_interrupt_in(g_mouse.addr,
+                                      g_mouse.in_ep,
+                                      g_mouse.in_mps,
+                                      report,
+                                      report_cap,
+                                      g_mouse.use_split,
+                                      g_mouse.low_speed,
+                                      g_mouse.hub_addr,
+                                      g_mouse.hub_port,
+                                      &actual);
+    if (rc != 0){
+        return -1;
+    }
+    if (actual < 3u){
+        return 0;
+    }
+    usb_hid_mouse_process_report(report, actual);
     return 0;
 }
 
@@ -784,6 +1041,17 @@ static int usb_get_split_route(unsigned char dev_addr, unsigned char* hub_addr, 
         return 1;
     }
 
+    // Optional route for HID mouse child behind the onboard hub.
+    if (g_mouse.present &&
+        g_mouse.use_split &&
+        g_mouse.addr == dev_addr &&
+        g_mouse.hub_addr != 0 &&
+        g_mouse.hub_port != 0){
+        *hub_addr = g_mouse.hub_addr;
+        *hub_port = g_mouse.hub_port;
+        return 1;
+    }
+
     return 0;
 }
 
@@ -810,6 +1078,13 @@ static int usb_target_is_low_speed(unsigned char dev_addr){
         g_kbd.use_split &&
         g_kbd.low_speed &&
         g_kbd.addr == dev_addr){
+        return 1;
+    }
+
+    if (g_mouse.present &&
+        g_mouse.use_split &&
+        g_mouse.low_speed &&
+        g_mouse.addr == dev_addr){
         return 1;
     }
 
@@ -862,10 +1137,15 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char hid_ep = 0;
     unsigned short hid_mps = 0;
     int hid_boot = 0;
+    unsigned char mouse_iface = 0;
+    unsigned char mouse_ep = 0;
+    unsigned short mouse_mps = 0;
+    int mouse_boot = 0;
     unsigned char intr_iface = 0;
     unsigned char intr_ep = 0;
     unsigned short intr_mps = 0;
     int hid_found = 0;
+    int mouse_found = 0;
     int child_is_high_speed = 0;
     int child_is_low_speed = 0;
     int child_use_split = 0;
@@ -968,6 +1248,12 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                         &hid_ep,
                                                         &hid_mps,
                                                         &hid_boot) == 0) ? 1 : 0;
+        mouse_found = (usb_parse_hid_mouse_from_config(cfg_desc,
+                                                       (unsigned int)cfg_read,
+                                                       &mouse_iface,
+                                                       &mouse_ep,
+                                                       &mouse_mps,
+                                                       &mouse_boot) == 0) ? 1 : 0;
         if (!hid_found && intr_ep && dev_desc[4] != 0x09u && !(bulk_in_ep && bulk_out_ep)){
             // Some low-cost keyboards report unusual interface metadata but still expose
             // a single interrupt-IN report endpoint. Avoid hubs and bulk NICs here.
@@ -1050,6 +1336,38 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
             uart_puthex(child_addr);
             uart_puts(" iface=");
             uart_puthex(hid_iface);
+            uart_puts("\n");
+        }
+    }
+
+    if (mouse_found && !g_mouse.present){
+        g_root_info.child_hid_mouse_address = child_addr;
+        g_root_info.child_hid_mouse_ep = mouse_ep;
+        g_root_info.child_hid_mouse_iface = mouse_iface;
+        g_root_info.child_hid_mouse_mps = mouse_mps;
+        g_root_info.child_hid_mouse_present = 0;
+        if (usb_hid_mouse_configure(child_addr,
+                                    mouse_iface,
+                                    mouse_ep,
+                                    mouse_mps,
+                                    mouse_boot,
+                                    child_use_split,
+                                    child_is_low_speed,
+                                    hub_addr,
+                                    (unsigned char)port) == 0){
+            g_root_info.child_hid_mouse_present = 1;
+            uart_puts("USB: HID mouse configured addr=");
+            uart_puthex(child_addr);
+            uart_puts(" iface=");
+            uart_puthex(mouse_iface);
+            uart_puts(" boot=");
+            uart_puthex((unsigned int)(mouse_boot ? 1u : 0u));
+            uart_puts("\n");
+        } else{
+            uart_puts("USB: HID mouse configure failed addr=");
+            uart_puthex(child_addr);
+            uart_puts(" iface=");
+            uart_puthex(mouse_iface);
             uart_puts("\n");
         }
     }
@@ -2009,7 +2327,12 @@ int usb_host_init(void){
     for (unsigned int i = 0; i < sizeof(g_kbd); i++){
         ((unsigned char*)&g_kbd)[i] = 0;
     }
+    for (unsigned int i = 0; i < sizeof(g_mouse); i++){
+        ((unsigned char*)&g_mouse)[i] = 0;
+    }
     g_kbd_next_poll_tick = 0;
+    g_mouse_next_poll_tick = 0;
+    g_mouse_active_until_tick = 0;
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
@@ -2394,7 +2717,12 @@ int usb_host_enumerate_root_device(void){
     for (unsigned int i = 0; i < sizeof(g_kbd); i++){
         ((unsigned char*)&g_kbd)[i] = 0;
     }
+    for (unsigned int i = 0; i < sizeof(g_mouse); i++){
+        ((unsigned char*)&g_mouse)[i] = 0;
+    }
     g_kbd_next_poll_tick = 0;
+    g_mouse_next_poll_tick = 0;
+    g_mouse_active_until_tick = 0;
     usb_hid_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
@@ -2555,22 +2883,31 @@ int usb_host_get_root_device_info(usb_root_device_info_t* out_info){
 }
 
 void usb_host_poll(void){
-    if (!g_usb_ready || !g_kbd.present){
+    if (!g_usb_ready){
         return;
     }
+
     unsigned long now = system_ticks;
-    if ((long)(now - g_kbd_next_poll_tick) < 0){
-        return;
+    if (g_kbd.present && (long)(now - g_kbd_next_poll_tick) >= 0){
+        (void)usb_hid_poll_once();
+        now = system_ticks;
+        // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
+        // transactions. Poll slowly while idle, then briefly speed up after any
+        // report so normal typing stays responsive without taxing graphics loops.
+        unsigned int kbd_interval = ((long)(now - g_kbd_active_until_tick) < 0) ?
+                                    USB_HID_ACTIVE_POLL_MS :
+                                    USB_HID_IDLE_POLL_MS;
+        g_kbd_next_poll_tick = now + kbd_interval;
     }
-    (void)usb_hid_poll_once();
-    now = system_ticks;
-    // Polling a HID keyboard behind the Pi 3 LAN9514 hub requires split
-    // transactions. Poll slowly while idle, then briefly speed up after any
-    // report so normal typing stays responsive without taxing graphics loops.
-    unsigned int interval = ((long)(now - g_kbd_active_until_tick) < 0) ?
-                            USB_HID_ACTIVE_POLL_MS :
-                            USB_HID_IDLE_POLL_MS;
-    g_kbd_next_poll_tick = now + interval;
+
+    if (g_mouse.present && (long)(now - g_mouse_next_poll_tick) >= 0){
+        (void)usb_hid_mouse_poll_once();
+        now = system_ticks;
+        unsigned int mouse_interval = ((long)(now - g_mouse_active_until_tick) < 0) ?
+                                      USB_HID_ACTIVE_POLL_MS :
+                                      USB_HID_IDLE_POLL_MS;
+        g_mouse_next_poll_tick = now + mouse_interval;
+    }
 }
 
 int usb_host_try_getc(char* out){
@@ -2579,6 +2916,19 @@ int usb_host_try_getc(char* out){
 
 void usb_host_flush_input(void){
     usb_hid_queue_reset();
+}
+
+int usb_host_get_mouse_state(usb_mouse_state_t* out){
+    if (!out){
+        return -1;
+    }
+
+    out->present = g_mouse.present ? 1 : 0;
+    out->x = g_mouse.x;
+    out->y = g_mouse.y;
+    out->buttons = g_mouse.buttons;
+    out->seq = g_mouse.seq;
+    return 0;
 }
 
 static void usb_snapshot_hub_diag_to_root_info(void){
@@ -2597,5 +2947,14 @@ static void usb_snapshot_hub_diag_to_root_info(void){
         g_root_info.port_vid[i] = g_port_vid[i];
         g_root_info.port_pid[i] = g_port_pid[i];
         g_root_info.port_intr_in_mps[i] = g_port_intr_in_mps[i];
+    }
+    if (g_mouse.present){
+        g_root_info.child_hid_mouse_present = 1;
+        g_root_info.child_hid_mouse_address = g_mouse.addr;
+        g_root_info.child_hid_mouse_ep = g_mouse.in_ep;
+        g_root_info.child_hid_mouse_iface = g_mouse.iface;
+        g_root_info.child_hid_mouse_mps = g_mouse.in_mps;
+    } else{
+        g_root_info.child_hid_mouse_present = 0;
     }
 }

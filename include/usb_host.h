@@ -38,9 +38,11 @@ typedef struct {
     int child_present;
     int child_configured;
     int child_hid_kbd_present;
+    int child_hid_mouse_present;
     unsigned char address;
     unsigned char child_address;
     unsigned char child_hid_kbd_address;
+    unsigned char child_hid_mouse_address;
     unsigned char ep0_mps;
     unsigned char dev_class;
     unsigned char child_class;
@@ -53,10 +55,13 @@ typedef struct {
     unsigned char child_bulk_in_ep;
     unsigned char child_bulk_out_ep;
     unsigned char child_hid_kbd_ep;
+    unsigned char child_hid_mouse_ep;
     unsigned char child_hid_kbd_iface;
+    unsigned char child_hid_mouse_iface;
     unsigned short child_bulk_in_mps;
     unsigned short child_bulk_out_mps;
     unsigned short child_hid_kbd_mps;
+    unsigned short child_hid_mouse_mps;
     unsigned short vid;
     unsigned short pid;
     unsigned short child_vid;
@@ -84,11 +89,20 @@ typedef struct {
     unsigned short port_intr_in_mps[USB_HOST_MAX_TRACKED_PORTS];
 } usb_root_device_info_t;
 
+typedef struct {
+    int present;
+    int x;
+    int y;
+    unsigned int buttons;
+    unsigned int seq;
+} usb_mouse_state_t;
+
 // Enumerate the root-port attached device (Default->Address->Configured).
 int usb_host_enumerate_root_device(void);
 int usb_host_get_root_device_info(usb_root_device_info_t* out_info);
 void usb_host_poll(void);
 int usb_host_try_getc(char* out);
 void usb_host_flush_input(void);
+int usb_host_get_mouse_state(usb_mouse_state_t* out);
 
 #endif
