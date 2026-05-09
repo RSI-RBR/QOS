@@ -28,7 +28,10 @@ typedef struct {
     int program_heap_alloc;
 } process_cleanup_t;
 
+#define IDLE_STACK_SIZE (64 * 1024)
+
 static unsigned char stacks[MAX_PROCESSES][STACK_SIZE];
+static unsigned char idle_stacks[MAX_CPU_CORES][IDLE_STACK_SIZE] __attribute__((aligned(16)));
 static int used[MAX_PROCESSES] = {0};
 
 static process_t processes[MAX_PROCESSES];
@@ -61,6 +64,7 @@ static int is_pid_pending_zombie(int pid);
 static int pid_running_on_other_core_locked(int pid, unsigned int core);
 static int process_user_range_check(const process_t* p, unsigned long addr, unsigned long len, int writeable);
 static int core_is_schedulable(unsigned int core, unsigned int online_mask);
+static void* build_idle_context(unsigned int core);
 
 static unsigned int scheduler_core_id(void){
     unsigned int core = cpu_get_id();
@@ -478,6 +482,23 @@ static void* build_initial_context_el0(void* stack_top, unsigned long entry, voi
     return frame;
 }
 
+static void* build_idle_context(unsigned int core){
+    if (core >= MAX_CPU_CORES){
+        core = 0;
+    }
+
+    unsigned long top = (unsigned long)&idle_stacks[core][IDLE_STACK_SIZE];
+    top &= ~0xFUL;
+    unsigned long* frame = (unsigned long*)(top - IRQ_FRAME_SIZE);
+    for (int i = 0; i < IRQ_FRAME_WORDS; i++){
+        frame[i] = 0;
+    }
+    frame[IRQ_FRAME_ELR_IDX] = (unsigned long)process_enter_idle_loop;
+    frame[IRQ_FRAME_SPSR_IDX] = INITIAL_SPSR_EL1H;
+    frame[IRQ_FRAME_USER_SP_IDX] = 0;
+    return frame;
+}
+
 static int process_create_common_locked(program_entry_t entry,
                                         int user_mode,
                                         void* user_sp,
@@ -851,6 +872,8 @@ int process_create_loaded(loaded_program_t prog){
 
 void process_exit(int pid){
     process_cleanup_t cleanup;
+    int poke_core = -1;
+    unsigned int local_core = scheduler_core_id();
     cleanup_init(&cleanup);
 
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
@@ -870,10 +893,15 @@ void process_exit(int pid){
 
     if (pid == current_pid[owner_core]){
         mark_current_for_reap(owner_core);
+        mark_need_resched_locked(owner_core);
+        poke_core = (int)owner_core;
     } else{
         detach_process_resources_locked(pid, &cleanup);
     }
     spin_unlock_irqrestore(&g_process_lock, irq);
+    if (poke_core >= 0 && (unsigned int)poke_core != local_core){
+        smp_send_ipi((unsigned int)poke_core);
+    }
     release_process_resources(&cleanup);
 }
 
@@ -1170,10 +1198,14 @@ void* scheduler_on_irq(void* irq_frame_sp){
                 return irq_frame_sp;
             }
             if (processes[cur].state == PROC_DEAD || processes[cur].state == PROC_REAPING){
-                // Still returning to the dead task's kernel frame, usually the
-                // idle WFI loop in process_exit_current(). Keep ownership so
-                // reap_pending_zombie() skips this stack until a real switch.
-                current_pid[core] = cur;
+                // A task killed from another core can arrive here from its
+                // EL0 timer/IPI frame. Returning to that same frame would
+                // resurrect the killed process, so park this core on a small
+                // per-core idle stack instead. The zombie is reaped from that
+                // safe stack on the next scheduler pass.
+                current_pid[core] = -1;
+                switched_to_idle = 1;
+                irq_frame_sp = build_idle_context(core);
             } else{
                 processes[cur].state = PROC_RUNNING;
                 current_pid[core] = cur;
@@ -1374,6 +1406,7 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
     mmu_switch_to_pid(-1);
 
     asm volatile("msr daifclr, #2" : : : "memory");
+    scheduler_run_once();
     while (1){
         if (scheduler_has_runnable()){
             scheduler_run_once();
