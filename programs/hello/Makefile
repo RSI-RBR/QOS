@@ -3,7 +3,8 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -O2 -pie -mgeneral-regs-only -DQOS_USERSPACE -I../../include
+CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -mgeneral-regs-only -DQOS_USERSPACE -I../../include
+USER_LIB_OBJS = qos_user_heap.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
@@ -16,8 +17,11 @@ main.o: main.c
 start.o: start.S
 	$(CC) $(CFLAGS) -c start.S -o start.o
 
-program.elf: main.o start.o
-	$(LD) -pie -T linker.ld start.o main.o -o program.elf
+qos_user_heap.o: ../lib/qos_user_heap.c
+	$(CC) $(CFLAGS) -c ../lib/qos_user_heap.c -o qos_user_heap.o
+
+program.elf: main.o start.o $(USER_LIB_OBJS)
+	$(LD) -pie -T linker.ld start.o main.o $(USER_LIB_OBJS) -o program.elf
 
 program.raw: program.elf
 	$(OBJCOPY) program.elf -O binary program.raw

@@ -13,6 +13,9 @@
 // Backward-compat alias for old builds/scripts. New code should use QOS_SIG_ALG_MLDSA65.
 #define QOS_SIG_ALG_LAMPORT_SHA256 QOS_SIG_ALG_MLDSA65
 #define QOS_MAX_SIGNATURE_BYTES 64u
+#define QOS_PROGRAM_SLOT_SIZE (2UL * 1024UL * 1024UL)
+#define QOS_USER_GUARD_PAGE_BYTES 4096UL
+#define QOS_USER_STACK_BYTES (128UL * 1024UL)
 
 typedef struct{
     unsigned int magic;

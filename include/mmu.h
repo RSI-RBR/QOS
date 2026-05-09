@@ -1,8 +1,7 @@
 #ifndef MMU_H
 #define MMU_H
 
-#define QOS_USER_GUARD_PAGE_BYTES 4096UL
-#define QOS_USER_STACK_BYTES (128UL * 1024UL)
+#include "program.h"
 
 void mmu_init(void);
 void mmu_enable_secondary(void);
