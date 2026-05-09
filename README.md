@@ -81,7 +81,7 @@ Current programs:
 - `programs/shell`: signed user shell, login, launcher, diagnostics, network commands, session commands.
 - `programs/hello`: cube/demo graphics program and performance test scaffold.
 - `programs/webbrowser`: text-mode web browser using DNS/socket/TCP/HTTPS syscalls.
-- `programs/game`: private/local game source directory, intentionally ignored by git.
+- `programs/game`: QOS wrapper/Makefile for a private local game build; private source/assets remain ignored by git.
 
 SD filenames:
 
@@ -330,7 +330,7 @@ cp boot/config.txt /media/sd/config.txt
 
 ## Build A User Program
 
-Use `programs/hello` as the public example. `programs/game/` is ignored so private commercial game source can live there without being pushed to the public QOS repo.
+Use `programs/hello` as the public example. `programs/game/` keeps a tracked QOS wrapper, but its private source/assets are ignored so commercial game code can live there without being pushed to the public QOS repo.
 
 Developer-signed app:
 
@@ -340,6 +340,21 @@ make -C programs/hello clean all \
   PQ_SIGN_KEY="$(pwd)/keys/dev_mldsa65_sk.bin"
 cp programs/hello/program.bin /media/sd/PROGRAM.BIN
 cp programs/hello/program.pqs /media/sd/PROGRAM.PQS
+```
+
+Private game wrapper:
+
+```bash
+mkdir -p programs/game/src programs/game/img
+cp /path/to/QuantumFront2D/src/* programs/game/src/
+cp /path/to/QuantumFront2D/img/* programs/game/img/
+
+make -C programs/game clean all \
+  SIGN_KEY="$(pwd)/keys/dev_ed25519.pem" \
+  PQ_SIGN_KEY="$(pwd)/keys/dev_mldsa65_sk.bin"
+
+cp programs/game/game.bin /media/sd/GAME.BIN
+cp programs/game/game.pqs /media/sd/GAME.PQS
 ```
 
 Admin-only programs:

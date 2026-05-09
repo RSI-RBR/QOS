@@ -1,0 +1,12 @@
+# Private QuantumFront2D source and assets live here locally.
+# The public QOS repo should keep only the wrapper/Makefile/README.
+src/
+include/
+img/
+assets/
+qf2d/
+*.o
+*.elf
+*.raw
+*.bin
+*.pqs

@@ -13,4 +13,10 @@ keys/
 build/
 
 # Private/local game source. Keep commercial game code out of the public QOS repo.
-programs/game/
+# Allow only the tiny public QOS wrapper/build scaffold.
+programs/game/*
+!programs/game/
+!programs/game/.gitignore
+!programs/game/README.md
+!programs/game/Makefile
+!programs/game/program_main.c
