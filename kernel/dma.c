@@ -30,7 +30,9 @@
 #define DMA_TI_NO_WIDE_BURSTS (1u << 26)
 
 #define DMA_BUS_UNCACHED_BASE 0xC0000000UL
-#define DMA_TIMEOUT_LOOPS     2000000u
+#define DMA_TIMEOUT_BASE_LOOPS     2000000u
+#define DMA_TIMEOUT_LOOPS_PER_BYTE 8u
+#define DMA_TIMEOUT_MAX_LOOPS      120000000u
 
 typedef struct {
     unsigned int ti;
@@ -134,6 +136,22 @@ static int dma_start_memcopy(unsigned int src_bus,
                              unsigned int stride,
                              unsigned int ti_extra){
     unsigned long irq = spin_lock_irqsave(&g_dma_lock);
+    unsigned int timeout_loops = DMA_TIMEOUT_BASE_LOOPS;
+    unsigned int transfer_bytes = txfr_len;
+
+    if (ti_extra & DMA_TI_TDMODE){
+        unsigned int row_bytes = txfr_len & 0xFFFFu;
+        unsigned int rows = (txfr_len >> 16) & 0x3FFFu;
+        transfer_bytes = row_bytes * rows;
+    }
+    if (transfer_bytes > 0u){
+        unsigned long scaled = DMA_TIMEOUT_BASE_LOOPS +
+                               ((unsigned long)transfer_bytes * DMA_TIMEOUT_LOOPS_PER_BYTE);
+        timeout_loops = (scaled > DMA_TIMEOUT_MAX_LOOPS)
+                            ? DMA_TIMEOUT_MAX_LOOPS
+                            : (unsigned int)scaled;
+    }
+
     dma_reset_channel();
 
     g_dma_cb.ti = DMA_TI_DEST_INC |
@@ -161,7 +179,7 @@ static int dma_start_memcopy(unsigned int src_bus,
              (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
 
     int rc = -1;
-    for (unsigned int i = 0; i < DMA_TIMEOUT_LOOPS; i++){
+    for (unsigned int i = 0; i < timeout_loops; i++){
         unsigned int cs = DMA_CS;
         g_dma_last_cs = cs;
         if (cs & DMA_CS_ERROR){
