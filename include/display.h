@@ -18,6 +18,10 @@ typedef struct {
     void* framebuffer;
     unsigned long framebuffer_size;
     unsigned int dirty;
+    unsigned int dirty_x0;
+    unsigned int dirty_y0;
+    unsigned int dirty_x1;
+    unsigned int dirty_y1;
     unsigned int width;
     unsigned int height;
     unsigned int pitch;
