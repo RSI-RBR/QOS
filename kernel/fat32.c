@@ -661,10 +661,16 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
             unsigned char *entry = &cluster_buf[i];
 
             if (entry[0] == 0x00){
-                // Rare delayed-run reliability case: if very first root entry looks like end marker,
-                // retry a fresh root-cluster read once before declaring file-not-found.
-                if (!retried_root_once && i == 0 && cluster == root_cluster){
+                /*
+                 * Rare SD/EMMC reliability case: if the root directory appears
+                 * to end before a requested boot file is found, force one
+                 * uncached reread before trusting the marker. The old retry
+                 * path could hit the same cached sector and was not a real
+                 * media retry.
+                 */
+                if (!retried_root_once && cluster == root_cluster){
                     retried_root_once = 1;
+                    fat_cache_reset();
                     if (read_cluster(cluster, cluster_buf) != 0){
                         uart_puts("FAT root retry read failed\n");
                         return -1;
