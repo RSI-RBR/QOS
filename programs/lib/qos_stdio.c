@@ -1,10 +1,8 @@
 #define QOS_STDIO_NO_MACROS
 #include "qos_stdio.h"
-#include "qos_user_heap.h"
 #include "syscall.h"
 
 #define QOS_STDIO_PRINTF_STACK_BUF 128u
-#define QOS_STDIO_PRINTF_MAX_BUF 2048u
 #define QOS_STDIO_STRING_MAX 512u
 
 static FILE g_stdin_file = {0, 0, 0};
@@ -21,10 +19,31 @@ typedef struct qos_fmt_out {
     char* buf;
     size_t cap;
     size_t len;
+    size_t pos;
+    int streaming;
 } qos_fmt_out_t;
+
+static void out_flush(qos_fmt_out_t* out){
+    if (!out || !out->streaming || !out->buf || out->cap == 0u || out->pos == 0u){
+        return;
+    }
+    out->buf[out->pos] = 0;
+    qos_puts(out->buf);
+    out->pos = 0u;
+}
 
 static void out_ch(qos_fmt_out_t* out, char c){
     if (!out){
+        return;
+    }
+    if (out->streaming){
+        if (out->buf && out->cap > 1u){
+            if (out->pos + 1u >= out->cap){
+                out_flush(out);
+            }
+            out->buf[out->pos++] = c;
+        }
+        out->len++;
         return;
     }
     if (out->buf && out->cap > 0u && out->len + 1u < out->cap){
@@ -199,6 +218,8 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
     fo.buf = out;
     fo.cap = cap;
     fo.len = 0u;
+    fo.pos = 0u;
+    fo.streaming = 0;
 
     if (!fmt){
         fmt = "(null)";
@@ -374,19 +395,179 @@ int qos_snprintf(char* out, size_t cap, const char* fmt, ...){
 
 int qos_vprintf(const char* fmt, va_list ap){
     char stack_buf[QOS_STDIO_PRINTF_STACK_BUF];
-    char* heap_buf = 0;
+    qos_fmt_out_t fo;
     int n;
 
-    heap_buf = (char*)malloc(QOS_STDIO_PRINTF_MAX_BUF);
-    if (heap_buf){
-        n = qos_vsnprintf(heap_buf, QOS_STDIO_PRINTF_MAX_BUF, fmt, ap);
-        qos_puts(heap_buf);
-        free(heap_buf);
-        return n;
+    fo.buf = stack_buf;
+    fo.cap = sizeof(stack_buf);
+    fo.len = 0u;
+    fo.pos = 0u;
+    fo.streaming = 1;
+
+    if (!fmt){
+        fmt = "(null)";
     }
 
-    n = qos_vsnprintf(stack_buf, sizeof(stack_buf), fmt, ap);
-    qos_puts(stack_buf);
+    /*
+     * Use the same formatter, but stream through a tiny stack buffer instead of
+     * placing a large printf buffer on the game stack.
+     */
+    {
+        const char* p;
+        for (p = fmt; *p; p++){
+            if (*p != '%'){
+                out_ch(&fo, *p);
+                continue;
+            }
+
+            p++;
+            if (*p == '%'){
+                out_ch(&fo, '%');
+                continue;
+            }
+
+            int left = 0;
+            int plus = 0;
+            int space = 0;
+            int alt = 0;
+            int zero = 0;
+            int width = 0;
+            int precision = -1;
+            int length = 0;
+
+            int parsing_flags = 1;
+            while (parsing_flags){
+                switch (*p){
+                    case '-': left = 1; p++; break;
+                    case '+': plus = 1; p++; break;
+                    case ' ': space = 1; p++; break;
+                    case '#': alt = 1; p++; break;
+                    case '0': zero = 1; p++; break;
+                    default: parsing_flags = 0; break;
+                }
+            }
+
+            if (is_digit(*p)){
+                width = read_int(&p);
+            }
+            if (*p == '.'){
+                p++;
+                precision = read_int(&p);
+            }
+            if (*p == 'h'){
+                p++;
+                length = 1;
+                if (*p == 'h'){
+                    p++;
+                    length = 2;
+                }
+            } else if (*p == 'l'){
+                p++;
+                length = 3;
+                if (*p == 'l'){
+                    p++;
+                    length = 4;
+                }
+            } else if (*p == 'z'){
+                p++;
+                length = 5;
+            }
+
+            char spec = *p;
+            if (!spec){
+                break;
+            }
+
+            (void)left;
+            if (left){
+                zero = 0;
+            }
+
+            if (spec == 's'){
+                const char* s = va_arg(ap, const char*);
+                size_t slen = cstr_len(s);
+                if (precision >= 0 && (size_t)precision < slen){
+                    slen = (size_t)precision;
+                }
+                if (width > (int)slen && !left){
+                    out_repeat(&fo, ' ', (unsigned int)width - (unsigned int)slen);
+                }
+                out_str_n(&fo, s, slen);
+                if (width > (int)slen && left){
+                    out_repeat(&fo, ' ', (unsigned int)width - (unsigned int)slen);
+                }
+                continue;
+            }
+
+            if (spec == 'c'){
+                char c = (char)va_arg(ap, int);
+                if (width > 1 && !left){
+                    out_repeat(&fo, ' ', (unsigned int)width - 1u);
+                }
+                out_ch(&fo, c);
+                if (width > 1 && left){
+                    out_repeat(&fo, ' ', (unsigned int)width - 1u);
+                }
+                continue;
+            }
+
+            if (spec == 'd' || spec == 'i'){
+                long long sv;
+                if (length == 4){
+                    sv = va_arg(ap, long long);
+                } else if (length == 3){
+                    sv = (long long)va_arg(ap, long);
+                } else if (length == 5){
+                    sv = (long long)va_arg(ap, size_t);
+                } else {
+                    sv = (long long)va_arg(ap, int);
+                }
+                int negative = sv < 0;
+                if (!negative && (plus || space)){
+                    out_ch(&fo, plus ? '+' : ' ');
+                    if (width > 0){
+                        width--;
+                    }
+                }
+                out_unsigned(&fo, signed_abs_to_u64(sv), 10u, 0, negative, width, zero, 0);
+                continue;
+            }
+
+            if (spec == 'u' || spec == 'x' || spec == 'X' || spec == 'o'){
+                unsigned long long uv;
+                if (length == 4){
+                    uv = va_arg(ap, unsigned long long);
+                } else if (length == 3){
+                    uv = (unsigned long long)va_arg(ap, unsigned long);
+                } else if (length == 5){
+                    uv = (unsigned long long)va_arg(ap, size_t);
+                } else {
+                    uv = (unsigned long long)va_arg(ap, unsigned int);
+                }
+                unsigned int base = (spec == 'o') ? 8u : ((spec == 'u') ? 10u : 16u);
+                out_unsigned(&fo, uv, base, spec == 'X', 0, width, zero, alt);
+                continue;
+            }
+
+            if (spec == 'p'){
+                unsigned long long uv = (unsigned long long)(unsigned long)va_arg(ap, void*);
+                out_unsigned(&fo, uv, 16u, 0, 0, width, zero, 1);
+                continue;
+            }
+
+            if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G'){
+                (void)va_arg(ap, double);
+                out_str_n(&fo, "<float>", 7u);
+                continue;
+            }
+
+            out_ch(&fo, '%');
+            out_ch(&fo, spec);
+        }
+    }
+
+    out_flush(&fo);
+    n = (int)fo.len;
     return n;
 }
 
