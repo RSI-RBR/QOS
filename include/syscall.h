@@ -105,7 +105,8 @@ enum {
     SYS_GET_TIME_US = 81,
     SYS_GET_TIME_NS = 82,
     SYS_FB_BLIT_RGBA = 83,
-    SYS_INPUT_POLL_EVENT = 84
+    SYS_INPUT_POLL_EVENT = 84,
+    SYS_FILE_READ_BMP = 85
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -261,6 +262,13 @@ static inline int qos_try_getc_ex(qos_input_event_t* out_ev){
 
 static inline int qos_poll_event(qos_event_t* out_ev){
     return (int)qos_syscall1(SYS_INPUT_POLL_EVENT, (unsigned long)out_ev);
+}
+
+static inline int qos_file_read_bmp(const char* fat_name_83, unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall3(SYS_FILE_READ_BMP,
+                             (unsigned long)fat_name_83,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
 }
 
 static inline int qos_run_program(void){

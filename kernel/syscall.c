@@ -22,6 +22,7 @@
 #include "dma.h"
 #include "klog.h"
 #include "display.h"
+#include "fat32.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -30,6 +31,7 @@
 #define USER_PASS_MAX 128u
 #define USER_IO_MAX   16384u
 #define USER_WIFI_SCAN_MAX 64u
+#define USER_BMP_FILE_MAX (512u * 1024u)
 
 // Trap frame layout in vectors.S
 #define TF_X0   0
@@ -78,6 +80,41 @@ static unsigned int cstr_bytes_with_nul(const char* s, unsigned int cap){
         n++;
     }
     return n + 1u;
+}
+
+static int fat83_char_allowed(char c){
+    if (c == ' ' || c == '_' || c == '-' || c == '$' || c == '~'){
+        return 1;
+    }
+    if (c >= 'A' && c <= 'Z'){
+        return 1;
+    }
+    if (c >= '0' && c <= '9'){
+        return 1;
+    }
+    return 0;
+}
+
+static int validate_bmp_fat83_name(const char* name){
+    int base_nonspace = 0;
+    if (!name){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 11u; i++){
+        if (!fat83_char_allowed(name[i])){
+            return -1;
+        }
+        if (i < 8u && name[i] != ' '){
+            base_nonspace = 1;
+        }
+    }
+    if (!base_nonspace){
+        return -1;
+    }
+    if (name[8] != 'B' || name[9] != 'M' || name[10] != 'P'){
+        return -1;
+    }
+    return 0;
 }
 
 static unsigned long counter_cycles_to_us(unsigned long cycles, unsigned long hz){
@@ -300,6 +337,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
+        case SYS_FILE_READ_BMP:
         case SYS_GETPID:
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
@@ -581,6 +619,52 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
                                                  &ev,
                                                  sizeof(ev)) == 0) ? 1ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FILE_READ_BMP: {
+            char name83[12];
+            unsigned char* user_out = (unsigned char*)frame[TF_X1];
+            unsigned int out_cap = (unsigned int)frame[TF_X2];
+            unsigned char* kbuf = 0;
+            int n = -1;
+
+            if (!frame[TF_X0] || !user_out || out_cap == 0u || out_cap > USER_BMP_FILE_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(name83); i++){
+                name83[i] = 0;
+            }
+            if (process_copy_from_user(name83, (const void*)frame[TF_X0], 11u) != 0 ||
+                validate_bmp_fat83_name(name83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kbuf = (unsigned char*)kmalloc((unsigned long)out_cap);
+            if (!kbuf){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kernel_preempt_enter();
+            if (fat32_init() == 0){
+                n = fat32_read_file(name83, kbuf, (int)out_cap);
+            }
+            kernel_preempt_exit();
+            if (n < 0 || n > (int)out_cap){
+                kfree(kbuf);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                kfree(kbuf);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kfree(kbuf);
+            frame[TF_X0] = (unsigned long)n;
             return frame_sp;
         }
 

@@ -39,6 +39,16 @@ typedef struct SDL_Texture {
     int alive;
 } SDL_Texture;
 
+typedef struct SDL_Surface {
+    int w;
+    int h;
+    int pitch;
+    Uint32 format;
+    Uint8* pixels;
+    Uint32 capacity;
+    int alive;
+} SDL_Surface;
+
 typedef struct SDL_Rect {
     int x;
     int y;
@@ -173,11 +183,15 @@ const Uint8* SDL_GetKeyboardState(int* numkeys);
 Uint32 SDL_GetMouseState(int* x, int* y);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
+SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);
 void SDL_DestroyTexture(SDL_Texture* texture);
 int SDL_LockTexture(SDL_Texture* texture, const SDL_Rect* rect, void** pixels, int* pitch);
 void SDL_UnlockTexture(SDL_Texture* texture);
 int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pixels, int pitch);
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
+SDL_Surface* SDL_LoadBMP(const char* file);
+void SDL_FreeSurface(SDL_Surface* surface);
+void SDL_DestroySurface(SDL_Surface* surface);
 
 #ifdef QOS_USERSPACE
 static inline Uint64 SDL_GetTicksNS(void){

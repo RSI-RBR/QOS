@@ -1,14 +1,19 @@
 #include "SDL.h"
+#include "SDL_image.h"
 #include "syscall.h"
 
 #define SDL_SHIM_MAX_TEXTURES 32
-#define SDL_SHIM_TEX_POOL_BYTES (768u * 1024u)
+#define SDL_SHIM_MAX_SURFACES 16
+#define SDL_SHIM_TEX_POOL_BYTES (1024u * 1024u)
 #define SDL_SHIM_ROWBUF_PIXELS 2048
+#define SDL_SHIM_BMP_FILE_MAX (512u * 1024u)
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
 static SDL_Texture g_textures[SDL_SHIM_MAX_TEXTURES];
+static SDL_Surface g_surfaces[SDL_SHIM_MAX_SURFACES];
 static Uint8 g_tex_pool[SDL_SHIM_TEX_POOL_BYTES];
+static Uint8 g_bmp_file_buf[SDL_SHIM_BMP_FILE_MAX];
 static Uint32 g_tex_pool_used = 0u;
 static Uint8 g_keyboard_state[256];
 static int g_mouse_x = 0;
@@ -116,14 +121,13 @@ static Uint8* tex_pool_alloc(Uint32 bytes){
     return out;
 }
 
-static int textures_alive_count(void){
-    int alive = 0;
-    for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
-        if (g_textures[i].alive){
-            alive++;
+static SDL_Surface* alloc_surface_slot(void){
+    for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
+        if (!g_surfaces[i].alive){
+            return &g_surfaces[i];
         }
     }
-    return alive;
+    return 0;
 }
 
 static SDL_Texture* alloc_texture_slot(void){
@@ -131,6 +135,83 @@ static SDL_Texture* alloc_texture_slot(void){
         if (!g_textures[i].alive){
             return &g_textures[i];
         }
+    }
+    return 0;
+}
+
+static Uint16 read_le16(const Uint8* p){
+    return (Uint16)((Uint16)p[0] | ((Uint16)p[1] << 8));
+}
+
+static Uint32 read_le32(const Uint8* p){
+    return (Uint32)p[0] |
+           ((Uint32)p[1] << 8) |
+           ((Uint32)p[2] << 16) |
+           ((Uint32)p[3] << 24);
+}
+
+static int read_s32_le(const Uint8* p){
+    return (int)read_le32(p);
+}
+
+static char ascii_upper(char c){
+    if (c >= 'a' && c <= 'z'){
+        return (char)(c - ('a' - 'A'));
+    }
+    return c;
+}
+
+static int make_bmp_fat_name_83(const char* path, char out83[11]){
+    const char* base = path;
+    const char* dot = 0;
+    int base_len = 0;
+    int ext_len = 0;
+
+    if (!path || !out83){
+        return -1;
+    }
+    for (const char* p = path; *p; p++){
+        if (*p == '/' || *p == '\\' || *p == ':'){
+            base = p + 1;
+        }
+    }
+    if (!*base){
+        return -1;
+    }
+    for (const char* p = base; *p; p++){
+        if (*p == '.'){
+            dot = p;
+        }
+    }
+    if (!dot || dot == base){
+        return -1;
+    }
+
+    for (int i = 0; i < 11; i++){
+        out83[i] = ' ';
+    }
+
+    for (const char* p = base; p < dot; p++){
+        char c = ascii_upper(*p);
+        if (c == ' '){
+            continue;
+        }
+        if (base_len >= 8){
+            return -1;
+        }
+        out83[base_len++] = c;
+    }
+    for (const char* p = dot + 1; *p; p++){
+        char c = ascii_upper(*p);
+        if (ext_len >= 3){
+            return -1;
+        }
+        out83[8 + ext_len++] = c;
+    }
+
+    if (base_len == 0 || ext_len != 3 ||
+        out83[8] != 'B' || out83[9] != 'M' || out83[10] != 'P'){
+        return -1;
     }
     return 0;
 }
@@ -170,6 +251,11 @@ int SDL_Init(Uint32 flags){
         g_textures[i].capacity = 0u;
         g_textures[i].locked = 0;
     }
+    for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
+        g_surfaces[i].alive = 0;
+        g_surfaces[i].pixels = 0;
+        g_surfaces[i].capacity = 0u;
+    }
     g_tex_pool_used = 0u;
     g_window.alive = 0;
     g_renderer.alive = 0;
@@ -191,6 +277,11 @@ void SDL_Quit(void){
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
         g_textures[i].locked = 0;
+    }
+    for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
+        g_surfaces[i].alive = 0;
+        g_surfaces[i].pixels = 0;
+        g_surfaces[i].capacity = 0u;
     }
     g_tex_pool_used = 0u;
     g_renderer.alive = 0;
@@ -477,10 +568,6 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
         return 0;
     }
     t->pixels = tex_pool_alloc(bytes);
-    if (!t->pixels && textures_alive_count() == 0){
-        g_tex_pool_used = 0u;
-        t->pixels = tex_pool_alloc(bytes);
-    }
     if (!t->pixels){
         set_error("texture pool exhausted");
         return 0;
@@ -495,6 +582,44 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->locked = 0;
     t->alive = 1;
     sdl_zero_bytes(t->pixels, bytes);
+    return t;
+}
+
+SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface){
+    SDL_Texture* t;
+    if (!renderer || !renderer->alive){
+        set_error("renderer not alive");
+        return 0;
+    }
+    if (!surface || !surface->alive || !surface->pixels || surface->w <= 0 || surface->h <= 0){
+        set_error("surface not alive");
+        return 0;
+    }
+    if (surface->format != SDL_PIXELFORMAT_RGBA8888){
+        set_error("surface format unsupported");
+        return 0;
+    }
+
+    t = alloc_texture_slot();
+    if (!t){
+        set_error("texture slots exhausted");
+        return 0;
+    }
+
+    /*
+     * Avoid duplicating 256x256 sprite memory. Surface pixels come from the
+     * shim pool and stay valid after SDL_FreeSurface(), which matches the
+     * common "load surface, create texture, free surface" asset flow.
+     */
+    t->w = surface->w;
+    t->h = surface->h;
+    t->format = surface->format;
+    t->access = SDL_TEXTUREACCESS_STATIC;
+    t->pitch = surface->pitch;
+    t->pixels = surface->pixels;
+    t->capacity = surface->capacity;
+    t->locked = 0;
+    t->alive = 1;
     return t;
 }
 
@@ -583,6 +708,138 @@ int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pi
         sdl_copy_bytes(dst_row, src_row, (Uint32)rw * 4u);
     }
     return 0;
+}
+
+SDL_Surface* SDL_LoadBMP(const char* file){
+    char fat83[11];
+    int n;
+    Uint32 pixel_offset;
+    Uint32 dib_size;
+    int width;
+    int height_signed;
+    int height;
+    int top_down = 0;
+    Uint16 planes;
+    Uint16 bpp;
+    Uint32 compression;
+    Uint32 row_stride;
+    Uint32 pixel_bytes;
+    SDL_Surface* s;
+    int alpha_nonzero = 0;
+
+    if (make_bmp_fat_name_83(file, fat83) != 0){
+        set_error("bad BMP filename");
+        return 0;
+    }
+
+    n = qos_file_read_bmp(fat83, g_bmp_file_buf, SDL_SHIM_BMP_FILE_MAX);
+    if (n < 54){
+        set_error("BMP read failed");
+        return 0;
+    }
+    if (g_bmp_file_buf[0] != 'B' || g_bmp_file_buf[1] != 'M'){
+        set_error("not a BMP");
+        return 0;
+    }
+
+    pixel_offset = read_le32(&g_bmp_file_buf[10]);
+    dib_size = read_le32(&g_bmp_file_buf[14]);
+    if (dib_size < 40u || pixel_offset >= (Uint32)n){
+        set_error("unsupported BMP header");
+        return 0;
+    }
+
+    width = read_s32_le(&g_bmp_file_buf[18]);
+    height_signed = read_s32_le(&g_bmp_file_buf[22]);
+    planes = read_le16(&g_bmp_file_buf[26]);
+    bpp = read_le16(&g_bmp_file_buf[28]);
+    compression = read_le32(&g_bmp_file_buf[30]);
+
+    if (width <= 0 || height_signed == 0 || planes != 1u ||
+        (bpp != 24u && bpp != 32u) || compression != 0u){
+        set_error("unsupported BMP format");
+        return 0;
+    }
+    if (height_signed < 0){
+        top_down = 1;
+        height = -height_signed;
+    } else{
+        height = height_signed;
+    }
+    if (height <= 0 || width > 2048 || height > 2048){
+        set_error("BMP dimensions unsupported");
+        return 0;
+    }
+
+    row_stride = ((((Uint32)width * (Uint32)bpp) + 31u) / 32u) * 4u;
+    if (row_stride == 0u ||
+        (Uint32)height > (0xFFFFFFFFu - pixel_offset) / row_stride){
+        set_error("BMP row overflow");
+        return 0;
+    }
+    if (pixel_offset + ((Uint32)height * row_stride) > (Uint32)n){
+        set_error("BMP truncated");
+        return 0;
+    }
+    if ((Uint32)width > (0xFFFFFFFFu / (Uint32)height) / 4u){
+        set_error("BMP size overflow");
+        return 0;
+    }
+    pixel_bytes = (Uint32)width * (Uint32)height * 4u;
+
+    s = alloc_surface_slot();
+    if (!s){
+        set_error("surface slots exhausted");
+        return 0;
+    }
+    s->pixels = tex_pool_alloc(pixel_bytes);
+    if (!s->pixels){
+        set_error("texture pool exhausted");
+        return 0;
+    }
+
+    s->w = width;
+    s->h = height;
+    s->pitch = width * 4;
+    s->format = SDL_PIXELFORMAT_RGBA8888;
+    s->capacity = pixel_bytes;
+    s->alive = 1;
+
+    for (int y = 0; y < height; y++){
+        int src_y = top_down ? y : (height - 1 - y);
+        const Uint8* src_row = g_bmp_file_buf + pixel_offset + ((Uint32)src_y * row_stride);
+        Uint8* dst_row = s->pixels + ((Uint32)y * (Uint32)s->pitch);
+        for (int x = 0; x < width; x++){
+            const Uint8* sp = src_row + ((Uint32)x * ((Uint32)bpp / 8u));
+            Uint8* dp = dst_row + ((Uint32)x * 4u);
+            dp[0] = sp[2];
+            dp[1] = sp[1];
+            dp[2] = sp[0];
+            dp[3] = (bpp == 32u) ? sp[3] : 255u;
+            if (dp[3] != 0u){
+                alpha_nonzero = 1;
+            }
+        }
+    }
+
+    if (bpp == 32u && !alpha_nonzero){
+        for (Uint32 i = 0u; i < pixel_bytes; i += 4u){
+            s->pixels[i + 3u] = 255u;
+        }
+    }
+
+    return s;
+}
+
+void SDL_FreeSurface(SDL_Surface* surface){
+    if (!surface){
+        return;
+    }
+    surface->alive = 0;
+}
+
+void SDL_DestroySurface(SDL_Surface* surface){
+    SDL_FreeSurface(surface);
 }
 
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){
@@ -678,4 +935,31 @@ int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect*
         }
     }
     return 0;
+}
+
+int IMG_Init(int flags){
+    (void)flags;
+    return IMG_INIT_BMP;
+}
+
+void IMG_Quit(void){
+}
+
+SDL_Surface* IMG_Load(const char* file){
+    return SDL_LoadBMP(file);
+}
+
+SDL_Texture* IMG_LoadTexture(SDL_Renderer* renderer, const char* file){
+    SDL_Surface* s = SDL_LoadBMP(file);
+    SDL_Texture* t;
+    if (!s){
+        return 0;
+    }
+    t = SDL_CreateTextureFromSurface(renderer, s);
+    SDL_FreeSurface(s);
+    return t;
+}
+
+const char* IMG_GetError(void){
+    return SDL_GetError();
 }
