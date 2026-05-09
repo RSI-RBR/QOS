@@ -13,6 +13,17 @@ typedef unsigned char Uint8;
 typedef unsigned short Uint16;
 typedef unsigned int Uint32;
 typedef unsigned long long Uint64;
+typedef int SDL_bool;
+
+#define SDL_FALSE 0
+#define SDL_TRUE 1
+
+typedef enum SDL_BlendMode {
+    SDL_BLENDMODE_NONE = 0,
+    SDL_BLENDMODE_BLEND = 1,
+    SDL_BLENDMODE_ADD = 2,
+    SDL_BLENDMODE_MOD = 4
+} SDL_BlendMode;
 
 typedef struct SDL_Window {
     int w;
@@ -24,6 +35,8 @@ typedef struct SDL_Window {
 typedef struct SDL_Renderer {
     SDL_Window* window;
     Uint32 draw_color;
+    Uint8 draw_alpha;
+    SDL_BlendMode draw_blend_mode;
     int alive;
 } SDL_Renderer;
 
@@ -35,6 +48,12 @@ typedef struct SDL_Texture {
     int pitch;
     Uint8* pixels;
     Uint32 capacity;
+    Uint8 color_r;
+    Uint8 color_g;
+    Uint8 color_b;
+    Uint8 alpha_mod;
+    SDL_BlendMode blend_mode;
+    int owns_pixels;
     int locked;
     int alive;
 } SDL_Texture;
@@ -46,6 +65,9 @@ typedef struct SDL_Surface {
     Uint32 format;
     Uint8* pixels;
     Uint32 capacity;
+    Uint32 color_key;
+    int color_key_enabled;
+    int owns_pixels;
     int alive;
 } SDL_Surface;
 
@@ -55,6 +77,11 @@ typedef struct SDL_Rect {
     int w;
     int h;
 } SDL_Rect;
+
+typedef struct SDL_Point {
+    int x;
+    int y;
+} SDL_Point;
 
 typedef struct SDL_Keysym {
     int sym;
@@ -149,6 +176,11 @@ typedef union SDL_Event {
 #define SDL_BUTTON_MMASK 2u
 #define SDL_BUTTON_RMASK 4u
 
+#define SDL_FLIP_NONE 0
+#define SDL_FLIP_HORIZONTAL 1
+#define SDL_FLIP_VERTICAL 2
+typedef int SDL_RendererFlip;
+
 #define SDLK_ESCAPE 27
 
 int SDL_Init(Uint32 flags);
@@ -172,6 +204,8 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags);
 void SDL_DestroyRenderer(SDL_Renderer* renderer);
 
 int SDL_SetRenderDrawColor(SDL_Renderer* renderer, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
+int SDL_SetRenderDrawBlendMode(SDL_Renderer* renderer, SDL_BlendMode blend_mode);
+int SDL_GetRenderDrawBlendMode(SDL_Renderer* renderer, SDL_BlendMode* blend_mode);
 int SDL_RenderClear(SDL_Renderer* renderer);
 int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_Rect* rect);
 int SDL_RenderDrawRect(SDL_Renderer* renderer, const SDL_Rect* rect);
@@ -185,13 +219,27 @@ Uint32 SDL_GetMouseState(int* x, int* y);
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);
 void SDL_DestroyTexture(SDL_Texture* texture);
+int SDL_QueryTexture(SDL_Texture* texture, Uint32* format, int* access, int* w, int* h);
+int SDL_SetTextureBlendMode(SDL_Texture* texture, SDL_BlendMode blend_mode);
+int SDL_GetTextureBlendMode(SDL_Texture* texture, SDL_BlendMode* blend_mode);
+int SDL_SetTextureAlphaMod(SDL_Texture* texture, Uint8 alpha);
+int SDL_GetTextureAlphaMod(SDL_Texture* texture, Uint8* alpha);
+int SDL_SetTextureColorMod(SDL_Texture* texture, Uint8 r, Uint8 g, Uint8 b);
+int SDL_GetTextureColorMod(SDL_Texture* texture, Uint8* r, Uint8* g, Uint8* b);
 int SDL_LockTexture(SDL_Texture* texture, const SDL_Rect* rect, void** pixels, int* pitch);
 void SDL_UnlockTexture(SDL_Texture* texture);
 int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pixels, int pitch);
 int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
+int SDL_RenderCopyEx(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst, int angle_degrees, const SDL_Point* center, SDL_RendererFlip flip);
+int SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst);
 SDL_Surface* SDL_LoadBMP(const char* file);
 void SDL_FreeSurface(SDL_Surface* surface);
 void SDL_DestroySurface(SDL_Surface* surface);
+int SDL_SetSurfaceColorKey(SDL_Surface* surface, int enabled, Uint32 key);
+int SDL_SetColorKey(SDL_Surface* surface, int flag, Uint32 key);
+int SDL_GetSurfaceColorKey(SDL_Surface* surface, Uint32* key);
+Uint32 SDL_MapRGB(Uint32 format, Uint8 r, Uint8 g, Uint8 b);
+Uint32 SDL_MapRGBA(Uint32 format, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
 
 #ifdef QOS_USERSPACE
 static inline Uint64 SDL_GetTicksNS(void){

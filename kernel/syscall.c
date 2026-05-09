@@ -31,7 +31,7 @@
 #define USER_PASS_MAX 128u
 #define USER_IO_MAX   16384u
 #define USER_WIFI_SCAN_MAX 64u
-#define USER_BMP_FILE_MAX (512u * 1024u)
+#define USER_BMP_FILE_MAX (4u * 1024u * 1024u)
 #define USER_BMP_PATH_MAX 96u
 
 // Trap frame layout in vectors.S

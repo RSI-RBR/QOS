@@ -1,20 +1,17 @@
 #include "SDL.h"
 #include "SDL_image.h"
 #include "syscall.h"
+#include <stdlib.h>
 
-#define SDL_SHIM_MAX_TEXTURES 32
-#define SDL_SHIM_MAX_SURFACES 16
-#define SDL_SHIM_TEX_POOL_BYTES (1024u * 1024u)
+#define SDL_SHIM_MAX_TEXTURES 128
+#define SDL_SHIM_MAX_SURFACES 32
 #define SDL_SHIM_ROWBUF_PIXELS 2048
-#define SDL_SHIM_BMP_FILE_MAX (512u * 1024u)
+#define SDL_SHIM_BMP_FILE_MAX (4u * 1024u * 1024u)
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
 static SDL_Texture g_textures[SDL_SHIM_MAX_TEXTURES];
 static SDL_Surface g_surfaces[SDL_SHIM_MAX_SURFACES];
-static Uint8 g_tex_pool[SDL_SHIM_TEX_POOL_BYTES];
-static Uint8 g_bmp_file_buf[SDL_SHIM_BMP_FILE_MAX];
-static Uint32 g_tex_pool_used = 0u;
 static Uint8 g_keyboard_state[256];
 static int g_mouse_x = 0;
 static int g_mouse_y = 0;
@@ -24,6 +21,22 @@ static Uint8 g_rowbuf[SDL_SHIM_ROWBUF_PIXELS * 4u];
 
 static Uint32 rgb_to_color(Uint8 r, Uint8 g, Uint8 b){
     return ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
+}
+
+static Uint32 rgba_to_color(Uint8 r, Uint8 g, Uint8 b, Uint8 a){
+    return ((Uint32)r << 24) | ((Uint32)g << 16) | ((Uint32)b << 8) | (Uint32)a;
+}
+
+static Uint8 color_r(Uint32 c){
+    return (Uint8)((c >> 24) & 0xFFu);
+}
+
+static Uint8 color_g(Uint32 c){
+    return (Uint8)((c >> 16) & 0xFFu);
+}
+
+static Uint8 color_b(Uint32 c){
+    return (Uint8)((c >> 8) & 0xFFu);
 }
 
 static void set_error(const char* msg){
@@ -41,10 +54,6 @@ static void set_error(const char* msg){
 
 static int sdl_i_min(int a, int b){
     return (a < b) ? a : b;
-}
-
-static int sdl_i_max(int a, int b){
-    return (a > b) ? a : b;
 }
 
 static int sdl_key_sym_from_qos(const qos_event_t* ev){
@@ -107,18 +116,17 @@ static void sdl_zero_bytes(Uint8* dst, Uint32 len){
     }
 }
 
-static Uint8* tex_pool_alloc(Uint32 bytes){
-    Uint32 aligned;
+static Uint8* sdl_alloc_pixels(Uint32 bytes){
     if (bytes == 0u){
         return 0;
     }
-    aligned = (bytes + 3u) & ~3u;
-    if (aligned > SDL_SHIM_TEX_POOL_BYTES || g_tex_pool_used > SDL_SHIM_TEX_POOL_BYTES - aligned){
-        return 0;
+    return (Uint8*)malloc((unsigned long)bytes);
+}
+
+static void sdl_free_pixels(Uint8* pixels){
+    if (pixels){
+        free(pixels);
     }
-    Uint8* out = &g_tex_pool[g_tex_pool_used];
-    g_tex_pool_used += aligned;
-    return out;
 }
 
 static SDL_Surface* alloc_surface_slot(void){
@@ -184,19 +192,35 @@ int SDL_Init(Uint32 flags){
         g_keyboard_state[i] = 0u;
     }
     for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
+        if (g_textures[i].alive && g_textures[i].owns_pixels){
+            sdl_free_pixels(g_textures[i].pixels);
+        }
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
+        g_textures[i].color_r = 255u;
+        g_textures[i].color_g = 255u;
+        g_textures[i].color_b = 255u;
+        g_textures[i].alpha_mod = 255u;
+        g_textures[i].blend_mode = SDL_BLENDMODE_BLEND;
+        g_textures[i].owns_pixels = 0;
         g_textures[i].locked = 0;
     }
     for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
+        if (g_surfaces[i].alive && g_surfaces[i].owns_pixels){
+            sdl_free_pixels(g_surfaces[i].pixels);
+        }
         g_surfaces[i].alive = 0;
         g_surfaces[i].pixels = 0;
         g_surfaces[i].capacity = 0u;
+        g_surfaces[i].color_key = 0u;
+        g_surfaces[i].color_key_enabled = 0;
+        g_surfaces[i].owns_pixels = 0;
     }
-    g_tex_pool_used = 0u;
     g_window.alive = 0;
     g_renderer.alive = 0;
+    g_renderer.draw_alpha = 255u;
+    g_renderer.draw_blend_mode = SDL_BLENDMODE_NONE;
     g_mouse_x = 0;
     g_mouse_y = 0;
     g_mouse_buttons = 0u;
@@ -211,17 +235,24 @@ int SDL_InitSubSystem(Uint32 flags){
 
 void SDL_Quit(void){
     for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
+        if (g_textures[i].alive && g_textures[i].owns_pixels){
+            sdl_free_pixels(g_textures[i].pixels);
+        }
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
+        g_textures[i].owns_pixels = 0;
         g_textures[i].locked = 0;
     }
     for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
+        if (g_surfaces[i].alive && g_surfaces[i].owns_pixels){
+            sdl_free_pixels(g_surfaces[i].pixels);
+        }
         g_surfaces[i].alive = 0;
         g_surfaces[i].pixels = 0;
         g_surfaces[i].capacity = 0u;
+        g_surfaces[i].owns_pixels = 0;
     }
-    g_tex_pool_used = 0u;
     g_renderer.alive = 0;
     g_window.alive = 0;
     g_mouse_x = 0;
@@ -273,6 +304,8 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags){
     }
     g_renderer.window = window;
     g_renderer.draw_color = 0x00000000u;
+    g_renderer.draw_alpha = 255u;
+    g_renderer.draw_blend_mode = SDL_BLENDMODE_NONE;
     g_renderer.alive = 1;
     return &g_renderer;
 }
@@ -284,12 +317,30 @@ void SDL_DestroyRenderer(SDL_Renderer* renderer){
 }
 
 int SDL_SetRenderDrawColor(SDL_Renderer* renderer, Uint8 r, Uint8 g, Uint8 b, Uint8 a){
-    (void)a;
     if (!renderer || !renderer->alive){
         set_error("renderer not alive");
         return -1;
     }
     renderer->draw_color = rgb_to_color(r, g, b);
+    renderer->draw_alpha = a;
+    return 0;
+}
+
+int SDL_SetRenderDrawBlendMode(SDL_Renderer* renderer, SDL_BlendMode blend_mode){
+    if (!renderer || !renderer->alive){
+        set_error("renderer not alive");
+        return -1;
+    }
+    renderer->draw_blend_mode = blend_mode;
+    return 0;
+}
+
+int SDL_GetRenderDrawBlendMode(SDL_Renderer* renderer, SDL_BlendMode* blend_mode){
+    if (!renderer || !renderer->alive || !blend_mode){
+        set_error("bad renderer blend args");
+        return -1;
+    }
+    *blend_mode = renderer->draw_blend_mode;
     return 0;
 }
 
@@ -340,6 +391,9 @@ int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_Rect* rect){
         return 0;
     }
 
+    if (renderer->draw_blend_mode == SDL_BLENDMODE_BLEND && renderer->draw_alpha == 0u){
+        return 0;
+    }
     qos_fb_rect((unsigned int)x, (unsigned int)y, (unsigned int)w, (unsigned int)h, renderer->draw_color);
     return 0;
 }
@@ -505,9 +559,9 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
         set_error("texture slots exhausted");
         return 0;
     }
-    t->pixels = tex_pool_alloc(bytes);
+    t->pixels = sdl_alloc_pixels(bytes);
     if (!t->pixels){
-        set_error("texture pool exhausted");
+        set_error("texture heap exhausted");
         return 0;
     }
 
@@ -517,6 +571,12 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->access = (Uint32)access;
     t->pitch = w * 4;
     t->capacity = bytes;
+    t->color_r = 255u;
+    t->color_g = 255u;
+    t->color_b = 255u;
+    t->alpha_mod = 255u;
+    t->blend_mode = SDL_BLENDMODE_BLEND;
+    t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
     sdl_zero_bytes(t->pixels, bytes);
@@ -544,18 +604,24 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
         return 0;
     }
 
-    /*
-     * Avoid duplicating 256x256 sprite memory. Surface pixels come from the
-     * shim pool and stay valid after SDL_FreeSurface(), which matches the
-     * common "load surface, create texture, free surface" asset flow.
-     */
     t->w = surface->w;
     t->h = surface->h;
     t->format = surface->format;
     t->access = SDL_TEXTUREACCESS_STATIC;
     t->pitch = surface->pitch;
-    t->pixels = surface->pixels;
     t->capacity = surface->capacity;
+    t->pixels = sdl_alloc_pixels(t->capacity);
+    if (!t->pixels){
+        set_error("texture heap exhausted");
+        return 0;
+    }
+    sdl_copy_bytes(t->pixels, surface->pixels, t->capacity);
+    t->color_r = 255u;
+    t->color_g = 255u;
+    t->color_b = 255u;
+    t->alpha_mod = 255u;
+    t->blend_mode = SDL_BLENDMODE_BLEND;
+    t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
     return t;
@@ -565,10 +631,98 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     if (!texture){
         return;
     }
+    if (texture->alive && texture->owns_pixels){
+        sdl_free_pixels(texture->pixels);
+    }
     texture->alive = 0;
     texture->locked = 0;
     texture->pixels = 0;
     texture->capacity = 0u;
+    texture->owns_pixels = 0;
+}
+
+int SDL_QueryTexture(SDL_Texture* texture, Uint32* format, int* access, int* w, int* h){
+    if (!texture || !texture->alive){
+        set_error("texture not alive");
+        return -1;
+    }
+    if (format){
+        *format = texture->format;
+    }
+    if (access){
+        *access = (int)texture->access;
+    }
+    if (w){
+        *w = texture->w;
+    }
+    if (h){
+        *h = texture->h;
+    }
+    return 0;
+}
+
+int SDL_SetTextureBlendMode(SDL_Texture* texture, SDL_BlendMode blend_mode){
+    if (!texture || !texture->alive){
+        set_error("texture not alive");
+        return -1;
+    }
+    texture->blend_mode = blend_mode;
+    return 0;
+}
+
+int SDL_GetTextureBlendMode(SDL_Texture* texture, SDL_BlendMode* blend_mode){
+    if (!texture || !texture->alive || !blend_mode){
+        set_error("bad texture blend args");
+        return -1;
+    }
+    *blend_mode = texture->blend_mode;
+    return 0;
+}
+
+int SDL_SetTextureAlphaMod(SDL_Texture* texture, Uint8 alpha){
+    if (!texture || !texture->alive){
+        set_error("texture not alive");
+        return -1;
+    }
+    texture->alpha_mod = alpha;
+    return 0;
+}
+
+int SDL_GetTextureAlphaMod(SDL_Texture* texture, Uint8* alpha){
+    if (!texture || !texture->alive || !alpha){
+        set_error("bad alpha mod args");
+        return -1;
+    }
+    *alpha = texture->alpha_mod;
+    return 0;
+}
+
+int SDL_SetTextureColorMod(SDL_Texture* texture, Uint8 r, Uint8 g, Uint8 b){
+    if (!texture || !texture->alive){
+        set_error("texture not alive");
+        return -1;
+    }
+    texture->color_r = r;
+    texture->color_g = g;
+    texture->color_b = b;
+    return 0;
+}
+
+int SDL_GetTextureColorMod(SDL_Texture* texture, Uint8* r, Uint8* g, Uint8* b){
+    if (!texture || !texture->alive){
+        set_error("texture not alive");
+        return -1;
+    }
+    if (r){
+        *r = texture->color_r;
+    }
+    if (g){
+        *g = texture->color_g;
+    }
+    if (b){
+        *b = texture->color_b;
+    }
+    return 0;
 }
 
 int SDL_LockTexture(SDL_Texture* texture, const SDL_Rect* rect, void** pixels, int* pitch){
@@ -663,37 +817,48 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     Uint32 pixel_bytes;
     SDL_Surface* s;
     int alpha_nonzero = 0;
+    Uint8* bmp = 0;
 
     if (!file || !*file){
         set_error("bad BMP filename");
         return 0;
     }
 
-    n = qos_file_read_bmp(file, g_bmp_file_buf, SDL_SHIM_BMP_FILE_MAX);
+    bmp = (Uint8*)malloc(SDL_SHIM_BMP_FILE_MAX);
+    if (!bmp){
+        set_error("BMP temp heap exhausted");
+        return 0;
+    }
+
+    n = qos_file_read_bmp(file, bmp, SDL_SHIM_BMP_FILE_MAX);
     if (n < 54){
+        free(bmp);
         set_error("BMP read failed");
         return 0;
     }
-    if (g_bmp_file_buf[0] != 'B' || g_bmp_file_buf[1] != 'M'){
+    if (bmp[0] != 'B' || bmp[1] != 'M'){
+        free(bmp);
         set_error("not a BMP");
         return 0;
     }
 
-    pixel_offset = read_le32(&g_bmp_file_buf[10]);
-    dib_size = read_le32(&g_bmp_file_buf[14]);
+    pixel_offset = read_le32(&bmp[10]);
+    dib_size = read_le32(&bmp[14]);
     if (dib_size < 40u || pixel_offset >= (Uint32)n){
+        free(bmp);
         set_error("unsupported BMP header");
         return 0;
     }
 
-    width = read_s32_le(&g_bmp_file_buf[18]);
-    height_signed = read_s32_le(&g_bmp_file_buf[22]);
-    planes = read_le16(&g_bmp_file_buf[26]);
-    bpp = read_le16(&g_bmp_file_buf[28]);
-    compression = read_le32(&g_bmp_file_buf[30]);
+    width = read_s32_le(&bmp[18]);
+    height_signed = read_s32_le(&bmp[22]);
+    planes = read_le16(&bmp[26]);
+    bpp = read_le16(&bmp[28]);
+    compression = read_le32(&bmp[30]);
 
     if (width <= 0 || height_signed == 0 || planes != 1u ||
         (bpp != 24u && bpp != 32u) || compression != 0u){
+        free(bmp);
         set_error("unsupported BMP format");
         return 0;
     }
@@ -704,6 +869,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
         height = height_signed;
     }
     if (height <= 0 || width > 2048 || height > 2048){
+        free(bmp);
         set_error("BMP dimensions unsupported");
         return 0;
     }
@@ -711,14 +877,17 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     row_stride = ((((Uint32)width * (Uint32)bpp) + 31u) / 32u) * 4u;
     if (row_stride == 0u ||
         (Uint32)height > (0xFFFFFFFFu - pixel_offset) / row_stride){
+        free(bmp);
         set_error("BMP row overflow");
         return 0;
     }
     if (pixel_offset + ((Uint32)height * row_stride) > (Uint32)n){
+        free(bmp);
         set_error("BMP truncated");
         return 0;
     }
     if ((Uint32)width > (0xFFFFFFFFu / (Uint32)height) / 4u){
+        free(bmp);
         set_error("BMP size overflow");
         return 0;
     }
@@ -726,12 +895,14 @@ SDL_Surface* SDL_LoadBMP(const char* file){
 
     s = alloc_surface_slot();
     if (!s){
+        free(bmp);
         set_error("surface slots exhausted");
         return 0;
     }
-    s->pixels = tex_pool_alloc(pixel_bytes);
+    s->pixels = sdl_alloc_pixels(pixel_bytes);
     if (!s->pixels){
-        set_error("texture pool exhausted");
+        free(bmp);
+        set_error("surface heap exhausted");
         return 0;
     }
 
@@ -740,11 +911,14 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     s->pitch = width * 4;
     s->format = SDL_PIXELFORMAT_RGBA8888;
     s->capacity = pixel_bytes;
+    s->color_key = 0u;
+    s->color_key_enabled = 0;
+    s->owns_pixels = 1;
     s->alive = 1;
 
     for (int y = 0; y < height; y++){
         int src_y = top_down ? y : (height - 1 - y);
-        const Uint8* src_row = g_bmp_file_buf + pixel_offset + ((Uint32)src_y * row_stride);
+        const Uint8* src_row = bmp + pixel_offset + ((Uint32)src_y * row_stride);
         Uint8* dst_row = s->pixels + ((Uint32)y * (Uint32)s->pitch);
         for (int x = 0; x < width; x++){
             const Uint8* sp = src_row + ((Uint32)x * ((Uint32)bpp / 8u));
@@ -765,6 +939,7 @@ SDL_Surface* SDL_LoadBMP(const char* file){
         }
     }
 
+    free(bmp);
     return s;
 }
 
@@ -772,14 +947,75 @@ void SDL_FreeSurface(SDL_Surface* surface){
     if (!surface){
         return;
     }
+    if (surface->alive && surface->owns_pixels){
+        sdl_free_pixels(surface->pixels);
+    }
     surface->alive = 0;
+    surface->pixels = 0;
+    surface->capacity = 0u;
+    surface->owns_pixels = 0;
 }
 
 void SDL_DestroySurface(SDL_Surface* surface){
     SDL_FreeSurface(surface);
 }
 
-int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){
+static void apply_surface_color_key(SDL_Surface* surface){
+    if (!surface || !surface->alive || !surface->pixels || !surface->color_key_enabled){
+        return;
+    }
+
+    Uint8 kr = color_r(surface->color_key);
+    Uint8 kg = color_g(surface->color_key);
+    Uint8 kb = color_b(surface->color_key);
+    for (int y = 0; y < surface->h; y++){
+        Uint8* row = surface->pixels + ((Uint32)y * (Uint32)surface->pitch);
+        for (int x = 0; x < surface->w; x++){
+            Uint8* p = row + ((Uint32)x * 4u);
+            if (p[0] == kr && p[1] == kg && p[2] == kb){
+                p[3] = 0u;
+            }
+        }
+    }
+}
+
+int SDL_SetSurfaceColorKey(SDL_Surface* surface, int enabled, Uint32 key){
+    if (!surface || !surface->alive || !surface->pixels){
+        set_error("surface not alive");
+        return -1;
+    }
+    surface->color_key = key;
+    surface->color_key_enabled = enabled ? 1 : 0;
+    if (surface->color_key_enabled){
+        apply_surface_color_key(surface);
+    }
+    return 0;
+}
+
+int SDL_SetColorKey(SDL_Surface* surface, int flag, Uint32 key){
+    return SDL_SetSurfaceColorKey(surface, flag, key);
+}
+
+int SDL_GetSurfaceColorKey(SDL_Surface* surface, Uint32* key){
+    if (!surface || !surface->alive || !key){
+        set_error("bad color key args");
+        return -1;
+    }
+    *key = surface->color_key;
+    return surface->color_key_enabled ? 0 : -1;
+}
+
+Uint32 SDL_MapRGB(Uint32 format, Uint8 r, Uint8 g, Uint8 b){
+    (void)format;
+    return rgba_to_color(r, g, b, 255u);
+}
+
+Uint32 SDL_MapRGBA(Uint32 format, Uint8 r, Uint8 g, Uint8 b, Uint8 a){
+    (void)format;
+    return rgba_to_color(r, g, b, a);
+}
+
+static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst, int flip){
     int sx, sy, sw, sh;
     int dx, dy, dw, dh;
     int screen_w, screen_h;
@@ -828,7 +1064,7 @@ int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect*
 
     for (int oy = 0; oy < dh; oy++){
         int py = dy + oy;
-        int tx_y = sy + (int)(((unsigned long long)oy * (unsigned long long)sh) / (unsigned long long)dh);
+        int tx_y;
         int run_start = 0;
 
         if (py < 0 || py >= screen_h){
@@ -849,15 +1085,22 @@ int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect*
                 int out_n = visible_to - visible_from;
                 for (int i = 0; i < out_n; i++){
                     int ox = visible_from + i;
-                    int tx_x = sx + (int)(((unsigned long long)ox * (unsigned long long)sw) / (unsigned long long)dw);
+                    int src_ox = (flip & SDL_FLIP_HORIZONTAL) ? (dw - 1 - ox) : ox;
+                    int src_oy = (flip & SDL_FLIP_VERTICAL) ? (dh - 1 - oy) : oy;
+                    int tx_x = sx + (int)(((unsigned long long)src_ox * (unsigned long long)sw) / (unsigned long long)dw);
+                    tx_y = sy + (int)(((unsigned long long)src_oy * (unsigned long long)sh) / (unsigned long long)dh);
                     const Uint8* sp = texture->pixels +
                                       ((Uint32)tx_y * (Uint32)texture->pitch) +
                                       ((Uint32)tx_x * 4u);
                     Uint8* dp = &g_rowbuf[i * 4];
-                    dp[0] = sp[0];
-                    dp[1] = sp[1];
-                    dp[2] = sp[2];
-                    dp[3] = sp[3];
+                    dp[0] = (Uint8)(((Uint32)sp[0] * (Uint32)texture->color_r) / 255u);
+                    dp[1] = (Uint8)(((Uint32)sp[1] * (Uint32)texture->color_g) / 255u);
+                    dp[2] = (Uint8)(((Uint32)sp[2] * (Uint32)texture->color_b) / 255u);
+                    if (texture->blend_mode == SDL_BLENDMODE_NONE){
+                        dp[3] = 255u;
+                    } else{
+                        dp[3] = (Uint8)(((Uint32)sp[3] * (Uint32)texture->alpha_mod) / 255u);
+                    }
                 }
                 if (qos_fb_blit_rgba((unsigned int)(dx + visible_from),
                                      (unsigned int)py,
@@ -872,6 +1115,26 @@ int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect*
         }
     }
     return 0;
+}
+
+int SDL_RenderCopy(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){
+    return sdl_render_copy_internal(renderer, texture, src, dst, SDL_FLIP_NONE);
+}
+
+int SDL_RenderCopyEx(SDL_Renderer* renderer,
+                     SDL_Texture* texture,
+                     const SDL_Rect* src,
+                     const SDL_Rect* dst,
+                     int angle_degrees,
+                     const SDL_Point* center,
+                     SDL_RendererFlip flip){
+    (void)angle_degrees;
+    (void)center;
+    return sdl_render_copy_internal(renderer, texture, src, dst, flip);
+}
+
+int SDL_RenderTexture(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect* src, const SDL_Rect* dst){
+    return SDL_RenderCopy(renderer, texture, src, dst);
 }
 
 int IMG_Init(int flags){
