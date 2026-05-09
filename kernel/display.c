@@ -420,6 +420,7 @@ int display_destroy_session(int session_id){
 
     void* fb = 0;
     unsigned long size = 0UL;
+    int switched_active = 0;
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     if (g_display_sessions[session_id].type == DISPLAY_NONE){
         spin_unlock_irqrestore(&g_display_lock, irq);
@@ -431,9 +432,13 @@ int display_destroy_session(int session_id){
     display_clear_session_locked(session_id);
     if (g_display_active == session_id){
         display_init_text_locked();
+        switched_active = 1;
     }
     spin_unlock_irqrestore(&g_display_lock, irq);
 
+    if (switched_active){
+        usb_host_flush_input();
+    }
     if (fb && size > 0UL){
         kfree_secure(fb, size);
     }
@@ -476,6 +481,7 @@ int display_set_active(int session_id){
     display_init();
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int old_active = g_display_active;
     if (g_display_sessions[session_id].type == DISPLAY_NONE){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -1;
@@ -492,6 +498,9 @@ int display_set_active(int session_id){
     g_display_active = session_id;
     g_display_pending_switch_pid = -1;
     spin_unlock_irqrestore(&g_display_lock, irq);
+    if (old_active != session_id){
+        usb_host_flush_input();
+    }
     if (session_id != DISPLAY_TEXT_SESSION_ID){
         (void)display_present_active_graphics();
     }
@@ -756,6 +765,7 @@ int display_present_for_pid(int owner_pid){
     }
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int did_switch = 0;
     if (g_display_sessions[session_id].type != DISPLAY_GRAPHICS){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -1;
@@ -767,11 +777,15 @@ int display_present_for_pid(int owner_pid){
         g_display_sessions[session_id].active = 1;
         g_display_active = session_id;
         g_display_pending_switch_pid = -1;
+        did_switch = 1;
         display_mark_full_dirty_locked(&g_display_sessions[session_id]);
     }
     int active = (g_display_active == session_id);
     spin_unlock_irqrestore(&g_display_lock, irq);
 
+    if (did_switch){
+        usb_host_flush_input();
+    }
     if (!active){
         return 0;
     }

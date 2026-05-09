@@ -153,6 +153,7 @@
 #define USB_HID_REQ_SET_PROTOCOL 0x0Bu
 #define USB_HID_REPORT_LEN 8u
 #define USB_HID_CHAR_QUEUE_LEN 128u
+#define USB_INPUT_EVENT_QUEUE_LEN 128u
 #define USB_HID_MOUSE_REPORT_LEN 4u
 #define USB_HID_ACTIVE_POLL_MS 4u
 #define USB_HID_IDLE_POLL_MS 8u
@@ -199,6 +200,11 @@ static int g_usb_dma_mode = 1;
 static unsigned char g_usb_dma_buffer[USB_DMA_BUFFER_SIZE] __attribute__((aligned(64)));
 static unsigned char g_bulk_in_toggle[16];
 static unsigned char g_bulk_out_toggle[16];
+static qos_event_t g_input_event_q[USB_INPUT_EVENT_QUEUE_LEN];
+static unsigned int g_input_event_head = 0;
+static unsigned int g_input_event_tail = 0;
+static unsigned int g_input_event_count = 0;
+static unsigned long g_input_event_seq = 0;
 static unsigned long g_kbd_next_poll_tick = 0;
 static unsigned long g_kbd_active_until_tick = 0;
 static unsigned long g_mouse_next_poll_tick = 0;
@@ -296,8 +302,16 @@ static void usb_reset_hub_diag(void);
 static void usb_hid_queue_reset(void);
 static int usb_hid_queue_push(unsigned char c);
 static int usb_hid_queue_pop(char* out);
+static void usb_input_event_queue_reset(void);
+static int usb_input_event_push(const qos_event_t* ev);
+static int usb_input_event_pop(qos_event_t* out);
 static int usb_hid_key_present(const unsigned char* report, unsigned char key);
 static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift);
+static unsigned int usb_hid_modifiers(unsigned char mod_byte);
+static void usb_hid_push_key_event(unsigned int type,
+                                   unsigned char key,
+                                   unsigned char mod_byte,
+                                   int key_down);
 static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN]);
 static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
                                               unsigned int len,
@@ -381,6 +395,12 @@ static void usb_hid_queue_reset(void){
     g_kbd.q_count = 0;
 }
 
+static void usb_input_event_queue_reset(void){
+    g_input_event_head = 0;
+    g_input_event_tail = 0;
+    g_input_event_count = 0;
+}
+
 static int usb_hid_queue_push(unsigned char c){
     if (g_kbd.q_count >= USB_HID_CHAR_QUEUE_LEN){
         return -1;
@@ -398,6 +418,32 @@ static int usb_hid_queue_pop(char* out){
     *out = (char)g_kbd.q[g_kbd.q_head];
     g_kbd.q_head = (g_kbd.q_head + 1u) % USB_HID_CHAR_QUEUE_LEN;
     g_kbd.q_count--;
+    return 1;
+}
+
+static int usb_input_event_push(const qos_event_t* ev){
+    if (!ev){
+        return -1;
+    }
+    if (g_input_event_count >= USB_INPUT_EVENT_QUEUE_LEN){
+        g_input_event_head = (g_input_event_head + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
+        g_input_event_count--;
+    }
+
+    g_input_event_q[g_input_event_tail] = *ev;
+    g_input_event_q[g_input_event_tail].seq = ++g_input_event_seq;
+    g_input_event_tail = (g_input_event_tail + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
+    g_input_event_count++;
+    return 0;
+}
+
+static int usb_input_event_pop(qos_event_t* out){
+    if (!out || g_input_event_count == 0u){
+        return 0;
+    }
+    *out = g_input_event_q[g_input_event_head];
+    g_input_event_head = (g_input_event_head + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
+    g_input_event_count--;
     return 1;
 }
 
@@ -449,13 +495,79 @@ static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift){
     }
 }
 
+static unsigned int usb_hid_modifiers(unsigned char mod_byte){
+    unsigned int mods = 0u;
+    if (mod_byte & 0x22u){
+        mods |= QOS_KEYMOD_SHIFT;
+    }
+    if (mod_byte & 0x11u){
+        mods |= QOS_KEYMOD_CTRL;
+    }
+    if (mod_byte & 0x44u){
+        mods |= QOS_KEYMOD_ALT;
+    }
+    if (mod_byte & 0x88u){
+        mods |= QOS_KEYMOD_META;
+    }
+    return mods;
+}
+
+static void usb_hid_push_key_event(unsigned int type,
+                                   unsigned char key,
+                                   unsigned char mod_byte,
+                                   int key_down){
+    if (key == 0u || key == 0x01u){
+        return;
+    }
+
+    int shift = (mod_byte & 0x22u) ? 1 : 0;
+    qos_event_t ev;
+    ev.type = type;
+    ev.source = QOS_EVENT_SOURCE_KEYBOARD;
+    ev.keycode = key;
+    ev.ascii = (unsigned int)usb_hid_keycode_to_ascii(key, shift);
+    ev.modifiers = usb_hid_modifiers(mod_byte);
+    ev.buttons = g_mouse.buttons;
+    ev.button = 0u;
+    ev.x = g_mouse.x;
+    ev.y = g_mouse.y;
+    ev.dx = 0;
+    ev.dy = 0;
+    ev.wheel = 0;
+    ev.tick = system_ticks;
+    ev.seq = 0u;
+    (void)usb_input_event_push(&ev);
+
+    if (key_down && ev.ascii){
+        (void)usb_hid_queue_push((unsigned char)ev.ascii);
+    }
+}
+
 static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN]){
     if (!report){
         return;
     }
 
-    int shift = (report[0] & 0x22u) ? 1 : 0;
     int alt = (report[0] & (USB_HID_MOD_LEFT_ALT | USB_HID_MOD_RIGHT_ALT)) ? 1 : 0;
+    unsigned char prev_mod = g_kbd.have_prev_report ? g_kbd.prev_report[0] : 0u;
+
+    if (g_kbd.have_prev_report){
+        for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+            unsigned char key = g_kbd.prev_report[i];
+            if (key == 0u || key == 0x01u){
+                continue;
+            }
+            if (usb_hid_key_present(report, key)){
+                continue;
+            }
+            if ((prev_mod & (USB_HID_MOD_LEFT_ALT | USB_HID_MOD_RIGHT_ALT)) &&
+                (key == USB_HID_KEY_LEFT_ARROW || key == USB_HID_KEY_RIGHT_ARROW)){
+                continue;
+            }
+            usb_hid_push_key_event(QOS_EVENT_KEY_UP, key, prev_mod, 0);
+        }
+    }
+
     for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
         unsigned char key = report[i];
         if (key == 0u){
@@ -475,10 +587,7 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
             (void)terminal_cycle_display_session(1);
             continue;
         }
-        unsigned char ascii = usb_hid_keycode_to_ascii(key, shift);
-        if (ascii){
-            (void)usb_hid_queue_push(ascii);
-        }
+        usb_hid_push_key_event(QOS_EVENT_KEY_DOWN, key, report[0], 1);
     }
 
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
@@ -777,8 +886,10 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
     unsigned int buttons = (unsigned int)(r[0] & 0x07u);
     int dx = (int)((signed char)r[1]);
     int dy = (int)((signed char)r[2]);
+    int wheel = (n >= 4u) ? (int)((signed char)r[3]) : 0;
     int moved = (dx != 0 || dy != 0);
-    int changed = moved || (buttons != g_mouse.buttons);
+    unsigned int old_buttons = g_mouse.buttons;
+    int changed = moved || wheel != 0 || (buttons != old_buttons);
 
     if (changed){
         int w = (int)fb_get_width();
@@ -794,6 +905,68 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
         g_mouse.buttons = buttons;
         g_mouse.seq++;
         g_mouse_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
+
+        if (moved){
+            qos_event_t ev;
+            ev.type = QOS_EVENT_MOUSE_MOVE;
+            ev.source = QOS_EVENT_SOURCE_MOUSE;
+            ev.keycode = 0u;
+            ev.ascii = 0u;
+            ev.modifiers = 0u;
+            ev.buttons = buttons;
+            ev.button = 0u;
+            ev.x = g_mouse.x;
+            ev.y = g_mouse.y;
+            ev.dx = dx;
+            ev.dy = dy;
+            ev.wheel = 0;
+            ev.tick = system_ticks;
+            ev.seq = 0u;
+            (void)usb_input_event_push(&ev);
+        }
+
+        if (wheel != 0){
+            qos_event_t ev;
+            ev.type = QOS_EVENT_MOUSE_WHEEL;
+            ev.source = QOS_EVENT_SOURCE_MOUSE;
+            ev.keycode = 0u;
+            ev.ascii = 0u;
+            ev.modifiers = 0u;
+            ev.buttons = buttons;
+            ev.button = 0u;
+            ev.x = g_mouse.x;
+            ev.y = g_mouse.y;
+            ev.dx = 0;
+            ev.dy = 0;
+            ev.wheel = wheel;
+            ev.tick = system_ticks;
+            ev.seq = 0u;
+            (void)usb_input_event_push(&ev);
+        }
+
+        unsigned int changed_buttons = (old_buttons ^ buttons) & 0x07u;
+        for (unsigned int bit = 0u; bit < 3u; bit++){
+            unsigned int mask = 1u << bit;
+            if ((changed_buttons & mask) == 0u){
+                continue;
+            }
+            qos_event_t ev;
+            ev.type = (buttons & mask) ? QOS_EVENT_MOUSE_BUTTON_DOWN : QOS_EVENT_MOUSE_BUTTON_UP;
+            ev.source = QOS_EVENT_SOURCE_MOUSE;
+            ev.keycode = 0u;
+            ev.ascii = 0u;
+            ev.modifiers = 0u;
+            ev.buttons = buttons;
+            ev.button = mask;
+            ev.x = g_mouse.x;
+            ev.y = g_mouse.y;
+            ev.dx = dx;
+            ev.dy = dy;
+            ev.wheel = 0;
+            ev.tick = system_ticks;
+            ev.seq = 0u;
+            (void)usb_input_event_push(&ev);
+        }
     }
 }
 
@@ -2339,6 +2512,7 @@ int usb_host_init(void){
     g_mouse_next_poll_tick = 0;
     g_mouse_active_until_tick = 0;
     usb_hid_queue_reset();
+    usb_input_event_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
     usb_reset_hub_diag();
@@ -2729,6 +2903,7 @@ int usb_host_enumerate_root_device(void){
     g_mouse_next_poll_tick = 0;
     g_mouse_active_until_tick = 0;
     usb_hid_queue_reset();
+    usb_input_event_queue_reset();
     g_child_use_split = 0;
     g_child_low_speed = 0;
     usb_reset_hub_diag();
@@ -2926,8 +3101,13 @@ int usb_host_try_getc(char* out){
     return usb_hid_queue_pop(out);
 }
 
+int usb_host_poll_event(qos_event_t* out){
+    return usb_input_event_pop(out);
+}
+
 void usb_host_flush_input(void){
     usb_hid_queue_reset();
+    usb_input_event_queue_reset();
 }
 
 int usb_host_get_mouse_state(usb_mouse_state_t* out){

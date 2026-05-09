@@ -299,6 +299,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_BLIT_RGBA:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
+        case SYS_INPUT_POLL_EVENT:
         case SYS_GETPID:
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
@@ -532,6 +533,27 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             } else{
                 frame[TF_X0] = (unsigned long)-1;
             }
+            return frame_sp;
+        }
+
+        case SYS_INPUT_POLL_EVENT: {
+            qos_event_t ev;
+            int pid = process_current_pid();
+            if (!frame[TF_X0] || !display_is_active_graphics_pid(pid)){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            usb_host_poll();
+            usb_host_poll_mouse();
+            if (!usb_host_poll_event(&ev)){
+                frame[TF_X0] = 0;
+                return frame_sp;
+            }
+
+            frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
+                                                 &ev,
+                                                 sizeof(ev)) == 0) ? 1ul : (unsigned long)-1;
             return frame_sp;
         }
 

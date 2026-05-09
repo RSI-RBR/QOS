@@ -5,6 +5,7 @@
 #include "socket.h"
 #include "tls_session.h"
 #include "cyw43.h"
+#include "input_event.h"
 
 #ifndef QOS_TERM_OUTPUT_UART
 #define QOS_TERM_OUTPUT_UART 1u
@@ -103,7 +104,8 @@ enum {
     SYS_PROCESS_STATE = 80,
     SYS_GET_TIME_US = 81,
     SYS_GET_TIME_NS = 82,
-    SYS_FB_BLIT_RGBA = 83
+    SYS_FB_BLIT_RGBA = 83,
+    SYS_INPUT_POLL_EVENT = 84
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -255,6 +257,10 @@ static inline int qos_try_getc_ex(qos_input_event_t* out_ev){
         out_ev->source = (unsigned int)((v >> 8) & 0xFFu);
     }
     return (int)(v & 0xFFu);
+}
+
+static inline int qos_poll_event(qos_event_t* out_ev){
+    return (int)qos_syscall1(SYS_INPUT_POLL_EVENT, (unsigned long)out_ev);
 }
 
 static inline int qos_run_program(void){

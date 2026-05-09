@@ -11,6 +11,9 @@ static SDL_Texture g_textures[SDL_SHIM_MAX_TEXTURES];
 static Uint8 g_tex_pool[SDL_SHIM_TEX_POOL_BYTES];
 static Uint32 g_tex_pool_used = 0u;
 static Uint8 g_keyboard_state[256];
+static int g_mouse_x = 0;
+static int g_mouse_y = 0;
+static Uint32 g_mouse_buttons = 0u;
 static char g_last_error[96] = "OK";
 static Uint8 g_rowbuf[SDL_SHIM_ROWBUF_PIXELS * 4u];
 
@@ -37,6 +40,46 @@ static int sdl_i_min(int a, int b){
 
 static int sdl_i_max(int a, int b){
     return (a > b) ? a : b;
+}
+
+static int sdl_key_sym_from_qos(const qos_event_t* ev){
+    if (!ev){
+        return 0;
+    }
+    if (ev->ascii != 0u){
+        return (int)ev->ascii;
+    }
+    if (ev->keycode == 0x29u){
+        return SDLK_ESCAPE;
+    }
+    return (int)ev->keycode;
+}
+
+static Uint32 sdl_mouse_mask_from_qos(unsigned int qos_buttons){
+    Uint32 mask = 0u;
+    if (qos_buttons & QOS_MOUSE_LEFT){
+        mask |= SDL_BUTTON_LMASK;
+    }
+    if (qos_buttons & QOS_MOUSE_MIDDLE){
+        mask |= SDL_BUTTON_MMASK;
+    }
+    if (qos_buttons & QOS_MOUSE_RIGHT){
+        mask |= SDL_BUTTON_RMASK;
+    }
+    return mask;
+}
+
+static Uint8 sdl_button_from_qos(unsigned int qos_button){
+    if (qos_button & QOS_MOUSE_LEFT){
+        return SDL_BUTTON_LEFT;
+    }
+    if (qos_button & QOS_MOUSE_MIDDLE){
+        return SDL_BUTTON_MIDDLE;
+    }
+    if (qos_button & QOS_MOUSE_RIGHT){
+        return SDL_BUTTON_RIGHT;
+    }
+    return 0u;
 }
 
 static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len){
@@ -130,6 +173,9 @@ int SDL_Init(Uint32 flags){
     g_tex_pool_used = 0u;
     g_window.alive = 0;
     g_renderer.alive = 0;
+    g_mouse_x = 0;
+    g_mouse_y = 0;
+    g_mouse_buttons = 0u;
     set_error("OK");
     return 0;
 }
@@ -149,6 +195,9 @@ void SDL_Quit(void){
     g_tex_pool_used = 0u;
     g_renderer.alive = 0;
     g_window.alive = 0;
+    g_mouse_x = 0;
+    g_mouse_y = 0;
+    g_mouse_buttons = 0u;
 }
 
 const char* SDL_GetError(void){
@@ -303,28 +352,77 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
 }
 
 int SDL_PollEvent(SDL_Event* event){
-    int ch;
+    qos_event_t qos_ev;
     if (!event){
         return 0;
     }
-    ch = qos_try_getc();
-    if (ch < 0){
+    if (qos_poll_event(&qos_ev) <= 0){
         return 0;
     }
 
-    if (ch >= 0 && ch < 256){
-        g_keyboard_state[ch] = 1u;
+    if (qos_ev.type == QOS_EVENT_KEY_DOWN || qos_ev.type == QOS_EVENT_KEY_UP){
+        int sym = sdl_key_sym_from_qos(&qos_ev);
+        if (sym >= 0 && sym < 256){
+            g_keyboard_state[sym] = (qos_ev.type == QOS_EVENT_KEY_DOWN) ? 1u : 0u;
+        }
+
+        event->type = (qos_ev.type == QOS_EVENT_KEY_DOWN) ? SDL_KEYDOWN : SDL_KEYUP;
+        event->key.type = event->type;
+        event->key.keysym.sym = sym;
+
+        if (qos_ev.type == QOS_EVENT_KEY_DOWN &&
+            (sym == 'q' || sym == 'Q' || sym == SDLK_ESCAPE)){
+            event->type = SDL_QUIT;
+            event->quit.type = SDL_QUIT;
+        }
+        return 1;
     }
 
-    event->type = SDL_KEYDOWN;
-    event->key.type = SDL_KEYDOWN;
-    event->key.keysym.sym = ch;
-
-    if (ch == 'q' || ch == 'Q' || ch == SDLK_ESCAPE){
-        event->type = SDL_QUIT;
-        event->quit.type = SDL_QUIT;
+    if (qos_ev.source == QOS_EVENT_SOURCE_MOUSE){
+        g_mouse_x = qos_ev.x;
+        g_mouse_y = qos_ev.y;
+        g_mouse_buttons = sdl_mouse_mask_from_qos(qos_ev.buttons);
     }
-    return 1;
+
+    if (qos_ev.type == QOS_EVENT_MOUSE_MOVE){
+        event->type = SDL_MOUSEMOTION;
+        event->motion.type = SDL_MOUSEMOTION;
+        event->motion.state = g_mouse_buttons;
+        event->motion.x = qos_ev.x;
+        event->motion.y = qos_ev.y;
+        event->motion.xrel = qos_ev.dx;
+        event->motion.yrel = qos_ev.dy;
+        return 1;
+    }
+
+    if (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN ||
+        qos_ev.type == QOS_EVENT_MOUSE_BUTTON_UP){
+        event->type = (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
+                      SDL_MOUSEBUTTONDOWN :
+                      SDL_MOUSEBUTTONUP;
+        event->button.type = event->type;
+        event->button.button = sdl_button_from_qos(qos_ev.button);
+        event->button.state = (qos_ev.type == QOS_EVENT_MOUSE_BUTTON_DOWN) ?
+                              SDL_PRESSED :
+                              SDL_RELEASED;
+        event->button.clicks = 1u;
+        event->button.padding1 = 0u;
+        event->button.x = qos_ev.x;
+        event->button.y = qos_ev.y;
+        return 1;
+    }
+
+    if (qos_ev.type == QOS_EVENT_MOUSE_WHEEL){
+        event->type = SDL_MOUSEWHEEL;
+        event->wheel.type = SDL_MOUSEWHEEL;
+        event->wheel.x = 0;
+        event->wheel.y = qos_ev.wheel;
+        event->wheel.mouse_x = qos_ev.x;
+        event->wheel.mouse_y = qos_ev.y;
+        return 1;
+    }
+
+    return 0;
 }
 
 const Uint8* SDL_GetKeyboardState(int* numkeys){
@@ -332,6 +430,16 @@ const Uint8* SDL_GetKeyboardState(int* numkeys){
         *numkeys = 256;
     }
     return g_keyboard_state;
+}
+
+Uint32 SDL_GetMouseState(int* x, int* y){
+    if (x){
+        *x = g_mouse_x;
+    }
+    if (y){
+        *y = g_mouse_y;
+    }
+    return g_mouse_buttons;
 }
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h){

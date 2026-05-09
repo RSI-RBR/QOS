@@ -55,6 +55,33 @@ typedef struct SDL_KeyboardEvent {
     SDL_Keysym keysym;
 } SDL_KeyboardEvent;
 
+typedef struct SDL_MouseMotionEvent {
+    Uint32 type;
+    Uint32 state;
+    int x;
+    int y;
+    int xrel;
+    int yrel;
+} SDL_MouseMotionEvent;
+
+typedef struct SDL_MouseButtonEvent {
+    Uint32 type;
+    Uint8 button;
+    Uint8 state;
+    Uint8 clicks;
+    Uint8 padding1;
+    int x;
+    int y;
+} SDL_MouseButtonEvent;
+
+typedef struct SDL_MouseWheelEvent {
+    Uint32 type;
+    int x;
+    int y;
+    int mouse_x;
+    int mouse_y;
+} SDL_MouseWheelEvent;
+
 typedef struct SDL_QuitEvent {
     Uint32 type;
 } SDL_QuitEvent;
@@ -62,6 +89,9 @@ typedef struct SDL_QuitEvent {
 typedef union SDL_Event {
     Uint32 type;
     SDL_KeyboardEvent key;
+    SDL_MouseMotionEvent motion;
+    SDL_MouseButtonEvent button;
+    SDL_MouseWheelEvent wheel;
     SDL_QuitEvent quit;
 } SDL_Event;
 
@@ -84,6 +114,30 @@ typedef union SDL_Event {
 #define SDL_QUIT 0x100u
 #define SDL_KEYDOWN 0x300u
 #define SDL_KEYUP 0x301u
+#define SDL_MOUSEMOTION 0x400u
+#define SDL_MOUSEBUTTONDOWN 0x401u
+#define SDL_MOUSEBUTTONUP 0x402u
+#define SDL_MOUSEWHEEL 0x403u
+
+#define SDL_EVENT_QUIT SDL_QUIT
+#define SDL_EVENT_KEY_DOWN SDL_KEYDOWN
+#define SDL_EVENT_KEY_UP SDL_KEYUP
+#define SDL_EVENT_MOUSE_MOTION SDL_MOUSEMOTION
+#define SDL_EVENT_MOUSE_BUTTON_DOWN SDL_MOUSEBUTTONDOWN
+#define SDL_EVENT_MOUSE_BUTTON_UP SDL_MOUSEBUTTONUP
+#define SDL_EVENT_MOUSE_WHEEL SDL_MOUSEWHEEL
+
+#define SDL_PRESSED 1u
+#define SDL_RELEASED 0u
+
+#define SDL_BUTTON_LEFT 1u
+#define SDL_BUTTON_MIDDLE 2u
+#define SDL_BUTTON_RIGHT 3u
+
+#define SDL_BUTTON(X) (1u << ((X) - 1u))
+#define SDL_BUTTON_LMASK 1u
+#define SDL_BUTTON_MMASK 2u
+#define SDL_BUTTON_RMASK 4u
 
 #define SDLK_ESCAPE 27
 
@@ -116,6 +170,7 @@ void SDL_RenderPresent(SDL_Renderer* renderer);
 
 int SDL_PollEvent(SDL_Event* event);
 const Uint8* SDL_GetKeyboardState(int* numkeys);
+Uint32 SDL_GetMouseState(int* x, int* y);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 void SDL_DestroyTexture(SDL_Texture* texture);

@@ -1,6 +1,8 @@
 #ifndef USB_HOST_H
 #define USB_HOST_H
 
+#include "input_event.h"
+
 #define USB_HOST_MAX_TRACKED_PORTS 8u
 
 typedef struct {
@@ -103,6 +105,7 @@ int usb_host_get_root_device_info(usb_root_device_info_t* out_info);
 void usb_host_poll(void);
 void usb_host_poll_mouse(void);
 int usb_host_try_getc(char* out);
+int usb_host_poll_event(qos_event_t* out);
 void usb_host_flush_input(void);
 int usb_host_get_mouse_state(usb_mouse_state_t* out);
 
