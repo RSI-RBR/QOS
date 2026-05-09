@@ -607,6 +607,7 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
                                               int* out_boot_kbd){
     unsigned char cur_iface = 0xFFu;
     int iface_is_hid = 0;
+    int iface_is_keyboard = 0;
     int iface_is_boot_kbd = 0;
     int best_score = -1;
     unsigned char best_iface = 0u;
@@ -637,8 +638,10 @@ static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
             unsigned char sub = cfg[off + 6u];
             unsigned char proto = cfg[off + 7u];
             iface_is_hid = (cls == 0x03u) ? 1 : 0;
+            iface_is_keyboard = (cls == 0x03u && proto == 0x01u) ? 1 : 0;
             iface_is_boot_kbd = (cls == 0x03u && sub == 0x01u && proto == 0x01u) ? 1 : 0;
-        } else if (iface_is_hid && desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
+        } else if (iface_is_hid && iface_is_keyboard &&
+                   desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7u){
             unsigned char ep_addr = cfg[off + 2u];
             unsigned char attrs = cfg[off + 3u];
             unsigned short mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
@@ -1435,7 +1438,7 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                        &mouse_ep,
                                                        &mouse_mps,
                                                        &mouse_boot) == 0) ? 1 : 0;
-        if (!hid_found && intr_ep && dev_desc[4] != 0x09u && !(bulk_in_ep && bulk_out_ep)){
+        if (!hid_found && !mouse_found && intr_ep && dev_desc[4] != 0x09u && !(bulk_in_ep && bulk_out_ep)){
             // Some low-cost keyboards report unusual interface metadata but still expose
             // a single interrupt-IN report endpoint. Avoid hubs and bulk NICs here.
             hid_found = 1;
