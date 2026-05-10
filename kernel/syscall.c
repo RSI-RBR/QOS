@@ -26,6 +26,7 @@
 #include "mmu.h"
 #include "mailbox.h"
 #include "gpu2d.h"
+#include "v3d.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -454,6 +455,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU2D_BLIT_COUNT:
         case SYS_GPU2D_FALLBACK_COUNT:
         case SYS_GPU2D_UNSUPPORTED_COUNT:
+        case SYS_V3D_STATUS:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -532,6 +534,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU_FLIP_COUNT:
         case SYS_SYSTEM_STATUS:
         case SYS_SYSTEM_SET_CLOCK:
+        case SYS_V3D_PROBE:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_SECURITY_LOG_DUMP:
@@ -907,6 +910,30 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_GPU2D_UNSUPPORTED_COUNT:
             frame[TF_X0] = (unsigned long)gpu2d_unsupported_count();
             return frame_sp;
+
+        case SYS_V3D_PROBE: {
+            qos_v3d_status_t st;
+            qos_v3d_status_t* user_st = (qos_v3d_status_t*)frame[TF_X0];
+            int rc = v3d_probe(&st);
+            if (!user_st || process_copy_to_user(user_st, &st, sizeof(st)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_V3D_STATUS: {
+            qos_v3d_status_t st;
+            qos_v3d_status_t* user_st = (qos_v3d_status_t*)frame[TF_X0];
+            int rc = v3d_get_status(&st);
+            if (!user_st || process_copy_to_user(user_st, &st, sizeof(st)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
 
         case SYS_TRY_GETC: {
             char c = 0;

@@ -460,6 +460,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" gpu2d status\n");
+    qos_puts(" v3d probe|status\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
@@ -855,6 +856,66 @@ static void cmd_gpu2d(const char* mode){
     print_uint(qos_gpu2d_fallback_count());
     qos_puts(" unsupported=");
     print_uint(qos_gpu2d_unsupported_count());
+    qos_puts("\n");
+}
+
+static void cmd_v3d(const char* mode){
+    qos_v3d_status_t st;
+    int rc;
+
+    if (!mode || !*mode || str_eq(mode, "status")){
+        rc = qos_v3d_status(&st);
+    } else if (str_eq(mode, "probe")){
+        rc = qos_v3d_probe(&st);
+    } else{
+        qos_puts("Usage: v3d probe|status\n");
+        return;
+    }
+
+    qos_puts("v3d rc=");
+    print_int(rc);
+    qos_puts(" flags=");
+    print_hex32(st.flags);
+    qos_puts(" clock=");
+    if (st.flags & QOS_V3D_FLAG_CLOCK_OK){
+        print_mhz(st.clock_hz);
+    } else{
+        qos_puts("?");
+    }
+    qos_puts("\n");
+
+    qos_puts(" ident0=");
+    print_hex32(st.ident0);
+    qos_puts(" ident1=");
+    print_hex32(st.ident1);
+    qos_puts(" ident2=");
+    print_hex32(st.ident2);
+    qos_puts("\n");
+
+    qos_puts(" scratch before=");
+    print_hex32(st.scratch_before);
+    qos_puts(" after=");
+    print_hex32(st.scratch_after);
+    qos_puts(" ct0=");
+    print_hex32(st.ct0cs);
+    qos_puts(" ct1=");
+    print_hex32(st.ct1cs);
+    qos_puts(" int=");
+    print_hex32(st.intctl);
+    qos_puts("\n");
+
+    qos_puts(" state:");
+    if (st.flags & QOS_V3D_FLAG_PROBED) qos_puts(" probed");
+    if (st.flags & QOS_V3D_FLAG_CLOCK_OK) qos_puts(" clock");
+    if (st.flags & QOS_V3D_FLAG_PRESENT) qos_puts(" present");
+    if (st.flags & QOS_V3D_FLAG_IDENT_OK) qos_puts(" ident");
+    if (st.flags & QOS_V3D_FLAG_SCRATCH_OK) qos_puts(" scratch");
+    qos_puts(" probes=");
+    print_uint(st.probe_count);
+    qos_puts(" fails=");
+    print_uint(st.fail_count);
+    qos_puts(" last=");
+    print_int(st.last_error);
     qos_puts("\n");
 }
 
@@ -1467,6 +1528,14 @@ static void execute_line(void){
         cmd_gpu2d(p);
     } else if (str_eq(g_buf, "gpu2d")){
         cmd_gpu2d("status");
+    } else if (str_starts_with(g_buf, "v3d ")){
+        const char* p = g_buf + 4;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_v3d(p);
+    } else if (str_eq(g_buf, "v3d")){
+        cmd_v3d("status");
     } else if (str_starts_with(g_buf, "gfxstat ")){
         const char* p = g_buf + 8;
         while (*p == ' '){

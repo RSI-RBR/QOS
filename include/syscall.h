@@ -7,6 +7,7 @@
 #include "cyw43.h"
 #include "input_event.h"
 #include "gpu2d.h"
+#include "v3d.h"
 
 #ifndef QOS_TERM_OUTPUT_UART
 #define QOS_TERM_OUTPUT_UART 1u
@@ -132,7 +133,9 @@ enum {
     SYS_GPU2D_BLIT_RGBA = 107,
     SYS_GPU2D_BLIT_COUNT = 108,
     SYS_GPU2D_FALLBACK_COUNT = 109,
-    SYS_GPU2D_UNSUPPORTED_COUNT = 110
+    SYS_GPU2D_UNSUPPORTED_COUNT = 110,
+    SYS_V3D_PROBE = 111,
+    SYS_V3D_STATUS = 112
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -507,6 +510,14 @@ static inline unsigned int qos_gpu2d_fallback_count(void){
 
 static inline unsigned int qos_gpu2d_unsupported_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_UNSUPPORTED_COUNT);
+}
+
+static inline int qos_v3d_probe(qos_v3d_status_t* out_status){
+    return (int)qos_syscall1(SYS_V3D_PROBE, (unsigned long)out_status);
+}
+
+static inline int qos_v3d_status(qos_v3d_status_t* out_status){
+    return (int)qos_syscall1(SYS_V3D_STATUS, (unsigned long)out_status);
 }
 
 static inline void qos_display_profile_reset(void){
