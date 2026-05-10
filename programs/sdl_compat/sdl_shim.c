@@ -55,6 +55,7 @@ static int g_soft_fb_pitch = 0;
 static int g_soft_fb_enabled = 0;
 static int g_soft_fb_dirty = 0;
 static int g_soft_fb_attached = 0;
+static int g_soft_fb_direct = 0;
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -369,7 +370,7 @@ static Uint8 color_a(Uint32 c){
 }
 
 static void sdl_soft_backbuffer_destroy(void){
-    if (g_soft_fb){
+    if (g_soft_fb && !g_soft_fb_direct){
         free(g_soft_fb);
     }
     g_soft_fb = 0;
@@ -379,6 +380,7 @@ static void sdl_soft_backbuffer_destroy(void){
     g_soft_fb_enabled = 0;
     g_soft_fb_dirty = 0;
     g_soft_fb_attached = 0;
+    g_soft_fb_direct = 0;
 }
 
 static int sdl_soft_backbuffer_init(int w, int h){
@@ -389,7 +391,8 @@ static int sdl_soft_backbuffer_init(int w, int h){
     }
     if (g_soft_fb && g_soft_fb_w == w && g_soft_fb_h == h){
         g_soft_fb_enabled = 1;
-        if (!g_soft_fb_attached &&
+        if (!g_soft_fb_direct &&
+            !g_soft_fb_attached &&
             qos_fb_attach_buffer((const unsigned int*)g_soft_fb,
                                  (unsigned int)w,
                                  (unsigned int)h,
@@ -399,6 +402,24 @@ static int sdl_soft_backbuffer_init(int w, int h){
         return 0;
     }
     sdl_soft_backbuffer_destroy();
+
+    qos_fb_direct_info_t direct;
+    if (qos_fb_direct_acquire(&direct) == 0 &&
+        direct.pixels &&
+        direct.width == (unsigned int)w &&
+        direct.height == (unsigned int)h &&
+        direct.pitch >= ((unsigned int)w * 4u)){
+        g_soft_fb = (Uint8*)direct.pixels;
+        g_soft_fb_w = w;
+        g_soft_fb_h = h;
+        g_soft_fb_pitch = (int)direct.pitch;
+        g_soft_fb_enabled = 1;
+        g_soft_fb_dirty = 1;
+        g_soft_fb_attached = 1;
+        g_soft_fb_direct = 1;
+        return 0;
+    }
+
     bytes = (unsigned long)w * (unsigned long)h * 4ul;
     if (bytes > 64ul * 1024ul * 1024ul){
         return -1;

@@ -122,8 +122,17 @@ enum {
     SYS_DISPLAY_PROFILE_RESET = 98,
     SYS_DISPLAY_PROFILE_DUMP = 99,
     SYS_FB_BLIT_NATIVE = 100,
-    SYS_FB_ATTACH_BUFFER = 101
+    SYS_FB_ATTACH_BUFFER = 101,
+    SYS_FB_DIRECT_ACQUIRE = 102
 };
+
+typedef struct {
+    unsigned int* pixels;
+    unsigned int width;
+    unsigned int height;
+    unsigned int pitch;
+    unsigned int page;
+} qos_fb_direct_info_t;
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
 
@@ -282,6 +291,10 @@ static inline int qos_fb_attach_buffer(const unsigned int* pixels,
                              (unsigned long)h,
                              (unsigned long)pitch,
                              0ul);
+}
+
+static inline int qos_fb_direct_acquire(qos_fb_direct_info_t* out_info){
+    return (int)qos_syscall1(SYS_FB_DIRECT_ACQUIRE, (unsigned long)out_info);
 }
 
 static inline int qos_try_getc(void){

@@ -566,6 +566,8 @@ static void display_clear_session_locked(int session_id){
     g_display_sessions[session_id].height = 0u;
     g_display_sessions[session_id].pitch = 0u;
     g_display_sessions[session_id].external_framebuffer = 0;
+    g_display_sessions[session_id].direct_framebuffer = 0;
+    g_display_sessions[session_id].direct_page = 0u;
     g_display_sessions[session_id].scanout_attached = 0;
     g_display_sessions[session_id].scanout_page = 0u;
 }
@@ -658,7 +660,7 @@ static int display_attach_scanout_locked(display_session_t* s){
         s->width == 0u || s->height == 0u || s->pitch == 0u){
         return -1;
     }
-    if (s->external_framebuffer){
+    if (s->external_framebuffer || s->direct_framebuffer){
         return -1;
     }
     if (s->scanout_attached){
@@ -711,6 +713,8 @@ static void display_init_text_locked(void){
     s->height = fb_get_height();
     s->pitch = fb_get_pitch();
     s->external_framebuffer = 0;
+    s->direct_framebuffer = 0;
+    s->direct_page = 0u;
     display_mark_full_dirty_locked(s);
     g_display_active = DISPLAY_TEXT_SESSION_ID;
 }
@@ -829,6 +833,8 @@ int display_create_graphics_session(int owner_pid){
     g_display_sessions[slot].height = fb_get_height();
     g_display_sessions[slot].pitch = fb_get_pitch();
     g_display_sessions[slot].external_framebuffer = 0;
+    g_display_sessions[slot].direct_framebuffer = 0;
+    g_display_sessions[slot].direct_page = 0u;
     g_display_sessions[slot].scanout_attached = 0;
     g_display_sessions[slot].scanout_page = 0u;
     display_mark_full_dirty_locked(&g_display_sessions[slot]);
@@ -1108,6 +1114,49 @@ int display_attach_external_framebuffer_for_pid(int owner_pid,
     return 0;
 }
 
+int display_attach_direct_framebuffer_for_pid(int owner_pid, unsigned int page){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0 || page == 0u || page >= fb_get_page_count()){
+        return -1;
+    }
+
+    unsigned long base = fb_get_page_base(page);
+    unsigned long size = (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height();
+    if (!base || size == 0UL){
+        return -1;
+    }
+
+    void* old_allocation = 0;
+    unsigned long old_allocation_size = 0UL;
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+    display_detach_scanout_locked(s);
+    old_allocation = s->allocation;
+    old_allocation_size = s->allocation_size;
+    s->framebuffer = (void*)base;
+    s->framebuffer_size = size;
+    s->backing_framebuffer = (void*)base;
+    s->backing_framebuffer_size = size;
+    s->allocation = 0;
+    s->allocation_size = 0UL;
+    s->width = fb_get_width();
+    s->height = fb_get_height();
+    s->pitch = fb_get_pitch();
+    s->external_framebuffer = 0;
+    s->direct_framebuffer = 1;
+    s->direct_page = page;
+    display_mark_full_dirty_locked(s);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    if (old_allocation && old_allocation_size > 0UL){
+        kfree_secure(old_allocation, old_allocation_size);
+    }
+    return 0;
+}
+
 int display_clear_for_pid(int owner_pid, unsigned int color){
     int session_id = display_get_or_create_graphics_for_pid(owner_pid);
     if (session_id < 0){
@@ -1303,6 +1352,13 @@ int display_present_for_pid(int owner_pid){
     if (g_display_sessions[session_id].external_framebuffer){
         display_mark_full_dirty_locked(&g_display_sessions[session_id]);
     }
+    if (g_display_sessions[session_id].direct_framebuffer){
+        g_display_sessions[session_id].dirty = 0u;
+        g_display_sessions[session_id].dirty_x0 = 0u;
+        g_display_sessions[session_id].dirty_y0 = 0u;
+        g_display_sessions[session_id].dirty_x1 = 0u;
+        g_display_sessions[session_id].dirty_y1 = 0u;
+    }
     if (g_display_pending_switch_pid == owner_pid){
         int old_active = g_display_active;
         if (display_valid_id(old_active) && old_active != session_id &&
@@ -1397,6 +1453,62 @@ int display_present_active_graphics(void){
     }
 
     display_session_t* s = &g_display_sessions[session_id];
+    if (s->direct_framebuffer){
+        unsigned int direct_page = s->direct_page;
+        unsigned long direct_base = fb_get_page_base(direct_page);
+        if (direct_base && direct_page != fb_get_display_page()){
+            unsigned long flip_start = display_read_cntpct();
+            if (fb_set_display_page(direct_page) == 0){
+                unsigned long after_set = display_read_cntpct();
+                unsigned long set_us = display_cycles_to_us(after_set - flip_start,
+                                                            prof_hz);
+                flip_set_us += set_us;
+                flip_us += set_us;
+                g_display_gpu_flip_count++;
+                g_display_profile.pageflip_calls++;
+            } else{
+                unsigned long fail_us = display_elapsed_us(flip_start, prof_hz);
+                flip_set_us += fail_us;
+                flip_us += fail_us;
+                g_display_gpu_failure_count++;
+            }
+        }
+
+        if (direct_base && mouse.present){
+            unsigned long cursor_start = display_read_cntpct();
+            display_draw_cursor_overlay(direct_base,
+                                        fb_get_pitch(),
+                                        fb_get_width(),
+                                        fb_get_height(),
+                                        mouse.x,
+                                        mouse.y,
+                                        mouse.buttons);
+            cursor_us += display_elapsed_us(cursor_start, prof_hz);
+            g_cursor_drawn = 1;
+            g_cursor_session_id = session_id;
+            g_cursor_x = mouse.x;
+            g_cursor_y = mouse.y;
+            g_cursor_seq = mouse.seq;
+        }
+        g_cursor_saved_valid = 0;
+        g_display_profile.present_calls++;
+        g_display_profile.usb_poll_us += poll_us;
+        g_display_profile.attach_us += attach_us;
+        g_display_profile.copy_us += copy_us;
+        g_display_profile.cursor_us += cursor_us;
+        g_display_profile.flip_us += flip_us;
+        g_display_profile.flip_set_us += flip_set_us;
+        g_display_profile.vsync_us += vsync_us;
+        g_display_profile.no_work_calls++;
+        unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
+        g_display_profile.present_us += total_us;
+        if (total_us > g_display_profile.present_max_us){
+            g_display_profile.present_max_us = total_us;
+        }
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return 0;
+    }
+
     int pageflip_attached = 0;
     unsigned long attach_start = display_read_cntpct();
     if (g_display_gpu_enabled &&

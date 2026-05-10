@@ -43,6 +43,7 @@
 #define MMU_USER_POOL_SIZE  QOS_PROGRAM_POOL_SIZE
 #define MMU_USER_POOL_END   (MMU_USER_POOL_START + MMU_USER_POOL_SIZE)
 #define MMU_MAX_USER_CHUNKS (QOS_PROGRAM_MAX_MEMORY_BYTES / MMU_CHUNK_SIZE)
+#define MMU_MAX_FB_CHUNKS   8U
 #define MMU_ASID_BITS       8U
 #define MMU_ASID_MAX        ((1U << MMU_ASID_BITS) - 1U)
 #define MMU_ASID_KERNEL     0U
@@ -68,6 +69,7 @@ static unsigned long proc_l1_table[MMU_MAX_PROCESS_SPACES][L1_ENTRIES] __attribu
 static unsigned long proc_l2_table[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l2_table_1[MMU_MAX_PROCESS_SPACES][L2_ENTRIES] __attribute__((aligned(4096)));
 static unsigned long proc_l3_user_slot[MMU_MAX_PROCESS_SPACES][MMU_MAX_USER_CHUNKS][L3_ENTRIES] __attribute__((aligned(4096)));
+static unsigned long proc_l3_fb_slot[MMU_MAX_PROCESS_SPACES][MMU_MAX_FB_CHUNKS][L3_ENTRIES] __attribute__((aligned(4096)));
 static unsigned char proc_space_active[MMU_MAX_PROCESS_SPACES];
 static int core_active_pid[MMU_MAX_CORES];
 static spinlock_t g_mmu_lock;
@@ -312,6 +314,11 @@ static void zero_tables(void){
         for (unsigned int chunk = 0; chunk < MMU_MAX_USER_CHUNKS; chunk++){
             for (unsigned int i = 0; i < L3_ENTRIES; i++){
                 proc_l3_user_slot[p][chunk][i] = 0;
+            }
+        }
+        for (unsigned int chunk = 0; chunk < MMU_MAX_FB_CHUNKS; chunk++){
+            for (unsigned int i = 0; i < L3_ENTRIES; i++){
+                proc_l3_fb_slot[p][chunk][i] = 0;
             }
         }
     }
@@ -812,6 +819,72 @@ void mmu_process_space_destroy(int pid){
     }
     mmu_tlb_shootdown_all_locked();
     spin_unlock_irqrestore(&g_mmu_lock, irq);
+}
+
+int mmu_process_map_framebuffer(int pid, unsigned long pa_start, unsigned long size){
+    static const mmu_block_attrs_t user_fb_rw_nx = {
+        .attridx = ATTRIDX_DEVICE,
+        .sh = SH_OUTER,
+        .ap = AP_EL1_RW_EL0_RW,
+        .xn = PXN_BIT | UXN_BIT,
+        .ng = NG_BIT
+    };
+
+    if (pid < 0 || (unsigned int)pid >= MMU_MAX_PROCESS_SPACES ||
+        pa_start == 0UL || size == 0UL){
+        return -1;
+    }
+    unsigned long end = pa_start + size;
+    if (end < pa_start){
+        return -1;
+    }
+
+    unsigned long first_chunk = pa_start & ~(MMU_CHUNK_SIZE - 1UL);
+    unsigned long last_chunk = (end - 1UL) & ~(MMU_CHUNK_SIZE - 1UL);
+    unsigned long chunk_count = ((last_chunk - first_chunk) / MMU_CHUNK_SIZE) + 1UL;
+    if (chunk_count == 0UL || chunk_count > MMU_MAX_FB_CHUNKS){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
+    if (!proc_space_active[pid]){
+        spin_unlock_irqrestore(&g_mmu_lock, irq);
+        return -1;
+    }
+
+    for (unsigned int slot = 0u; slot < (unsigned int)chunk_count; slot++){
+        unsigned long chunk_base = first_chunk + ((unsigned long)slot * MMU_CHUNK_SIZE);
+        unsigned long l1_index = chunk_base >> 30;
+        unsigned long l2_index = (chunk_base >> 21) & 0x1FFUL;
+        unsigned long* l2 = 0;
+        if (l1_index == 0UL){
+            l2 = proc_l2_table[pid];
+        } else if (l1_index == 1UL){
+            l2 = proc_l2_table_1[pid];
+        } else{
+            spin_unlock_irqrestore(&g_mmu_lock, irq);
+            return -1;
+        }
+
+        unsigned long* l3 = proc_l3_fb_slot[pid][slot];
+        l2[l2_index] = ((unsigned long)l3 & ~0xFFFUL) | DESC_VALID | DESC_TABLE;
+        l3_fill_kernel_private(l3, chunk_base);
+
+        unsigned long map_start = (pa_start > chunk_base) ? (pa_start - chunk_base) : 0UL;
+        unsigned long chunk_end = chunk_base + MMU_CHUNK_SIZE;
+        unsigned long map_end = (end < chunk_end) ? (end - chunk_base) : MMU_CHUNK_SIZE;
+        if (map_end > map_start){
+            l3_map_chunk_range(l3,
+                               chunk_base,
+                               map_start,
+                               map_end - map_start,
+                               &user_fb_rw_nx);
+        }
+    }
+
+    mmu_tlb_shootdown_all_locked();
+    spin_unlock_irqrestore(&g_mmu_lock, irq);
+    return 0;
 }
 
 void mmu_switch_to_pid(int pid){

@@ -76,7 +76,8 @@ void fb_init(){
     mbox[20] = 0x40001;
     mbox[21] = 8;
     mbox[22] = 8;
-    mbox[23] = 16;
+    // Page alignment lets per-process MMU mappings expose framebuffer pages safely.
+    mbox[23] = 4096;
     mbox[24] = 0;
 
     mbox[25] = 0;

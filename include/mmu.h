@@ -19,6 +19,7 @@ int mmu_process_space_create(int pid,
                              unsigned long user_rw_offset,
                              unsigned long user_rw_size);
 void mmu_process_space_destroy(int pid);
+int mmu_process_map_framebuffer(int pid, unsigned long pa_start, unsigned long size);
 void mmu_switch_to_pid(int pid);
 void mmu_prepare_return_to_pid(int pid);
 void mmu_debug_dump_current(unsigned long va);

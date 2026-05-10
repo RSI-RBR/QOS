@@ -23,6 +23,7 @@
 #include "klog.h"
 #include "display.h"
 #include "fat32.h"
+#include "mmu.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -415,6 +416,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_BLIT_RGBA:
         case SYS_FB_BLIT_NATIVE:
         case SYS_FB_ATTACH_BUFFER:
+        case SYS_FB_DIRECT_ACQUIRE:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -732,6 +734,53 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                                                        h,
                                                                                        pitch,
                                                                                        total_bytes);
+            return frame_sp;
+        }
+
+        case SYS_FB_DIRECT_ACQUIRE: {
+            qos_fb_direct_info_t info;
+            qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
+            int pid = process_current_pid();
+            unsigned int page = 1u;
+            unsigned long base = fb_get_page_base(page);
+            unsigned int pitch = fb_get_pitch();
+            unsigned int width = fb_get_width();
+            unsigned int height = fb_get_height();
+            unsigned long size = (unsigned long)pitch * (unsigned long)height;
+
+            if (!user_info || fb_get_page_count() < 2u || !base ||
+                pitch == 0u || width == 0u || height == 0u || size == 0UL){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (!process_user_range_writable(user_info, sizeof(*user_info))){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (mmu_process_map_framebuffer(pid, base, size) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            unsigned int* fb_words = (unsigned int*)base;
+            unsigned long words = size / sizeof(unsigned int);
+            for (unsigned long i = 0; i < words; i++){
+                fb_words[i] = 0u;
+            }
+
+            if (display_attach_direct_framebuffer_for_pid(pid, page) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            info.pixels = (unsigned int*)base;
+            info.width = width;
+            info.height = height;
+            info.pitch = pitch;
+            info.page = page;
+            frame[TF_X0] = (process_copy_to_user(user_info,
+                                                 &info,
+                                                 sizeof(info)) == 0) ? 0ul : (unsigned long)-1;
             return frame_sp;
         }
 
