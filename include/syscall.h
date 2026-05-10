@@ -149,7 +149,9 @@ enum {
     SYS_GPU2D_TEXTURE_FREE_COUNT = 123,
     SYS_GPU2D_TEXTURE_BYTES = 124,
     SYS_FB_DIRECT_GET_DRAW = 125,
-    SYS_PROCESS_LOG_READ = 126
+    SYS_PROCESS_LOG_READ = 126,
+    SYS_DISPLAY_VSYNC_SET = 127,
+    SYS_DISPLAY_VSYNC_GET = 128
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -614,6 +616,15 @@ static inline void qos_display_profile_reset(void){
 
 static inline void qos_display_profile_dump(void){
     (void)qos_syscall0(SYS_DISPLAY_PROFILE_DUMP);
+}
+
+static inline int qos_display_vsync_set(int enabled){
+    return (int)qos_syscall1(SYS_DISPLAY_VSYNC_SET,
+                             (unsigned long)(enabled ? 1u : 0u));
+}
+
+static inline int qos_display_vsync_get(void){
+    return (int)qos_syscall0(SYS_DISPLAY_VSYNC_GET);
 }
 
 static inline void qos_security_log_dump(void){

@@ -496,6 +496,7 @@ static void cmd_help(void){
     qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
+    qos_puts(" vsync on|off|status\n");
     qos_puts(" gpu2d status\n");
     qos_puts(" v3d probe|status|noop [0|1]|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
@@ -902,6 +903,26 @@ static void cmd_gpu(const char* mode){
         return;
     }
     qos_puts("Usage: gpu on|off|status\n");
+}
+
+static void cmd_vsync(const char* mode){
+    if (!mode || !*mode || str_eq(mode, "status")){
+        qos_puts("vsync=");
+        qos_puts(qos_display_vsync_get() ? "on" : "off");
+        qos_puts("\n");
+        return;
+    }
+    if (str_eq(mode, "on")){
+        (void)qos_display_vsync_set(1);
+        qos_puts("vsync enabled; presents are paced to vblank.\n");
+        return;
+    }
+    if (str_eq(mode, "off")){
+        (void)qos_display_vsync_set(0);
+        qos_puts("vsync disabled for benchmark mode; tearing is expected.\n");
+        return;
+    }
+    qos_puts("Usage: vsync on|off|status\n");
 }
 
 static void cmd_gpu2d(const char* mode){
@@ -1684,6 +1705,14 @@ static void execute_line(void){
         cmd_gpu(p);
     } else if (str_eq(g_buf, "gpu")){
         cmd_gpu("status");
+    } else if (str_starts_with(g_buf, "vsync ")){
+        const char* p = g_buf + 6;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_vsync(p);
+    } else if (str_eq(g_buf, "vsync")){
+        cmd_vsync("status");
     } else if (str_starts_with(g_buf, "gpu2d ")){
         const char* p = g_buf + 6;
         while (*p == ' '){

@@ -25,6 +25,7 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
 
 static int g_display_gpu_enabled = 0;
+static int g_display_vsync_enabled = 1;
 static unsigned int g_display_gpu_flip_count = 0;
 static unsigned int g_display_gpu_failure_count = 0;
 static int g_cursor_drawn = 0;
@@ -1281,7 +1282,9 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
         unsigned long set_us = display_cycles_to_us(after_set - flip_start,
                                                     prof_hz);
         unsigned long vsync_start = display_read_cntpct();
-        if (s->direct_page_a != s->direct_page_b){
+        unsigned long wait_us = 0UL;
+        if (g_display_vsync_enabled &&
+            s->direct_page_a != s->direct_page_b){
             /*
              * With double-buffered direct pages, the old visible page is the
              * next draw page. Wait for vblank before giving it back to
@@ -1289,9 +1292,10 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
              * still scanning out.
              */
             (void)fb_wait_vsync();
+            wait_us = display_elapsed_us(vsync_start, prof_hz);
         }
         flip_set_us += set_us;
-        flip_us += set_us + display_elapsed_us(vsync_start, prof_hz);
+        flip_us += set_us + wait_us;
         g_display_gpu_flip_count++;
         g_display_profile.pageflip_calls++;
     } else{
@@ -1895,9 +1899,13 @@ int display_present_active_graphics(void){
              * offset, then wait until the next vblank has accepted it before
              * giving the old visible page back to the renderer.
              */
-            (void)fb_wait_vsync();
+            if (g_display_vsync_enabled){
+                (void)fb_wait_vsync();
+            }
             flip_set_us += set_us;
-            unsigned long wait_us = display_elapsed_us(vsync_start, prof_hz);
+            unsigned long wait_us = g_display_vsync_enabled ?
+                                    display_elapsed_us(vsync_start, prof_hz) :
+                                    0UL;
             vsync_us += wait_us;
             flip_us += set_us + wait_us;
             g_display_gpu_flip_count++;
@@ -2018,6 +2026,22 @@ unsigned int display_gpu_failure_count(void){
     return g_display_gpu_failure_count;
 }
 
+int display_vsync_set_enabled(int enabled){
+    display_init();
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    g_display_vsync_enabled = enabled ? 1 : 0;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
+int display_vsync_is_enabled(void){
+    display_init();
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    int enabled = g_display_vsync_enabled;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return enabled;
+}
+
 void display_profile_reset(void){
     display_init();
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
@@ -2130,5 +2154,7 @@ void display_profile_dump(void){
     klog_putdec(snap.vsync_us);
     klog_puts(" clean=");
     klog_putdec(snap.clean_us);
+    klog_puts(" mode=");
+    klog_puts(display_vsync_is_enabled() ? "vsync" : "uncapped");
     klog_puts("\n");
 }

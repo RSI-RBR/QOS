@@ -543,6 +543,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_V3D_CLEAR:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
+        case SYS_DISPLAY_VSYNC_SET:
+        case SYS_DISPLAY_VSYNC_GET:
         case SYS_SECURITY_LOG_DUMP:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
@@ -1784,6 +1786,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_DISPLAY_PROFILE_DUMP:
             display_profile_dump();
             frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_DISPLAY_VSYNC_SET:
+            frame[TF_X0] = (unsigned long)display_vsync_set_enabled(frame[TF_X0] ? 1 : 0);
+            return frame_sp;
+
+        case SYS_DISPLAY_VSYNC_GET:
+            frame[TF_X0] = (unsigned long)display_vsync_is_enabled();
             return frame_sp;
 
         case SYS_SECURITY_LOG_DUMP:
