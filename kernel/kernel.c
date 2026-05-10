@@ -394,6 +394,8 @@ void kernel_main(void){
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
+            usb_host_poll();
+            usb_host_poll_mouse();
             asm volatile("wfi");
         }
     }

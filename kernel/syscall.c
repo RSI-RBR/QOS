@@ -464,6 +464,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_DMA_STATUS:
         case SYS_DMA_LAST_CS:
         case SYS_DMA_LAST_DEBUG:
+        case SYS_DMA_TRANSFER_COUNT:
+        case SYS_DMA_LAST_BYTES:
         case SYS_SECURITY_LOG_DUMP:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
@@ -1224,6 +1226,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_DMA_LAST_DEBUG:
             frame[TF_X0] = (unsigned long)dma_last_debug();
+            return frame_sp;
+
+        case SYS_DMA_TRANSFER_COUNT:
+            frame[TF_X0] = (unsigned long)dma_transfer_count();
+            return frame_sp;
+
+        case SYS_DMA_LAST_BYTES:
+            frame[TF_X0] = (unsigned long)dma_last_bytes();
             return frame_sp;
 
         case SYS_SECURITY_LOG_DUMP:

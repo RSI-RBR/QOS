@@ -11,6 +11,7 @@
 #include "panic.h"
 #include "terminal.h"
 #include "display.h"
+#include "usb_host.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -1444,6 +1445,8 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
+            usb_host_poll();
+            usb_host_poll_mouse();
             asm volatile("wfi");
         }
     }

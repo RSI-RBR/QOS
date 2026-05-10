@@ -54,6 +54,8 @@ static int g_dma_disabled = 0;
 static unsigned int g_dma_failures = 0;
 static unsigned int g_dma_last_cs = 0;
 static unsigned int g_dma_last_debug = 0;
+static unsigned int g_dma_transfer_count = 0;
+static unsigned int g_dma_last_bytes = 0;
 
 static void dma_barrier(void){
     asm volatile("dsb sy" : : : "memory");
@@ -108,6 +110,8 @@ void dma_set_enabled(int enabled){
         g_dma_enabled = 1;
         g_dma_last_cs = 0;
         g_dma_last_debug = 0;
+        g_dma_transfer_count = 0;
+        g_dma_last_bytes = 0;
     } else{
         g_dma_enabled = 0;
         dma_reset_channel();
@@ -129,6 +133,14 @@ unsigned int dma_last_cs(void){
 
 unsigned int dma_last_debug(void){
     return g_dma_last_debug;
+}
+
+unsigned int dma_transfer_count(void){
+    return g_dma_transfer_count;
+}
+
+unsigned int dma_last_bytes(void){
+    return g_dma_last_bytes;
 }
 
 static int dma_start_memcopy(unsigned int src_bus,
@@ -202,6 +214,8 @@ static int dma_start_memcopy(unsigned int src_bus,
         g_dma_disabled = 1;
         dma_reset_channel();
     } else{
+        g_dma_transfer_count++;
+        g_dma_last_bytes = transfer_bytes;
         DMA_CS = DMA_CS_END | DMA_CS_INT;
         dma_barrier();
     }
@@ -222,7 +236,7 @@ int dma_memcpy_to_bus(unsigned int dst_bus, const void* src, unsigned int bytes)
     }
 
     dma_init();
-    clean_invalidate_data_cache_range((unsigned long)src, bytes);
+    clean_data_cache_range((unsigned long)src, bytes);
     return dma_start_memcopy(dma_bus_address(src), dst_bus, bytes, 0u, 0u);
 }
 
@@ -249,7 +263,7 @@ int dma_memcpy_2d_to_bus(unsigned int dst_bus,
 
     unsigned long src_total = ((unsigned long)(row_bytes + src_stride) * (unsigned long)(rows - 1u)) +
                               (unsigned long)row_bytes;
-    clean_invalidate_data_cache_range((unsigned long)src, src_total);
+    clean_data_cache_range((unsigned long)src, src_total);
 
     return dma_start_memcopy(dma_bus_address(src),
                              dst_bus,

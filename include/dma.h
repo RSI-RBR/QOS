@@ -7,6 +7,8 @@ int dma_is_enabled(void);
 unsigned int dma_failure_count(void);
 unsigned int dma_last_cs(void);
 unsigned int dma_last_debug(void);
+unsigned int dma_transfer_count(void);
+unsigned int dma_last_bytes(void);
 int dma_memcpy_to_bus(unsigned int dst_bus, const void* src, unsigned int bytes);
 int dma_memcpy_2d_to_bus(unsigned int dst_bus,
                          unsigned int dst_stride,

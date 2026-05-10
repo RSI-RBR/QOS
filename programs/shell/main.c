@@ -709,6 +709,10 @@ static void cmd_dma(const char* mode){
         print_hex32(qos_dma_last_cs());
         qos_puts(" debug=");
         print_hex32(qos_dma_last_debug());
+        qos_puts(" xfers=");
+        print_uint(qos_dma_transfer_count());
+        qos_puts(" last_bytes=");
+        print_uint(qos_dma_last_bytes());
         qos_puts("\n");
         return;
     }

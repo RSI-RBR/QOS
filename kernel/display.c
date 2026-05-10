@@ -175,6 +175,7 @@ static int display_copy_rect_locked(const display_session_t* s,
                            y1 <= dst_height);
 
     if (full_frame_copy &&
+        dma_is_enabled() &&
         fb_bus != 0u &&
         copy_bytes >= DISPLAY_DMA_MIN_BYTES &&
         copy_bytes <= 0xFFFFFFFFUL){
@@ -188,6 +189,20 @@ static int display_copy_rect_locked(const display_session_t* s,
                                               row_offset);
         if (src_stride == 0u && dst_stride == 0u){
             if (dma_memcpy_to_bus(dst_bus, src0, (unsigned int)copy_bytes) == 0){
+                return 0;
+            }
+        } else if (src_stride <= 0x7FFFu && dst_stride <= 0x7FFFu){
+            /*
+             * Still one DMA control block for the whole visible frame, even
+             * when firmware pads either pitch. This avoids the old trap of
+             * treating graphics present as many tiny row transfers.
+             */
+            if (dma_memcpy_2d_to_bus(dst_bus,
+                                     dst_stride,
+                                     src0,
+                                     src_stride,
+                                     row_bytes,
+                                     copy_height) == 0){
                 return 0;
             }
         }
