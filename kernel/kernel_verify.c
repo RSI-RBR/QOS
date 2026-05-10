@@ -219,7 +219,11 @@ static int verify_manifest_policy(void){
             return -1;
         }
         if (!g_logged_kernel_verify_mode){
-            uart_puts("Kernel verify: mode=ED25519\n");
+            if (g_require_kernel_pq){
+                uart_puts("Kernel verify: mode=HYBRID-ED25519+ML-DSA65\n");
+            } else{
+                uart_puts("Kernel verify: mode=ED25519\n");
+            }
             g_logged_kernel_verify_mode = 1;
         }
     }
