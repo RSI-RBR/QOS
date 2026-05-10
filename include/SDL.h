@@ -18,6 +18,8 @@ typedef int SDL_bool;
 typedef int SDL_Scancode;
 typedef int SDL_Keycode;
 
+#define SDL_QOS_NATIVE_SCALE_LEVELS 6
+
 #define SDL_FALSE 0
 #define SDL_TRUE 1
 #define SDL_DISABLE 0
@@ -53,13 +55,18 @@ typedef struct SDL_Texture {
     int pitch;
     Uint8* pixels;
     Uint32* native_pixels;
+    Uint32* native_scaled_pixels[SDL_QOS_NATIVE_SCALE_LEVELS];
     Uint16* opaque_spans;
     Uint32 capacity;
     Uint32 native_capacity;
+    Uint32 native_scaled_w[SDL_QOS_NATIVE_SCALE_LEVELS];
+    Uint32 native_scaled_h[SDL_QOS_NATIVE_SCALE_LEVELS];
+    Uint32 native_scaled_capacity[SDL_QOS_NATIVE_SCALE_LEVELS];
     Uint32 opaque_span_count;
     Uint32 opaque_span_capacity;
     Uint32 gpu_texture_id;
     int native_valid;
+    int native_scaled_valid[SDL_QOS_NATIVE_SCALE_LEVELS];
     int opaque_spans_valid;
     int binary_alpha;
     int gpu_texture_valid;

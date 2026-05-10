@@ -88,6 +88,7 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_gpu2d_miss;
     Uint64 rendercopy_native_calls;
     Uint64 rendercopy_native_intscale_calls;
+    Uint64 rendercopy_native_cached_scale_calls;
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
@@ -174,6 +175,7 @@ static void sdl_profile_copy(sdl_qos_profile_t* dst, const sdl_qos_profile_t* sr
     dst->rendercopy_gpu2d_miss = src->rendercopy_gpu2d_miss;
     dst->rendercopy_native_calls = src->rendercopy_native_calls;
     dst->rendercopy_native_intscale_calls = src->rendercopy_native_intscale_calls;
+    dst->rendercopy_native_cached_scale_calls = src->rendercopy_native_cached_scale_calls;
     dst->rendercopy_blitbuf_calls = src->rendercopy_blitbuf_calls;
     dst->rendercopy_row_calls = src->rendercopy_row_calls;
     dst->rendercopy_fill_calls = src->rendercopy_fill_calls;
@@ -215,6 +217,7 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_gpu2d_miss = 0ull;
     g_sdl_profile.rendercopy_native_calls = 0ull;
     g_sdl_profile.rendercopy_native_intscale_calls = 0ull;
+    g_sdl_profile.rendercopy_native_cached_scale_calls = 0ull;
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
@@ -287,6 +290,8 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_native_calls);
     qos_puts(" intscale=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_native_intscale_calls);
+    qos_puts(" cachedscale=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_native_cached_scale_calls);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_blitbuf_calls);
     qos_puts(" row=");
@@ -397,6 +402,8 @@ static void sdl_profile_auto_tick(void){
                                       g_sdl_auto_last_profile.rendercopy_native_calls);
     Uint64 intscale = sdl_profile_delta(g_sdl_profile.rendercopy_native_intscale_calls,
                                         g_sdl_auto_last_profile.rendercopy_native_intscale_calls);
+    Uint64 cachedscale = sdl_profile_delta(g_sdl_profile.rendercopy_native_cached_scale_calls,
+                                           g_sdl_auto_last_profile.rendercopy_native_cached_scale_calls);
     Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
                                        g_sdl_auto_last_profile.rendercopy_blitbuf_calls);
     Uint64 row = sdl_profile_delta(g_sdl_profile.rendercopy_row_calls,
@@ -456,6 +463,8 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(native);
     qos_puts(" intscale=");
     sdl_profile_put_u64(intscale);
+    qos_puts(" cachedscale=");
+    sdl_profile_put_u64(cachedscale);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(blitbuf);
     qos_puts(" row=");
@@ -986,6 +995,12 @@ static int sdl_texture_upload_gpu(SDL_Texture* texture);
 static void sdl_texture_free_native(SDL_Texture* texture);
 static void sdl_texture_invalidate_native(SDL_Texture* texture);
 static int sdl_texture_ensure_native(SDL_Texture* texture);
+static void sdl_texture_reset_scaled_native(SDL_Texture* texture);
+static void sdl_texture_free_scaled_native(SDL_Texture* texture);
+static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
+                                            int out_w,
+                                            int out_h,
+                                            const Uint32** out_pixels);
 static void sdl_texture_free_spans(SDL_Texture* texture);
 static void sdl_texture_invalidate_spans(SDL_Texture* texture);
 static int sdl_texture_ensure_opaque_spans(SDL_Texture* texture);
@@ -1037,6 +1052,28 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
         sw >= dw && sh >= dh &&
         dw > 0 && dh > 0 &&
         (sw % dw) == 0 && (sh % dh) == 0){
+        const Uint32* cached_pixels = 0;
+        if (sx == 0 && sy == 0 &&
+            sw == texture->w && sh == texture->h &&
+            sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
+            for (int oy = visible_y0; oy < visible_y1; oy++){
+                int py = dy + oy;
+                if (py < 0 || py >= g_soft_fb_h){
+                    continue;
+                }
+
+                Uint8* dst = g_soft_fb +
+                             ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                             ((unsigned long)(dx + visible_x0) * 4ul);
+                const Uint8* src = (const Uint8*)(cached_pixels +
+                                                  ((Uint32)oy * (Uint32)dw) +
+                                                  (Uint32)visible_x0);
+                sdl_copy_bytes(dst, src, (Uint32)(visible_x1 - visible_x0) * 4u);
+            }
+            g_sdl_profile.rendercopy_native_cached_scale_calls++;
+            return 0;
+        }
+
         int x_step_i = sw / dw;
         int y_step_i = sh / dh;
         for (int oy = visible_y0; oy < visible_y1; oy++){
@@ -2084,6 +2121,122 @@ static int sdl_texture_upload_gpu(SDL_Texture* texture){
 #endif
 }
 
+static void sdl_texture_reset_scaled_native(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+    for (int i = 0; i < SDL_QOS_NATIVE_SCALE_LEVELS; i++){
+        texture->native_scaled_pixels[i] = 0;
+        texture->native_scaled_w[i] = 0u;
+        texture->native_scaled_h[i] = 0u;
+        texture->native_scaled_capacity[i] = 0u;
+        texture->native_scaled_valid[i] = 0;
+    }
+}
+
+static void sdl_texture_free_scaled_native(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+    for (int i = 0; i < SDL_QOS_NATIVE_SCALE_LEVELS; i++){
+        if (texture->native_scaled_pixels[i]){
+            free(texture->native_scaled_pixels[i]);
+        }
+    }
+    sdl_texture_reset_scaled_native(texture);
+}
+
+static int sdl_texture_scaled_slot_for_size(SDL_Texture* texture,
+                                            int out_w,
+                                            int out_h){
+    int empty = -1;
+    if (!texture){
+        return -1;
+    }
+    for (int i = 0; i < SDL_QOS_NATIVE_SCALE_LEVELS; i++){
+        if (texture->native_scaled_valid[i] &&
+            texture->native_scaled_w[i] == (Uint32)out_w &&
+            texture->native_scaled_h[i] == (Uint32)out_h &&
+            texture->native_scaled_pixels[i]){
+            return i;
+        }
+        if (empty < 0 && !texture->native_scaled_valid[i]){
+            empty = i;
+        }
+    }
+    return empty;
+}
+
+static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
+                                            int out_w,
+                                            int out_h,
+                                            const Uint32** out_pixels){
+    Uint32 bytes;
+    int slot;
+    int x_step_i;
+    int y_step_i;
+
+    if (out_pixels){
+        *out_pixels = 0;
+    }
+    if (!texture || !out_pixels || !texture->alive ||
+        out_w <= 0 || out_h <= 0 ||
+        texture->w <= 0 || texture->h <= 0 ||
+        out_w > texture->w || out_h > texture->h ||
+        (texture->w % out_w) != 0 || (texture->h % out_h) != 0){
+        return -1;
+    }
+    if ((Uint32)out_w > (0xFFFFFFFFu / (Uint32)out_h) / 4u){
+        return -1;
+    }
+    if (sdl_texture_ensure_native(texture) != 0){
+        return -1;
+    }
+
+    slot = sdl_texture_scaled_slot_for_size(texture, out_w, out_h);
+    if (slot < 0){
+        return -1;
+    }
+
+    bytes = (Uint32)out_w * (Uint32)out_h * 4u;
+    if (!texture->native_scaled_pixels[slot] ||
+        texture->native_scaled_capacity[slot] < bytes){
+        if (texture->native_scaled_pixels[slot]){
+            free(texture->native_scaled_pixels[slot]);
+        }
+        texture->native_scaled_pixels[slot] = (Uint32*)malloc((unsigned long)bytes);
+        if (!texture->native_scaled_pixels[slot]){
+            texture->native_scaled_capacity[slot] = 0u;
+            texture->native_scaled_valid[slot] = 0;
+            return -1;
+        }
+        texture->native_scaled_capacity[slot] = bytes;
+        texture->native_scaled_valid[slot] = 0;
+    }
+
+    if (!texture->native_scaled_valid[slot] ||
+        texture->native_scaled_w[slot] != (Uint32)out_w ||
+        texture->native_scaled_h[slot] != (Uint32)out_h){
+        x_step_i = texture->w / out_w;
+        y_step_i = texture->h / out_h;
+        for (int y = 0; y < out_h; y++){
+            const Uint32* src = texture->native_pixels +
+                                ((Uint32)(y * y_step_i) * (Uint32)texture->w);
+            Uint32* dst = texture->native_scaled_pixels[slot] +
+                          ((Uint32)y * (Uint32)out_w);
+            for (int x = 0; x < out_w; x++){
+                dst[x] = src[x * x_step_i];
+            }
+        }
+        texture->native_scaled_w[slot] = (Uint32)out_w;
+        texture->native_scaled_h[slot] = (Uint32)out_h;
+        texture->native_scaled_valid[slot] = 1;
+    }
+
+    *out_pixels = texture->native_scaled_pixels[slot];
+    return 0;
+}
+
 static void sdl_texture_free_native(SDL_Texture* texture){
     if (!texture){
         return;
@@ -2091,6 +2244,7 @@ static void sdl_texture_free_native(SDL_Texture* texture){
     if (texture->native_pixels){
         free(texture->native_pixels);
     }
+    sdl_texture_free_scaled_native(texture);
     texture->native_pixels = 0;
     texture->native_capacity = 0u;
     texture->native_valid = 0;
@@ -2117,6 +2271,7 @@ static void sdl_texture_invalidate_spans(SDL_Texture* texture){
 static void sdl_texture_invalidate_native(SDL_Texture* texture){
     if (texture){
         texture->native_valid = 0;
+        sdl_texture_free_scaled_native(texture);
         sdl_texture_invalidate_spans(texture);
         sdl_texture_invalidate_gpu(texture);
     }
@@ -3027,6 +3182,7 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->native_pixels = 0;
     t->opaque_spans = 0;
     t->native_capacity = 0u;
+    sdl_texture_reset_scaled_native(t);
     t->opaque_span_count = 0u;
     t->opaque_span_capacity = 0u;
     t->gpu_texture_id = 0u;
@@ -3093,6 +3249,7 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->native_pixels = 0;
     t->opaque_spans = 0;
     t->native_capacity = 0u;
+    sdl_texture_reset_scaled_native(t);
     t->opaque_span_count = 0u;
     t->opaque_span_capacity = 0u;
     t->gpu_texture_id = 0u;
