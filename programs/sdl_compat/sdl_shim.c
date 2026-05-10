@@ -660,8 +660,19 @@ static int sdl_queue_fill_rect(unsigned int x,
         return 0;
     }
     g_sdl_profile.fill_calls++;
+    Uint64 t0 = qos_get_time_us();
+    if (g_soft_fb_direct &&
+        (x & 63u) == 0u &&
+        (y & 63u) == 0u &&
+        (w & 63u) == 0u &&
+        (h & 63u) == 0u &&
+        qos_gpu2d_fill_rect(x, y, w, h, color) == 0){
+        g_sdl_profile.fill_flushes++;
+        g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+        return 0;
+    }
     if (g_soft_fb_enabled && g_soft_fb){
-        Uint64 t0 = qos_get_time_us();
         sdl_soft_fill_rect(x, y, w, h, color);
         g_sdl_profile.fill_flushes++;
         g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;

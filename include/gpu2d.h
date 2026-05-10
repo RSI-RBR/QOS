@@ -7,6 +7,7 @@
 #define QOS_GPU2D_CAP_ACCEL_ALPHA       0x00000008u
 #define QOS_GPU2D_CAP_ACCEL_ROTATE      0x00000010u
 #define QOS_GPU2D_CAP_ACCEL_CLEAR       0x00000020u
+#define QOS_GPU2D_CAP_ACCEL_FILL_TILE   0x00000040u
 
 #define QOS_GPU2D_STATUS_READY          0x00010000u
 #define QOS_GPU2D_STATUS_BACKEND_SOFT   0x00020000u
@@ -40,7 +41,14 @@ unsigned int gpu2d_blit_count(void);
 unsigned int gpu2d_fallback_count(void);
 unsigned int gpu2d_unsupported_count(void);
 unsigned int gpu2d_clear_count(void);
+unsigned int gpu2d_fill_count(void);
 int gpu2d_blit_rgba_for_pid(int pid, const qos_gpu2d_blit_t* blit);
 int gpu2d_clear_for_pid(int pid, unsigned int color);
+int gpu2d_fill_rect_for_pid(int pid,
+                            unsigned int x,
+                            unsigned int y,
+                            unsigned int w,
+                            unsigned int h,
+                            unsigned int color);
 
 #endif

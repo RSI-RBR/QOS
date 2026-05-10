@@ -457,6 +457,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU2D_UNSUPPORTED_COUNT:
         case SYS_GPU2D_CLEAR:
         case SYS_GPU2D_CLEAR_COUNT:
+        case SYS_GPU2D_FILL_RECT:
+        case SYS_GPU2D_FILL_COUNT:
         case SYS_V3D_STATUS:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
@@ -922,6 +924,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_GPU2D_CLEAR_COUNT:
             frame[TF_X0] = (unsigned long)gpu2d_clear_count();
+            return frame_sp;
+
+        case SYS_GPU2D_FILL_RECT:
+            frame[TF_X0] = (unsigned long)gpu2d_fill_rect_for_pid(process_current_pid(),
+                                                                  (unsigned int)frame[TF_X0],
+                                                                  (unsigned int)frame[TF_X1],
+                                                                  (unsigned int)frame[TF_X2],
+                                                                  (unsigned int)frame[TF_X3],
+                                                                  (unsigned int)frame[TF_X4]);
+            return frame_sp;
+
+        case SYS_GPU2D_FILL_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_fill_count();
             return frame_sp;
 
         case SYS_V3D_PROBE: {

@@ -139,7 +139,9 @@ enum {
     SYS_V3D_NOOP = 113,
     SYS_V3D_CLEAR = 114,
     SYS_GPU2D_CLEAR = 115,
-    SYS_GPU2D_CLEAR_COUNT = 116
+    SYS_GPU2D_CLEAR_COUNT = 116,
+    SYS_GPU2D_FILL_RECT = 117,
+    SYS_GPU2D_FILL_COUNT = 118
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -508,12 +510,29 @@ static inline int qos_gpu2d_clear(unsigned int color){
     return (int)qos_syscall1(SYS_GPU2D_CLEAR, (unsigned long)color);
 }
 
+static inline int qos_gpu2d_fill_rect(unsigned int x,
+                                      unsigned int y,
+                                      unsigned int w,
+                                      unsigned int h,
+                                      unsigned int color){
+    return (int)qos_syscall5(SYS_GPU2D_FILL_RECT,
+                             (unsigned long)x,
+                             (unsigned long)y,
+                             (unsigned long)w,
+                             (unsigned long)h,
+                             (unsigned long)color);
+}
+
 static inline unsigned int qos_gpu2d_blit_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_BLIT_COUNT);
 }
 
 static inline unsigned int qos_gpu2d_clear_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_CLEAR_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_fill_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_FILL_COUNT);
 }
 
 static inline unsigned int qos_gpu2d_fallback_count(void){

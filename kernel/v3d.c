@@ -133,6 +133,41 @@ static int v3d_wait_thread_stopped(unsigned int cs_reg){
     return QOS_V3D_ERR_TIMEOUT;
 }
 
+static void v3d_clean_invalidate_frame_tiles(unsigned long fb_base,
+                                             unsigned int pitch,
+                                             unsigned int tile_x,
+                                             unsigned int tile_y,
+                                             unsigned int tile_w,
+                                             unsigned int tile_h,
+                                             unsigned int fb_width,
+                                             unsigned int fb_height){
+    unsigned int x0 = tile_x * V3D_TILE_SIZE;
+    unsigned int y0 = tile_y * V3D_TILE_SIZE;
+    unsigned int x1 = (tile_x + tile_w) * V3D_TILE_SIZE;
+    unsigned int y1 = (tile_y + tile_h) * V3D_TILE_SIZE;
+    if (x1 > fb_width){
+        x1 = fb_width;
+    }
+    if (y1 > fb_height){
+        y1 = fb_height;
+    }
+    if (x1 <= x0 || y1 <= y0){
+        return;
+    }
+    if (x0 == 0u && y0 == 0u && x1 == fb_width && y1 == fb_height){
+        clean_invalidate_data_cache_range(fb_base,
+                                          (unsigned long)pitch * (unsigned long)fb_height);
+        return;
+    }
+    unsigned int row_bytes = (x1 - x0) * sizeof(unsigned int);
+    for (unsigned int y = y0; y < y1; y++){
+        clean_invalidate_data_cache_range(fb_base +
+                                          ((unsigned long)y * pitch) +
+                                          ((unsigned long)x0 * sizeof(unsigned int)),
+                                          row_bytes);
+    }
+}
+
 static int v3d_update_clock(qos_v3d_status_t* st, int allow_set){
     unsigned int hz = 0u;
 
@@ -348,7 +383,13 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out){
     return rc;
 }
 
-int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
+int v3d_clear_page_tiles(unsigned int page,
+                         unsigned int rgba,
+                         unsigned int tile_x,
+                         unsigned int tile_y,
+                         unsigned int tile_w,
+                         unsigned int tile_h,
+                         qos_v3d_status_t* out){
     qos_v3d_status_t st;
     unsigned int width = fb_get_width();
     unsigned int height = fb_get_height();
@@ -380,7 +421,11 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
 
     tiles_x = (width + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
     tiles_y = (height + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
-    if (tiles_x == 0u || tiles_y == 0u || tiles_x > 255u || tiles_y > 255u){
+    if (tiles_x == 0u || tiles_y == 0u || tiles_x > 255u || tiles_y > 255u ||
+        tile_w == 0u || tile_h == 0u ||
+        tile_x >= tiles_x || tile_y >= tiles_y ||
+        tile_x + tile_w < tile_x || tile_y + tile_h < tile_y ||
+        tile_x + tile_w > tiles_x || tile_y + tile_h > tiles_y){
         (void)v3d_get_status(&st);
         st.last_error = QOS_V3D_ERR_CONTROL;
         if (out){ *out = st; }
@@ -418,9 +463,11 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
      * pass is the visible clear and signals end-of-frame on the final tile.
      */
     for (unsigned int pass = 0u; pass < 2u; pass++){
-        for (unsigned int y = 0u; y < tiles_y; y++){
-            for (unsigned int x = 0u; x < tiles_x; x++){
-                int last = (pass == 1u && x + 1u == tiles_x && y + 1u == tiles_y);
+        for (unsigned int y = tile_y; y < tile_y + tile_h; y++){
+            for (unsigned int x = tile_x; x < tile_x + tile_w; x++){
+                int last = (pass == 1u &&
+                            x + 1u == tile_x + tile_w &&
+                            y + 1u == tile_y + tile_h);
                 v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
                 v3d_emit_u8(&p, end, x);
                 v3d_emit_u8(&p, end, y);
@@ -440,7 +487,14 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
 
     clean_data_cache_range((unsigned long)g_v3d_clear_cl,
                            (unsigned long)(p - g_v3d_clear_cl));
-    clean_invalidate_data_cache_range(fb_base, (unsigned long)pitch * (unsigned long)height);
+    v3d_clean_invalidate_frame_tiles(fb_base,
+                                     pitch,
+                                     tile_x,
+                                     tile_y,
+                                     tile_w,
+                                     tile_h,
+                                     width,
+                                     height);
     start_bus = v3d_bus_address(g_v3d_clear_cl);
     end_bus = start_bus + (unsigned int)(p - g_v3d_clear_cl);
 
@@ -453,7 +507,14 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
     v3d_barrier();
 
     rc = v3d_wait_thread_stopped(V3D_CT1CS);
-    clean_invalidate_data_cache_range(fb_base, (unsigned long)pitch * (unsigned long)height);
+    v3d_clean_invalidate_frame_tiles(fb_base,
+                                     pitch,
+                                     tile_x,
+                                     tile_y,
+                                     tile_w,
+                                     tile_h,
+                                     width,
+                                     height);
 
     (void)v3d_get_status(&st);
     st.last_job_thread = 1u;
@@ -461,7 +522,7 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
     st.last_job_end_bus = end_bus;
     st.last_clear_color = rgba;
     st.last_clear_page = page;
-    st.last_clear_tiles = tiles_x * tiles_y;
+    st.last_clear_tiles = tile_w * tile_h;
     if (rc == 0){
         st.clear_count = ++g_v3d_clear_count;
     } else{
@@ -479,6 +540,14 @@ int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
         *out = st;
     }
     return rc;
+}
+
+int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
+    unsigned int width = fb_get_width();
+    unsigned int height = fb_get_height();
+    unsigned int tiles_x = (width + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    unsigned int tiles_y = (height + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    return v3d_clear_page_tiles(page, rgba, 0u, 0u, tiles_x, tiles_y, out);
 }
 
 int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){

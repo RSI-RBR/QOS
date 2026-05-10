@@ -47,6 +47,13 @@ typedef struct {
 int v3d_probe(qos_v3d_status_t* out);
 int v3d_get_status(qos_v3d_status_t* out);
 int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
+int v3d_clear_page_tiles(unsigned int page,
+                         unsigned int rgba,
+                         unsigned int tile_x,
+                         unsigned int tile_y,
+                         unsigned int tile_w,
+                         unsigned int tile_h,
+                         qos_v3d_status_t* out);
 int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out);
 int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out);
 

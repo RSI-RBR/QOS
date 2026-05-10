@@ -4,6 +4,7 @@
 
 static unsigned int g_gpu2d_blit_count = 0u;
 static unsigned int g_gpu2d_clear_count = 0u;
+static unsigned int g_gpu2d_fill_count = 0u;
 static unsigned int g_gpu2d_fallback_count = 0u;
 static unsigned int g_gpu2d_unsupported_count = 0u;
 
@@ -15,7 +16,8 @@ unsigned int gpu2d_status(void){
     if (v3d_get_status(&st) == 0 &&
         (st.flags & QOS_V3D_FLAG_SCRATCH_OK)){
         status |= QOS_GPU2D_STATUS_BACKEND_HW |
-                  QOS_GPU2D_CAP_ACCEL_CLEAR;
+                  QOS_GPU2D_CAP_ACCEL_CLEAR |
+                  QOS_GPU2D_CAP_ACCEL_FILL_TILE;
     }
     return status;
 }
@@ -26,6 +28,10 @@ unsigned int gpu2d_blit_count(void){
 
 unsigned int gpu2d_clear_count(void){
     return g_gpu2d_clear_count;
+}
+
+unsigned int gpu2d_fill_count(void){
+    return g_gpu2d_fill_count;
 }
 
 unsigned int gpu2d_fallback_count(void){
@@ -99,5 +105,40 @@ int gpu2d_clear_for_pid(int pid, unsigned int color){
         return -2;
     }
     g_gpu2d_clear_count++;
+    return 0;
+}
+
+int gpu2d_fill_rect_for_pid(int pid,
+                            unsigned int x,
+                            unsigned int y,
+                            unsigned int w,
+                            unsigned int h,
+                            unsigned int color){
+    int session_id = display_get_for_pid(pid);
+    display_session_t info;
+    if (session_id < 0 || display_get_info(session_id, &info) != 0){
+        return -1;
+    }
+    if (info.type != DISPLAY_GRAPHICS || !info.direct_framebuffer ||
+        info.direct_page >= 4u ||
+        (x & 63u) != 0u || (y & 63u) != 0u ||
+        (w & 63u) != 0u || (h & 63u) != 0u ||
+        w == 0u || h == 0u ||
+        x + w < x || y + h < y ||
+        x + w > info.width || y + h > info.height){
+        g_gpu2d_unsupported_count++;
+        return -2;
+    }
+    if (v3d_clear_page_tiles(info.direct_page,
+                             color,
+                             x >> 6,
+                             y >> 6,
+                             w >> 6,
+                             h >> 6,
+                             0) != 0){
+        g_gpu2d_unsupported_count++;
+        return -2;
+    }
+    g_gpu2d_fill_count++;
     return 0;
 }
