@@ -1340,6 +1340,9 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
 
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface){
     SDL_Texture* t;
+    Uint32 row_bytes;
+    Uint32 expected_capacity;
+    int adopted_pixels = 0;
     Uint64 t0 = qos_get_time_us();
     if (!renderer || !renderer->alive){
         set_error("renderer not alive");
@@ -1353,6 +1356,16 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
         set_error("surface format unsupported");
         return 0;
     }
+    if ((Uint32)surface->w > (0xFFFFFFFFu / (Uint32)surface->h) / 4u){
+        set_error("surface size overflow");
+        return 0;
+    }
+    row_bytes = (Uint32)surface->w * 4u;
+    expected_capacity = row_bytes * (Uint32)surface->h;
+    if (surface->pitch < (int)row_bytes || surface->capacity < expected_capacity){
+        set_error("surface storage invalid");
+        return 0;
+    }
 
     t = alloc_texture_slot();
     if (!t){
@@ -1364,14 +1377,32 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->h = surface->h;
     t->format = surface_format_value(surface);
     t->access = SDL_TEXTUREACCESS_STATIC;
-    t->pitch = surface->pitch;
-    t->capacity = surface->capacity;
-    t->pixels = sdl_alloc_pixels(t->capacity);
-    if (!t->pixels){
-        set_error("texture heap exhausted");
-        return 0;
+    t->pitch = (int)row_bytes;
+    t->capacity = expected_capacity;
+
+    if (surface->owns_pixels &&
+        surface->pitch == (int)row_bytes &&
+        surface->capacity == expected_capacity){
+        /*
+         * IMG_LoadTexture() immediately frees the temporary surface. Transfer
+         * ownership for the common BMP path to avoid a large duplicate copy and
+         * reduce peak heap pressure during asset loading.
+         */
+        t->pixels = surface->pixels;
+        surface->owns_pixels = 0;
+        adopted_pixels = 1;
+    } else{
+        t->pixels = sdl_alloc_pixels(t->capacity);
+        if (!t->pixels){
+            set_error("texture heap exhausted");
+            return 0;
+        }
+        for (int y = 0; y < surface->h; y++){
+            Uint8* dst_row = t->pixels + ((Uint32)y * row_bytes);
+            const Uint8* src_row = surface->pixels + ((Uint32)y * (Uint32)surface->pitch);
+            sdl_copy_bytes(dst_row, src_row, row_bytes);
+        }
     }
-    sdl_copy_bytes(t->pixels, surface->pixels, t->capacity);
     t->color_r = 255u;
     t->color_g = 255u;
     t->color_b = 255u;
@@ -1383,6 +1414,9 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
+    if (adopted_pixels){
+        surface->pixels = t->pixels;
+    }
     g_sdl_profile.texture_calls++;
     g_sdl_profile.texture_bytes += (Uint64)t->capacity;
     g_sdl_profile.texture_us += qos_get_time_us() - t0;
