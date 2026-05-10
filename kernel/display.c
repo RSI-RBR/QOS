@@ -14,6 +14,8 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_CURSOR_RADIUS 7
 #define DISPLAY_CURSOR_PAD 2
 #define DISPLAY_DMA_MIN_BYTES (256u * 1024u)
+#define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
+#define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
@@ -887,6 +889,30 @@ int display_present_active_graphics(void){
         }
         if (copy_x0 >= copy_x1 || copy_y0 >= copy_y1){
             have_dirty = 0;
+        }
+        if (have_dirty && dma_is_enabled()){
+            unsigned long dirty_pixels =
+                (unsigned long)(copy_x1 - copy_x0) *
+                (unsigned long)(copy_y1 - copy_y0);
+            unsigned int full_x1 = s->width < dst_width ? s->width : dst_width;
+            unsigned int full_y1 = s->height < dst_height ? s->height : dst_height;
+            unsigned long full_pixels =
+                (unsigned long)full_x1 * (unsigned long)full_y1;
+
+            if (full_pixels > 0ul &&
+                (dirty_pixels * DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN) >=
+                (full_pixels * DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM)){
+                /*
+                 * Large scrolling/redraw frames are better tested as a single
+                 * full-screen present. If pitch is contiguous, the DMA layer
+                 * uses one linear transfer; otherwise it uses one 2D control
+                 * block, not per-line syscalls.
+                 */
+                copy_x0 = 0u;
+                copy_y0 = 0u;
+                copy_x1 = full_x1;
+                copy_y1 = full_y1;
+            }
         }
     }
 
