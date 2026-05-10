@@ -870,9 +870,6 @@ int display_destroy_session(int session_id){
     if (g_display_sessions[session_id].allocation){
         fb = g_display_sessions[session_id].allocation;
         size = g_display_sessions[session_id].allocation_size;
-    } else if (!g_display_sessions[session_id].external_framebuffer){
-        fb = g_display_sessions[session_id].framebuffer;
-        size = g_display_sessions[session_id].framebuffer_size;
     }
     display_clear_session_locked(session_id);
     if (g_display_active == session_id){
@@ -1114,6 +1111,10 @@ int display_attach_external_framebuffer_for_pid(int owner_pid,
     s->height = height;
     s->pitch = pitch;
     s->external_framebuffer = 1;
+    s->direct_framebuffer = 0;
+    s->direct_page = 0u;
+    s->direct_page_a = 0u;
+    s->direct_page_b = 0u;
     display_mark_full_dirty_locked(s);
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (old_allocation && old_allocation_size > 0UL){

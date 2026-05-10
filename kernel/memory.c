@@ -187,6 +187,13 @@ void kfree_secure(void* ptr, unsigned long size){
     if (!block){
         spin_unlock_irqrestore(&heap_lock, irq);
         uart_puts("kfree_secure invalid ptr\n");
+        uart_puts(" ptr=");
+        uart_puthex((unsigned int)(unsigned long)ptr);
+        uart_puts(" heap=");
+        uart_puthex((unsigned int)(unsigned long)heap_base);
+        uart_puts("..");
+        uart_puthex((unsigned int)((unsigned long)heap_base + heap_size));
+        uart_puts("\n");
         return;
     }
     if (block->free){
