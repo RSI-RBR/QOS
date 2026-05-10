@@ -167,7 +167,15 @@ static int display_copy_rect_locked(const display_session_t* s,
         return -1;
     }
 
-    if (fb_bus != 0u &&
+    int full_frame_copy = (x0 == 0u &&
+                           y0 == 0u &&
+                           x1 == s->width &&
+                           y1 == s->height &&
+                           x1 <= dst_width &&
+                           y1 <= dst_height);
+
+    if (full_frame_copy &&
+        fb_bus != 0u &&
         copy_bytes >= DISPLAY_DMA_MIN_BYTES &&
         copy_bytes <= 0xFFFFFFFFUL){
         unsigned int src_stride = s->pitch - row_bytes;
@@ -182,13 +190,6 @@ static int display_copy_rect_locked(const display_session_t* s,
             if (dma_memcpy_to_bus(dst_bus, src0, (unsigned int)copy_bytes) == 0){
                 return 0;
             }
-        } else if (dma_memcpy_2d_to_bus(dst_bus,
-                                        dst_stride,
-                                        src0,
-                                        src_stride,
-                                        row_bytes,
-                                        copy_height) == 0){
-            return 0;
         }
     }
 

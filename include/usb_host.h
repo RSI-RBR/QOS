@@ -74,6 +74,9 @@ typedef struct {
     unsigned int hid_nodata_count;
     unsigned int hid_error_count;
     unsigned int hid_last_actual;
+    unsigned int hid_last_mod;
+    unsigned int hid_last_key0;
+    unsigned int hid_switch_count;
     unsigned int hid_stale_clear_count;
     unsigned char hub_ports;
     unsigned char hub_enum_attempts;

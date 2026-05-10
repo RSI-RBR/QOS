@@ -646,6 +646,14 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
     int alt = (report[0] & (USB_HID_MOD_LEFT_ALT | USB_HID_MOD_RIGHT_ALT)) ? 1 : 0;
     unsigned char switch_combo = 0u;
     unsigned char prev_mod = g_kbd.have_prev_report ? g_kbd.prev_report[0] : 0u;
+    g_root_info.hid_last_mod = report[0];
+    g_root_info.hid_last_key0 = 0u;
+    for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+        if (report[i] != 0u && report[i] != 0x01u){
+            g_root_info.hid_last_key0 = report[i];
+            break;
+        }
+    }
 
     if (alt && usb_hid_key_present(report, USB_HID_KEY_LEFT_ARROW)){
         switch_combo = USB_HID_SWITCH_LEFT;
@@ -662,6 +670,7 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
         if (g_kbd_switch_combo != switch_combo){
             (void)terminal_cycle_display_session(
                 switch_combo == USB_HID_SWITCH_LEFT ? -1 : 1);
+            g_root_info.hid_switch_count++;
         }
         g_kbd_switch_combo = switch_combo;
         g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
@@ -1190,8 +1199,16 @@ static int usb_hid_poll_once(void){
     }
     g_root_info.hid_report_count++;
     g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
-    if (actual >= 9u && report[0] != 0u && report[1] == 0u){
-        // Report-ID prefixed packet: decode the 8-byte boot layout after ID.
+    if (actual >= 9u &&
+        !g_kbd.boot_kbd &&
+        report[0] != 0u &&
+        report[2] == 0u){
+        /*
+         * Report-ID prefixed packet:
+         *   [report_id, modifiers, reserved, key0, ...]
+         * Do not treat a plain boot report with Alt held as report-ID
+         * prefixed; in that case report[2] is the first key slot.
+         */
         usb_hid_process_report(&report[1]);
     } else{
         usb_hid_process_report(report);

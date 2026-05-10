@@ -331,6 +331,12 @@ static void syscall_dump_usb_info(void){
         uart_putdec(info.hid_error_count);
         syscall_write_puts(-1, " last=");
         uart_putdec(info.hid_last_actual);
+        syscall_write_puts(-1, " mod=");
+        uart_puthex(info.hid_last_mod);
+        syscall_write_puts(-1, " key=");
+        uart_puthex(info.hid_last_key0);
+        syscall_write_puts(-1, " switches=");
+        uart_putdec(info.hid_switch_count);
         syscall_write_puts(-1, " stale_clear=");
         uart_putdec(info.hid_stale_clear_count);
         syscall_write_puts(-1, "\n");
