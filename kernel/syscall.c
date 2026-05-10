@@ -339,6 +339,8 @@ static void syscall_dump_usb_info(void){
         uart_puthex(info.hid_last_key0);
         syscall_write_puts(-1, " ascii=");
         uart_puthex(info.hid_last_ascii);
+        syscall_write_puts(-1, " down=");
+        uart_puthex(info.hid_last_down_key);
         syscall_write_puts(-1, " q=");
         uart_putdec(info.hid_char_queue_count);
         syscall_write_puts(-1, " evq=");

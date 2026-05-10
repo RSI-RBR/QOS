@@ -82,6 +82,7 @@ typedef struct {
     unsigned int hid_char_queue_count;
     unsigned int hid_event_queue_count;
     unsigned int hid_last_ascii;
+    unsigned int hid_last_down_key;
     unsigned int hid_switch_count;
     unsigned int hid_stale_clear_count;
     unsigned char hub_ports;

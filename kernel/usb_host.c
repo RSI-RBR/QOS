@@ -568,6 +568,22 @@ static int usb_hid_report_has_key_or_mod(const unsigned char report[USB_HID_REPO
     return 0;
 }
 
+static int usb_hid_report_has_key(const unsigned char report[USB_HID_REPORT_LEN]){
+    if (!report){
+        return 0;
+    }
+    for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+        if (report[i] != 0u && report[i] != 0x01u){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int usb_hid_keycode_plausible(unsigned char key){
+    return (key >= 0x04u && key <= 0x73u) ? 1 : 0;
+}
+
 static void usb_hid_pack_last_raw(const unsigned char* report, unsigned int actual){
     unsigned int raw0 = 0u;
     unsigned int raw1 = 0u;
@@ -587,7 +603,9 @@ static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
                                              unsigned char out[USB_HID_REPORT_LEN]){
     unsigned char boot[USB_HID_REPORT_LEN];
     unsigned char shifted[USB_HID_REPORT_LEN];
+    unsigned char compact[USB_HID_REPORT_LEN];
     int choose_shifted = 0;
+    int choose_compact = 0;
 
     if (!raw || !out || actual == 0u){
         return -1;
@@ -596,6 +614,7 @@ static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         boot[i] = 0;
         shifted[i] = 0;
+        compact[i] = 0;
         out[i] = 0;
     }
 
@@ -611,20 +630,59 @@ static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
         for (unsigned int i = 0; i < shifted_n; i++){
             shifted[i] = raw[i + 1u];
         }
+
+        /*
+         * Fallback for odd HID report-protocol keyboards that send
+         * [report_id, key0, key1, ...] instead of the boot reserved byte.
+         */
+        compact[0] = 0u;
+        compact[1] = 0u;
+        unsigned int compact_keys = ((actual - 1u) < (USB_HID_REPORT_LEN - 2u)) ?
+                                    (actual - 1u) :
+                                    (USB_HID_REPORT_LEN - 2u);
+        for (unsigned int i = 0; i < compact_keys; i++){
+            compact[i + 2u] = raw[i + 1u];
+        }
     }
 
     int boot_has = usb_hid_report_has_key_or_mod(boot);
     int shifted_has = usb_hid_report_has_key_or_mod(shifted);
-    int ambiguous_release = (actual >= 4u &&
-                             raw[0] <= 8u &&
-                             raw[1] == 0u &&
-                             raw[2] == 0u &&
-                             !shifted_has) ? 1 : 0;
+    int shifted_key_has = usb_hid_report_has_key(shifted);
+    int compact_key_has = usb_hid_report_has_key(compact);
+    int raw_later_key = 0;
+    for (unsigned int i = 3; i < actual && i < 9u; i++){
+        if (usb_hid_keycode_plausible(raw[i])){
+            raw_later_key = 1;
+            break;
+        }
+    }
+    int ambiguous_release = 0;
+    if (raw[0] <= 8u){
+        if (actual == 1u){
+            ambiguous_release = 1;
+        } else if (actual == 2u && raw[1] == 0u){
+            ambiguous_release = 1;
+        } else if (actual >= 4u &&
+                   raw[1] == 0u &&
+                   raw[2] == 0u &&
+                   !shifted_has){
+            ambiguous_release = 1;
+        }
+    }
 
-    if (g_kbd.report_offset == 1u){
+    if (ambiguous_release){
+        choose_shifted = 1;
+    } else if (g_kbd.report_offset == 2u){
+        choose_compact = 1;
+    } else if (g_kbd.report_offset == 1u){
         choose_shifted = 1;
     } else if (g_kbd.report_offset == 0u){
         choose_shifted = 0;
+    } else if (actual >= 4u &&
+               raw[0] <= 8u &&
+               raw[2] == 0u &&
+               raw_later_key){
+        choose_shifted = 1;
     } else if (actual >= 4u &&
                raw[0] <= 8u &&
                raw[1] == 0u &&
@@ -638,17 +696,23 @@ static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
         choose_shifted = 1;
     } else if (actual >= 9u && raw[2] == 0u && shifted_has){
         choose_shifted = 1;
+    } else if (actual >= 2u &&
+               raw[0] <= 8u &&
+               usb_hid_keycode_plausible(raw[1]) &&
+               compact_key_has &&
+               !shifted_key_has){
+        choose_compact = 1;
     } else if (shifted_has && !boot_has){
         choose_shifted = 1;
     }
 
-    const unsigned char* chosen = choose_shifted ? shifted : boot;
+    const unsigned char* chosen = choose_compact ? compact : (choose_shifted ? shifted : boot);
     for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
         out[i] = chosen[i];
     }
 
-    if ((boot_has || shifted_has) && !ambiguous_release){
-        g_kbd.report_offset = choose_shifted ? 1u : 0u;
+    if ((boot_has || shifted_has || compact_key_has) && !ambiguous_release){
+        g_kbd.report_offset = choose_compact ? 2u : (choose_shifted ? 1u : 0u);
     }
     g_root_info.hid_report_offset = g_kbd.report_offset;
     return 0;
@@ -758,6 +822,9 @@ static void usb_hid_push_key_event(unsigned int type,
     if (key_down && ev.ascii){
         g_root_info.hid_last_ascii = ev.ascii;
         (void)usb_hid_queue_push((unsigned char)ev.ascii);
+    }
+    if (key_down){
+        g_root_info.hid_last_down_key = key;
     }
 }
 
@@ -1057,6 +1124,7 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.report_offset = 0xFFu;
     g_root_info.hid_report_offset = 0xFFu;
     g_root_info.hid_last_ascii = 0u;
+    g_root_info.hid_last_down_key = 0u;
     g_root_info.hid_last_raw0 = 0u;
     g_root_info.hid_last_raw1 = 0u;
     g_kbd.in_toggle = 0;
@@ -1322,7 +1390,8 @@ static int usb_hid_poll_once(void){
         return -1;
     }
     g_root_info.hid_last_actual = actual;
-    if (actual < 3u){
+    usb_hid_pack_last_raw(report, actual);
+    if (actual == 0u){
         g_root_info.hid_nodata_count++;
         // No-data/NAK is not a key-release report. Clearing prev_report here
         // makes held keys look newly pressed after another key changes.
@@ -1330,7 +1399,6 @@ static int usb_hid_poll_once(void){
     }
     g_root_info.hid_report_count++;
     g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
-    usb_hid_pack_last_raw(report, actual);
     unsigned char normalized[USB_HID_REPORT_LEN];
     if (usb_hid_normalize_keyboard_report(report, actual, normalized) == 0){
         usb_hid_process_report(normalized);
