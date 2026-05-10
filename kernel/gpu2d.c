@@ -48,8 +48,17 @@ unsigned int gpu2d_status(void){
     unsigned int status = QOS_GPU2D_STATUS_READY |
                           QOS_GPU2D_STATUS_BACKEND_SOFT |
                           QOS_GPU2D_CAP_SOFTWARE_FALLBACK;
-    if (v3d_get_status(&st) == 0 &&
-        (st.flags & QOS_V3D_FLAG_SCRATCH_OK)){
+    if (v3d_get_status(&st) != 0 ||
+        (st.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        /*
+         * User programs often query GPU2D capabilities while loading textures,
+         * before any explicit V3D command has warmed the hardware. Probe here
+         * so "v3d probe" remains diagnostic instead of a required pre-game
+         * shell command.
+         */
+        (void)v3d_probe(&st);
+    }
+    if ((st.flags & QOS_V3D_FLAG_SCRATCH_OK) != 0u){
         status |= QOS_GPU2D_STATUS_BACKEND_HW |
                   QOS_GPU2D_CAP_ACCEL_CLEAR |
                   QOS_GPU2D_CAP_ACCEL_FILL_TILE |

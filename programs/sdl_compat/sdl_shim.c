@@ -1544,7 +1544,13 @@ static int sdl_texture_upload_gpu(SDL_Texture* texture){
     }
 
     status = sdl_gpu2d_status_cached();
-    if ((status & QOS_GPU2D_CAP_TEXTURE_OBJECTS) == 0u){
+    /*
+     * Texture objects are only useful once the kernel backend can actually
+     * consume them for accelerated blits. Avoid duplicating every BMP into
+     * kernel memory on the current clear/fill-only V3D path.
+     */
+    if ((status & (QOS_GPU2D_CAP_TEXTURE_OBJECTS | QOS_GPU2D_CAP_ACCEL_BLIT)) !=
+        (QOS_GPU2D_CAP_TEXTURE_OBJECTS | QOS_GPU2D_CAP_ACCEL_BLIT)){
         return -1;
     }
 
