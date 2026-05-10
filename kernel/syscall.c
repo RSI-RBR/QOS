@@ -867,6 +867,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
             int pid = process_current_pid();
             unsigned int next_page = 0u;
+            unsigned long next_base = 0UL;
             unsigned int pitch = fb_get_pitch();
             unsigned int width = fb_get_width();
             unsigned int height = fb_get_height();
@@ -882,8 +883,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
+            next_base = fb_get_page_base(next_page);
+            if (!next_base ||
+                (next_base & 0xFFFUL) != 0UL ||
+                mmu_process_map_framebuffer(pid, next_base, size) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
 
-            info.pixels = (unsigned int*)fb_get_page_base(next_page);
+            info.pixels = (unsigned int*)next_base;
             info.width = width;
             info.height = height;
             info.pitch = pitch;
@@ -954,11 +962,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             int rc = gpu2d_texture_upload_for_pid(process_current_pid(), &req);
-            if (rc == 0 &&
-                process_copy_to_user(user_req, &req, sizeof(req)) != 0){
-                (void)gpu2d_texture_free_for_pid(process_current_pid(), req.texture_id);
-                frame[TF_X0] = (unsigned long)-1;
-                return frame_sp;
+            if (rc == 0){
+                /*
+                 * Only return the generated handle. Keeping this writeback
+                 * narrow prevents future ABI changes from accidentally
+                 * refreshing userspace pointer fields with kernel-side state.
+                 */
+                if (process_copy_to_user((void*)&user_req->texture_id,
+                                         &req.texture_id,
+                                         sizeof(req.texture_id)) != 0){
+                    (void)gpu2d_texture_free_for_pid(process_current_pid(), req.texture_id);
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
             }
             frame[TF_X0] = (unsigned long)rc;
             return frame_sp;

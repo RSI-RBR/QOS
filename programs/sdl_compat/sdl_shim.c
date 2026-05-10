@@ -1699,6 +1699,7 @@ int SDL_Init(Uint32 flags){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
             sdl_free_pixels(g_textures[i].pixels);
         }
+        sdl_texture_free_gpu(&g_textures[i]);
         sdl_texture_free_native(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
@@ -1762,6 +1763,7 @@ void SDL_Quit(void){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
             sdl_free_pixels(g_textures[i].pixels);
         }
+        sdl_texture_free_gpu(&g_textures[i]);
         sdl_texture_free_native(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
