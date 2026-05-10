@@ -438,6 +438,7 @@ static void cmd_help(void){
     qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
+    qos_puts(" gfxstat [reset]\n");
     qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -796,6 +797,15 @@ static void cmd_gpu(const char* mode){
         return;
     }
     qos_puts("Usage: gpu on|off|status\n");
+}
+
+static void cmd_gfxstat(const char* mode){
+    if (mode && str_eq(mode, "reset")){
+        qos_display_profile_reset();
+        qos_puts("graphics profile reset.\n");
+        return;
+    }
+    qos_display_profile_dump();
 }
 
 static void cmd_securitylog(void){
@@ -1279,6 +1289,14 @@ static void execute_line(void){
         cmd_gpu(p);
     } else if (str_eq(g_buf, "gpu")){
         cmd_gpu("status");
+    } else if (str_starts_with(g_buf, "gfxstat ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_gfxstat(p);
+    } else if (str_eq(g_buf, "gfxstat")){
+        cmd_gfxstat(0);
     } else if (str_eq(g_buf, "securitylog")){
         cmd_securitylog();
     } else if (str_eq(g_buf, "clear")){

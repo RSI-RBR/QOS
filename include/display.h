@@ -68,5 +68,7 @@ int display_gpu_set_enabled(int enabled);
 unsigned int display_gpu_status(void);
 unsigned int display_gpu_flip_count(void);
 unsigned int display_gpu_failure_count(void);
+void display_profile_reset(void);
+void display_profile_dump(void);
 
 #endif

@@ -489,6 +489,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU_SET_ENABLED:
         case SYS_GPU_STATUS:
         case SYS_GPU_FLIP_COUNT:
+        case SYS_DISPLAY_PROFILE_RESET:
+        case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_SECURITY_LOG_DUMP:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
@@ -1301,6 +1303,16 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_GPU_FLIP_COUNT:
             frame[TF_X0] = (unsigned long)display_gpu_flip_count();
+            return frame_sp;
+
+        case SYS_DISPLAY_PROFILE_RESET:
+            display_profile_reset();
+            frame[TF_X0] = 0;
+            return frame_sp;
+
+        case SYS_DISPLAY_PROFILE_DUMP:
+            display_profile_dump();
+            frame[TF_X0] = 0;
             return frame_sp;
 
         case SYS_SECURITY_LOG_DUMP:

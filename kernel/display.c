@@ -1,6 +1,7 @@
 #include "display.h"
 #include "dma.h"
 #include "framebuffer.h"
+#include "klog.h"
 #include "memory.h"
 #include "program.h"
 #include "spinlock.h"
@@ -36,6 +37,46 @@ static unsigned int g_cursor_saved_y0 = 0u;
 static unsigned int g_cursor_saved_x1 = 0u;
 static unsigned int g_cursor_saved_y1 = 0u;
 static unsigned int g_cursor_saved_pixels[DISPLAY_CURSOR_MAX_SIDE * DISPLAY_CURSOR_MAX_SIDE];
+
+typedef struct {
+    unsigned long present_calls;
+    unsigned long pageflip_calls;
+    unsigned long buffered_calls;
+    unsigned long cursor_only_calls;
+    unsigned long no_work_calls;
+    unsigned long full_dirty_calls;
+    unsigned long partial_dirty_calls;
+    unsigned long copied_pixels;
+    unsigned long present_us;
+    unsigned long present_max_us;
+    unsigned long usb_poll_us;
+} display_profile_t;
+
+static display_profile_t g_display_profile;
+
+static unsigned long display_read_cntpct(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long display_read_cntfrq(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long display_cycles_to_us(unsigned long cycles, unsigned long hz){
+    if (hz == 0UL){
+        return 0UL;
+    }
+    return (unsigned long)(((unsigned long long)cycles * 1000000ULL) /
+                           (unsigned long long)hz);
+}
+
+static unsigned long display_elapsed_us(unsigned long start, unsigned long hz){
+    return display_cycles_to_us(display_read_cntpct() - start, hz);
+}
 
 static int display_valid_id(int session_id){
     return session_id >= 0 && session_id < DISPLAY_MAX_SESSIONS;
@@ -1147,6 +1188,9 @@ int display_present_for_pid(int owner_pid){
 
 int display_present_active_graphics(void){
     display_init();
+    unsigned long prof_hz = display_read_cntfrq();
+    unsigned long prof_start = display_read_cntpct();
+    unsigned long poll_start = prof_start;
 
     /*
      * Graphics apps may render continuously without polling SDL events every
@@ -1154,6 +1198,7 @@ int display_present_active_graphics(void){
      * a graphics session owns input.
      */
     usb_host_poll();
+    unsigned long poll_us = display_elapsed_us(poll_start, prof_hz);
 
     unsigned int visible_page = fb_get_display_page();
     unsigned long dst_base = fb_get_page_base(visible_page);
@@ -1179,6 +1224,14 @@ int display_present_active_graphics(void){
         g_display_sessions[session_id].type != DISPLAY_GRAPHICS ||
         !g_display_sessions[session_id].framebuffer ||
         g_display_sessions[session_id].pitch == 0u){
+        g_display_profile.present_calls++;
+        g_display_profile.usb_poll_us += poll_us;
+        g_display_profile.no_work_calls++;
+        unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
+        g_display_profile.present_us += total_us;
+        if (total_us > g_display_profile.present_max_us){
+            g_display_profile.present_max_us = total_us;
+        }
         spin_unlock_irqrestore(&g_display_lock, irq);
         return 0;
     }
@@ -1270,6 +1323,14 @@ int display_present_active_graphics(void){
                           fb_get_display_page() != s->scanout_page) ? 1 : 0;
 
     if (!have_dirty && !cursor_changed && !cursor_removed && !need_page_flip){
+        g_display_profile.present_calls++;
+        g_display_profile.usb_poll_us += poll_us;
+        g_display_profile.no_work_calls++;
+        unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
+        g_display_profile.present_us += total_us;
+        if (total_us > g_display_profile.present_max_us){
+            g_display_profile.present_max_us = total_us;
+        }
         spin_unlock_irqrestore(&g_display_lock, irq);
         return 0;
     }
@@ -1284,6 +1345,10 @@ int display_present_active_graphics(void){
                                        copy_y0,
                                        copy_x1,
                                        copy_y1);
+        g_display_profile.buffered_calls++;
+        g_display_profile.copied_pixels +=
+            (unsigned long)(copy_x1 - copy_x0) *
+            (unsigned long)(copy_y1 - copy_y0);
     }
 
     if (had_cursor && (cursor_changed || cursor_removed)){
@@ -1371,6 +1436,7 @@ int display_present_active_graphics(void){
     if (pageflip_present && fb_get_display_page() != s->scanout_page){
         if (fb_set_display_page(s->scanout_page) == 0){
             g_display_gpu_flip_count++;
+            g_display_profile.pageflip_calls++;
             unsigned int next_page = (s->scanout_page == 0u) ? 1u : 0u;
             unsigned long next_base = fb_get_page_base(next_page);
             if (next_base){
@@ -1390,6 +1456,23 @@ int display_present_active_graphics(void){
     s->dirty_y0 = 0u;
     s->dirty_x1 = 0u;
     s->dirty_y1 = 0u;
+    g_display_profile.present_calls++;
+    g_display_profile.usb_poll_us += poll_us;
+    if (!have_dirty && (cursor_changed || cursor_removed)){
+        g_display_profile.cursor_only_calls++;
+    }
+    if (dirty_full_frame){
+        g_display_profile.full_dirty_calls++;
+    } else if (have_dirty){
+        g_display_profile.partial_dirty_calls++;
+    }
+    {
+        unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
+        g_display_profile.present_us += total_us;
+        if (total_us > g_display_profile.present_max_us){
+            g_display_profile.present_max_us = total_us;
+        }
+    }
     spin_unlock_irqrestore(&g_display_lock, irq);
     return 0;
 }
@@ -1451,4 +1534,57 @@ unsigned int display_gpu_flip_count(void){
 
 unsigned int display_gpu_failure_count(void){
     return g_display_gpu_failure_count;
+}
+
+void display_profile_reset(void){
+    display_init();
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    g_display_profile.present_calls = 0UL;
+    g_display_profile.pageflip_calls = 0UL;
+    g_display_profile.buffered_calls = 0UL;
+    g_display_profile.cursor_only_calls = 0UL;
+    g_display_profile.no_work_calls = 0UL;
+    g_display_profile.full_dirty_calls = 0UL;
+    g_display_profile.partial_dirty_calls = 0UL;
+    g_display_profile.copied_pixels = 0UL;
+    g_display_profile.present_us = 0UL;
+    g_display_profile.present_max_us = 0UL;
+    g_display_profile.usb_poll_us = 0UL;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+}
+
+void display_profile_dump(void){
+    display_profile_t snap;
+    display_init();
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    snap = g_display_profile;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+
+    klog_puts("DISPLAY profile: present=");
+    klog_putdec(snap.present_calls);
+    klog_puts(" pageflip=");
+    klog_putdec(snap.pageflip_calls);
+    klog_puts(" buffered=");
+    klog_putdec(snap.buffered_calls);
+    klog_puts(" cursor=");
+    klog_putdec(snap.cursor_only_calls);
+    klog_puts(" nowork=");
+    klog_putdec(snap.no_work_calls);
+    klog_puts("\n");
+
+    klog_puts("DISPLAY dirty: full=");
+    klog_putdec(snap.full_dirty_calls);
+    klog_puts(" partial=");
+    klog_putdec(snap.partial_dirty_calls);
+    klog_puts(" copied_pixels=");
+    klog_putdec(snap.copied_pixels);
+    klog_puts("\n");
+
+    klog_puts("DISPLAY us: present_total=");
+    klog_putdec(snap.present_us);
+    klog_puts(" max=");
+    klog_putdec(snap.present_max_us);
+    klog_puts(" usb_poll=");
+    klog_putdec(snap.usb_poll_us);
+    klog_puts("\n");
 }

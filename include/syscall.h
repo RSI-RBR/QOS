@@ -118,7 +118,9 @@ enum {
     SYS_TERM_CLEAR_INPUT_LINE = 94,
     SYS_GPU_SET_ENABLED = 95,
     SYS_GPU_STATUS = 96,
-    SYS_GPU_FLIP_COUNT = 97
+    SYS_GPU_FLIP_COUNT = 97,
+    SYS_DISPLAY_PROFILE_RESET = 98,
+    SYS_DISPLAY_PROFILE_DUMP = 99
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -409,6 +411,14 @@ static inline unsigned int qos_gpu_status(void){
 
 static inline unsigned int qos_gpu_flip_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU_FLIP_COUNT);
+}
+
+static inline void qos_display_profile_reset(void){
+    (void)qos_syscall0(SYS_DISPLAY_PROFILE_RESET);
+}
+
+static inline void qos_display_profile_dump(void){
+    (void)qos_syscall0(SYS_DISPLAY_PROFILE_DUMP);
 }
 
 static inline void qos_security_log_dump(void){
