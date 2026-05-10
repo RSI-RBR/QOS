@@ -28,12 +28,12 @@ static int shell_can_use_input_overlay(void){
     return g_local_authed && g_tty_owned;
 }
 
-static void shell_set_input_overlay_from(const char* src_buf, int src_len){
+static int shell_set_input_overlay_from(const char* src_buf, int src_len){
     char line[BUF_SIZE + 8];
     const char prefix[] = "UQOS> ";
     unsigned int pos = 0u;
     if (!shell_can_use_input_overlay()){
-        return;
+        return -1;
     }
     for (unsigned int i = 0u; prefix[i] && pos + 1u < sizeof(line); i++){
         line[pos++] = prefix[i];
@@ -44,7 +44,7 @@ static void shell_set_input_overlay_from(const char* src_buf, int src_len){
         }
     }
     line[pos] = 0;
-    (void)qos_term_set_input_line(line);
+    return qos_term_set_input_line(line);
 }
 
 static int str_eq(const char* a, const char* b){
@@ -294,7 +294,9 @@ static void local_login_handle_char(int ch){
 
 static void print_prompt(void){
     if (shell_can_use_input_overlay()){
-        shell_set_input_overlay_from(g_local_buf, g_local_len);
+        if (shell_set_input_overlay_from(g_local_buf, g_local_len) != 0){
+            qos_puts("\nUQOS> ");
+        }
     } else{
         qos_puts("\nUQOS> ");
     }
@@ -1420,7 +1422,9 @@ static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
             (*src_len)--;
             src_buf[*src_len] = 0;
             if (shell_can_use_input_overlay()){
-                shell_set_input_overlay_from(src_buf, *src_len);
+                if (shell_set_input_overlay_from(src_buf, *src_len) != 0){
+                    qos_puts("\b \b");
+                }
             } else{
                 qos_puts("\b \b");
             }
@@ -1437,7 +1441,9 @@ static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
         (*src_len)++;
         src_buf[*src_len] = 0;
         if (shell_can_use_input_overlay()){
-            shell_set_input_overlay_from(src_buf, *src_len);
+            if (shell_set_input_overlay_from(src_buf, *src_len) != 0){
+                qos_putc((char)ch);
+            }
         } else{
             qos_putc((char)ch);
         }
