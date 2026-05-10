@@ -124,8 +124,14 @@ enum {
     SYS_FB_BLIT_NATIVE = 100,
     SYS_FB_ATTACH_BUFFER = 101,
     SYS_FB_DIRECT_ACQUIRE = 102,
-    SYS_FB_DIRECT_PRESENT = 103
+    SYS_FB_DIRECT_PRESENT = 103,
+    SYS_SYSTEM_STATUS = 104
 };
+
+#define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
+#define QOS_SYSTEM_STATUS_ARM_CLOCK_OK  0x02u
+#define QOS_SYSTEM_STATUS_CORE_CLOCK_OK 0x04u
+#define QOS_SYSTEM_STATUS_THROTTLE_OK   0x08u
 
 typedef struct {
     unsigned int* pixels;
@@ -134,6 +140,14 @@ typedef struct {
     unsigned int pitch;
     unsigned int page;
 } qos_fb_direct_info_t;
+
+typedef struct {
+    unsigned int ok_mask;
+    unsigned int temp_millic;
+    unsigned int arm_hz;
+    unsigned int core_hz;
+    unsigned int throttled_flags;
+} qos_system_status_t;
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
 
@@ -456,6 +470,10 @@ static inline unsigned int qos_gpu_status(void){
 
 static inline unsigned int qos_gpu_flip_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU_FLIP_COUNT);
+}
+
+static inline int qos_system_status(qos_system_status_t* out_status){
+    return (int)qos_syscall1(SYS_SYSTEM_STATUS, (unsigned long)out_status);
 }
 
 static inline void qos_display_profile_reset(void){

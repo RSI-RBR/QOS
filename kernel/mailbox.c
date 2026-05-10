@@ -1,5 +1,6 @@
 #include "mailbox.h"
 #include "uart.h"
+#include "spinlock.h"
 
 #define MMIO_BASE 0x3F000000
 #define MBOX_BASE (MMIO_BASE + 0xB880)
@@ -14,6 +15,7 @@
 #define MAILBOX_CHANNEL_PROP 8
 
 volatile unsigned int mbox[36] __attribute__((aligned(16)));
+static spinlock_t g_mailbox_lock;
 
 static unsigned long cache_line_size(void){
     unsigned long ctr;
@@ -33,7 +35,15 @@ static void clean_invalidate_dcache_range(unsigned long start, unsigned long siz
     asm volatile("dsb ish");
 }
 
-int mailbox_call(unsigned char ch){
+void mailbox_lock(void){
+    spin_lock(&g_mailbox_lock);
+}
+
+void mailbox_unlock(void){
+    spin_unlock(&g_mailbox_lock);
+}
+
+int mailbox_call_locked(unsigned char ch){
     unsigned int r = ((unsigned int)((unsigned long)&mbox) & ~0xF) | (ch & 0xF);
     unsigned long mbox_addr = (unsigned long)&mbox[0];
     unsigned long mbox_size = sizeof(mbox);
@@ -55,9 +65,17 @@ int mailbox_call(unsigned char ch){
     }
 }
 
+int mailbox_call(unsigned char ch){
+    mailbox_lock();
+    int ok = mailbox_call_locked(ch);
+    mailbox_unlock();
+    return ok;
+}
+
 int mailbox_set_emmc_clock(unsigned int hz){
     uart_puts("MAILBOX: set EMMC clock\n");
 
+    mailbox_lock();
     mbox[0] = 9 * 4;
     mbox[1] = 0;
 
@@ -70,14 +88,17 @@ int mailbox_set_emmc_clock(unsigned int hz){
     mbox[7] = 0;
     mbox[8] = 0;
 
-    if (mailbox_call(MAILBOX_CHANNEL_PROP)){
+    if (mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
         uart_puts("MAILBOX: EMMC clock set OK\n");
         return 0;
     }
+    mailbox_unlock();
     return -1;
 }
 
 int mailbox_set_power_state(unsigned int device_id, unsigned int state){
+    mailbox_lock();
     mbox[0] = 8 * 4;
     mbox[1] = 0;
 
@@ -89,14 +110,18 @@ int mailbox_set_power_state(unsigned int device_id, unsigned int state){
 
     mbox[7] = 0;
 
-    if (!mailbox_call(MAILBOX_CHANNEL_PROP)){
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
         return -1;
     }
     // Bit0 set in response state means powered.
-    return (mbox[6] & 1u) ? 0 : -1;
+    int ok = (mbox[6] & 1u) ? 0 : -1;
+    mailbox_unlock();
+    return ok;
 }
 
 int mailbox_set_gpio_state(unsigned int pin, unsigned int state){
+    mailbox_lock();
     mbox[0] = 8 * 4;
     mbox[1] = 0;
 
@@ -108,7 +133,9 @@ int mailbox_set_gpio_state(unsigned int pin, unsigned int state){
 
     mbox[7] = 0;
 
-    return mailbox_call(MAILBOX_CHANNEL_PROP) ? 0 : -1;
+    int ok = mailbox_call_locked(MAILBOX_CHANNEL_PROP) ? 0 : -1;
+    mailbox_unlock();
+    return ok;
 }
 
 int mailbox_power_on_usb(void){
@@ -129,6 +156,7 @@ int mailbox_get_arm_memory(unsigned int* base_out, unsigned int* size_out){
     }
 
     // Get ARM memory tag response returns base and size in bytes.
+    mailbox_lock();
     mbox[0] = 8 * 4;
     mbox[1] = 0;
     mbox[2] = 0x00010005; // Get ARM memory
@@ -138,14 +166,90 @@ int mailbox_get_arm_memory(unsigned int* base_out, unsigned int* size_out){
     mbox[6] = 0;
     mbox[7] = 0;
 
-    if (!mailbox_call(MAILBOX_CHANNEL_PROP)){
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
         return -1;
     }
 
     *base_out = mbox[5];
     *size_out = mbox[6];
+    mailbox_unlock();
     if (*size_out == 0){
         return -1;
     }
+    return 0;
+}
+
+int mailbox_get_clock_rate(unsigned int clock_id, unsigned int* hz_out){
+    if (!hz_out){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 9 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00030002; // Get clock rate
+    mbox[3] = 8;
+    mbox[4] = 0;
+    mbox[5] = clock_id;
+    mbox[6] = 0;
+    mbox[7] = 0;
+    mbox[8] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    *hz_out = mbox[6];
+    mailbox_unlock();
+    return (*hz_out != 0u) ? 0 : -1;
+}
+
+int mailbox_get_temperature(unsigned int sensor_id, unsigned int* milli_c_out){
+    if (!milli_c_out){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 9 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00030006; // Get temperature, milli-degrees C
+    mbox[3] = 8;
+    mbox[4] = 0;
+    mbox[5] = sensor_id;
+    mbox[6] = 0;
+    mbox[7] = 0;
+    mbox[8] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    *milli_c_out = mbox[6];
+    mailbox_unlock();
+    return 0;
+}
+
+int mailbox_get_throttled(unsigned int* flags_out){
+    if (!flags_out){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00030046; // Get throttled state
+    mbox[3] = 4;
+    mbox[4] = 0;
+    mbox[5] = 0;
+    mbox[6] = 0;
+    mbox[7] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    *flags_out = mbox[5];
+    mailbox_unlock();
     return 0;
 }

@@ -277,12 +277,24 @@ static void sdl_profile_auto_tick(void){
 
     Uint64 frames = sdl_profile_delta(g_sdl_profile.present_calls,
                                       g_sdl_auto_last_profile.present_calls);
+    Uint64 window_us = (now_us >= g_sdl_auto_last_us) ?
+                       (now_us - g_sdl_auto_last_us) : 0ull;
     if (frames == 0ull){
         g_sdl_auto_last_us = now_us;
         g_sdl_auto_last_profile = g_sdl_profile;
         return;
     }
 
+    Uint64 clear_calls = sdl_profile_delta(g_sdl_profile.clear_calls,
+                                           g_sdl_auto_last_profile.clear_calls);
+    Uint64 poll_calls = sdl_profile_delta(g_sdl_profile.poll_calls,
+                                          g_sdl_auto_last_profile.poll_calls);
+    Uint64 render_calls = sdl_profile_delta(g_sdl_profile.rendercopy_calls,
+                                            g_sdl_auto_last_profile.rendercopy_calls);
+    Uint64 fill_calls = sdl_profile_delta(g_sdl_profile.fill_calls,
+                                          g_sdl_auto_last_profile.fill_calls);
+    Uint64 fill_pixels = sdl_profile_delta(g_sdl_profile.fill_pixels,
+                                           g_sdl_auto_last_profile.fill_pixels);
     Uint64 clear_us = sdl_profile_delta(g_sdl_profile.clear_us,
                                         g_sdl_auto_last_profile.clear_us);
     Uint64 poll_us = sdl_profile_delta(g_sdl_profile.poll_us,
@@ -312,6 +324,8 @@ static void sdl_profile_auto_tick(void){
 
     qos_puts("SDL 1s: frames=");
     sdl_profile_put_u64(frames);
+    qos_puts(" win_ms=");
+    sdl_profile_put_u64(window_us / 1000ull);
     qos_puts(" avg_us clear=");
     sdl_profile_put_u64(clear_us / frames);
     qos_puts(" poll=");
@@ -328,6 +342,14 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(present_flush_us / frames);
     qos_puts(" direct=");
     sdl_profile_put_u64((Uint64)(g_soft_fb_direct ? 1u : 0u));
+    qos_puts(" calls c/p/r/f=");
+    sdl_profile_put_u64(clear_calls / frames);
+    qos_putc('/');
+    sdl_profile_put_u64(poll_calls / frames);
+    qos_putc('/');
+    sdl_profile_put_u64(render_calls / frames);
+    qos_putc('/');
+    sdl_profile_put_u64(fill_calls / frames);
     qos_puts(" paths d/b/r/f/s=");
     sdl_profile_put_u64(direct);
     qos_putc('/');
@@ -340,6 +362,10 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(soft);
     qos_puts(" px=");
     sdl_profile_put_u64(pixels);
+    qos_puts(" pxpf=");
+    sdl_profile_put_u64(pixels / frames);
+    qos_puts(" fillpxpf=");
+    sdl_profile_put_u64(fill_pixels / frames);
     qos_puts("\n");
 
     g_sdl_auto_last_us = now_us;

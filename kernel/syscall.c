@@ -24,6 +24,7 @@
 #include "display.h"
 #include "fat32.h"
 #include "mmu.h"
+#include "mailbox.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -500,6 +501,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU_SET_ENABLED:
         case SYS_GPU_STATUS:
         case SYS_GPU_FLIP_COUNT:
+        case SYS_SYSTEM_STATUS:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_SECURITY_LOG_DUMP:
@@ -1481,6 +1483,36 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_GPU_FLIP_COUNT:
             frame[TF_X0] = (unsigned long)display_gpu_flip_count();
             return frame_sp;
+
+        case SYS_SYSTEM_STATUS: {
+            qos_system_status_t st;
+            st.ok_mask = 0u;
+            st.temp_millic = 0u;
+            st.arm_hz = 0u;
+            st.core_hz = 0u;
+            st.throttled_flags = 0u;
+
+            if (!frame[TF_X0]){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (mailbox_get_temperature(0u, &st.temp_millic) == 0){
+                st.ok_mask |= QOS_SYSTEM_STATUS_TEMP_OK;
+            }
+            if (mailbox_get_clock_rate(3u, &st.arm_hz) == 0){
+                st.ok_mask |= QOS_SYSTEM_STATUS_ARM_CLOCK_OK;
+            }
+            if (mailbox_get_clock_rate(4u, &st.core_hz) == 0){
+                st.ok_mask |= QOS_SYSTEM_STATUS_CORE_CLOCK_OK;
+            }
+            if (mailbox_get_throttled(&st.throttled_flags) == 0){
+                st.ok_mask |= QOS_SYSTEM_STATUS_THROTTLE_OK;
+            }
+            frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
+                                                 &st,
+                                                 sizeof(st)) == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
 
         case SYS_DISPLAY_PROFILE_RESET:
             display_profile_reset();

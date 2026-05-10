@@ -348,6 +348,27 @@ static void print_hex32(unsigned int v){
     }
 }
 
+static void print_3digits(unsigned int v){
+    v %= 1000u;
+    qos_putc((char)('0' + (v / 100u)));
+    qos_putc((char)('0' + ((v / 10u) % 10u)));
+    qos_putc((char)('0' + (v % 10u)));
+}
+
+static void print_mhz(unsigned int hz){
+    print_uint(hz / 1000000u);
+    qos_putc('.');
+    print_3digits((hz % 1000000u) / 1000u);
+    qos_puts(" MHz");
+}
+
+static void print_temp_millic(unsigned int milli_c){
+    print_uint(milli_c / 1000u);
+    qos_putc('.');
+    print_3digits(milli_c % 1000u);
+    qos_puts(" C");
+}
+
 static void print_ip4(const unsigned char ip[4]){
     print_uint((unsigned int)ip[0]);
     qos_putc('.');
@@ -439,6 +460,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" gfxstat [reset]\n");
+    qos_puts(" sysstat\n");
     qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -808,6 +830,53 @@ static void cmd_gfxstat(const char* mode){
         return;
     }
     qos_display_profile_dump();
+}
+
+static void cmd_sysstat(void){
+    qos_system_status_t st;
+    if (qos_system_status(&st) != 0){
+        qos_puts("sysstat unavailable.\n");
+        return;
+    }
+
+    qos_puts("sysstat: temp=");
+    if (st.ok_mask & QOS_SYSTEM_STATUS_TEMP_OK){
+        print_temp_millic(st.temp_millic);
+    } else{
+        qos_puts("?");
+    }
+    qos_puts(" arm=");
+    if (st.ok_mask & QOS_SYSTEM_STATUS_ARM_CLOCK_OK){
+        print_mhz(st.arm_hz);
+    } else{
+        qos_puts("?");
+    }
+    qos_puts(" core=");
+    if (st.ok_mask & QOS_SYSTEM_STATUS_CORE_CLOCK_OK){
+        print_mhz(st.core_hz);
+    } else{
+        qos_puts("?");
+    }
+    qos_puts(" throttled=");
+    if (st.ok_mask & QOS_SYSTEM_STATUS_THROTTLE_OK){
+        print_hex32(st.throttled_flags);
+    } else{
+        qos_puts("?");
+    }
+    qos_puts("\n");
+
+    if ((st.ok_mask & QOS_SYSTEM_STATUS_THROTTLE_OK) && st.throttled_flags){
+        qos_puts("throttle flags:");
+        if (st.throttled_flags & 0x1u) qos_puts(" under_voltage_now");
+        if (st.throttled_flags & 0x2u) qos_puts(" arm_freq_capped_now");
+        if (st.throttled_flags & 0x4u) qos_puts(" throttled_now");
+        if (st.throttled_flags & 0x8u) qos_puts(" soft_temp_now");
+        if (st.throttled_flags & 0x10000u) qos_puts(" under_voltage_seen");
+        if (st.throttled_flags & 0x20000u) qos_puts(" arm_freq_capped_seen");
+        if (st.throttled_flags & 0x40000u) qos_puts(" throttled_seen");
+        if (st.throttled_flags & 0x80000u) qos_puts(" soft_temp_seen");
+        qos_puts("\n");
+    }
 }
 
 static void cmd_securitylog(void){
@@ -1299,6 +1368,8 @@ static void execute_line(void){
         cmd_gfxstat(p);
     } else if (str_eq(g_buf, "gfxstat")){
         cmd_gfxstat(0);
+    } else if (str_eq(g_buf, "sysstat")){
+        cmd_sysstat();
     } else if (str_eq(g_buf, "securitylog")){
         cmd_securitylog();
     } else if (str_eq(g_buf, "clear")){

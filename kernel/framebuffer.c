@@ -47,6 +47,7 @@ void fb_init(){
     }
     unsigned int requested_virtual_height = requested_height * requested_pages;
 
+    mailbox_lock();
     mbox[0] = 35 * 4;
     mbox[1] = 0;
 
@@ -82,7 +83,7 @@ void fb_init(){
 
     mbox[25] = 0;
 
-    if (mailbox_call(8)){
+    if (mailbox_call_locked(8)){
         // The firmware returns a GPU/DMA bus address. Keep it raw for DMA
         // destinations; only mask to an ARM physical address for CPU access.
         fb_bus = (unsigned long)mbox[23];
@@ -141,6 +142,7 @@ void fb_init(){
         uart_puthex((unsigned int)fb_get_page_base(3u));
         uart_puts("\n");
     }
+    mailbox_unlock();
 }
 
 static inline void fb_draw_pixel_fast(unsigned int x, unsigned int y, unsigned int colour){
@@ -348,6 +350,7 @@ unsigned long fb_get_page_bus_base(unsigned int page){
 
 int fb_wait_vsync(void){
     unsigned long irq = spin_lock_irqsave(&g_fb_lock);
+    mailbox_lock();
     mbox[0] = 8 * 4;
     mbox[1] = 0;
     mbox[2] = 0x0004800E; // wait for vertical sync
@@ -357,7 +360,8 @@ int fb_wait_vsync(void){
     mbox[6] = 0;
     mbox[7] = 0;
 
-    int ok = mailbox_call(8);
+    int ok = mailbox_call_locked(8);
+    mailbox_unlock();
     spin_unlock_irqrestore(&g_fb_lock, irq);
     return ok ? 0 : -1;
 }
@@ -368,6 +372,7 @@ int fb_set_display_page(unsigned int page){
     }
 
     unsigned long irq = spin_lock_irqsave(&g_fb_lock);
+    mailbox_lock();
     mbox[0] = 8 * 4;
     mbox[1] = 0;
     mbox[2] = 0x00048009; // set virtual framebuffer offset
@@ -377,10 +382,11 @@ int fb_set_display_page(unsigned int page){
     mbox[6] = page * height;
     mbox[7] = 0;
 
-    int ok = mailbox_call(8);
+    int ok = mailbox_call_locked(8);
     if (ok){
         fb_display_page = page;
     }
+    mailbox_unlock();
     spin_unlock_irqrestore(&g_fb_lock, irq);
     return ok ? 0 : -1;
 }
