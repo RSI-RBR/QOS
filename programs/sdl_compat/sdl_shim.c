@@ -160,6 +160,16 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.present_us);
     qos_puts("\n");
 
+    qos_puts("SDL heap: used=");
+    sdl_profile_put_u64((Uint64)qos_heap_used());
+    qos_puts(" free=");
+    sdl_profile_put_u64((Uint64)qos_heap_free());
+    qos_puts(" largest=");
+    sdl_profile_put_u64((Uint64)qos_heap_largest_free());
+    qos_puts(" total=");
+    sdl_profile_put_u64((Uint64)qos_heap_total());
+    qos_puts("\n");
+
     qos_file_profile_dump();
     qos_puts("SDL profile: file profile complete\n");
 }
@@ -1730,6 +1740,13 @@ SDL_Surface* SDL_LoadBMP(const char* file){
     }
     s->pixels = sdl_alloc_pixels(pixel_bytes);
     if (!s->pixels){
+        qos_puts("SDL_LoadBMP: surface heap exhausted bytes=");
+        sdl_profile_put_u64((Uint64)pixel_bytes);
+        qos_puts(" largest=");
+        sdl_profile_put_u64((Uint64)qos_heap_largest_free());
+        qos_puts(" free=");
+        sdl_profile_put_u64((Uint64)qos_heap_free());
+        qos_puts("\n");
         free(bmp);
         sdl_profile_note_bmp(0, n, profile_read_us, 0ull, qos_get_time_us() - profile_total0);
         set_error("surface heap exhausted");

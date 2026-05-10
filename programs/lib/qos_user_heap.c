@@ -56,13 +56,21 @@ static int ptr_in_heap(unsigned long p){
 }
 
 static unsigned long current_program_base(void){
-    unsigned long pc;
-    asm volatile("adr %0, ." : "=r"(pc));
-    return pc & ~(QOS_PROGRAM_MEMORY_BYTES - 1UL);
+    unsigned long sp;
+    asm volatile("mov %0, sp" : "=r"(sp));
+
+    /*
+     * Program reservations are allocated on 2 MiB boundaries, not on their
+     * total reservation size. The user stack lives at the top of the current
+     * reservation, so use SP to recover the actual slot base reliably.
+     */
+    unsigned long stack_chunk =
+        sp & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
+    return stack_chunk -
+           (QOS_PROGRAM_MEMORY_BYTES - QOS_PROGRAM_ALLOC_GRANULE_BYTES);
 }
 
-static unsigned long runtime_image_end(void){
-    unsigned long base = current_program_base();
+static unsigned long runtime_image_end(unsigned long base){
     unsigned long image_end = (unsigned long)__qos_image_end;
 
     /*
@@ -81,10 +89,10 @@ static void heap_init(void){
         return;
     }
 
-    unsigned long image_end = runtime_image_end();
-    unsigned long slot_base = image_end & ~(QOS_PROGRAM_ALLOC_GRANULE_BYTES - 1UL);
+    unsigned long program_base = current_program_base();
+    unsigned long image_end = runtime_image_end(program_base);
     unsigned long heap_start = align_up(image_end, QOS_HEAP_ALIGN);
-    unsigned long heap_end = slot_base + QOS_PROGRAM_MEMORY_BYTES -
+    unsigned long heap_end = program_base + QOS_PROGRAM_MEMORY_BYTES -
                              QOS_USER_STACK_BYTES -
                              QOS_USER_GUARD_PAGE_BYTES;
     unsigned long hdr = header_bytes();
@@ -94,7 +102,9 @@ static void heap_init(void){
     g_heap_head = 0;
     g_heap_ready = 1;
 
-    if (heap_end <= heap_start + hdr + QOS_HEAP_MIN_SPLIT){
+    if (image_end < program_base ||
+        image_end > program_base + QOS_PROGRAM_MEMORY_BYTES ||
+        heap_end <= heap_start + hdr + QOS_HEAP_MIN_SPLIT){
         return;
     }
 

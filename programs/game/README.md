@@ -58,7 +58,7 @@ from the SD card so the shell cannot accidentally launch an older build.
 
 Notes:
 - `programs/game/src`, `programs/game/img`, and build outputs are ignored.
-- The default game reservation is 16 MiB, matching the current kernel
+- The default game reservation is 32 MiB, matching the current kernel
   `QOS_PROGRAM_MAX_MEMORY_BYTES` limit.
 - QOS fault reports now print `PROG_BASE` and `ELR_OFF`. On the Linux build
   machine, resolve a game crash with:

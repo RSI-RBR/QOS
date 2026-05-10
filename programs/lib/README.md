@@ -8,7 +8,7 @@ Userspace heap:
 - Include `<stdlib.h>` for `malloc`, `free`, `calloc`, and `realloc`.
 - Set `PROGRAM_MEMORY_BYTES` in the program Makefile to choose the signed
   process reservation. It must be a numeric byte value, aligned to 2 MiB,
-  up to 16 MiB. Example: `PROGRAM_MEMORY_BYTES ?= 16777216`.
+  up to 32 MiB. Example: `PROGRAM_MEMORY_BYTES ?= 16777216`.
 - Optional debug helpers are declared in `qos_user_heap.h`:
   - `qos_heap_total()`
   - `qos_heap_used()`
