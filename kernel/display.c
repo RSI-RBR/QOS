@@ -565,6 +565,7 @@ static void display_clear_session_locked(int session_id){
     g_display_sessions[session_id].width = 0u;
     g_display_sessions[session_id].height = 0u;
     g_display_sessions[session_id].pitch = 0u;
+    g_display_sessions[session_id].external_framebuffer = 0;
     g_display_sessions[session_id].scanout_attached = 0;
     g_display_sessions[session_id].scanout_page = 0u;
 }
@@ -657,6 +658,9 @@ static int display_attach_scanout_locked(display_session_t* s){
         s->width == 0u || s->height == 0u || s->pitch == 0u){
         return -1;
     }
+    if (s->external_framebuffer){
+        return -1;
+    }
     if (s->scanout_attached){
         return 0;
     }
@@ -706,6 +710,7 @@ static void display_init_text_locked(void){
     s->width = fb_get_width();
     s->height = fb_get_height();
     s->pitch = fb_get_pitch();
+    s->external_framebuffer = 0;
     display_mark_full_dirty_locked(s);
     g_display_active = DISPLAY_TEXT_SESSION_ID;
 }
@@ -823,6 +828,7 @@ int display_create_graphics_session(int owner_pid){
     g_display_sessions[slot].width = fb_get_width();
     g_display_sessions[slot].height = fb_get_height();
     g_display_sessions[slot].pitch = fb_get_pitch();
+    g_display_sessions[slot].external_framebuffer = 0;
     g_display_sessions[slot].scanout_attached = 0;
     g_display_sessions[slot].scanout_page = 0u;
     display_mark_full_dirty_locked(&g_display_sessions[slot]);
@@ -847,12 +853,13 @@ int display_destroy_session(int session_id){
     }
 
     display_detach_scanout_locked(&g_display_sessions[session_id]);
-    fb = g_display_sessions[session_id].allocation ?
-         g_display_sessions[session_id].allocation :
-         g_display_sessions[session_id].framebuffer;
-    size = g_display_sessions[session_id].allocation ?
-           g_display_sessions[session_id].allocation_size :
-           g_display_sessions[session_id].framebuffer_size;
+    if (g_display_sessions[session_id].allocation){
+        fb = g_display_sessions[session_id].allocation;
+        size = g_display_sessions[session_id].allocation_size;
+    } else if (!g_display_sessions[session_id].external_framebuffer){
+        fb = g_display_sessions[session_id].framebuffer;
+        size = g_display_sessions[session_id].framebuffer_size;
+    }
     display_clear_session_locked(session_id);
     if (g_display_active == session_id){
         display_init_text_locked();
@@ -1054,6 +1061,53 @@ int display_is_active_graphics_pid(int owner_pid){
     return ok;
 }
 
+int display_attach_external_framebuffer_for_pid(int owner_pid,
+                                                void* framebuffer,
+                                                unsigned int width,
+                                                unsigned int height,
+                                                unsigned int pitch,
+                                                unsigned long size){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0 || !framebuffer || width == 0u || height == 0u ||
+        pitch < (width * sizeof(unsigned int))){
+        return -1;
+    }
+    if (width != fb_get_width() || height != fb_get_height()){
+        return -1;
+    }
+    if (size < ((unsigned long)pitch * (unsigned long)height)){
+        return -1;
+    }
+
+    void* old_allocation = 0;
+    unsigned long old_allocation_size = 0UL;
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+    display_detach_scanout_locked(s);
+    old_allocation = s->allocation;
+    old_allocation_size = s->allocation_size;
+    s->framebuffer = framebuffer;
+    s->framebuffer_size = size;
+    s->backing_framebuffer = framebuffer;
+    s->backing_framebuffer_size = size;
+    s->allocation = 0;
+    s->allocation_size = 0UL;
+    s->width = width;
+    s->height = height;
+    s->pitch = pitch;
+    s->external_framebuffer = 1;
+    display_mark_full_dirty_locked(s);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    if (old_allocation && old_allocation_size > 0UL){
+        kfree_secure(old_allocation, old_allocation_size);
+    }
+    return 0;
+}
+
 int display_clear_for_pid(int owner_pid, unsigned int color){
     int session_id = display_get_or_create_graphics_for_pid(owner_pid);
     if (session_id < 0){
@@ -1245,6 +1299,9 @@ int display_present_for_pid(int owner_pid){
     if (g_display_sessions[session_id].type != DISPLAY_GRAPHICS){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -1;
+    }
+    if (g_display_sessions[session_id].external_framebuffer){
+        display_mark_full_dirty_locked(&g_display_sessions[session_id]);
     }
     if (g_display_pending_switch_pid == owner_pid){
         int old_active = g_display_active;

@@ -29,6 +29,7 @@ typedef struct {
     unsigned int width;
     unsigned int height;
     unsigned int pitch;
+    int external_framebuffer;
     int scanout_attached;
     unsigned int scanout_page;
 } display_session_t;
@@ -47,6 +48,12 @@ void* display_get_framebuffer_for_pid(int owner_pid);
 unsigned long display_get_framebuffer_size_for_pid(int owner_pid);
 int display_mark_dirty_for_pid(int owner_pid);
 int display_is_active_graphics_pid(int owner_pid);
+int display_attach_external_framebuffer_for_pid(int owner_pid,
+                                                void* framebuffer,
+                                                unsigned int width,
+                                                unsigned int height,
+                                                unsigned int pitch,
+                                                unsigned long size);
 int display_clear_for_pid(int owner_pid, unsigned int color);
 int display_rect_for_pid(int owner_pid,
                          unsigned int x,

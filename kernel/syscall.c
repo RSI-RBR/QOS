@@ -414,6 +414,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_PRESENT:
         case SYS_FB_BLIT_RGBA:
         case SYS_FB_BLIT_NATIVE:
+        case SYS_FB_ATTACH_BUFFER:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -693,6 +694,44 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                                         h,
                                                                         user_src,
                                                                         (unsigned int)row_bytes);
+            return frame_sp;
+        }
+
+        case SYS_FB_ATTACH_BUFFER: {
+            unsigned int* user_pixels = (unsigned int*)frame[TF_X0];
+            unsigned int w = (unsigned int)frame[TF_X1];
+            unsigned int h = (unsigned int)frame[TF_X2];
+            unsigned int pitch = (unsigned int)frame[TF_X3];
+            int pid = process_current_pid();
+
+            if (!user_pixels || w == 0u || h == 0u ||
+                w != fb_get_width() || h != fb_get_height()){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            unsigned long row_bytes = (unsigned long)w * sizeof(unsigned int);
+            if (row_bytes == 0ul || row_bytes > 0xFFFFFFFFul ||
+                pitch < row_bytes){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if ((~0ul / (unsigned long)pitch) < (unsigned long)h){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned long total_bytes = (unsigned long)pitch * (unsigned long)h;
+            if (!process_user_range_writable(user_pixels, total_bytes)){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            frame[TF_X0] = (unsigned long)display_attach_external_framebuffer_for_pid(pid,
+                                                                                       user_pixels,
+                                                                                       w,
+                                                                                       h,
+                                                                                       pitch,
+                                                                                       total_bytes);
             return frame_sp;
         }
 

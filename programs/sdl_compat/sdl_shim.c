@@ -54,6 +54,7 @@ static int g_soft_fb_h = 0;
 static int g_soft_fb_pitch = 0;
 static int g_soft_fb_enabled = 0;
 static int g_soft_fb_dirty = 0;
+static int g_soft_fb_attached = 0;
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -377,6 +378,7 @@ static void sdl_soft_backbuffer_destroy(void){
     g_soft_fb_pitch = 0;
     g_soft_fb_enabled = 0;
     g_soft_fb_dirty = 0;
+    g_soft_fb_attached = 0;
 }
 
 static int sdl_soft_backbuffer_init(int w, int h){
@@ -387,6 +389,13 @@ static int sdl_soft_backbuffer_init(int w, int h){
     }
     if (g_soft_fb && g_soft_fb_w == w && g_soft_fb_h == h){
         g_soft_fb_enabled = 1;
+        if (!g_soft_fb_attached &&
+            qos_fb_attach_buffer((const unsigned int*)g_soft_fb,
+                                 (unsigned int)w,
+                                 (unsigned int)h,
+                                 (unsigned int)g_soft_fb_pitch) == 0){
+            g_soft_fb_attached = 1;
+        }
         return 0;
     }
     sdl_soft_backbuffer_destroy();
@@ -405,6 +414,12 @@ static int sdl_soft_backbuffer_init(int w, int h){
     g_soft_fb_dirty = 1;
     for (unsigned long i = 0; i < bytes; i++){
         g_soft_fb[i] = 0u;
+    }
+    if (qos_fb_attach_buffer((const unsigned int*)g_soft_fb,
+                             (unsigned int)w,
+                             (unsigned int)h,
+                             (unsigned int)g_soft_fb_pitch) == 0){
+        g_soft_fb_attached = 1;
     }
     return 0;
 #else
@@ -1561,7 +1576,7 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     g_sdl_profile.present_flush_us += qos_get_time_us() - flush_start;
     int rc = 0;
     if (sdl_soft_backbuffer_valid(renderer)){
-        if (g_soft_fb_dirty){
+        if (g_soft_fb_dirty && !g_soft_fb_attached){
             Uint64 upload_start = qos_get_time_us();
             rc = qos_fb_blit_native(0u,
                                     0u,
@@ -1577,6 +1592,9 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
             Uint64 kernel_start = qos_get_time_us();
             rc = qos_fb_present();
             g_sdl_profile.present_kernel_us += qos_get_time_us() - kernel_start;
+            if (rc == 0 && g_soft_fb_attached){
+                g_soft_fb_dirty = 0;
+            }
         }
     } else{
         Uint64 kernel_start = qos_get_time_us();
