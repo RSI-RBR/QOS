@@ -94,6 +94,11 @@ int v3d_probe(qos_v3d_status_t* out){
 
     v3d_barrier();
     v3d_read_register_snapshot(&st);
+    if (!v3d_ident_is_valid(st.ident0) && mailbox_set_qpu_enabled(1u) == 0){
+        st.flags |= QOS_V3D_FLAG_QPU_OK;
+        v3d_barrier();
+        v3d_read_register_snapshot(&st);
+    }
 
     if (v3d_ident_is_valid(st.ident0)){
         st.flags |= QOS_V3D_FLAG_PRESENT | QOS_V3D_FLAG_IDENT_OK;

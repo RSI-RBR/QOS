@@ -15,6 +15,7 @@ int mailbox_power_on_usb(void);
 int mailbox_get_arm_memory(unsigned int* base_out, unsigned int* size_out);
 int mailbox_get_clock_rate(unsigned int clock_id, unsigned int* hz_out);
 int mailbox_set_clock_rate(unsigned int clock_id, unsigned int hz);
+int mailbox_set_qpu_enabled(unsigned int enabled);
 int mailbox_get_temperature(unsigned int sensor_id, unsigned int* milli_c_out);
 int mailbox_get_throttled(unsigned int* flags_out);
 

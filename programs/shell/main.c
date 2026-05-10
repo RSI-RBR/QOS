@@ -907,6 +907,7 @@ static void cmd_v3d(const char* mode){
     qos_puts(" state:");
     if (st.flags & QOS_V3D_FLAG_PROBED) qos_puts(" probed");
     if (st.flags & QOS_V3D_FLAG_CLOCK_OK) qos_puts(" clock");
+    if (st.flags & QOS_V3D_FLAG_QPU_OK) qos_puts(" qpu");
     if (st.flags & QOS_V3D_FLAG_PRESENT) qos_puts(" present");
     if (st.flags & QOS_V3D_FLAG_IDENT_OK) qos_puts(" ident");
     if (st.flags & QOS_V3D_FLAG_SCRATCH_OK) qos_puts(" scratch");

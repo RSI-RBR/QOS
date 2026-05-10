@@ -223,6 +223,25 @@ int mailbox_set_clock_rate(unsigned int clock_id, unsigned int hz){
     return 0;
 }
 
+int mailbox_set_qpu_enabled(unsigned int enabled){
+    mailbox_lock();
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00030012; // Enable QPU/V3D power domain
+    mbox[3] = 4;
+    mbox[4] = 4;
+    mbox[5] = enabled ? 1u : 0u;
+    mbox[6] = 0;
+    mbox[7] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    mailbox_unlock();
+    return 0;
+}
+
 int mailbox_get_temperature(unsigned int sensor_id, unsigned int* milli_c_out){
     if (!milli_c_out){
         return -1;
