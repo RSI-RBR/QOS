@@ -225,8 +225,8 @@ static inline void qos_fb_rect(unsigned int x, unsigned int y, unsigned int w, u
     (void)qos_syscall5(SYS_FB_RECT, (unsigned long)x, (unsigned long)y, (unsigned long)w, (unsigned long)h, (unsigned long)color);
 }
 
-static inline void qos_fb_present(void){
-    (void)qos_syscall0(SYS_FB_PRESENT);
+static inline int qos_fb_present(void){
+    return (int)qos_syscall0(SYS_FB_PRESENT);
 }
 
 static inline int qos_fb_blit_rgba(unsigned int x,

@@ -161,6 +161,7 @@ void SDL_QOS_ProfileDump(void){
     qos_puts("\n");
 
     qos_file_profile_dump();
+    qos_puts("SDL profile: file profile complete\n");
 }
 
 static Uint32 rgb_to_color(Uint8 r, Uint8 g, Uint8 b){
@@ -1144,7 +1145,14 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     (void)renderer;
     Uint64 t0 = qos_get_time_us();
     sdl_flush_pending_fill();
-    qos_fb_present();
+    if (qos_fb_present() != 0){
+        static int warned_present_failure = 0;
+        set_error("fb present failed");
+        if (!warned_present_failure){
+            qos_puts("SDL present failed\n");
+            warned_present_failure = 1;
+        }
+    }
     g_sdl_profile.present_calls++;
     g_sdl_profile.present_us += qos_get_time_us() - t0;
 }
