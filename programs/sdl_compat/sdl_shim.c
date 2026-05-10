@@ -13,6 +13,7 @@
 #define SDL_SHIM_REPEAT_INTERVAL_MS 33u
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 #define SDL_SHIM_RENDER_HINT_CHAR_16 2
+#define SDL_SHIM_SOFT_BACKBUFFER 1
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -47,6 +48,12 @@ static unsigned int g_pending_fill_y = 0u;
 static unsigned int g_pending_fill_w = 0u;
 static unsigned int g_pending_fill_h = 0u;
 static unsigned int g_pending_fill_color = 0u;
+static Uint8* g_soft_fb = 0;
+static int g_soft_fb_w = 0;
+static int g_soft_fb_h = 0;
+static int g_soft_fb_pitch = 0;
+static int g_soft_fb_enabled = 0;
+static int g_soft_fb_dirty = 0;
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -66,6 +73,7 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
+    Uint64 rendercopy_soft_calls;
     Uint64 rendercopy_pixels;
     Uint64 fill_calls;
     Uint64 fill_flushes;
@@ -139,6 +147,7 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
+    g_sdl_profile.rendercopy_soft_calls = 0ull;
     g_sdl_profile.rendercopy_pixels = 0ull;
     g_sdl_profile.fill_calls = 0ull;
     g_sdl_profile.fill_flushes = 0ull;
@@ -200,6 +209,8 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_row_calls);
     qos_puts(" fill=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_fill_calls);
+    qos_puts(" soft=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_soft_calls);
     qos_puts("\n");
 
     qos_puts("SDL profile us: clear calls=");
@@ -272,6 +283,8 @@ static void sdl_profile_auto_tick(void){
                                    g_sdl_auto_last_profile.rendercopy_row_calls);
     Uint64 fill = sdl_profile_delta(g_sdl_profile.rendercopy_fill_calls,
                                     g_sdl_auto_last_profile.rendercopy_fill_calls);
+    Uint64 soft = sdl_profile_delta(g_sdl_profile.rendercopy_soft_calls,
+                                    g_sdl_auto_last_profile.rendercopy_soft_calls);
     Uint64 pixels = sdl_profile_delta(g_sdl_profile.rendercopy_pixels,
                                       g_sdl_auto_last_profile.rendercopy_pixels);
 
@@ -285,7 +298,7 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(render_us / frames);
     qos_puts(" present=");
     sdl_profile_put_u64(present_us / frames);
-    qos_puts(" paths d/b/r/f=");
+    qos_puts(" paths d/b/r/f/s=");
     sdl_profile_put_u64(direct);
     qos_putc('/');
     sdl_profile_put_u64(blitbuf);
@@ -293,6 +306,8 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(row);
     qos_putc('/');
     sdl_profile_put_u64(fill);
+    qos_putc('/');
+    sdl_profile_put_u64(soft);
     qos_puts(" px=");
     sdl_profile_put_u64(pixels);
     qos_puts("\n");
@@ -324,6 +339,103 @@ static Uint8 color_b(Uint32 c){
 
 static Uint8 color_a(Uint32 c){
     return (Uint8)(c & 0xFFu);
+}
+
+static void sdl_soft_backbuffer_destroy(void){
+    if (g_soft_fb){
+        free(g_soft_fb);
+    }
+    g_soft_fb = 0;
+    g_soft_fb_w = 0;
+    g_soft_fb_h = 0;
+    g_soft_fb_pitch = 0;
+    g_soft_fb_enabled = 0;
+    g_soft_fb_dirty = 0;
+}
+
+static int sdl_soft_backbuffer_init(int w, int h){
+#if SDL_SHIM_SOFT_BACKBUFFER
+    unsigned long bytes;
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096){
+        return -1;
+    }
+    if (g_soft_fb && g_soft_fb_w == w && g_soft_fb_h == h){
+        g_soft_fb_enabled = 1;
+        return 0;
+    }
+    sdl_soft_backbuffer_destroy();
+    bytes = (unsigned long)w * (unsigned long)h * 4ul;
+    if (bytes > 64ul * 1024ul * 1024ul){
+        return -1;
+    }
+    g_soft_fb = (Uint8*)malloc(bytes);
+    if (!g_soft_fb){
+        return -1;
+    }
+    g_soft_fb_w = w;
+    g_soft_fb_h = h;
+    g_soft_fb_pitch = w * 4;
+    g_soft_fb_enabled = 1;
+    g_soft_fb_dirty = 1;
+    for (unsigned long i = 0; i < bytes; i += 4ul){
+        g_soft_fb[i + 0ul] = 0u;
+        g_soft_fb[i + 1ul] = 0u;
+        g_soft_fb[i + 2ul] = 0u;
+        g_soft_fb[i + 3ul] = 255u;
+    }
+    return 0;
+#else
+    (void)w;
+    (void)h;
+    return -1;
+#endif
+}
+
+static int sdl_soft_backbuffer_valid(const SDL_Renderer* renderer){
+    return renderer &&
+           renderer->alive &&
+           renderer->window &&
+           renderer->window->alive &&
+           g_soft_fb_enabled &&
+           g_soft_fb &&
+           g_soft_fb_w == renderer->window->w &&
+           g_soft_fb_h == renderer->window->h &&
+           g_soft_fb_pitch == renderer->window->w * 4;
+}
+
+static void sdl_soft_fill_rect(unsigned int x,
+                               unsigned int y,
+                               unsigned int w,
+                               unsigned int h,
+                               unsigned int color){
+    if (!g_soft_fb || w == 0u || h == 0u){
+        return;
+    }
+    if (x >= (unsigned int)g_soft_fb_w || y >= (unsigned int)g_soft_fb_h){
+        return;
+    }
+    if (x + w < x || x + w > (unsigned int)g_soft_fb_w){
+        w = (unsigned int)g_soft_fb_w - x;
+    }
+    if (y + h < y || y + h > (unsigned int)g_soft_fb_h){
+        h = (unsigned int)g_soft_fb_h - y;
+    }
+    Uint8 r = (Uint8)((color >> 16) & 0xFFu);
+    Uint8 g = (Uint8)((color >> 8) & 0xFFu);
+    Uint8 b = (Uint8)(color & 0xFFu);
+    Uint32 packed = (Uint32)r |
+                    ((Uint32)g << 8) |
+                    ((Uint32)b << 16) |
+                    (255u << 24);
+    for (unsigned int py = 0u; py < h; py++){
+        Uint32* row = (Uint32*)(g_soft_fb +
+                                ((unsigned long)(y + py) * (unsigned long)g_soft_fb_pitch) +
+                                ((unsigned long)x * 4ul));
+        for (unsigned int px = 0u; px < w; px++){
+            row[px] = packed;
+        }
+    }
+    g_soft_fb_dirty = 1;
 }
 
 static void surface_set_format(SDL_Surface* surface, Uint32 format){
@@ -360,6 +472,18 @@ static void sdl_flush_pending_fill(void){
         return;
     }
     Uint64 t0 = qos_get_time_us();
+    if (g_soft_fb_enabled && g_soft_fb){
+        sdl_soft_fill_rect(g_pending_fill_x,
+                           g_pending_fill_y,
+                           g_pending_fill_w,
+                           g_pending_fill_h,
+                           g_pending_fill_color);
+        g_sdl_profile.fill_flushes++;
+        g_sdl_profile.fill_pixels += (Uint64)g_pending_fill_w * (Uint64)g_pending_fill_h;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+        g_pending_fill_valid = 0;
+        return;
+    }
     qos_fb_rect(g_pending_fill_x,
                 g_pending_fill_y,
                 g_pending_fill_w,
@@ -380,6 +504,14 @@ static int sdl_queue_fill_rect(unsigned int x,
         return 0;
     }
     g_sdl_profile.fill_calls++;
+    if (g_soft_fb_enabled && g_soft_fb){
+        Uint64 t0 = qos_get_time_us();
+        sdl_soft_fill_rect(x, y, w, h, color);
+        g_sdl_profile.fill_flushes++;
+        g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+        return 0;
+    }
     if (g_pending_fill_valid &&
         g_pending_fill_y == y &&
         g_pending_fill_h == h &&
@@ -405,6 +537,100 @@ static int sdl_i_min(int a, int b){
 
 static int sdl_time_reached(Uint32 now, Uint32 target){
     return (int)(now - target) >= 0;
+}
+
+static int sdl_soft_blit_texture(SDL_Texture* texture,
+                                 int sx,
+                                 int sy,
+                                 int sw,
+                                 int sh,
+                                 int dx,
+                                 int dy,
+                                 int dw,
+                                 int dh,
+                                 int visible_x0,
+                                 int visible_y0,
+                                 int visible_x1,
+                                 int visible_y1,
+                                 int flip){
+    if (!g_soft_fb || !texture || !texture->pixels || dw <= 0 || dh <= 0){
+        return -1;
+    }
+
+    if (flip == SDL_FLIP_NONE &&
+        visible_x0 == 0 && visible_y0 == 0 &&
+        visible_x1 == dw && visible_y1 == dh &&
+        sx == 0 && sy == 0 &&
+        sw == texture->w && sh == texture->h &&
+        dw == texture->w && dh == texture->h &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        texture->color_b == 255u &&
+        texture->opaque){
+        unsigned int row_bytes = (unsigned int)dw * 4u;
+        for (int y = 0; y < dh; y++){
+            Uint8* dst = g_soft_fb + ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
+                         ((unsigned long)dx * 4ul);
+            const Uint8* src = texture->pixels + ((unsigned long)y * (unsigned long)texture->pitch);
+            for (unsigned int i = 0u; i < row_bytes; i++){
+                dst[i] = src[i];
+            }
+        }
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
+
+    for (int oy = visible_y0; oy < visible_y1; oy++){
+        int py = dy + oy;
+        if (py < 0 || py >= g_soft_fb_h){
+            continue;
+        }
+        for (int ox = visible_x0; ox < visible_x1; ox++){
+            int px = dx + ox;
+            if (px < 0 || px >= g_soft_fb_w){
+                continue;
+            }
+
+            int src_ox = (flip & SDL_FLIP_HORIZONTAL) ? (dw - 1 - ox) : ox;
+            int src_oy = (flip & SDL_FLIP_VERTICAL) ? (dh - 1 - oy) : oy;
+            int tx_x = sx + (int)(((unsigned long long)src_ox * (unsigned long long)sw) /
+                                  (unsigned long long)dw);
+            int tx_y = sy + (int)(((unsigned long long)src_oy * (unsigned long long)sh) /
+                                  (unsigned long long)dh);
+            const Uint8* sp = texture->pixels +
+                              ((unsigned long)tx_y * (unsigned long)texture->pitch) +
+                              ((unsigned long)tx_x * 4ul);
+            Uint8* dp = g_soft_fb +
+                        ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                        ((unsigned long)px * 4ul);
+
+            Uint32 sr = ((Uint32)sp[0] * (Uint32)texture->color_r) / 255u;
+            Uint32 sg = ((Uint32)sp[1] * (Uint32)texture->color_g) / 255u;
+            Uint32 sb = ((Uint32)sp[2] * (Uint32)texture->color_b) / 255u;
+            Uint32 sa = (texture->blend_mode == SDL_BLENDMODE_NONE)
+                            ? 255u
+                            : (((Uint32)sp[3] * (Uint32)texture->alpha_mod) / 255u);
+
+            if (sa == 0u){
+                continue;
+            }
+            if (sa >= 255u){
+                dp[0] = (Uint8)sr;
+                dp[1] = (Uint8)sg;
+                dp[2] = (Uint8)sb;
+                dp[3] = 255u;
+            } else{
+                Uint32 ia = 255u - sa;
+                dp[0] = (Uint8)((sr * sa + (Uint32)dp[0] * ia + 127u) / 255u);
+                dp[1] = (Uint8)((sg * sa + (Uint32)dp[1] * ia + 127u) / 255u);
+                dp[2] = (Uint8)((sb * sa + (Uint32)dp[2] * ia + 127u) / 255u);
+                dp[3] = 255u;
+            }
+        }
+    }
+    g_soft_fb_dirty = 1;
+    return 0;
 }
 
 static Uint32 sdl_now_ms(void){
@@ -989,6 +1215,7 @@ int SDL_Init(Uint32 flags){
     }
     g_window.alive = 0;
     g_renderer.alive = 0;
+    sdl_soft_backbuffer_destroy();
     g_renderer.draw_alpha = 255u;
     g_renderer.draw_blend_mode = SDL_BLENDMODE_NONE;
     g_mod_state = KMOD_NONE;
@@ -1043,6 +1270,7 @@ void SDL_Quit(void){
     }
     g_renderer.alive = 0;
     g_window.alive = 0;
+    sdl_soft_backbuffer_destroy();
     sdl_event_queue_reset();
     for (int i = 0; i < SDL_NUM_SCANCODES; i++){
         g_keyboard_state[i] = 0u;
@@ -1158,12 +1386,14 @@ SDL_Renderer* SDL_CreateRenderer(SDL_Window* window, int index, Uint32 flags){
     g_renderer.draw_alpha = 255u;
     g_renderer.draw_blend_mode = SDL_BLENDMODE_NONE;
     g_renderer.alive = 1;
+    (void)sdl_soft_backbuffer_init(window->w, window->h);
     return &g_renderer;
 }
 
 void SDL_DestroyRenderer(SDL_Renderer* renderer){
     if (renderer == &g_renderer){
         g_renderer.alive = 0;
+        sdl_soft_backbuffer_destroy();
     }
 }
 
@@ -1208,7 +1438,15 @@ int SDL_RenderClear(SDL_Renderer* renderer){
      * frames as partial updates, which disables page flipping and drops back to
      * the slow full-screen copy path. Clear the whole graphics session instead.
      */
-    qos_fb_clear(renderer->draw_color);
+    if (sdl_soft_backbuffer_valid(renderer)){
+        sdl_soft_fill_rect(0u,
+                           0u,
+                           (unsigned int)renderer->window->w,
+                           (unsigned int)renderer->window->h,
+                           renderer->draw_color);
+    } else{
+        qos_fb_clear(renderer->draw_color);
+    }
     g_sdl_profile.clear_calls++;
     g_sdl_profile.clear_us += qos_get_time_us() - t0;
     return 0;
@@ -1291,10 +1529,25 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y){
 }
 
 void SDL_RenderPresent(SDL_Renderer* renderer){
-    (void)renderer;
     Uint64 t0 = qos_get_time_us();
     sdl_flush_pending_fill();
-    if (qos_fb_present() != 0){
+    int rc = 0;
+    if (sdl_soft_backbuffer_valid(renderer)){
+        if (g_soft_fb_dirty){
+            rc = qos_fb_blit_rgba(0u,
+                                  0u,
+                                  (unsigned int)g_soft_fb_w,
+                                  (unsigned int)g_soft_fb_h,
+                                  g_soft_fb);
+            g_soft_fb_dirty = 0;
+        }
+        if (rc == 0){
+            rc = qos_fb_present();
+        }
+    } else{
+        rc = qos_fb_present();
+    }
+    if (rc != 0){
         static int warned_present_failure = 0;
         set_error("fb present failed");
         if (!warned_present_failure){
@@ -2250,6 +2503,43 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
     }
     g_sdl_profile.rendercopy_pixels +=
         (Uint64)(visible_x1 - visible_x0) * (Uint64)(visible_y1 - visible_y0);
+
+    if (sdl_soft_backbuffer_valid(renderer)){
+        if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
+            texture->opaque &&
+            texture->alpha_mod == 255u &&
+            texture->color_r == 255u &&
+            texture->color_g == 255u &&
+            texture->color_b == 255u &&
+            sx == 0 && sy == 0 && sw == texture->w && sh == texture->h &&
+            dw <= 64 && dh <= 64){
+            g_sdl_profile.rendercopy_fill_calls++;
+            return sdl_queue_fill_rect((unsigned int)(dx + visible_x0),
+                                       (unsigned int)(dy + visible_y0),
+                                       (unsigned int)(visible_x1 - visible_x0),
+                                       (unsigned int)(visible_y1 - visible_y0),
+                                       texture->average_color);
+        }
+        if (sdl_soft_blit_texture(texture,
+                                  sx,
+                                  sy,
+                                  sw,
+                                  sh,
+                                  dx,
+                                  dy,
+                                  dw,
+                                  dh,
+                                  visible_x0,
+                                  visible_y0,
+                                  visible_x1,
+                                  visible_y1,
+                                  flip) != 0){
+            set_error("soft blit failed");
+            return -1;
+        }
+        g_sdl_profile.rendercopy_soft_calls++;
+        return 0;
+    }
 
     if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
         texture->opaque &&
