@@ -1,4 +1,5 @@
 #include "display.h"
+#include "cache.h"
 #include "dma.h"
 #include "framebuffer.h"
 #include "klog.h"
@@ -1216,6 +1217,11 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
 
     unsigned int draw_page = s->direct_page;
     unsigned int previous_page = fb_get_display_page();
+    unsigned long draw_base = fb_get_page_base(draw_page);
+    if (draw_base && s->pitch > 0u && s->height > 0u){
+        clean_data_cache_range(draw_base,
+                               (unsigned long)s->pitch * (unsigned long)s->height);
+    }
     unsigned long flip_start = display_read_cntpct();
     if (fb_set_display_page(draw_page) == 0){
         unsigned long after_set = display_read_cntpct();

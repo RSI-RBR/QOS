@@ -823,8 +823,8 @@ void mmu_process_space_destroy(int pid){
 
 int mmu_process_map_framebuffer(int pid, unsigned long pa_start, unsigned long size){
     static const mmu_block_attrs_t user_fb_rw_nx = {
-        .attridx = ATTRIDX_DEVICE,
-        .sh = SH_OUTER,
+        .attridx = ATTRIDX_NORMAL,
+        .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_RW,
         .xn = PXN_BIT | UXN_BIT,
         .ng = NG_BIT
