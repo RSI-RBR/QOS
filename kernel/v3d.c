@@ -36,10 +36,13 @@
 #define V3D_CL_HALT           0u
 #define V3D_CL_STORE_RESOLVED 24u
 #define V3D_CL_STORE_EOF      25u
+#define V3D_CL_STORE_GENERAL  28u
 #define V3D_CL_RENDER_CONFIG  113u
 #define V3D_CL_CLEAR_COLORS   114u
 #define V3D_CL_TILE_COORDS    115u
 #define V3D_RENDER_RGBA8888_LINEAR (1u << 2)
+#define V3D_STORE_GENERAL_COLOR_CLEAR 0x00000002u
+#define V3D_STORE_GENERAL_LAST_TILE   0x00080000u
 
 static qos_v3d_status_t g_v3d_status;
 static unsigned int g_v3d_probe_count = 0u;
@@ -419,7 +422,9 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
             v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
             v3d_emit_u8(&p, end, x);
             v3d_emit_u8(&p, end, y);
-            v3d_emit_u8(&p, end, last ? V3D_CL_STORE_EOF : V3D_CL_STORE_RESOLVED);
+            v3d_emit_u8(&p, end, V3D_CL_STORE_GENERAL);
+            v3d_emit_u32(&p, end, V3D_STORE_GENERAL_COLOR_CLEAR |
+                                  (last ? V3D_STORE_GENERAL_LAST_TILE : 0u));
         }
     }
     v3d_emit_u8(&p, end, V3D_CL_HALT);
