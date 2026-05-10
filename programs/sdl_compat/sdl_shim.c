@@ -68,6 +68,7 @@ static int g_soft_fb_attached = 0;
 static int g_soft_fb_direct = 0;
 static int g_soft_fb_direct_inactive = 0;
 static int g_soft_fb_direct_checked = 0;
+static Uint32 g_native_scaled_cache_clock = 1u;
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -2133,6 +2134,7 @@ static void sdl_texture_reset_scaled_native(SDL_Texture* texture){
         texture->native_scaled_w[i] = 0u;
         texture->native_scaled_h[i] = 0u;
         texture->native_scaled_capacity[i] = 0u;
+        texture->native_scaled_stamp[i] = 0u;
         texture->native_scaled_valid[i] = 0;
     }
 }
@@ -2153,6 +2155,8 @@ static int sdl_texture_scaled_slot_for_size(SDL_Texture* texture,
                                             int out_w,
                                             int out_h){
     int empty = -1;
+    int oldest = 0;
+    Uint32 oldest_stamp = 0xFFFFFFFFu;
     if (!texture){
         return -1;
     }
@@ -2166,8 +2170,18 @@ static int sdl_texture_scaled_slot_for_size(SDL_Texture* texture,
         if (empty < 0 && !texture->native_scaled_valid[i]){
             empty = i;
         }
+        if (texture->native_scaled_stamp[i] < oldest_stamp){
+            oldest_stamp = texture->native_scaled_stamp[i];
+            oldest = i;
+        }
     }
-    return empty;
+    if (empty >= 0){
+        return empty;
+    }
+    texture->native_scaled_valid[oldest] = 0;
+    texture->native_scaled_w[oldest] = 0u;
+    texture->native_scaled_h[oldest] = 0u;
+    return oldest;
 }
 
 static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
@@ -2249,6 +2263,10 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
         texture->native_scaled_valid[slot] = 1;
     }
 
+    if (++g_native_scaled_cache_clock == 0u){
+        g_native_scaled_cache_clock = 1u;
+    }
+    texture->native_scaled_stamp[slot] = g_native_scaled_cache_clock;
     *out_pixels = texture->native_scaled_pixels[slot];
     return 0;
 }

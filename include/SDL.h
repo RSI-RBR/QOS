@@ -62,6 +62,7 @@ typedef struct SDL_Texture {
     Uint32 native_scaled_w[SDL_QOS_NATIVE_SCALE_LEVELS];
     Uint32 native_scaled_h[SDL_QOS_NATIVE_SCALE_LEVELS];
     Uint32 native_scaled_capacity[SDL_QOS_NATIVE_SCALE_LEVELS];
+    Uint32 native_scaled_stamp[SDL_QOS_NATIVE_SCALE_LEVELS];
     Uint32 opaque_span_count;
     Uint32 opaque_span_capacity;
     Uint32 gpu_texture_id;
