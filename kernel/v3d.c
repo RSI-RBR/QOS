@@ -36,13 +36,10 @@
 #define V3D_CL_HALT           0u
 #define V3D_CL_STORE_RESOLVED 24u
 #define V3D_CL_STORE_EOF      25u
-#define V3D_CL_STORE_GENERAL  28u
 #define V3D_CL_RENDER_CONFIG  113u
 #define V3D_CL_CLEAR_COLORS   114u
 #define V3D_CL_TILE_COORDS    115u
 #define V3D_RENDER_RGBA8888_LINEAR (1u << 2)
-#define V3D_STORE_GENERAL_COLOR_CLEAR 0x00000002u
-#define V3D_STORE_GENERAL_LAST_TILE   0x00080000u
 
 static qos_v3d_status_t g_v3d_status;
 static unsigned int g_v3d_probe_count = 0u;
@@ -416,15 +413,20 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
     v3d_emit_u16(&p, end, height);
     v3d_emit_u16(&p, end, V3D_RENDER_RGBA8888_LINEAR);
 
-    for (unsigned int y = 0u; y < tiles_y; y++){
-        for (unsigned int x = 0u; x < tiles_x; x++){
-            int last = (x + 1u == tiles_x && y + 1u == tiles_y);
-            v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
-            v3d_emit_u8(&p, end, x);
-            v3d_emit_u8(&p, end, y);
-            v3d_emit_u8(&p, end, V3D_CL_STORE_GENERAL);
-            v3d_emit_u32(&p, end, V3D_STORE_GENERAL_COLOR_CLEAR |
-                                  (last ? V3D_STORE_GENERAL_LAST_TILE : 0u));
+    /*
+     * First pass primes the tile-buffer clear state. On Pi 3, the first tile
+     * can otherwise be stale after coming from unrelated GPU work. The second
+     * pass is the visible clear and signals end-of-frame on the final tile.
+     */
+    for (unsigned int pass = 0u; pass < 2u; pass++){
+        for (unsigned int y = 0u; y < tiles_y; y++){
+            for (unsigned int x = 0u; x < tiles_x; x++){
+                int last = (pass == 1u && x + 1u == tiles_x && y + 1u == tiles_y);
+                v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
+                v3d_emit_u8(&p, end, x);
+                v3d_emit_u8(&p, end, y);
+                v3d_emit_u8(&p, end, last ? V3D_CL_STORE_EOF : V3D_CL_STORE_RESOLVED);
+            }
         }
     }
     v3d_emit_u8(&p, end, V3D_CL_HALT);
