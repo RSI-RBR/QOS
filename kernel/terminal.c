@@ -304,6 +304,19 @@ static int terminal_pid_is_foreground_locked(int term_id, int pid){
     return term->foreground_pid == pid;
 }
 
+static int terminal_pid_can_write_locked(const terminal_t* term, int pid, int owner){
+    if (pid < 0){
+        return 1;
+    }
+    if (!term){
+        return 1;
+    }
+    if (owner == pid || term->foreground_pid == pid){
+        return 1;
+    }
+    return 0;
+}
+
 static int terminal_active_graphics_pid(void){
     int active = display_get_active();
     display_session_t info;
@@ -473,13 +486,15 @@ void terminal_putc(int term_id, int pid, char c){
     unsigned int dirty_end = 0u;
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
+    int can_write = terminal_pid_can_write_locked(term, pid, owner);
     int active = (term_id == g_active_term);
-    int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
+    int mirror_uart = can_write && (!term || (term->flags & TERM_FLAG_UART));
     int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) &&
-                    display_get_active() == DISPLAY_TEXT_SESSION_ID;
-    int mirror_remote = (pid >= 0 && owner == pid);
+                    display_get_active() == DISPLAY_TEXT_SESSION_ID &&
+                    can_write;
+    int mirror_remote = (pid >= 0 && owner == pid && can_write);
 
-    if (term){
+    if (term && can_write){
         unsigned int old_row = term->cursor_row;
         int dirty_all = terminal_char_will_scroll(term, c);
         dirty_start = old_row;
@@ -520,18 +535,20 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     int do_remote = 0;
     unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
     terminal_t* term = terminal_get_locked(term_id);
+    int can_write = terminal_pid_can_write_locked(term, pid, owner);
     int active = (term_id == g_active_term);
-    int mirror_uart = !term || (term->flags & TERM_FLAG_UART);
+    int mirror_uart = can_write && (!term || (term->flags & TERM_FLAG_UART));
     int mirror_fb = term && active && (term->flags & TERM_FLAG_FB) &&
-                    display_get_active() == DISPLAY_TEXT_SESSION_ID;
-    int mirror_remote = (pid >= 0 && owner == pid);
+                    display_get_active() == DISPLAY_TEXT_SESSION_ID &&
+                    can_write;
+    int mirror_remote = (pid >= 0 && owner == pid && can_write);
     unsigned int dirty_start = term ? term->cursor_row : 0u;
     unsigned int dirty_end = dirty_start;
     int dirty_all = 0;
 
     for (unsigned long i = 0; i < len; i++){
         char c = s[i];
-        if (term){
+        if (term && can_write){
             unsigned int old_row = term->cursor_row;
             if (terminal_char_will_scroll(term, c)){
                 dirty_all = 1;
