@@ -20,6 +20,8 @@
 #define DMA_CS_ERROR          (1u << 8)
 #define DMA_CS_PANIC_PRIORITY_SHIFT 20
 #define DMA_CS_PRIORITY_SHIFT 16
+#define DMA_SAFE_PRIORITY 4u
+#define DMA_SAFE_BURST_LENGTH 0u
 #define DMA_CS_DISDEBUG       (1u << 29)
 #define DMA_CS_ABORT          (1u << 30)
 #define DMA_CS_RESET          (1u << 31)
@@ -209,23 +211,6 @@ static void dma_note_transfer_timing(unsigned int bytes,
     spin_unlock_irqrestore(&g_dma_lock, irq);
 }
 
-static int dma_wide_ok(unsigned int src_bus,
-                       unsigned int dst_bus,
-                       unsigned int txfr_len,
-                       unsigned int stride,
-                       unsigned int ti_extra){
-    if (((src_bus | dst_bus) & 0xFu) != 0u){
-        return 0;
-    }
-    if (ti_extra & DMA_TI_TDMODE){
-        unsigned int row_bytes = txfr_len & 0xFFFFu;
-        unsigned int dst_stride = (stride >> 16) & 0xFFFFu;
-        unsigned int src_stride = stride & 0xFFFFu;
-        return (((row_bytes | dst_stride | src_stride) & 0xFu) == 0u) ? 1 : 0;
-    }
-    return (txfr_len & 0xFu) == 0u ? 1 : 0;
-}
-
 static int dma_start_memcopy(unsigned int src_bus,
                              unsigned int dst_bus,
                              unsigned int txfr_len,
@@ -257,11 +242,8 @@ static int dma_start_memcopy(unsigned int src_bus,
     g_dma_cb.ti = DMA_TI_DEST_INC |
                   DMA_TI_SRC_INC |
                   DMA_TI_WAIT_RESP |
-                  (8u << DMA_TI_BURST_LENGTH_SHIFT) |
+                  (DMA_SAFE_BURST_LENGTH << DMA_TI_BURST_LENGTH_SHIFT) |
                   ti_extra;
-    if (dma_wide_ok(src_bus, dst_bus, txfr_len, stride, ti_extra)){
-        g_dma_cb.ti |= DMA_TI_SRC_WIDTH | DMA_TI_DEST_WIDTH;
-    }
     g_dma_cb.source_ad = src_bus;
     g_dma_cb.dest_ad = dst_bus;
     g_dma_cb.txfr_len = txfr_len;
@@ -282,8 +264,8 @@ static int dma_start_memcopy(unsigned int src_bus,
     dma_barrier();
     DMA_CS = DMA_CS_ACTIVE |
              DMA_CS_DISDEBUG |
-             (8u << DMA_CS_PRIORITY_SHIFT) |
-             (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
+             (DMA_SAFE_PRIORITY << DMA_CS_PRIORITY_SHIFT) |
+             (DMA_SAFE_PRIORITY << DMA_CS_PANIC_PRIORITY_SHIFT);
 
     unsigned long wait_start = dma_read_cntpct();
     int rc = -1;

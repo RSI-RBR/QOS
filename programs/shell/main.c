@@ -24,6 +24,29 @@ static int g_local_locked = 0;
 
 static void print_prompt(void);
 
+static int shell_can_use_input_overlay(void){
+    return g_local_authed && g_tty_owned;
+}
+
+static void shell_set_input_overlay_from(const char* src_buf, int src_len){
+    char line[BUF_SIZE + 8];
+    const char prefix[] = "UQOS> ";
+    unsigned int pos = 0u;
+    if (!shell_can_use_input_overlay()){
+        return;
+    }
+    for (unsigned int i = 0u; prefix[i] && pos + 1u < sizeof(line); i++){
+        line[pos++] = prefix[i];
+    }
+    if (src_buf && src_len > 0){
+        for (int i = 0; i < src_len && pos + 1u < sizeof(line); i++){
+            line[pos++] = src_buf[i];
+        }
+    }
+    line[pos] = 0;
+    (void)qos_term_set_input_line(line);
+}
+
 static int str_eq(const char* a, const char* b){
     while (*a && *b){
         if (*a != *b){
@@ -270,7 +293,11 @@ static void local_login_handle_char(int ch){
 }
 
 static void print_prompt(void){
-    qos_puts("\nUQOS> ");
+    if (shell_can_use_input_overlay()){
+        shell_set_input_overlay_from(g_local_buf, g_local_len);
+    } else{
+        qos_puts("\nUQOS> ");
+    }
 }
 
 static int shell_claim_tty(void){
@@ -1375,7 +1402,14 @@ static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
     }
 
     if (ch == '\r' || ch == '\n'){
-        qos_puts("\n");
+        if (shell_can_use_input_overlay()){
+            (void)qos_term_clear_input_line();
+            qos_puts("UQOS> ");
+            qos_puts(src_buf);
+            qos_puts("\n");
+        } else{
+            qos_puts("\n");
+        }
         execute_source_buffer(src_buf, src_len);
         print_prompt();
         return;
@@ -1385,7 +1419,11 @@ static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
         if (*src_len > 0){
             (*src_len)--;
             src_buf[*src_len] = 0;
-            qos_puts("\b \b");
+            if (shell_can_use_input_overlay()){
+                shell_set_input_overlay_from(src_buf, *src_len);
+            } else{
+                qos_puts("\b \b");
+            }
         }
         return;
     }
@@ -1398,7 +1436,11 @@ static void shell_handle_input_char(char* src_buf, int* src_len, int ch){
         src_buf[*src_len] = (char)ch;
         (*src_len)++;
         src_buf[*src_len] = 0;
-        qos_putc((char)ch);
+        if (shell_can_use_input_overlay()){
+            shell_set_input_overlay_from(src_buf, *src_len);
+        } else{
+            qos_putc((char)ch);
+        }
     }
 }
 

@@ -113,7 +113,9 @@ enum {
     SYS_DMA_LAST_BYTES = 89,
     SYS_DMA_LAST_CLEAN_US = 90,
     SYS_DMA_LAST_WAIT_US = 91,
-    SYS_DMA_LAST_TOTAL_US = 92
+    SYS_DMA_LAST_TOTAL_US = 92,
+    SYS_TERM_SET_INPUT_LINE = 93,
+    SYS_TERM_CLEAR_INPUT_LINE = 94
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -203,6 +205,14 @@ static inline void qos_putc(char c){
 
 static inline void qos_puts(const char* s){
     (void)qos_syscall1(SYS_PUTS, (unsigned long)s);
+}
+
+static inline int qos_term_set_input_line(const char* s){
+    return (int)qos_syscall1(SYS_TERM_SET_INPUT_LINE, (unsigned long)s);
+}
+
+static inline int qos_term_clear_input_line(void){
+    return (int)qos_syscall0(SYS_TERM_CLEAR_INPUT_LINE);
 }
 
 static inline void qos_sleep(unsigned int ms){

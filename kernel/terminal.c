@@ -31,6 +31,11 @@ typedef struct {
     unsigned int in_count;
     int login_required;
     int login_authenticated;
+    int overlay_active;
+    int overlay_pid;
+    unsigned char overlay[TERM_MAX_COLS];
+    unsigned int overlay_len;
+    unsigned int overlay_cursor;
 } terminal_t;
 
 static terminal_t g_terms[QOS_TERMINAL_MAX];
@@ -72,6 +77,23 @@ static void terminal_clear_buffer_locked(terminal_t* term){
     }
     term->cursor_col = 0;
     term->cursor_row = 0;
+    term->overlay_active = 0;
+    term->overlay_pid = -1;
+    term->overlay_len = 0u;
+    term->overlay_cursor = 0u;
+    for (unsigned int col = 0; col < TERM_MAX_COLS; col++){
+        term->overlay[col] = ' ';
+    }
+}
+
+static unsigned int terminal_output_rows_locked(const terminal_t* term){
+    if (!term || term->rows == 0u){
+        return 0u;
+    }
+    if (term->overlay_active && term->rows > 1u){
+        return term->rows - 1u;
+    }
+    return term->rows;
 }
 
 static void terminal_render_rows_unlocked(int term_id,
@@ -106,13 +128,26 @@ static void terminal_render_rows_unlocked(int term_id,
         spin_unlock(&g_terminal_render_lock);
         return;
     }
+    unsigned int overlay_row = term->rows ? term->rows - 1u : 0u;
     for (unsigned int row = start_row; row <= end_row; row++){
-        for (unsigned int col = 0; col < term->cols; col++){
-            g_render_cells[row][col] = term->cells[row][col];
+        if (term->overlay_active && row == overlay_row){
+            for (unsigned int col = 0; col < term->cols; col++){
+                g_render_cells[row][col] =
+                    (col < term->overlay_len) ? term->overlay[col] : ' ';
+            }
+        } else{
+            for (unsigned int col = 0; col < term->cols; col++){
+                g_render_cells[row][col] = term->cells[row][col];
+            }
         }
     }
-    cursor_col = term->cursor_col;
-    cursor_row = term->cursor_row;
+    if (term->overlay_active){
+        cursor_col = term->overlay_cursor;
+        cursor_row = overlay_row;
+    } else{
+        cursor_col = term->cursor_col;
+        cursor_row = term->cursor_row;
+    }
     row_count = (end_row - start_row) + 1u;
     spin_unlock_irqrestore(&g_terminal_lock, irq);
 
@@ -143,7 +178,8 @@ static void terminal_dirty_note(unsigned int* start_row, unsigned int* end_row, 
 }
 
 static int terminal_char_will_scroll(const terminal_t* term, char c){
-    if (!term || term->rows == 0u || term->cols == 0u || term->cursor_row + 1u < term->rows){
+    unsigned int rows = terminal_output_rows_locked(term);
+    if (!term || rows == 0u || term->cols == 0u || term->cursor_row + 1u < rows){
         return 0;
     }
     if (c == '\n'){
@@ -160,19 +196,20 @@ static int terminal_char_will_scroll(const terminal_t* term, char c){
 }
 
 static void terminal_scroll_locked(terminal_t* term){
-    if (!term || term->cols == 0u || term->rows == 0u){
+    unsigned int rows = terminal_output_rows_locked(term);
+    if (!term || term->cols == 0u || rows == 0u){
         return;
     }
 
-    for (unsigned int row = 1u; row < term->rows; row++){
+    for (unsigned int row = 1u; row < rows; row++){
         for (unsigned int col = 0; col < term->cols; col++){
             term->cells[row - 1u][col] = term->cells[row][col];
         }
     }
     for (unsigned int col = 0; col < term->cols; col++){
-        term->cells[term->rows - 1u][col] = ' ';
+        term->cells[rows - 1u][col] = ' ';
     }
-    term->cursor_row = term->rows - 1u;
+    term->cursor_row = rows - 1u;
 }
 
 static void terminal_newline_locked(terminal_t* term){
@@ -180,7 +217,11 @@ static void terminal_newline_locked(terminal_t* term){
         return;
     }
     term->cursor_col = 0;
-    if (term->cursor_row + 1u >= term->rows){
+    unsigned int rows = terminal_output_rows_locked(term);
+    if (rows == 0u){
+        return;
+    }
+    if (term->cursor_row + 1u >= rows){
         terminal_scroll_locked(term);
     } else{
         term->cursor_row++;
@@ -188,8 +229,13 @@ static void terminal_newline_locked(terminal_t* term){
 }
 
 static void terminal_buffer_putc_locked(terminal_t* term, char c){
-    if (!term || term->cols == 0u || term->rows == 0u){
+    unsigned int rows = terminal_output_rows_locked(term);
+    if (!term || term->cols == 0u || rows == 0u){
         return;
+    }
+    if (term->cursor_row >= rows){
+        term->cursor_row = rows - 1u;
+        term->cursor_col = 0u;
     }
 
     if (c == '\n'){
@@ -592,6 +638,66 @@ void terminal_putc_for_pid(int pid, char c){
 
 void terminal_write_for_pid(int pid, const char* s, unsigned long len){
     terminal_write(terminal_get_for_pid(pid), pid, s, len);
+}
+
+int terminal_set_input_overlay_for_pid(int pid, const char* s, unsigned long len, unsigned int cursor){
+    if (pid < 0 || !s){
+        return -1;
+    }
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    int term_id = terminal_get_for_pid_locked(pid);
+    terminal_t* term = terminal_get_locked(term_id);
+    if (!term || term->rows < 2u || term->cols == 0u){
+        spin_unlock_irqrestore(&g_terminal_lock, irq);
+        return -1;
+    }
+    if (len > term->cols){
+        len = term->cols;
+    }
+    unsigned int row = term->rows - 1u;
+    for (unsigned int col = 0; col < term->cols; col++){
+        term->overlay[col] = (col < len) ? (unsigned char)s[col] : ' ';
+    }
+    term->overlay_len = (unsigned int)len;
+    term->overlay_cursor = (cursor > term->cols) ? term->cols : cursor;
+    term->overlay_pid = pid;
+    term->overlay_active = 1;
+    if (term->cursor_row >= term->rows - 1u){
+        term->cursor_row = term->rows - 2u;
+        term->cursor_col = 0u;
+    }
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    terminal_render_rows_unlocked(term_id, row, row);
+    return 0;
+}
+
+int terminal_clear_input_overlay_for_pid(int pid){
+    if (pid < 0){
+        return -1;
+    }
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    int term_id = terminal_get_for_pid_locked(pid);
+    terminal_t* term = terminal_get_locked(term_id);
+    if (!term){
+        spin_unlock_irqrestore(&g_terminal_lock, irq);
+        return -1;
+    }
+    unsigned int row = term->rows ? term->rows - 1u : 0u;
+    term->overlay_active = 0;
+    term->overlay_pid = -1;
+    term->overlay_len = 0u;
+    term->overlay_cursor = 0u;
+    for (unsigned int col = 0; col < term->cols; col++){
+        term->overlay[col] = ' ';
+        if (term->rows > 0u){
+            term->cells[row][col] = ' ';
+        }
+    }
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (row < TERM_MAX_ROWS){
+        terminal_render_rows_unlocked(term_id, row, row);
+    }
+    return 0;
 }
 
 int terminal_try_getc_for_pid(int pid, char* out){

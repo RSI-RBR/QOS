@@ -475,6 +475,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TERM_CLEAR:
         case SYS_TERM_GET_OUTPUT:
         case SYS_TERM_SET_OUTPUT:
+        case SYS_TERM_SET_INPUT_LINE:
+        case SYS_TERM_CLEAR_INPUT_LINE:
         case SYS_DMA_SET_ENABLED:
         case SYS_DMA_STATUS:
         case SYS_DMA_LAST_CS:
@@ -550,6 +552,26 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
         }
+
+        case SYS_TERM_SET_INPUT_LINE:
+        {
+            char tmp[257];
+            tmp[0] = 0;
+            if (copy_cstr_from_user_bound(tmp, sizeof(tmp), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned long len = clamp_puts_len(tmp);
+            frame[TF_X0] = (unsigned long)terminal_set_input_overlay_for_pid(process_current_pid(),
+                                                                              tmp,
+                                                                              len,
+                                                                              (unsigned int)len);
+            return frame_sp;
+        }
+
+        case SYS_TERM_CLEAR_INPUT_LINE:
+            frame[TF_X0] = (unsigned long)terminal_clear_input_overlay_for_pid(process_current_pid());
+            return frame_sp;
 
         case SYS_SLEEP: {
             unsigned int ms = (unsigned int)frame[TF_X0];
