@@ -43,9 +43,10 @@ typedef struct {
     unsigned int nextconbk;
     unsigned int reserved0;
     unsigned int reserved1;
+    unsigned int pad[8];
 } dma_cb_t;
 
-static dma_cb_t g_dma_cb __attribute__((aligned(32)));
+static dma_cb_t g_dma_cb __attribute__((aligned(64)));
 static spinlock_t g_dma_lock;
 static int g_dma_ready = 0;
 static int g_dma_enabled = 0;
@@ -165,6 +166,9 @@ static int dma_start_memcopy(unsigned int src_bus,
     g_dma_cb.nextconbk = 0;
     g_dma_cb.reserved0 = 0;
     g_dma_cb.reserved1 = 0;
+    for (unsigned int i = 0; i < 8u; i++){
+        g_dma_cb.pad[i] = 0;
+    }
 
     clean_invalidate_data_cache_range((unsigned long)&g_dma_cb, sizeof(g_dma_cb));
 

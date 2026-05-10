@@ -840,6 +840,13 @@ int display_present_for_pid(int owner_pid){
 int display_present_active_graphics(void){
     display_init();
 
+    /*
+     * Graphics apps may render continuously without polling SDL events every
+     * frame. Poll the keyboard here so global display hotkeys still work while
+     * a graphics session owns input.
+     */
+    usb_host_poll();
+
     unsigned long dst_base = fb_get_base();
     unsigned int dst_pitch = fb_get_pitch();
     unsigned int dst_width = fb_get_width();

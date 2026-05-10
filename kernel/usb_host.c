@@ -167,6 +167,8 @@
 #define USB_HID_MOD_RIGHT_ALT 0x40u
 #define USB_HID_KEY_RIGHT_ARROW 0x4Fu
 #define USB_HID_KEY_LEFT_ARROW  0x50u
+#define USB_HID_SWITCH_LEFT     1u
+#define USB_HID_SWITCH_RIGHT    2u
 
 // USB 2.0 Hub class requests/features.
 #define HUB_REQ_GET_STATUS      0x00u
@@ -215,6 +217,7 @@ static unsigned int g_input_event_count = 0;
 static unsigned long g_input_event_seq = 0;
 static unsigned long g_kbd_next_poll_tick = 0;
 static unsigned long g_kbd_active_until_tick = 0;
+static unsigned char g_kbd_switch_combo = 0;
 static unsigned long g_mouse_next_poll_tick = 0;
 static unsigned long g_mouse_active_until_tick = 0;
 static unsigned int g_hub_ports = 0;
@@ -537,6 +540,14 @@ static int usb_hid_key_present(const unsigned char* report, unsigned char key){
     return 0;
 }
 
+static void usb_hid_save_prev_report(const unsigned char report[USB_HID_REPORT_LEN]){
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        g_kbd.prev_report[i] = report[i];
+    }
+    g_kbd.have_prev_report = 1;
+    g_kbd.last_report_tick = system_ticks;
+}
+
 static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift){
     if (key >= 0x04u && key <= 0x1Du){
         unsigned char base = (unsigned char)('a' + (key - 0x04u));
@@ -633,7 +644,31 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
     }
 
     int alt = (report[0] & (USB_HID_MOD_LEFT_ALT | USB_HID_MOD_RIGHT_ALT)) ? 1 : 0;
+    unsigned char switch_combo = 0u;
     unsigned char prev_mod = g_kbd.have_prev_report ? g_kbd.prev_report[0] : 0u;
+
+    if (alt && usb_hid_key_present(report, USB_HID_KEY_LEFT_ARROW)){
+        switch_combo = USB_HID_SWITCH_LEFT;
+    } else if (alt && usb_hid_key_present(report, USB_HID_KEY_RIGHT_ARROW)){
+        switch_combo = USB_HID_SWITCH_RIGHT;
+    }
+
+    /*
+     * Alt+Arrow is a global display-session hotkey. Detect it as a combo
+     * state, not only as a new key edge, because some keyboards/report timing
+     * can show the arrow before the Alt modifier changes.
+     */
+    if (switch_combo != 0u){
+        if (g_kbd_switch_combo != switch_combo){
+            (void)terminal_cycle_display_session(
+                switch_combo == USB_HID_SWITCH_LEFT ? -1 : 1);
+        }
+        g_kbd_switch_combo = switch_combo;
+        g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
+        usb_hid_save_prev_report(report);
+        return;
+    }
+    g_kbd_switch_combo = 0u;
 
     if (g_kbd.have_prev_report){
         for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
@@ -674,11 +709,7 @@ static void usb_hid_process_report(const unsigned char report[USB_HID_REPORT_LEN
         usb_hid_push_key_event(QOS_EVENT_KEY_DOWN, key, report[0], 1);
     }
 
-    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
-        g_kbd.prev_report[i] = report[i];
-    }
-    g_kbd.have_prev_report = 1;
-    g_kbd.last_report_tick = system_ticks;
+    usb_hid_save_prev_report(report);
 }
 
 static int usb_parse_hid_keyboard_from_config(const unsigned char* cfg,
