@@ -8,6 +8,7 @@
 #define QOS_V3D_FLAG_SCRATCH_OK  0x00000010u
 #define QOS_V3D_FLAG_QPU_OK      0x00000020u
 #define QOS_V3D_FLAG_QPU_MEM_OK  0x00000040u
+#define QOS_V3D_FLAG_QPU_WRITE_OK 0x00000080u
 
 #define QOS_V3D_ERR_NOT_PROBED   (-1)
 #define QOS_V3D_ERR_CLOCK        (-2)
@@ -16,6 +17,7 @@
 #define QOS_V3D_ERR_CONTROL      (-5)
 #define QOS_V3D_ERR_TIMEOUT      (-6)
 #define QOS_V3D_ERR_QPU_MEMORY   (-7)
+#define QOS_V3D_ERR_QPU_WRITE    (-8)
 
 typedef struct {
     unsigned int flags;
@@ -38,6 +40,7 @@ typedef struct {
     unsigned int noop_count;
     unsigned int clear_count;
     unsigned int qpu_probe_count;
+    unsigned int qpu_write_count;
     unsigned int last_job_thread;
     unsigned int last_job_start_bus;
     unsigned int last_job_end_bus;
@@ -48,6 +51,12 @@ typedef struct {
     unsigned int last_qpu_bus;
     unsigned int last_qpu_size;
     int last_qpu_rc;
+    unsigned int last_qpu_arm;
+    unsigned int last_qpu_write0;
+    unsigned int last_qpu_read0;
+    unsigned int last_qpu_write1;
+    unsigned int last_qpu_read1;
+    int last_qpu_write_rc;
     int last_error;
 } qos_v3d_status_t;
 
@@ -55,6 +64,7 @@ int v3d_probe(qos_v3d_status_t* out);
 int v3d_get_status(qos_v3d_status_t* out);
 int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
 int v3d_qpu_memory_probe(qos_v3d_status_t* out);
+int v3d_qpu_memory_write_probe(qos_v3d_status_t* out);
 int v3d_clear_page_tiles(unsigned int page,
                          unsigned int rgba,
                          unsigned int tile_x,

@@ -35,6 +35,8 @@
 #define V3D_TILE_SIZE         64u
 #define V3D_QPU_PROBE_MEM_SIZE 4096u
 #define V3D_QPU_PROBE_MEM_ALIGN 4096u
+#define V3D_QPU_WRITE_MAGIC0 0x51505531u
+#define V3D_QPU_WRITE_MAGIC1 0x56433344u
 #define V3D_MEM_FLAG_DIRECT   (1u << 2)
 #define V3D_MEM_FLAG_ZERO     (1u << 4)
 #define V3D_MEM_FLAG_HINT_PERMALOCK (1u << 6)
@@ -53,6 +55,7 @@ static unsigned int g_v3d_fail_count = 0u;
 static unsigned int g_v3d_noop_count = 0u;
 static unsigned int g_v3d_clear_count = 0u;
 static unsigned int g_v3d_qpu_probe_count = 0u;
+static unsigned int g_v3d_qpu_write_count = 0u;
 static unsigned char g_v3d_noop_cl[V3D_NOOP_CL_SIZE] __attribute__((aligned(64)));
 static unsigned char g_v3d_clear_cl[V3D_CLEAR_CL_SIZE] __attribute__((aligned(64)));
 static spinlock_t g_v3d_lock;
@@ -84,6 +87,30 @@ static void v3d_lock_init_once(void){
 static unsigned int v3d_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
     return (unsigned int)((addr & 0x3FFFFFFFUL) | V3D_BUS_UNCACHED_BASE);
+}
+
+static unsigned long v3d_arm_address_from_vc_bus(unsigned int bus){
+    return (unsigned long)(bus & 0x3FFFFFFFu);
+}
+
+static int v3d_vc_memory_arm_accessible(unsigned long arm, unsigned int size){
+    if (arm == 0UL || size == 0u){
+        return 0;
+    }
+    if ((arm & 3UL) != 0UL){
+        return 0;
+    }
+    if (arm + (unsigned long)size < arm){
+        return 0;
+    }
+    /*
+     * Pi 3 GPU memory lives in the same low SDRAM window when locked through
+     * the firmware. Keep this conservative so we never probe MMIO by mistake.
+     */
+    if (arm + (unsigned long)size > 0x3F000000UL){
+        return 0;
+    }
+    return 1;
 }
 
 static void v3d_emit_u8(unsigned char** pp, unsigned char* end, unsigned int v){
@@ -225,6 +252,7 @@ int v3d_probe(qos_v3d_status_t* out){
     st.noop_count = g_v3d_noop_count;
     st.clear_count = g_v3d_clear_count;
     st.qpu_probe_count = g_v3d_qpu_probe_count;
+    st.qpu_write_count = g_v3d_qpu_write_count;
     st.last_job_thread = g_v3d_status.last_job_thread;
     st.last_job_start_bus = g_v3d_status.last_job_start_bus;
     st.last_job_end_bus = g_v3d_status.last_job_end_bus;
@@ -235,6 +263,12 @@ int v3d_probe(qos_v3d_status_t* out){
     st.last_qpu_bus = g_v3d_status.last_qpu_bus;
     st.last_qpu_size = g_v3d_status.last_qpu_size;
     st.last_qpu_rc = g_v3d_status.last_qpu_rc;
+    st.last_qpu_arm = g_v3d_status.last_qpu_arm;
+    st.last_qpu_write0 = g_v3d_status.last_qpu_write0;
+    st.last_qpu_read0 = g_v3d_status.last_qpu_read0;
+    st.last_qpu_write1 = g_v3d_status.last_qpu_write1;
+    st.last_qpu_read1 = g_v3d_status.last_qpu_read1;
+    st.last_qpu_write_rc = g_v3d_status.last_qpu_write_rc;
     st.last_error = 0;
 
     clock_ok = (v3d_update_clock(&st, 1) == 0);
@@ -297,6 +331,7 @@ int v3d_get_status(qos_v3d_status_t* out){
         st.noop_count = g_v3d_noop_count;
         st.clear_count = g_v3d_clear_count;
         st.qpu_probe_count = g_v3d_qpu_probe_count;
+        st.qpu_write_count = g_v3d_qpu_write_count;
         st.last_error = QOS_V3D_ERR_NOT_PROBED;
         if (out){
             *out = st;
@@ -313,6 +348,7 @@ int v3d_get_status(qos_v3d_status_t* out){
     st.noop_count = g_v3d_noop_count;
     st.clear_count = g_v3d_clear_count;
     st.qpu_probe_count = g_v3d_qpu_probe_count;
+    st.qpu_write_count = g_v3d_qpu_write_count;
     v3d_store_status(&st);
     if (out){
         *out = st;
@@ -470,6 +506,143 @@ int v3d_qpu_memory_probe(qos_v3d_status_t* out){
         st.fail_count = ++g_v3d_fail_count;
     } else{
         st.last_error = 0;
+        st.fail_count = g_v3d_fail_count;
+    }
+
+    v3d_read_register_snapshot(&st);
+    v3d_store_status(&st);
+    spin_unlock(&g_v3d_lock);
+
+    if (out){
+        *out = st;
+    }
+    return rc;
+}
+
+int v3d_qpu_memory_write_probe(qos_v3d_status_t* out){
+    qos_v3d_status_t st;
+    unsigned int handle = 0u;
+    unsigned int bus = 0u;
+    unsigned long arm = 0UL;
+    unsigned int wrote0 = V3D_QPU_WRITE_MAGIC0;
+    unsigned int wrote1 = V3D_QPU_WRITE_MAGIC1;
+    unsigned int read0 = 0u;
+    unsigned int read1 = 0u;
+    int rc = 0;
+
+    if ((g_v3d_status.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        rc = v3d_probe(&st);
+        if (rc != 0){
+            if (out){
+                *out = st;
+            }
+            return rc;
+        }
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+
+    (void)v3d_get_status(&st);
+    st.qpu_write_count = ++g_v3d_qpu_write_count;
+    st.last_qpu_handle = 0u;
+    st.last_qpu_bus = 0u;
+    st.last_qpu_arm = 0u;
+    st.last_qpu_size = V3D_QPU_PROBE_MEM_SIZE;
+    st.last_qpu_rc = 0;
+    st.last_qpu_write0 = wrote0;
+    st.last_qpu_write1 = wrote1;
+    st.last_qpu_read0 = 0u;
+    st.last_qpu_read1 = 0u;
+    st.last_qpu_write_rc = 0;
+
+    if (mailbox_set_qpu_enabled(1u) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+        st.last_qpu_write_rc = rc;
+    } else{
+        st.flags |= QOS_V3D_FLAG_QPU_OK;
+    }
+
+    if (rc == 0 &&
+        mailbox_alloc_vc_memory(V3D_QPU_PROBE_MEM_SIZE,
+                                V3D_QPU_PROBE_MEM_ALIGN,
+                                V3D_QPU_MEM_FLAGS,
+                                &handle) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+        st.last_qpu_write_rc = rc;
+    }
+
+    if (rc == 0 &&
+        mailbox_lock_vc_memory(handle, &bus) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+        st.last_qpu_write_rc = rc;
+    }
+
+    if (rc == 0){
+        arm = v3d_arm_address_from_vc_bus(bus);
+        st.last_qpu_handle = handle;
+        st.last_qpu_bus = bus;
+        st.last_qpu_arm = (unsigned int)arm;
+        if (!v3d_vc_memory_arm_accessible(arm, V3D_QPU_PROBE_MEM_SIZE)){
+            rc = QOS_V3D_ERR_QPU_WRITE;
+            st.last_qpu_rc = rc;
+            st.last_qpu_write_rc = rc;
+        }
+    }
+
+    if (rc == 0){
+        volatile unsigned int* words = (volatile unsigned int*)arm;
+        words[0] = wrote0;
+        words[1] = wrote1;
+        words[2] = bus;
+        words[3] = V3D_QPU_PROBE_MEM_SIZE;
+        asm volatile("dsb sy" ::: "memory");
+        clean_invalidate_data_cache_range(arm, 64UL);
+        read0 = words[0];
+        read1 = words[1];
+        st.last_qpu_read0 = read0;
+        st.last_qpu_read1 = read1;
+
+        if (read0 == wrote0 && read1 == wrote1){
+            st.flags |= QOS_V3D_FLAG_QPU_MEM_OK | QOS_V3D_FLAG_QPU_WRITE_OK;
+            st.last_qpu_write_rc = 0;
+        } else{
+            rc = QOS_V3D_ERR_QPU_WRITE;
+            st.last_qpu_rc = rc;
+            st.last_qpu_write_rc = rc;
+        }
+
+        for (unsigned int i = 0u; i < 16u; i++){
+            words[i] = 0u;
+        }
+        asm volatile("dsb sy" ::: "memory");
+        clean_data_cache_range(arm, 64UL);
+    }
+
+    if (bus != 0u){
+        if (mailbox_unlock_vc_memory(handle) != 0 && rc == 0){
+            rc = QOS_V3D_ERR_QPU_MEMORY;
+            st.last_qpu_rc = rc;
+            st.last_qpu_write_rc = rc;
+        }
+    }
+    if (handle != 0u){
+        if (mailbox_release_vc_memory(handle) != 0 && rc == 0){
+            rc = QOS_V3D_ERR_QPU_MEMORY;
+            st.last_qpu_rc = rc;
+            st.last_qpu_write_rc = rc;
+        }
+    }
+
+    if (rc != 0){
+        st.last_error = rc;
+        st.fail_count = ++g_v3d_fail_count;
+    } else{
+        st.last_error = 0;
+        st.last_qpu_rc = 0;
         st.fail_count = g_v3d_fail_count;
     }
 

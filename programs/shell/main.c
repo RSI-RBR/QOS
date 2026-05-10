@@ -498,7 +498,7 @@ static void cmd_help(void){
     qos_puts(" gpu on|off|status\n");
     qos_puts(" vsync on|off|status\n");
     qos_puts(" gpu2d status\n");
-    qos_puts(" v3d probe|status|noop [0|1]|qpu|clear <rgba32hex>\n");
+    qos_puts(" v3d probe|status|noop [0|1]|qpu|qpuwrite|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>|v3d <mhz>\n");
@@ -994,6 +994,8 @@ static void cmd_v3d(const char* mode){
         rc = qos_v3d_noop(thread, &st);
     } else if (str_eq(mode, "qpu")){
         rc = qos_v3d_qpu_probe(&st);
+    } else if (str_eq(mode, "qpuwrite")){
+        rc = qos_v3d_qpu_write_probe(&st);
     } else if (str_starts_with(mode, "clear")){
         unsigned int rgba = 0u;
         const char* p = mode + 5;
@@ -1006,7 +1008,7 @@ static void cmd_v3d(const char* mode){
         }
         rc = qos_v3d_clear(rgba, &st);
     } else{
-        qos_puts("Usage: v3d probe|status|noop [0|1]|qpu|clear <rgba32hex>\n");
+        qos_puts("Usage: v3d probe|status|noop [0|1]|qpu|qpuwrite|clear <rgba32hex>\n");
         return;
     }
 
@@ -1057,6 +1059,7 @@ static void cmd_v3d(const char* mode){
     if (st.flags & QOS_V3D_FLAG_CLOCK_OK) qos_puts(" clock");
     if (st.flags & QOS_V3D_FLAG_QPU_OK) qos_puts(" qpu");
     if (st.flags & QOS_V3D_FLAG_QPU_MEM_OK) qos_puts(" qpumem");
+    if (st.flags & QOS_V3D_FLAG_QPU_WRITE_OK) qos_puts(" qpuwrite");
     if (st.flags & QOS_V3D_FLAG_PRESENT) qos_puts(" present");
     if (st.flags & QOS_V3D_FLAG_IDENT_OK) qos_puts(" ident");
     if (st.flags & QOS_V3D_FLAG_SCRATCH_OK) qos_puts(" scratch");
@@ -1070,6 +1073,8 @@ static void cmd_v3d(const char* mode){
     print_uint(st.clear_count);
     qos_puts(" qpuprobe=");
     print_uint(st.qpu_probe_count);
+    qos_puts(" qpuwrite=");
+    print_uint(st.qpu_write_count);
     qos_puts(" last=");
     print_int(st.last_error);
     qos_puts("\n");
@@ -1096,6 +1101,20 @@ static void cmd_v3d(const char* mode){
     print_uint(st.last_qpu_size);
     qos_puts(" rc=");
     print_int(st.last_qpu_rc);
+    qos_puts("\n");
+
+    qos_puts(" qpu arm=");
+    print_hex32(st.last_qpu_arm);
+    qos_puts(" w0=");
+    print_hex32(st.last_qpu_write0);
+    qos_puts(" r0=");
+    print_hex32(st.last_qpu_read0);
+    qos_puts(" w1=");
+    print_hex32(st.last_qpu_write1);
+    qos_puts(" r1=");
+    print_hex32(st.last_qpu_read1);
+    qos_puts(" wrc=");
+    print_int(st.last_qpu_write_rc);
     qos_puts("\n");
 }
 
