@@ -13,6 +13,7 @@
 #define SDL_SHIM_REPEAT_INTERVAL_MS 33u
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 #define SDL_SHIM_RENDER_HINT_CHAR_16 2
+#define SDL_SHIM_SPAN_MAX_RUNS_PER_TEXTURE 16384u
 #define SDL_SHIM_SOFT_BACKBUFFER 1
 #define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
 #define SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH 1
@@ -867,6 +868,9 @@ static int sdl_texture_upload_gpu(SDL_Texture* texture);
 static void sdl_texture_free_native(SDL_Texture* texture);
 static void sdl_texture_invalidate_native(SDL_Texture* texture);
 static int sdl_texture_ensure_native(SDL_Texture* texture);
+static void sdl_texture_free_spans(SDL_Texture* texture);
+static void sdl_texture_invalidate_spans(SDL_Texture* texture);
+static int sdl_texture_ensure_opaque_spans(SDL_Texture* texture);
 
 static int sdl_soft_blit_native_texture(SDL_Texture* texture,
                                         int sx,
@@ -979,6 +983,7 @@ static int sdl_soft_blit_rgba_unscaled_texture(SDL_Texture* texture,
         texture->color_r != 255u ||
         texture->color_g != 255u ||
         texture->color_b != 255u ||
+        texture->blend_mode == SDL_BLENDMODE_NONE ||
         visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
         return -2;
     }
@@ -1037,6 +1042,88 @@ static int sdl_soft_blit_rgba_unscaled_texture(SDL_Texture* texture,
         }
     }
 
+    return 0;
+}
+
+static int sdl_soft_blit_span_texture(SDL_Texture* texture,
+                                      int sx,
+                                      int sy,
+                                      int sw,
+                                      int sh,
+                                      int dx,
+                                      int dy,
+                                      int dw,
+                                      int dh,
+                                      int visible_x0,
+                                      int visible_y0,
+                                      int visible_x1,
+                                      int visible_y1,
+                                      int flip){
+    if (!texture || !g_soft_fb || !texture->native_pixels ||
+        sx != 0 || sy != 0 ||
+        sw != texture->w || sh != texture->h ||
+        dw != texture->w || dh != texture->h ||
+        flip != SDL_FLIP_NONE ||
+        texture->alpha_mod != 255u ||
+        texture->color_r != 255u ||
+        texture->color_g != 255u ||
+        texture->color_b != 255u ||
+        visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
+        return -2;
+    }
+    if (sdl_texture_ensure_opaque_spans(texture) != 0 ||
+        !texture->binary_alpha ||
+        !texture->opaque_spans_valid){
+        return -2;
+    }
+    if (texture->opaque_span_count == 0u){
+        return 0;
+    }
+
+    const Uint16* spans = texture->opaque_spans;
+    for (Uint32 i = 0u; i < texture->opaque_span_count; i++){
+        int row = (int)spans[(i * 3u) + 0u];
+        int x0 = (int)spans[(i * 3u) + 1u];
+        int x1 = x0 + (int)spans[(i * 3u) + 2u];
+
+        if (row < visible_y0 || row >= visible_y1){
+            continue;
+        }
+        if (x0 < visible_x0){
+            x0 = visible_x0;
+        }
+        if (x1 > visible_x1){
+            x1 = visible_x1;
+        }
+        if (x1 <= x0){
+            continue;
+        }
+
+        int dst_x = dx + x0;
+        int dst_y = dy + row;
+        if (dst_y < 0 || dst_y >= g_soft_fb_h ||
+            dst_x >= g_soft_fb_w || dst_x + (x1 - x0) <= 0){
+            continue;
+        }
+        if (dst_x < 0){
+            x0 -= dst_x;
+            dst_x = 0;
+        }
+        if (dst_x + (x1 - x0) > g_soft_fb_w){
+            x1 = x0 + (g_soft_fb_w - dst_x);
+        }
+        if (x1 <= x0){
+            continue;
+        }
+
+        const Uint8* src = (const Uint8*)(texture->native_pixels +
+                                          ((Uint32)row * (Uint32)texture->w) +
+                                          (Uint32)x0);
+        Uint8* dst = g_soft_fb +
+                     ((unsigned long)dst_y * (unsigned long)g_soft_fb_pitch) +
+                     ((unsigned long)dst_x * 4ul);
+        sdl_copy_bytes(dst, src, (Uint32)(x1 - x0) * 4u);
+    }
     return 0;
 }
 
@@ -1123,6 +1210,32 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         return 0;
     }
 #endif
+
+    if (!texture->opaque &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        texture->color_b == 255u &&
+        texture->blend_mode != SDL_BLENDMODE_NONE &&
+        sdl_texture_ensure_native(texture) == 0 &&
+        sdl_soft_blit_span_texture(texture,
+                                   sx,
+                                   sy,
+                                   sw,
+                                   sh,
+                                   dx,
+                                   dy,
+                                   dw,
+                                   dh,
+                                   visible_x0,
+                                   visible_y0,
+                                   visible_x1,
+                                   visible_y1,
+                                   flip) == 0){
+        g_sdl_profile.rendercopy_native_calls++;
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
 
     if (sdl_soft_blit_rgba_unscaled_texture(texture,
                                             sx,
@@ -1703,9 +1816,28 @@ static void sdl_texture_free_native(SDL_Texture* texture){
     texture->native_valid = 0;
 }
 
+static void sdl_texture_free_spans(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+    if (texture->opaque_spans){
+        free(texture->opaque_spans);
+    }
+    texture->opaque_spans = 0;
+    texture->opaque_span_count = 0u;
+    texture->opaque_span_capacity = 0u;
+    texture->opaque_spans_valid = 0;
+    texture->binary_alpha = 0;
+}
+
+static void sdl_texture_invalidate_spans(SDL_Texture* texture){
+    sdl_texture_free_spans(texture);
+}
+
 static void sdl_texture_invalidate_native(SDL_Texture* texture){
     if (texture){
         texture->native_valid = 0;
+        sdl_texture_invalidate_spans(texture);
         sdl_texture_invalidate_gpu(texture);
     }
 }
@@ -1741,6 +1873,96 @@ static int sdl_texture_ensure_native(SDL_Texture* texture){
         }
         texture->native_valid = 1;
     }
+    return 0;
+}
+
+static int sdl_texture_ensure_opaque_spans(SDL_Texture* texture){
+    Uint32 run_count = 0u;
+    Uint16* spans;
+    Uint32 out = 0u;
+    if (!texture || !texture->alive || !texture->pixels ||
+        texture->w <= 0 || texture->h <= 0 || texture->pitch <= 0 ||
+        texture->w > 65535 || texture->h > 65535){
+        return -1;
+    }
+    if (texture->opaque_spans_valid){
+        return texture->binary_alpha ? 0 : -2;
+    }
+
+    texture->binary_alpha = 1;
+    for (int y = 0; y < texture->h; y++){
+        const Uint8* row = texture->pixels + ((Uint32)y * (Uint32)texture->pitch);
+        int x = 0;
+        while (x < texture->w){
+            Uint8 a = row[((Uint32)x * 4u) + 3u];
+            if (a != 0u && a != 255u){
+                texture->binary_alpha = 0;
+            }
+            if (a != 255u){
+                x++;
+                continue;
+            }
+            int start = x;
+            while (x < texture->w){
+                a = row[((Uint32)x * 4u) + 3u];
+                if (a != 255u){
+                    if (a != 0u){
+                        texture->binary_alpha = 0;
+                    }
+                    break;
+                }
+                x++;
+            }
+            if (x > start){
+                run_count++;
+                if (run_count > SDL_SHIM_SPAN_MAX_RUNS_PER_TEXTURE){
+                    texture->binary_alpha = 0;
+                }
+            }
+        }
+    }
+
+    if (!texture->binary_alpha){
+        texture->opaque_spans_valid = 1;
+        texture->opaque_span_count = 0u;
+        return -2;
+    }
+    if (run_count == 0u){
+        texture->opaque_spans_valid = 1;
+        texture->opaque_span_count = 0u;
+        return 0;
+    }
+
+    spans = (Uint16*)malloc((unsigned long)run_count * 3ul * sizeof(Uint16));
+    if (!spans){
+        return -1;
+    }
+
+    for (int y = 0; y < texture->h; y++){
+        const Uint8* row = texture->pixels + ((Uint32)y * (Uint32)texture->pitch);
+        int x = 0;
+        while (x < texture->w){
+            while (x < texture->w && row[((Uint32)x * 4u) + 3u] != 255u){
+                x++;
+            }
+            int start = x;
+            while (x < texture->w && row[((Uint32)x * 4u) + 3u] == 255u){
+                x++;
+            }
+            if (x > start){
+                spans[out++] = (Uint16)y;
+                spans[out++] = (Uint16)start;
+                spans[out++] = (Uint16)(x - start);
+            }
+        }
+    }
+
+    sdl_texture_free_spans(texture);
+    texture->opaque_spans = spans;
+    texture->opaque_span_count = run_count;
+    texture->opaque_span_capacity = run_count;
+    texture->opaque_spans_valid = 1;
+    texture->binary_alpha = 1;
     return 0;
 }
 
@@ -1876,6 +2098,7 @@ int SDL_Init(Uint32 flags){
         }
         sdl_texture_free_gpu(&g_textures[i]);
         sdl_texture_free_native(&g_textures[i]);
+        sdl_texture_free_spans(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
@@ -1940,6 +2163,7 @@ void SDL_Quit(void){
         }
         sdl_texture_free_gpu(&g_textures[i]);
         sdl_texture_free_native(&g_textures[i]);
+        sdl_texture_free_spans(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
@@ -2521,9 +2745,14 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->pitch = w * 4;
     t->capacity = bytes;
     t->native_pixels = 0;
+    t->opaque_spans = 0;
     t->native_capacity = 0u;
+    t->opaque_span_count = 0u;
+    t->opaque_span_capacity = 0u;
     t->gpu_texture_id = 0u;
     t->native_valid = 0;
+    t->opaque_spans_valid = 0;
+    t->binary_alpha = 0;
     t->gpu_texture_valid = 0;
     t->color_r = 255u;
     t->color_g = 255u;
@@ -2582,9 +2811,14 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->pitch = (int)row_bytes;
     t->capacity = expected_capacity;
     t->native_pixels = 0;
+    t->opaque_spans = 0;
     t->native_capacity = 0u;
+    t->opaque_span_count = 0u;
+    t->opaque_span_capacity = 0u;
     t->gpu_texture_id = 0u;
     t->native_valid = 0;
+    t->opaque_spans_valid = 0;
+    t->binary_alpha = 0;
     t->gpu_texture_valid = 0;
 
     if (surface->owns_pixels &&
@@ -2643,6 +2877,7 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     }
     sdl_texture_free_gpu(texture);
     sdl_texture_free_native(texture);
+    sdl_texture_free_spans(texture);
     texture->alive = 0;
     texture->locked = 0;
     texture->pixels = 0;

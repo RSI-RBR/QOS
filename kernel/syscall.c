@@ -819,8 +819,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 /*
                  * Pi 3 commonly only gives us two pages. While active, the
                  * graphics app can use both pages for fullscreen flipping.
-                 * When inactive, the SDL shim redirects drawing into a scratch
-                 * buffer so page 0 can safely return to tty0.
+                 * When inactive, the SDL shim drops draw work so page 0 can
+                 * safely return to tty0.
                  */
                 page = (visible_page == 0u) ? 1u : 0u;
                 page_b = (page == 0u) ? 1u : 0u;

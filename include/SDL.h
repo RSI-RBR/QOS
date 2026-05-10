@@ -53,10 +53,15 @@ typedef struct SDL_Texture {
     int pitch;
     Uint8* pixels;
     Uint32* native_pixels;
+    Uint16* opaque_spans;
     Uint32 capacity;
     Uint32 native_capacity;
+    Uint32 opaque_span_count;
+    Uint32 opaque_span_capacity;
     Uint32 gpu_texture_id;
     int native_valid;
+    int opaque_spans_valid;
+    int binary_alpha;
     int gpu_texture_valid;
     Uint8 color_r;
     Uint8 color_g;
