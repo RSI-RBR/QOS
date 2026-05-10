@@ -3781,6 +3781,21 @@ void usb_host_poll_mouse(void){
     }
 }
 
+void usb_host_service(void){
+    if (!g_usb_ready){
+        return;
+    }
+
+    /*
+     * HID collection is intentionally a background service. Callers that are
+     * latency-sensitive (graphics/event syscalls) should drain the queue only;
+     * idle/background kernel paths run this pump so a NAK/no-data interrupt
+     * transfer does not sit directly on the render critical path.
+     */
+    usb_host_poll();
+    usb_host_poll_mouse();
+}
+
 int usb_host_try_getc(char* out){
     return usb_hid_queue_pop(out);
 }

@@ -23,12 +23,10 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
-#define DISPLAY_HOTKEY_POLL_MS 250UL
 
 static int g_display_gpu_enabled = 0;
 static unsigned int g_display_gpu_flip_count = 0;
 static unsigned int g_display_gpu_failure_count = 0;
-static unsigned long g_display_next_hotkey_poll_tick = 0UL;
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
 static int g_cursor_x = 0;
@@ -1564,18 +1562,7 @@ int display_present_active_graphics(void){
     display_init();
     unsigned long prof_hz = display_read_cntfrq();
     unsigned long prof_start = display_read_cntpct();
-    unsigned long poll_start = prof_start;
-
-    /*
-     * Graphics apps may render continuously without polling SDL events every
-     * frame. Poll the keyboard here so global display hotkeys still work, but
-     * do not make every present pay for USB host traffic.
-     */
-    if (system_ticks >= g_display_next_hotkey_poll_tick){
-        usb_host_poll();
-        g_display_next_hotkey_poll_tick = system_ticks + DISPLAY_HOTKEY_POLL_MS;
-    }
-    unsigned long poll_us = display_elapsed_us(poll_start, prof_hz);
+    unsigned long poll_us = 0UL;
     unsigned long attach_us = 0UL;
     unsigned long copy_us = 0UL;
     unsigned long cursor_us = 0UL;
