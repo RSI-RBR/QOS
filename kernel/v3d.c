@@ -33,6 +33,12 @@
 #define V3D_NOOP_TIMEOUT      1000000u
 #define V3D_CLEAR_CL_SIZE     16384u
 #define V3D_TILE_SIZE         64u
+#define V3D_QPU_PROBE_MEM_SIZE 4096u
+#define V3D_QPU_PROBE_MEM_ALIGN 4096u
+#define V3D_MEM_FLAG_DIRECT   (1u << 2)
+#define V3D_MEM_FLAG_ZERO     (1u << 4)
+#define V3D_MEM_FLAG_HINT_PERMALOCK (1u << 6)
+#define V3D_QPU_MEM_FLAGS     (V3D_MEM_FLAG_DIRECT | V3D_MEM_FLAG_ZERO | V3D_MEM_FLAG_HINT_PERMALOCK)
 #define V3D_CL_HALT           0u
 #define V3D_CL_STORE_RESOLVED 24u
 #define V3D_CL_STORE_EOF      25u
@@ -46,6 +52,7 @@ static unsigned int g_v3d_probe_count = 0u;
 static unsigned int g_v3d_fail_count = 0u;
 static unsigned int g_v3d_noop_count = 0u;
 static unsigned int g_v3d_clear_count = 0u;
+static unsigned int g_v3d_qpu_probe_count = 0u;
 static unsigned char g_v3d_noop_cl[V3D_NOOP_CL_SIZE] __attribute__((aligned(64)));
 static unsigned char g_v3d_clear_cl[V3D_CLEAR_CL_SIZE] __attribute__((aligned(64)));
 static spinlock_t g_v3d_lock;
@@ -217,12 +224,17 @@ int v3d_probe(qos_v3d_status_t* out){
     st.fail_count = g_v3d_fail_count;
     st.noop_count = g_v3d_noop_count;
     st.clear_count = g_v3d_clear_count;
+    st.qpu_probe_count = g_v3d_qpu_probe_count;
     st.last_job_thread = g_v3d_status.last_job_thread;
     st.last_job_start_bus = g_v3d_status.last_job_start_bus;
     st.last_job_end_bus = g_v3d_status.last_job_end_bus;
     st.last_clear_color = g_v3d_status.last_clear_color;
     st.last_clear_page = g_v3d_status.last_clear_page;
     st.last_clear_tiles = g_v3d_status.last_clear_tiles;
+    st.last_qpu_handle = g_v3d_status.last_qpu_handle;
+    st.last_qpu_bus = g_v3d_status.last_qpu_bus;
+    st.last_qpu_size = g_v3d_status.last_qpu_size;
+    st.last_qpu_rc = g_v3d_status.last_qpu_rc;
     st.last_error = 0;
 
     clock_ok = (v3d_update_clock(&st, 1) == 0);
@@ -284,6 +296,7 @@ int v3d_get_status(qos_v3d_status_t* out){
         st.fail_count = g_v3d_fail_count;
         st.noop_count = g_v3d_noop_count;
         st.clear_count = g_v3d_clear_count;
+        st.qpu_probe_count = g_v3d_qpu_probe_count;
         st.last_error = QOS_V3D_ERR_NOT_PROBED;
         if (out){
             *out = st;
@@ -299,6 +312,7 @@ int v3d_get_status(qos_v3d_status_t* out){
     st.fail_count = g_v3d_fail_count;
     st.noop_count = g_v3d_noop_count;
     st.clear_count = g_v3d_clear_count;
+    st.qpu_probe_count = g_v3d_qpu_probe_count;
     v3d_store_status(&st);
     if (out){
         *out = st;
@@ -375,6 +389,92 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out){
     }
     v3d_store_status(&st);
 
+    spin_unlock(&g_v3d_lock);
+
+    if (out){
+        *out = st;
+    }
+    return rc;
+}
+
+int v3d_qpu_memory_probe(qos_v3d_status_t* out){
+    qos_v3d_status_t st;
+    unsigned int handle = 0u;
+    unsigned int bus = 0u;
+    int rc = 0;
+
+    if ((g_v3d_status.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        rc = v3d_probe(&st);
+        if (rc != 0){
+            if (out){
+                *out = st;
+            }
+            return rc;
+        }
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+
+    (void)v3d_get_status(&st);
+    st.qpu_probe_count = ++g_v3d_qpu_probe_count;
+    st.last_qpu_handle = 0u;
+    st.last_qpu_bus = 0u;
+    st.last_qpu_size = V3D_QPU_PROBE_MEM_SIZE;
+    st.last_qpu_rc = 0;
+
+    if (mailbox_set_qpu_enabled(1u) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+    } else{
+        st.flags |= QOS_V3D_FLAG_QPU_OK;
+    }
+
+    if (rc == 0 &&
+        mailbox_alloc_vc_memory(V3D_QPU_PROBE_MEM_SIZE,
+                                V3D_QPU_PROBE_MEM_ALIGN,
+                                V3D_QPU_MEM_FLAGS,
+                                &handle) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+    }
+
+    if (rc == 0 &&
+        mailbox_lock_vc_memory(handle, &bus) != 0){
+        rc = QOS_V3D_ERR_QPU_MEMORY;
+        st.last_qpu_rc = rc;
+    }
+
+    if (rc == 0){
+        st.flags |= QOS_V3D_FLAG_QPU_MEM_OK;
+        st.last_qpu_handle = handle;
+        st.last_qpu_bus = bus;
+        st.last_qpu_rc = 0;
+    }
+
+    if (bus != 0u){
+        if (mailbox_unlock_vc_memory(handle) != 0 && rc == 0){
+            rc = QOS_V3D_ERR_QPU_MEMORY;
+            st.last_qpu_rc = rc;
+        }
+    }
+    if (handle != 0u){
+        if (mailbox_release_vc_memory(handle) != 0 && rc == 0){
+            rc = QOS_V3D_ERR_QPU_MEMORY;
+            st.last_qpu_rc = rc;
+        }
+    }
+
+    if (rc != 0){
+        st.last_error = rc;
+        st.fail_count = ++g_v3d_fail_count;
+    } else{
+        st.last_error = 0;
+        st.fail_count = g_v3d_fail_count;
+    }
+
+    v3d_read_register_snapshot(&st);
+    v3d_store_status(&st);
     spin_unlock(&g_v3d_lock);
 
     if (out){

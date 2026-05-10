@@ -242,6 +242,132 @@ int mailbox_set_qpu_enabled(unsigned int enabled){
     return 0;
 }
 
+int mailbox_alloc_vc_memory(unsigned int size,
+                            unsigned int alignment,
+                            unsigned int flags,
+                            unsigned int* handle_out){
+    if (!handle_out || size == 0u || alignment == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 9 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x0003000C; // Allocate memory
+    mbox[3] = 12;
+    mbox[4] = 12;
+    mbox[5] = size;
+    mbox[6] = alignment;
+    mbox[7] = flags;
+    mbox[8] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    *handle_out = mbox[5];
+    mailbox_unlock();
+    return (*handle_out != 0u) ? 0 : -1;
+}
+
+int mailbox_lock_vc_memory(unsigned int handle, unsigned int* bus_addr_out){
+    if (!bus_addr_out || handle == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 7 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x0003000D; // Lock memory
+    mbox[3] = 4;
+    mbox[4] = 4;
+    mbox[5] = handle;
+    mbox[6] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    *bus_addr_out = mbox[5];
+    mailbox_unlock();
+    return (*bus_addr_out != 0u) ? 0 : -1;
+}
+
+int mailbox_unlock_vc_memory(unsigned int handle){
+    if (handle == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 7 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x0003000E; // Unlock memory
+    mbox[3] = 4;
+    mbox[4] = 4;
+    mbox[5] = handle;
+    mbox[6] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    int ok = (mbox[5] == 0u) ? 0 : -1;
+    mailbox_unlock();
+    return ok;
+}
+
+int mailbox_release_vc_memory(unsigned int handle){
+    if (handle == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 7 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x0003000F; // Release memory
+    mbox[3] = 4;
+    mbox[4] = 4;
+    mbox[5] = handle;
+    mbox[6] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    int ok = (mbox[5] == 0u) ? 0 : -1;
+    mailbox_unlock();
+    return ok;
+}
+
+int mailbox_execute_qpu(unsigned int num_qpus,
+                        unsigned int control_bus_addr,
+                        unsigned int noflush,
+                        unsigned int timeout_ms){
+    if (num_qpus == 0u || control_bus_addr == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 10 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00030011; // Execute QPU
+    mbox[3] = 16;
+    mbox[4] = 16;
+    mbox[5] = num_qpus;
+    mbox[6] = control_bus_addr;
+    mbox[7] = noflush ? 1u : 0u;
+    mbox[8] = timeout_ms;
+    mbox[9] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    int ok = (mbox[5] == 0u) ? 0 : -1;
+    mailbox_unlock();
+    return ok;
+}
+
 int mailbox_get_temperature(unsigned int sensor_id, unsigned int* milli_c_out){
     if (!milli_c_out){
         return -1;
