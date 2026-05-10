@@ -6,6 +6,8 @@
 #define MAX_WIDTH 1920
 #define MAX_HEIGHT 1080
 #define MAX_TRACKED_PIXELS (MAX_WIDTH * MAX_HEIGHT)
+#define FB_MAX_REQUESTED_PAGES 4u
+#define FB_LEGACY_SAFE_VIRTUAL_HEIGHT 4096u
 
 static unsigned int width = 1920;
 static unsigned int height = 1080;
@@ -32,7 +34,18 @@ static spinlock_t g_fb_lock;
 void fb_init(){
     spinlock_init(&g_fb_lock);
     unsigned int requested_height = height;
-    unsigned int requested_virtual_height = requested_height * 4u;
+    unsigned int requested_pages = FB_MAX_REQUESTED_PAGES;
+    /*
+     * Pi 3 legacy firmware commonly clamps oversized virtual dimensions. At
+     * 1080p, four pages require virtual_height=4320, so request three pages
+     * instead of letting firmware silently fall back to two.
+     */
+    while (requested_pages > 2u &&
+           requested_height > 0u &&
+           requested_height * requested_pages > FB_LEGACY_SAFE_VIRTUAL_HEIGHT){
+        requested_pages--;
+    }
+    unsigned int requested_virtual_height = requested_height * requested_pages;
 
     mbox[0] = 35 * 4;
     mbox[1] = 0;
@@ -101,8 +114,8 @@ void fb_init(){
             unsigned int pages_by_height = virtual_height / height;
             unsigned int pages_by_size = (unsigned int)(fb_size / page_bytes);
             unsigned int pages = pages_by_height < pages_by_size ? pages_by_height : pages_by_size;
-            if (pages > 4u){
-                pages = 4u;
+            if (pages > requested_pages){
+                pages = requested_pages;
             }
             if (pages > 0u){
                 fb_page_count = pages;
