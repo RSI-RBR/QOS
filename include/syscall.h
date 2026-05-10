@@ -153,7 +153,8 @@ enum {
     SYS_DISPLAY_VSYNC_SET = 127,
     SYS_DISPLAY_VSYNC_GET = 128,
     SYS_V3D_QPU_PROBE = 129,
-    SYS_V3D_QPU_WRITE_PROBE = 130
+    SYS_V3D_QPU_WRITE_PROBE = 130,
+    SYS_V3D_QPU_EXEC_PROBE = 131
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -618,6 +619,10 @@ static inline int qos_v3d_qpu_probe(qos_v3d_status_t* out_status){
 
 static inline int qos_v3d_qpu_write_probe(qos_v3d_status_t* out_status){
     return (int)qos_syscall1(SYS_V3D_QPU_WRITE_PROBE, (unsigned long)out_status);
+}
+
+static inline int qos_v3d_qpu_exec_probe(qos_v3d_status_t* out_status){
+    return (int)qos_syscall1(SYS_V3D_QPU_EXEC_PROBE, (unsigned long)out_status);
 }
 
 static inline void qos_display_profile_reset(void){

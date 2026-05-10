@@ -498,7 +498,7 @@ static void cmd_help(void){
     qos_puts(" gpu on|off|status\n");
     qos_puts(" vsync on|off|status\n");
     qos_puts(" gpu2d status\n");
-    qos_puts(" v3d probe|status|noop [0|1]|qpu|qpuwrite|clear <rgba32hex>\n");
+    qos_puts(" v3d probe|status|noop [0|1]|qpu|qpuwrite|qpuexec|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>|v3d <mhz>\n");
@@ -996,6 +996,8 @@ static void cmd_v3d(const char* mode){
         rc = qos_v3d_qpu_probe(&st);
     } else if (str_eq(mode, "qpuwrite")){
         rc = qos_v3d_qpu_write_probe(&st);
+    } else if (str_eq(mode, "qpuexec")){
+        rc = qos_v3d_qpu_exec_probe(&st);
     } else if (str_starts_with(mode, "clear")){
         unsigned int rgba = 0u;
         const char* p = mode + 5;
@@ -1008,7 +1010,7 @@ static void cmd_v3d(const char* mode){
         }
         rc = qos_v3d_clear(rgba, &st);
     } else{
-        qos_puts("Usage: v3d probe|status|noop [0|1]|qpu|qpuwrite|clear <rgba32hex>\n");
+        qos_puts("Usage: v3d probe|status|noop [0|1]|qpu|qpuwrite|qpuexec|clear <rgba32hex>\n");
         return;
     }
 
@@ -1060,6 +1062,7 @@ static void cmd_v3d(const char* mode){
     if (st.flags & QOS_V3D_FLAG_QPU_OK) qos_puts(" qpu");
     if (st.flags & QOS_V3D_FLAG_QPU_MEM_OK) qos_puts(" qpumem");
     if (st.flags & QOS_V3D_FLAG_QPU_WRITE_OK) qos_puts(" qpuwrite");
+    if (st.flags & QOS_V3D_FLAG_QPU_EXEC_OK) qos_puts(" qpuexec");
     if (st.flags & QOS_V3D_FLAG_PRESENT) qos_puts(" present");
     if (st.flags & QOS_V3D_FLAG_IDENT_OK) qos_puts(" ident");
     if (st.flags & QOS_V3D_FLAG_SCRATCH_OK) qos_puts(" scratch");
@@ -1075,6 +1078,8 @@ static void cmd_v3d(const char* mode){
     print_uint(st.qpu_probe_count);
     qos_puts(" qpuwrite=");
     print_uint(st.qpu_write_count);
+    qos_puts(" qpuexec=");
+    print_uint(st.qpu_exec_count);
     qos_puts(" last=");
     print_int(st.last_error);
     qos_puts("\n");
@@ -1115,6 +1120,22 @@ static void cmd_v3d(const char* mode){
     print_hex32(st.last_qpu_read1);
     qos_puts(" wrc=");
     print_int(st.last_qpu_write_rc);
+    qos_puts("\n");
+
+    qos_puts(" qpuexec status=");
+    print_hex32(st.last_qpu_exec_status);
+    qos_puts(" mis=");
+    print_uint(st.last_qpu_exec_mismatch);
+    qos_puts(" exp0=");
+    print_hex32(st.last_qpu_exec_expected0);
+    qos_puts(" out0=");
+    print_hex32(st.last_qpu_exec_result0);
+    qos_puts(" exp63=");
+    print_hex32(st.last_qpu_exec_expected63);
+    qos_puts(" out63=");
+    print_hex32(st.last_qpu_exec_result63);
+    qos_puts(" erc=");
+    print_int(st.last_qpu_exec_rc);
     qos_puts("\n");
 }
 
