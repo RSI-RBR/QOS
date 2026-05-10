@@ -37,6 +37,20 @@
 #include "terminal.h"
 #include "klog.h"
 #include "display.h"
+#include "program.h"
+
+static int kernel_ranges_overlap(unsigned long a, unsigned long a_size,
+                                 unsigned long b, unsigned long b_size){
+    if (a_size == 0UL || b_size == 0UL){
+        return 0;
+    }
+    unsigned long a_end = a + a_size;
+    unsigned long b_end = b + b_size;
+    if (a_end < a || b_end < b){
+        return 1;
+    }
+    return a < b_end && b < a_end;
+}
 
 
 //extern kernel_api_t kapi;
@@ -214,7 +228,22 @@ void kernel_main(void){
     console_init();
 
     fb_init();
-    mmu_map_device_region(fb_get_base(), (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height());
+    {
+        unsigned long fb_base = fb_get_base();
+        unsigned long fb_one_page = (unsigned long)fb_get_pitch() * (unsigned long)fb_get_height();
+        unsigned long fb_map_size = fb_get_total_size();
+        if (fb_map_size == 0UL){
+            fb_map_size = fb_one_page;
+        }
+        if (kernel_ranges_overlap(fb_base,
+                                  fb_map_size,
+                                  QOS_PROGRAM_POOL_START,
+                                  QOS_PROGRAM_POOL_SIZE)){
+            uart_puts("FB pageflip disabled: framebuffer overlaps program pool.\n");
+            fb_map_size = fb_one_page;
+        }
+        mmu_map_device_region(fb_base, fb_map_size);
+    }
     fb_init_buffers();
     uart_puts("Frame buffer initialized!\n");
 

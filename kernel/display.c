@@ -2,6 +2,7 @@
 #include "dma.h"
 #include "framebuffer.h"
 #include "memory.h"
+#include "program.h"
 #include "spinlock.h"
 #include "usb_host.h"
 
@@ -147,8 +148,26 @@ static void display_copy_surface(void* dst,
 }
 
 static int display_pageflip_available(void){
-    return fb_get_page_count() > DISPLAY_SCANOUT_PAGE &&
-           fb_get_page_base(DISPLAY_SCANOUT_PAGE) != 0UL;
+    unsigned long page_bytes = display_fb_size();
+    unsigned long base0 = fb_get_page_base(0u);
+    unsigned long base1 = fb_get_page_base(DISPLAY_SCANOUT_PAGE);
+    unsigned long pool_start = QOS_PROGRAM_POOL_START;
+    unsigned long pool_end = QOS_PROGRAM_POOL_START + QOS_PROGRAM_POOL_SIZE;
+
+    if (fb_get_page_count() <= DISPLAY_SCANOUT_PAGE ||
+        page_bytes == 0UL ||
+        base0 == 0UL ||
+        base1 == 0UL){
+        return 0;
+    }
+
+    if (base0 < pool_end && base0 + page_bytes > pool_start){
+        return 0;
+    }
+    if (base1 < pool_end && base1 + page_bytes > pool_start){
+        return 0;
+    }
+    return 1;
 }
 
 static void display_invalidate_cursor_locked(void){

@@ -22,6 +22,7 @@ unsigned int fb_get_height();
 unsigned int fb_get_pitch();
 unsigned long fb_get_base();
 unsigned long fb_get_bus_base();
+unsigned long fb_get_total_size(void);
 unsigned int fb_get_page_count(void);
 unsigned int fb_get_display_page(void);
 unsigned long fb_get_page_base(unsigned int page);

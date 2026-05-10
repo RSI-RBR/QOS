@@ -110,6 +110,10 @@ void fb_init(){
         uart_puthex(pitch);
         uart_puts(" pages=");
         uart_puthex(fb_page_count);
+        uart_puts(" base=");
+        uart_puthex((unsigned int)(unsigned long)fb);
+        uart_puts(" page1=");
+        uart_puthex((unsigned int)fb_get_page_base(1u));
         uart_puts("\n");
     }
 }
@@ -284,6 +288,15 @@ unsigned long fb_get_base(){
 
 unsigned long fb_get_bus_base(){
     return fb_bus;
+}
+
+unsigned long fb_get_total_size(void){
+    if (pitch == 0u || height == 0u || fb_page_count == 0u){
+        return 0UL;
+    }
+    return (unsigned long)pitch *
+           (unsigned long)height *
+           (unsigned long)fb_page_count;
 }
 
 unsigned int fb_get_page_count(void){
