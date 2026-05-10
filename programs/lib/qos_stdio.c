@@ -1,6 +1,7 @@
 #define QOS_STDIO_NO_MACROS
 #include "qos_stdio.h"
 #include "syscall.h"
+#include <stdint.h>
 
 #define QOS_STDIO_PRINTF_STACK_BUF 128u
 #define QOS_STDIO_STRING_MAX 512u
@@ -205,11 +206,41 @@ static void out_unsigned(qos_fmt_out_t* out,
 static int read_int(const char** p){
     int v = 0;
     while (is_digit(**p)){
-        v = (v * 10) + (**p - '0');
+        int digit = **p - '0';
+        if (v <= 10000){
+            v = (v * 10) + digit;
+            if (v > 100000){
+                v = 100000;
+            }
+        }
         (*p)++;
     }
     return v;
 }
+
+#define READ_STAR_WIDTH(ap_, width_, left_) \
+    do { \
+        int qos_fmt_w_ = va_arg((ap_), int); \
+        if (qos_fmt_w_ < 0){ \
+            (left_) = 1; \
+            qos_fmt_w_ = -qos_fmt_w_; \
+        } \
+        if (qos_fmt_w_ > 100000){ \
+            qos_fmt_w_ = 100000; \
+        } \
+        (width_) = qos_fmt_w_; \
+    } while (0)
+
+#define READ_STAR_PRECISION(ap_, precision_) \
+    do { \
+        int qos_fmt_p_ = va_arg((ap_), int); \
+        if (qos_fmt_p_ < 0){ \
+            qos_fmt_p_ = -1; \
+        } else if (qos_fmt_p_ > 100000){ \
+            qos_fmt_p_ = 100000; \
+        } \
+        (precision_) = qos_fmt_p_; \
+    } while (0)
 
 int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
     qos_fmt_out_t fo;
@@ -244,7 +275,7 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
         int zero = 0;
         int width = 0;
         int precision = -1;
-        int length = 0; /* 0=default, 1=h, 2=hh, 3=l, 4=ll, 5=z */
+        int length = 0; /* 0=default, 1=h, 2=hh, 3=l, 4=ll, 5=z, 6=j, 7=t, 8=L */
 
         int parsing_flags = 1;
         while (parsing_flags){
@@ -254,16 +285,25 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
                 case ' ': space = 1; p++; break;
                 case '#': alt = 1; p++; break;
                 case '0': zero = 1; p++; break;
+                case '\'': p++; break;
                 default: parsing_flags = 0; break;
             }
         }
 
-        if (is_digit(*p)){
+        if (*p == '*'){
+            p++;
+            READ_STAR_WIDTH(ap, width, left);
+        } else if (is_digit(*p)){
             width = read_int(&p);
         }
         if (*p == '.'){
             p++;
-            precision = read_int(&p);
+            if (*p == '*'){
+                p++;
+                READ_STAR_PRECISION(ap, precision);
+            } else {
+                precision = read_int(&p);
+            }
         }
         if (*p == 'h'){
             p++;
@@ -282,6 +322,15 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
         } else if (*p == 'z'){
             p++;
             length = 5;
+        } else if (*p == 'j'){
+            p++;
+            length = 6;
+        } else if (*p == 't'){
+            p++;
+            length = 7;
+        } else if (*p == 'L'){
+            p++;
+            length = 8;
         }
 
         char spec = *p;
@@ -329,7 +378,11 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
             } else if (length == 3){
                 sv = (long long)va_arg(ap, long);
             } else if (length == 5){
-                sv = (long long)va_arg(ap, size_t);
+                sv = (long long)va_arg(ap, long);
+            } else if (length == 6){
+                sv = (long long)va_arg(ap, intmax_t);
+            } else if (length == 7){
+                sv = (long long)va_arg(ap, ptrdiff_t);
             } else {
                 sv = (long long)va_arg(ap, int);
             }
@@ -352,6 +405,10 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
                 uv = (unsigned long long)va_arg(ap, unsigned long);
             } else if (length == 5){
                 uv = (unsigned long long)va_arg(ap, size_t);
+            } else if (length == 6){
+                uv = (unsigned long long)va_arg(ap, uintmax_t);
+            } else if (length == 7){
+                uv = (unsigned long long)va_arg(ap, size_t);
             } else {
                 uv = (unsigned long long)va_arg(ap, unsigned int);
             }
@@ -366,9 +423,30 @@ int qos_vsnprintf(char* out, size_t cap, const char* fmt, va_list ap){
             continue;
         }
 
-        if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G'){
-            (void)va_arg(ap, double);
+        if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G' || spec == 'a' || spec == 'A'){
+            if (length == 8){
+                (void)va_arg(ap, long double);
+            } else {
+                (void)va_arg(ap, double);
+            }
             out_str_n(&fo, "<float>", 7u);
+            continue;
+        }
+
+        if (spec == 'n'){
+            if (length == 4){
+                (void)va_arg(ap, long long*);
+            } else if (length == 3){
+                (void)va_arg(ap, long*);
+            } else if (length == 5){
+                (void)va_arg(ap, size_t*);
+            } else if (length == 6){
+                (void)va_arg(ap, intmax_t*);
+            } else if (length == 7){
+                (void)va_arg(ap, ptrdiff_t*);
+            } else {
+                (void)va_arg(ap, int*);
+            }
             continue;
         }
 
@@ -443,16 +521,25 @@ int qos_vprintf(const char* fmt, va_list ap){
                     case ' ': space = 1; p++; break;
                     case '#': alt = 1; p++; break;
                     case '0': zero = 1; p++; break;
+                    case '\'': p++; break;
                     default: parsing_flags = 0; break;
                 }
             }
 
-            if (is_digit(*p)){
+            if (*p == '*'){
+                p++;
+                READ_STAR_WIDTH(ap, width, left);
+            } else if (is_digit(*p)){
                 width = read_int(&p);
             }
             if (*p == '.'){
                 p++;
-                precision = read_int(&p);
+                if (*p == '*'){
+                    p++;
+                    READ_STAR_PRECISION(ap, precision);
+                } else {
+                    precision = read_int(&p);
+                }
             }
             if (*p == 'h'){
                 p++;
@@ -471,6 +558,15 @@ int qos_vprintf(const char* fmt, va_list ap){
             } else if (*p == 'z'){
                 p++;
                 length = 5;
+            } else if (*p == 'j'){
+                p++;
+                length = 6;
+            } else if (*p == 't'){
+                p++;
+                length = 7;
+            } else if (*p == 'L'){
+                p++;
+                length = 8;
             }
 
             char spec = *p;
@@ -518,7 +614,11 @@ int qos_vprintf(const char* fmt, va_list ap){
                 } else if (length == 3){
                     sv = (long long)va_arg(ap, long);
                 } else if (length == 5){
-                    sv = (long long)va_arg(ap, size_t);
+                    sv = (long long)va_arg(ap, long);
+                } else if (length == 6){
+                    sv = (long long)va_arg(ap, intmax_t);
+                } else if (length == 7){
+                    sv = (long long)va_arg(ap, ptrdiff_t);
                 } else {
                     sv = (long long)va_arg(ap, int);
                 }
@@ -541,6 +641,10 @@ int qos_vprintf(const char* fmt, va_list ap){
                     uv = (unsigned long long)va_arg(ap, unsigned long);
                 } else if (length == 5){
                     uv = (unsigned long long)va_arg(ap, size_t);
+                } else if (length == 6){
+                    uv = (unsigned long long)va_arg(ap, uintmax_t);
+                } else if (length == 7){
+                    uv = (unsigned long long)va_arg(ap, size_t);
                 } else {
                     uv = (unsigned long long)va_arg(ap, unsigned int);
                 }
@@ -555,9 +659,30 @@ int qos_vprintf(const char* fmt, va_list ap){
                 continue;
             }
 
-            if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G'){
-                (void)va_arg(ap, double);
+            if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G' || spec == 'a' || spec == 'A'){
+                if (length == 8){
+                    (void)va_arg(ap, long double);
+                } else {
+                    (void)va_arg(ap, double);
+                }
                 out_str_n(&fo, "<float>", 7u);
+                continue;
+            }
+
+            if (spec == 'n'){
+                if (length == 4){
+                    (void)va_arg(ap, long long*);
+                } else if (length == 3){
+                    (void)va_arg(ap, long*);
+                } else if (length == 5){
+                    (void)va_arg(ap, size_t*);
+                } else if (length == 6){
+                    (void)va_arg(ap, intmax_t*);
+                } else if (length == 7){
+                    (void)va_arg(ap, ptrdiff_t*);
+                } else {
+                    (void)va_arg(ap, int*);
+                }
                 continue;
             }
 
