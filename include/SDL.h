@@ -52,7 +52,10 @@ typedef struct SDL_Texture {
     Uint32 access;
     int pitch;
     Uint8* pixels;
+    Uint32* native_pixels;
     Uint32 capacity;
+    Uint32 native_capacity;
+    int native_valid;
     Uint8 color_r;
     Uint8 color_g;
     Uint8 color_b;

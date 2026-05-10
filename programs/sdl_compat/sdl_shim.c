@@ -74,6 +74,7 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_direct_calls;
     Uint64 rendercopy_gpu2d_calls;
     Uint64 rendercopy_gpu2d_miss;
+    Uint64 rendercopy_native_calls;
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
@@ -156,6 +157,7 @@ static void sdl_profile_copy(sdl_qos_profile_t* dst, const sdl_qos_profile_t* sr
     dst->rendercopy_direct_calls = src->rendercopy_direct_calls;
     dst->rendercopy_gpu2d_calls = src->rendercopy_gpu2d_calls;
     dst->rendercopy_gpu2d_miss = src->rendercopy_gpu2d_miss;
+    dst->rendercopy_native_calls = src->rendercopy_native_calls;
     dst->rendercopy_blitbuf_calls = src->rendercopy_blitbuf_calls;
     dst->rendercopy_row_calls = src->rendercopy_row_calls;
     dst->rendercopy_fill_calls = src->rendercopy_fill_calls;
@@ -193,6 +195,7 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_direct_calls = 0ull;
     g_sdl_profile.rendercopy_gpu2d_calls = 0ull;
     g_sdl_profile.rendercopy_gpu2d_miss = 0ull;
+    g_sdl_profile.rendercopy_native_calls = 0ull;
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
@@ -259,6 +262,8 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_gpu2d_calls);
     qos_puts(" gpu2d_miss=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_gpu2d_miss);
+    qos_puts(" native=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_native_calls);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_blitbuf_calls);
     qos_puts(" row=");
@@ -361,6 +366,8 @@ static void sdl_profile_auto_tick(void){
                                       g_sdl_auto_last_profile.rendercopy_direct_calls);
     Uint64 gpu2d = sdl_profile_delta(g_sdl_profile.rendercopy_gpu2d_calls,
                                      g_sdl_auto_last_profile.rendercopy_gpu2d_calls);
+    Uint64 native = sdl_profile_delta(g_sdl_profile.rendercopy_native_calls,
+                                      g_sdl_auto_last_profile.rendercopy_native_calls);
     Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
                                        g_sdl_auto_last_profile.rendercopy_blitbuf_calls);
     Uint64 row = sdl_profile_delta(g_sdl_profile.rendercopy_row_calls,
@@ -400,10 +407,12 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(render_calls / frames);
     qos_putc('/');
     sdl_profile_put_u64(fill_calls / frames);
-    qos_puts(" paths d/g/b/r/f/s=");
+    qos_puts(" paths d/g/n/b/r/f/s=");
     sdl_profile_put_u64(direct);
     qos_putc('/');
     sdl_profile_put_u64(gpu2d);
+    qos_putc('/');
+    sdl_profile_put_u64(native);
     qos_putc('/');
     sdl_profile_put_u64(blitbuf);
     qos_putc('/');
@@ -782,6 +791,10 @@ static int sdl_time_reached(Uint32 now, Uint32 target){
     return (int)(now - target) >= 0;
 }
 
+static void sdl_texture_free_native(SDL_Texture* texture);
+static void sdl_texture_invalidate_native(SDL_Texture* texture);
+static int sdl_texture_ensure_native(SDL_Texture* texture);
+
 static int sdl_soft_blit_texture(SDL_Texture* texture,
                                  int sx,
                                  int sy,
@@ -811,16 +824,28 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         texture->color_g == 255u &&
         texture->color_b == 255u &&
         texture->opaque){
-        for (int y = 0; y < dh; y++){
-            Uint32* dst = (Uint32*)(g_soft_fb +
-                                    ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
-                                    ((unsigned long)dx * 4ul));
-            const Uint8* src = texture->pixels + ((unsigned long)y * (unsigned long)texture->pitch);
-            for (int x = 0; x < dw; x++){
-                const Uint8* sp = src + ((unsigned long)x * 4ul);
-                dst[x] = ((Uint32)sp[0] << 16) |
-                         ((Uint32)sp[1] << 8) |
-                         (Uint32)sp[2];
+        if (sdl_texture_ensure_native(texture) == 0){
+            for (int y = 0; y < dh; y++){
+                Uint8* dst = g_soft_fb +
+                             ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
+                             ((unsigned long)dx * 4ul);
+                const Uint8* src = (const Uint8*)(texture->native_pixels +
+                                                  ((unsigned long)y * (unsigned long)texture->w));
+                sdl_copy_bytes(dst, src, (Uint32)dw * 4u);
+            }
+            g_sdl_profile.rendercopy_native_calls++;
+        } else{
+            for (int y = 0; y < dh; y++){
+                Uint32* dst = (Uint32*)(g_soft_fb +
+                                        ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
+                                        ((unsigned long)dx * 4ul));
+                const Uint8* src = texture->pixels + ((unsigned long)y * (unsigned long)texture->pitch);
+                for (int x = 0; x < dw; x++){
+                    const Uint8* sp = src + ((unsigned long)x * 4ul);
+                    dst[x] = ((Uint32)sp[0] << 16) |
+                             ((Uint32)sp[1] << 8) |
+                             (Uint32)sp[2];
+                }
             }
         }
         g_soft_fb_dirty = 1;
@@ -1299,6 +1324,58 @@ static void sdl_free_pixels(Uint8* pixels){
     }
 }
 
+static void sdl_texture_free_native(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+    if (texture->native_pixels){
+        free(texture->native_pixels);
+    }
+    texture->native_pixels = 0;
+    texture->native_capacity = 0u;
+    texture->native_valid = 0;
+}
+
+static void sdl_texture_invalidate_native(SDL_Texture* texture){
+    if (texture){
+        texture->native_valid = 0;
+    }
+}
+
+static int sdl_texture_ensure_native(SDL_Texture* texture){
+    Uint32 bytes;
+    if (!texture || !texture->alive || !texture->pixels ||
+        texture->w <= 0 || texture->h <= 0 || texture->pitch <= 0){
+        return -1;
+    }
+    if ((Uint32)texture->w > (0xFFFFFFFFu / (Uint32)texture->h) / 4u){
+        return -1;
+    }
+    bytes = (Uint32)texture->w * (Uint32)texture->h * 4u;
+    if (!texture->native_pixels || texture->native_capacity < bytes){
+        sdl_texture_free_native(texture);
+        texture->native_pixels = (Uint32*)malloc((unsigned long)bytes);
+        if (!texture->native_pixels){
+            return -1;
+        }
+        texture->native_capacity = bytes;
+    }
+    if (!texture->native_valid){
+        for (int y = 0; y < texture->h; y++){
+            const Uint8* src = texture->pixels + ((Uint32)y * (Uint32)texture->pitch);
+            Uint32* dst = texture->native_pixels + ((Uint32)y * (Uint32)texture->w);
+            for (int x = 0; x < texture->w; x++){
+                const Uint8* sp = src + ((Uint32)x * 4u);
+                dst[x] = ((Uint32)sp[0] << 16) |
+                         ((Uint32)sp[1] << 8) |
+                         (Uint32)sp[2];
+            }
+        }
+        texture->native_valid = 1;
+    }
+    return 0;
+}
+
 static SDL_Surface* alloc_surface_slot(void){
     for (int i = 0; i < SDL_SHIM_MAX_SURFACES; i++){
         if (!g_surfaces[i].alive){
@@ -1429,6 +1506,7 @@ int SDL_Init(Uint32 flags){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
             sdl_free_pixels(g_textures[i].pixels);
         }
+        sdl_texture_free_native(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
@@ -1491,6 +1569,7 @@ void SDL_Quit(void){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
             sdl_free_pixels(g_textures[i].pixels);
         }
+        sdl_texture_free_native(&g_textures[i]);
         g_textures[i].alive = 0;
         g_textures[i].pixels = 0;
         g_textures[i].capacity = 0u;
@@ -2032,6 +2111,9 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->access = (Uint32)access;
     t->pitch = w * 4;
     t->capacity = bytes;
+    t->native_pixels = 0;
+    t->native_capacity = 0u;
+    t->native_valid = 0;
     t->color_r = 255u;
     t->color_g = 255u;
     t->color_b = 255u;
@@ -2088,6 +2170,9 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->access = SDL_TEXTUREACCESS_STATIC;
     t->pitch = (int)row_bytes;
     t->capacity = expected_capacity;
+    t->native_pixels = 0;
+    t->native_capacity = 0u;
+    t->native_valid = 0;
 
     if (surface->owns_pixels &&
         surface->pitch == (int)row_bytes &&
@@ -2123,6 +2208,9 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->owns_pixels = 1;
     t->locked = 0;
     t->alive = 1;
+    if (t->opaque){
+        (void)sdl_texture_ensure_native(t);
+    }
     if (adopted_pixels){
         surface->pixels = t->pixels;
     }
@@ -2139,6 +2227,7 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     if (texture->alive && texture->owns_pixels){
         sdl_free_pixels(texture->pixels);
     }
+    sdl_texture_free_native(texture);
     texture->alive = 0;
     texture->locked = 0;
     texture->pixels = 0;
@@ -2257,6 +2346,7 @@ int SDL_LockTexture(SDL_Texture* texture, const SDL_Rect* rect, void** pixels, i
     }
 
     texture->locked = 1;
+    sdl_texture_invalidate_native(texture);
     *pitch = texture->pitch;
     *pixels = (void*)(texture->pixels + ((Uint32)ry * (Uint32)texture->pitch) + ((Uint32)rx * 4u));
     return 0;
@@ -2307,6 +2397,7 @@ int SDL_UpdateTexture(SDL_Texture* texture, const SDL_Rect* rect, const void* pi
         const Uint8* src_row = src + ((Uint32)y * (Uint32)spitch);
         sdl_copy_bytes(dst_row, src_row, (Uint32)rw * 4u);
     }
+    sdl_texture_invalidate_native(texture);
     return 0;
 }
 
@@ -2872,7 +2963,34 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         texture->alpha_mod == 255u &&
         texture->color_r == 255u &&
         texture->color_g == 255u &&
-        (texture->opaque || texture->blend_mode != SDL_BLENDMODE_NONE)){
+        texture->color_b == 255u &&
+        texture->opaque &&
+        sdl_texture_ensure_native(texture) == 0){
+        sdl_flush_pending_fill();
+        if (qos_fb_blit_native((unsigned int)dx,
+                               (unsigned int)dy,
+                               (unsigned int)dw,
+                               (unsigned int)dh,
+                               texture->native_pixels) != 0){
+            set_error("fb native blit failed");
+            return -1;
+        }
+        g_sdl_profile.rendercopy_direct_calls++;
+        g_sdl_profile.rendercopy_native_calls++;
+        return 0;
+    }
+
+    if (flip == SDL_FLIP_NONE &&
+        visible_x0 == 0 && visible_y0 == 0 &&
+        visible_x1 == dw && visible_y1 == dh &&
+        sx == 0 && sy == 0 &&
+        sw == texture->w && sh == texture->h &&
+        dw == texture->w && dh == texture->h &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        texture->color_b == 255u &&
+        texture->blend_mode != SDL_BLENDMODE_NONE){
         sdl_flush_pending_fill();
         if (qos_fb_blit_rgba((unsigned int)dx,
                              (unsigned int)dy,
