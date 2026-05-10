@@ -14,7 +14,8 @@
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 #define SDL_SHIM_RENDER_HINT_CHAR_16 2
 #define SDL_SHIM_SOFT_BACKBUFFER 1
-#define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 0
+#define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
+#define SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH 0
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -851,6 +852,7 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         return 0;
     }
 
+#if SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH
     if (native_ok){
         for (int oy = visible_y0; oy < visible_y1; oy++){
             int py = dy + oy;
@@ -880,6 +882,7 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         g_soft_fb_dirty = 1;
         return 0;
     }
+#endif
 
     for (int oy = visible_y0; oy < visible_y1; oy++){
         int py = dy + oy;
@@ -3043,7 +3046,13 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         unsigned long total_bytes = (unsigned long)out_w * (unsigned long)out_h * 4ul;
         if (total_bytes > 0ul && total_bytes <= (unsigned long)SDL_SHIM_BLITBUF_BYTES){
             sdl_flush_pending_fill();
-            if (texture->opaque &&
+            if (flip == SDL_FLIP_NONE &&
+                visible_x0 == 0 && visible_y0 == 0 &&
+                visible_x1 == dw && visible_y1 == dh &&
+                sx == 0 && sy == 0 &&
+                sw == texture->w && sh == texture->h &&
+                dw == texture->w && dh == texture->h &&
+                texture->opaque &&
                 texture->alpha_mod == 255u &&
                 texture->color_r == 255u &&
                 texture->color_g == 255u &&
