@@ -408,6 +408,17 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
     v3d_emit_u8(&p, end, 0u);
     v3d_emit_u8(&p, end, 0u);
 
+    /*
+     * The tile buffer is cleared as part of the store/dump pipeline, so the
+     * very first visible store after mode setup can contain stale tile-buffer
+     * data. Prime it with one throwaway store to tile 0,0, then immediately
+     * write tile 0,0 again during the real loop below.
+     */
+    v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
+    v3d_emit_u8(&p, end, 0u);
+    v3d_emit_u8(&p, end, 0u);
+    v3d_emit_u8(&p, end, V3D_CL_STORE_RESOLVED);
+
     for (unsigned int y = 0u; y < tiles_y; y++){
         for (unsigned int x = 0u; x < tiles_x; x++){
             int last = (x + 1u == tiles_x && y + 1u == tiles_y);
