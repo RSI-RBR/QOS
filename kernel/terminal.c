@@ -506,6 +506,7 @@ void terminal_poll_inputs(void){
     int term_id = -1;
     int pid = -1;
     int owner = console_get_owner();
+    int text_active = (display_get_active() == DISPLAY_TEXT_SESSION_ID) ? 1 : 0;
     char c = 0;
     unsigned int src = 0;
 
@@ -513,12 +514,14 @@ void terminal_poll_inputs(void){
     term_id = g_active_term;
     if (terminal_valid_id(term_id)){
         pid = g_terms[term_id].foreground_pid;
-        if (owner >= 0 &&
-            owner < TERM_PID_MAP_MAX &&
-            g_pid_term[owner] == (signed char)term_id &&
-            pid != owner){
-            g_terms[term_id].foreground_pid = owner;
-            pid = owner;
+        if (text_active && owner >= 0 && owner < TERM_PID_MAP_MAX){
+            if (g_pid_term[owner] != (signed char)term_id){
+                g_pid_term[owner] = (signed char)term_id;
+            }
+            if (pid != owner){
+                g_terms[term_id].foreground_pid = owner;
+                pid = owner;
+            }
         }
     }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
@@ -555,9 +558,20 @@ int terminal_read(int term_id, int pid, char* out, unsigned int* out_source){
         pid >= 0 &&
         pid < TERM_PID_MAP_MAX &&
         owner == pid &&
-        g_pid_term[pid] == (signed char)term_id &&
-        term->foreground_pid != pid){
-        term->foreground_pid = pid;
+        display_get_active() == DISPLAY_TEXT_SESSION_ID){
+        /*
+         * Console ownership is the authoritative foreground input grant.
+         * If a boot/runtime handoff leaves the terminal map stale, output can
+         * still appear through terminal_get_for_pid() fallback while input is
+         * silently rejected below. Repair the mapping here instead of
+         * stranding the login prompt.
+         */
+        if (g_pid_term[pid] != (signed char)term_id){
+            g_pid_term[pid] = (signed char)term_id;
+        }
+        if (term->foreground_pid != pid){
+            term->foreground_pid = pid;
+        }
     }
     if (!term ||
         pid < 0 ||
