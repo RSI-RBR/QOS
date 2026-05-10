@@ -1276,7 +1276,7 @@ static int usb_choose_hid_keyboard_endpoint(unsigned char addr,
         }
     }
 
-    if (best < 0 || best_score <= 0){
+    if (best < 0 || best_score < 50){
         return -1;
     }
 
@@ -1321,7 +1321,7 @@ static int usb_choose_hid_mouse_endpoint(unsigned char addr,
         }
     }
 
-    if (best < 0 || best_score <= 0){
+    if (best < 0 || best_score < 50){
         return -1;
     }
 
@@ -2035,18 +2035,6 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                 cfg_set = 1;
             }
         }
-        hid_found = (usb_parse_hid_keyboard_from_config(cfg_desc,
-                                                        (unsigned int)cfg_read,
-                                                        &hid_iface,
-                                                        &hid_ep,
-                                                        &hid_mps,
-                                                        &hid_boot) == 0) ? 1 : 0;
-        mouse_found = (usb_parse_hid_mouse_from_config(cfg_desc,
-                                                       (unsigned int)cfg_read,
-                                                       &mouse_iface,
-                                                       &mouse_ep,
-                                                       &mouse_mps,
-                                                       &mouse_boot) == 0) ? 1 : 0;
         if (hid_candidate_count > 0u){
             unsigned char chosen_iface = 0u;
             unsigned char chosen_ep = 0u;
@@ -2078,19 +2066,31 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                 mouse_mps = chosen_mps;
                 mouse_boot = chosen_boot;
             }
-        }
-        if (!hid_found &&
-            intr_ep &&
-            intr_ep != mouse_ep &&
-            dev_desc[4] != 0x09u &&
-            !(bulk_in_ep && bulk_out_ep)){
-            // Some low-cost keyboards report unusual interface metadata but still expose
-            // a single interrupt-IN report endpoint. Avoid hubs and bulk NICs here.
-            hid_found = 1;
-            hid_iface = intr_iface;
-            hid_ep = intr_ep;
-            hid_mps = intr_mps;
-            hid_boot = 0;
+        } else{
+            hid_found = (usb_parse_hid_keyboard_from_config(cfg_desc,
+                                                            (unsigned int)cfg_read,
+                                                            &hid_iface,
+                                                            &hid_ep,
+                                                            &hid_mps,
+                                                            &hid_boot) == 0) ? 1 : 0;
+            mouse_found = (usb_parse_hid_mouse_from_config(cfg_desc,
+                                                           (unsigned int)cfg_read,
+                                                           &mouse_iface,
+                                                           &mouse_ep,
+                                                           &mouse_mps,
+                                                           &mouse_boot) == 0) ? 1 : 0;
+            if (!hid_found &&
+                intr_ep &&
+                intr_ep != mouse_ep &&
+                dev_desc[4] != 0x09u &&
+                !(bulk_in_ep && bulk_out_ep)){
+                // Last-resort legacy fallback for very old single-interface keyboards.
+                hid_found = 1;
+                hid_iface = intr_iface;
+                hid_ep = intr_ep;
+                hid_mps = intr_mps;
+                hid_boot = 0;
+            }
         }
         if (hid_found){
             g_hub_hid_candidates++;
