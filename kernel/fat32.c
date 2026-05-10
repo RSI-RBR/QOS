@@ -2,6 +2,7 @@
 #include "blockdev.h"
 #include "uart.h"
 #include "debug.h"
+#include "spinlock.h"
 
 #define SECTOR_SIZE 512
 #define MAX_CLUSTER_SIZE (64 * 1024)
@@ -18,6 +19,7 @@ static int fat_initialized;
 
 static unsigned char sector[SECTOR_SIZE] __attribute__((aligned(4096)));
 static unsigned char cluster_buf[MAX_CLUSTER_SIZE];
+static spinlock_t fat_lock_state;
 
 typedef struct fat_sector_cache_entry {
     unsigned int valid;
@@ -26,6 +28,21 @@ typedef struct fat_sector_cache_entry {
 } fat_sector_cache_entry_t;
 
 static fat_sector_cache_entry_t sector_cache[FAT_SECTOR_CACHE_ENTRIES] __attribute__((aligned(64)));
+
+static unsigned long fat_lock(void){
+    /*
+     * FAT keeps shared scratch buffers and a shared sector cache. Under SMP,
+     * two readers would otherwise corrupt each other's directory/file walks.
+     * Keep IRQs enabled because the EMMC/SD wait paths use system_ticks.
+     */
+    spin_lock(&fat_lock_state);
+    return 0;
+}
+
+static void fat_unlock(unsigned long irq){
+    (void)irq;
+    spin_unlock(&fat_lock_state);
+}
 
 static void fat_cache_reset(void){
     for (unsigned int i = 0u; i < FAT_SECTOR_CACHE_ENTRIES; i++){
@@ -81,7 +98,7 @@ static unsigned short read16(unsigned char *p){
     return ((unsigned short)p[0]) | ((unsigned short)p[1]<<8);
 }
 
-int fat32_init(void){
+static int fat32_init_locked(void){
     if (fat_initialized){
         return 0;
     }
@@ -181,6 +198,13 @@ int fat32_init(void){
     }
 
     return -1;
+}
+
+int fat32_init(void){
+    unsigned long irq = fat_lock();
+    int rc = fat32_init_locked();
+    fat_unlock(irq);
+    return rc;
 }
 
 static int name_match(unsigned char *entry, const char *name){
@@ -635,7 +659,7 @@ static int find_entry_in_dir_by_component(unsigned int start_cluster,
     return -1;
 }
 
-int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
+static int fat32_read_file_locked(const char *name, unsigned char *buffer, int max_size){
     unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
     unsigned int cluster = root_cluster;
     int retried_root_once = 0;
@@ -717,10 +741,25 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     return -1;
 }
 
-int fat32_read_file_in_dir_path(const char root_dir_83[11],
-                                const char *relative_path,
-                                unsigned char *buffer,
-                                int max_size){
+int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
+    unsigned long irq = fat_lock();
+    int rc;
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+    rc = fat32_read_file_locked(name, buffer, max_size);
+    if (rc < 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+static int fat32_read_file_in_dir_path_locked(const char root_dir_83[11],
+                                              const char *relative_path,
+                                              unsigned char *buffer,
+                                              int max_size){
     unsigned char entry[32];
     unsigned int dir_cluster;
     const char* p = relative_path;
@@ -810,4 +849,25 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
     }
 
     return -1;
+}
+
+int fat32_read_file_in_dir_path(const char root_dir_83[11],
+                                const char *relative_path,
+                                unsigned char *buffer,
+                                int max_size){
+    unsigned long irq = fat_lock();
+    int rc;
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+    rc = fat32_read_file_in_dir_path_locked(root_dir_83,
+                                            relative_path,
+                                            buffer,
+                                            max_size);
+    if (rc < 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
 }
