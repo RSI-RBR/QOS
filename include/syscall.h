@@ -147,7 +147,8 @@ enum {
     SYS_GPU2D_TEXTURE_COUNT = 121,
     SYS_GPU2D_TEXTURE_UPLOAD_COUNT = 122,
     SYS_GPU2D_TEXTURE_FREE_COUNT = 123,
-    SYS_GPU2D_TEXTURE_BYTES = 124
+    SYS_GPU2D_TEXTURE_BYTES = 124,
+    SYS_FB_DIRECT_GET_DRAW = 125
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -336,6 +337,10 @@ static inline int qos_fb_direct_acquire(qos_fb_direct_info_t* out_info){
 
 static inline int qos_fb_direct_present(qos_fb_direct_info_t* out_info){
     return (int)qos_syscall1(SYS_FB_DIRECT_PRESENT, (unsigned long)out_info);
+}
+
+static inline int qos_fb_direct_get_draw(qos_fb_direct_info_t* out_info){
+    return (int)qos_syscall1(SYS_FB_DIRECT_GET_DRAW, (unsigned long)out_info);
 }
 
 static inline int qos_try_getc(void){

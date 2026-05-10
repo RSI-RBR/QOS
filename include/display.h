@@ -61,6 +61,8 @@ int display_attach_external_framebuffer_for_pid(int owner_pid,
 int display_attach_direct_framebuffer_for_pid(int owner_pid,
                                               unsigned int page_a,
                                               unsigned int page_b);
+int display_direct_get_draw_for_pid(int owner_pid,
+                                    unsigned int* out_page);
 int display_direct_present_for_pid(int owner_pid,
                                    unsigned int* out_next_page);
 int display_clear_for_pid(int owner_pid, unsigned int color);

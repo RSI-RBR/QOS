@@ -1172,6 +1172,31 @@ int display_attach_direct_framebuffer_for_pid(int owner_pid,
     return 0;
 }
 
+int display_direct_get_draw_for_pid(int owner_pid, unsigned int* out_page){
+    int session_id = display_get_for_pid(owner_pid);
+    if (session_id < 0 || !out_page){
+        return -1;
+    }
+
+    display_init();
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS || !s->direct_framebuffer ||
+        s->direct_page >= fb_get_page_count()){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+    if (g_display_active != session_id){
+        *out_page = s->direct_page;
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -2;
+    }
+    *out_page = s->direct_page;
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
 int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     int session_id = display_get_for_pid(owner_pid);
     if (session_id < 0 || !out_next_page){

@@ -450,6 +450,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_ATTACH_BUFFER:
         case SYS_FB_DIRECT_ACQUIRE:
         case SYS_FB_DIRECT_PRESENT:
+        case SYS_FB_DIRECT_GET_DRAW:
         case SYS_GPU2D_STATUS:
         case SYS_GPU2D_BLIT_RGBA:
         case SYS_GPU2D_BLIT_COUNT:
@@ -796,6 +797,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
             int pid = process_current_pid();
             unsigned int page_count = fb_get_page_count();
+            unsigned int visible_page = fb_get_display_page();
             unsigned int page = 1u;
             unsigned int page_b = 2u;
             unsigned int map_first_page = 1u;
@@ -815,15 +817,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 map_last_page = 2u;
             } else if (page_count == 2u){
                 /*
-                 * Pi 3 commonly only gives us two pages. Keep page 0 reserved
-                 * for tty0 and expose page 1 as a single direct graphics page.
-                 * This is faster than the buffered upload path while avoiding
-                 * the old bug where a background game could draw over shell
-                 * text by writing into page 0.
+                 * Pi 3 commonly only gives us two pages. While active, the
+                 * graphics app can use both pages for fullscreen flipping.
+                 * When inactive, the SDL shim redirects drawing into a scratch
+                 * buffer so page 0 can safely return to tty0.
                  */
-                page = 1u;
-                page_b = 1u;
-                map_first_page = 1u;
+                page = (visible_page == 0u) ? 1u : 0u;
+                page_b = (page == 0u) ? 1u : 0u;
+                map_first_page = 0u;
                 map_last_page = 1u;
             }
 
@@ -832,9 +833,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             map_size = size * ((unsigned long)(map_last_page - map_first_page) + 1UL);
 
             /*
-             * Direct userspace double-buffering needs two graphics-only pages.
-             * With only two total HDMI pages, page 0 is reserved for tty0 and
-             * page 1 becomes a single direct graphics page.
+             * Direct userspace gets one or two mapped HDMI pages. The SDL shim
+             * must stop using those pointers while the graphics session is not
+             * active, because tty0 owns page 0 when the shell is visible.
              */
             if (!user_info || page_count < 2u || !base || !map_base ||
                 pitch == 0u || width == 0u || height == 0u || size == 0UL ||
@@ -907,6 +908,46 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             info.height = height;
             info.pitch = pitch;
             info.page = next_page;
+            frame[TF_X0] = (process_copy_to_user(user_info,
+                                                 &info,
+                                                 sizeof(info)) == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FB_DIRECT_GET_DRAW: {
+            qos_fb_direct_info_t info;
+            qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
+            int pid = process_current_pid();
+            unsigned int draw_page = 0u;
+            unsigned long draw_base = 0UL;
+            unsigned int pitch = fb_get_pitch();
+            unsigned int width = fb_get_width();
+            unsigned int height = fb_get_height();
+            unsigned long size = (unsigned long)pitch * (unsigned long)height;
+
+            if (!user_info || !process_user_range_writable(user_info, sizeof(*user_info)) ||
+                pitch == 0u || width == 0u || height == 0u || size == 0UL){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int rc = display_direct_get_draw_for_pid(pid, &draw_page);
+            if (rc != 0){
+                frame[TF_X0] = (unsigned long)rc;
+                return frame_sp;
+            }
+            draw_base = fb_get_page_base(draw_page);
+            if (!draw_base ||
+                (draw_base & 0xFFFUL) != 0UL ||
+                mmu_process_map_framebuffer(pid, draw_base, size) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            info.pixels = (unsigned int*)draw_base;
+            info.width = width;
+            info.height = height;
+            info.pitch = pitch;
+            info.page = draw_page;
             frame[TF_X0] = (process_copy_to_user(user_info,
                                                  &info,
                                                  sizeof(info)) == 0) ? 0ul : (unsigned long)-1;

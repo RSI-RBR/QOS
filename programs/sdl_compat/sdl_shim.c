@@ -62,6 +62,9 @@ static int g_soft_fb_enabled = 0;
 static int g_soft_fb_dirty = 0;
 static int g_soft_fb_attached = 0;
 static int g_soft_fb_direct = 0;
+static int g_soft_fb_direct_inactive = 0;
+static Uint8* g_direct_scratch = 0;
+static unsigned long g_direct_scratch_bytes = 0UL;
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -468,6 +471,11 @@ static void sdl_soft_backbuffer_destroy(void){
     if (g_soft_fb && !g_soft_fb_direct){
         free(g_soft_fb);
     }
+    if (g_direct_scratch){
+        free(g_direct_scratch);
+    }
+    g_direct_scratch = 0;
+    g_direct_scratch_bytes = 0UL;
     g_soft_fb = 0;
     g_soft_fb_w = 0;
     g_soft_fb_h = 0;
@@ -476,6 +484,56 @@ static void sdl_soft_backbuffer_destroy(void){
     g_soft_fb_dirty = 0;
     g_soft_fb_attached = 0;
     g_soft_fb_direct = 0;
+    g_soft_fb_direct_inactive = 0;
+}
+
+static int sdl_direct_scratch_use(void){
+    unsigned long bytes;
+    if (!g_soft_fb_direct || g_soft_fb_w <= 0 || g_soft_fb_h <= 0){
+        return -1;
+    }
+    bytes = (unsigned long)g_soft_fb_w * (unsigned long)g_soft_fb_h * 4UL;
+    if (bytes == 0UL || bytes > 64UL * 1024UL * 1024UL){
+        g_soft_fb = 0;
+        g_soft_fb_pitch = 0;
+        g_soft_fb_direct_inactive = 1;
+        return 0;
+    }
+    if (!g_direct_scratch || g_direct_scratch_bytes < bytes){
+        if (g_direct_scratch){
+            free(g_direct_scratch);
+        }
+        g_direct_scratch = (Uint8*)malloc(bytes);
+        g_direct_scratch_bytes = g_direct_scratch ? bytes : 0UL;
+    }
+    g_soft_fb = g_direct_scratch;
+    g_soft_fb_pitch = g_soft_fb_w * 4;
+    g_soft_fb_direct_inactive = 1;
+    return 0;
+}
+
+static int sdl_direct_refresh_for_draw(void){
+    qos_fb_direct_info_t info;
+    int rc;
+    if (!g_soft_fb_direct){
+        return 1;
+    }
+    rc = qos_fb_direct_get_draw(&info);
+    if (rc == 0 &&
+        info.pixels &&
+        info.width == (unsigned int)g_soft_fb_w &&
+        info.height == (unsigned int)g_soft_fb_h &&
+        info.pitch >= ((unsigned int)g_soft_fb_w * 4u)){
+        g_soft_fb = (Uint8*)info.pixels;
+        g_soft_fb_pitch = (int)info.pitch;
+        g_soft_fb_direct_inactive = 0;
+        return 1;
+    }
+    if (rc == -2){
+        (void)sdl_direct_scratch_use();
+        return 0;
+    }
+    return -1;
 }
 
 static int sdl_soft_backbuffer_init(int w, int h){
@@ -513,6 +571,7 @@ static int sdl_soft_backbuffer_init(int w, int h){
         g_soft_fb_dirty = 1;
         g_soft_fb_attached = 1;
         g_soft_fb_direct = 1;
+        g_soft_fb_direct_inactive = 0;
         return 0;
     }
     if (direct_rc < 0){
@@ -1952,6 +2011,12 @@ int SDL_RenderClear(SDL_Renderer* renderer){
         set_error("renderer/window not alive");
         return -1;
     }
+    if (g_soft_fb_direct && sdl_direct_refresh_for_draw() == 0){
+        g_pending_fill_valid = 0;
+        g_sdl_profile.clear_calls++;
+        g_sdl_profile.clear_us += qos_get_time_us() - t0;
+        return 0;
+    }
     sdl_flush_pending_fill();
     /*
      * QOS presents SDL windows as fullscreen-desktop sessions. Clearing only
@@ -1959,7 +2024,8 @@ int SDL_RenderClear(SDL_Renderer* renderer){
      * frames as partial updates, which disables page flipping and drops back to
      * the slow full-screen copy path. Clear the whole graphics session instead.
      */
-    if (g_soft_fb_direct && qos_gpu2d_clear(renderer->draw_color) == 0){
+    if (g_soft_fb_direct && !g_soft_fb_direct_inactive &&
+        qos_gpu2d_clear(renderer->draw_color) == 0){
         g_sdl_profile.clear_calls++;
         g_sdl_profile.clear_us += qos_get_time_us() - t0;
         return 0;
@@ -1983,6 +2049,9 @@ int SDL_RenderFillRect(SDL_Renderer* renderer, const SDL_Rect* rect){
     if (!renderer || !renderer->alive || !renderer->window || !rect){
         set_error("bad fill rect args");
         return -1;
+    }
+    if (g_soft_fb_direct && sdl_direct_refresh_for_draw() == 0){
+        return 0;
     }
     x = rect->x;
     y = rect->y;
@@ -2057,6 +2126,20 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y){
 void SDL_RenderPresent(SDL_Renderer* renderer){
     Uint64 t0 = qos_get_time_us();
     Uint64 flush_start = t0;
+    if (g_soft_fb_direct){
+        int was_inactive = g_soft_fb_direct_inactive;
+        int active = sdl_direct_refresh_for_draw();
+        if (active <= 0 || was_inactive){
+            g_pending_fill_valid = 0;
+            g_soft_fb_dirty = 0;
+            g_sdl_profile.present_calls++;
+            g_sdl_profile.present_us += qos_get_time_us() - t0;
+#ifdef QOS_PROFILE_SDL_AUTO
+            sdl_profile_auto_tick();
+#endif
+            return;
+        }
+    }
     sdl_flush_pending_fill();
     g_sdl_profile.present_flush_us += qos_get_time_us() - flush_start;
     int rc = 0;
@@ -2077,13 +2160,21 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
             Uint64 kernel_start = qos_get_time_us();
             if (g_soft_fb_direct){
                 qos_fb_direct_info_t next;
-                rc = qos_fb_direct_present(&next);
-                if (rc == 0 && next.pixels &&
-                    next.width == (unsigned int)g_soft_fb_w &&
-                    next.height == (unsigned int)g_soft_fb_h &&
-                    next.pitch >= ((unsigned int)g_soft_fb_w * 4u)){
-                    g_soft_fb = (Uint8*)next.pixels;
-                    g_soft_fb_pitch = (int)next.pitch;
+                int was_inactive = g_soft_fb_direct_inactive;
+                int active = sdl_direct_refresh_for_draw();
+                if (active <= 0 || was_inactive){
+                    rc = 0;
+                    g_soft_fb_dirty = 0;
+                } else{
+                    rc = qos_fb_direct_present(&next);
+                    if (rc == 0 && next.pixels &&
+                        next.width == (unsigned int)g_soft_fb_w &&
+                        next.height == (unsigned int)g_soft_fb_h &&
+                        next.pitch >= ((unsigned int)g_soft_fb_w * 4u)){
+                        g_soft_fb = (Uint8*)next.pixels;
+                        g_soft_fb_pitch = (int)next.pitch;
+                        g_soft_fb_direct_inactive = 0;
+                    }
                 }
             } else{
                 rc = qos_fb_present();
@@ -3028,6 +3119,9 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
     if (!texture || !texture->alive || !texture->pixels){
         set_error("texture not alive");
         return -1;
+    }
+    if (g_soft_fb_direct && sdl_direct_refresh_for_draw() == 0){
+        return 0;
     }
 
     sx = 0; sy = 0; sw = texture->w; sh = texture->h;
