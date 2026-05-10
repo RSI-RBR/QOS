@@ -123,7 +123,8 @@ enum {
     SYS_DISPLAY_PROFILE_DUMP = 99,
     SYS_FB_BLIT_NATIVE = 100,
     SYS_FB_ATTACH_BUFFER = 101,
-    SYS_FB_DIRECT_ACQUIRE = 102
+    SYS_FB_DIRECT_ACQUIRE = 102,
+    SYS_FB_DIRECT_PRESENT = 103
 };
 
 typedef struct {
@@ -295,6 +296,10 @@ static inline int qos_fb_attach_buffer(const unsigned int* pixels,
 
 static inline int qos_fb_direct_acquire(qos_fb_direct_info_t* out_info){
     return (int)qos_syscall1(SYS_FB_DIRECT_ACQUIRE, (unsigned long)out_info);
+}
+
+static inline int qos_fb_direct_present(qos_fb_direct_info_t* out_info){
+    return (int)qos_syscall1(SYS_FB_DIRECT_PRESENT, (unsigned long)out_info);
 }
 
 static inline int qos_try_getc(void){

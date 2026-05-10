@@ -326,6 +326,8 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(present_kernel_us / frames);
     qos_puts(" flush=");
     sdl_profile_put_u64(present_flush_us / frames);
+    qos_puts(" direct=");
+    sdl_profile_put_u64((Uint64)(g_soft_fb_direct ? 1u : 0u));
     qos_puts(" paths d/b/r/f/s=");
     sdl_profile_put_u64(direct);
     qos_putc('/');
@@ -1611,7 +1613,19 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
         }
         if (rc == 0){
             Uint64 kernel_start = qos_get_time_us();
-            rc = qos_fb_present();
+            if (g_soft_fb_direct){
+                qos_fb_direct_info_t next;
+                rc = qos_fb_direct_present(&next);
+                if (rc == 0 && next.pixels &&
+                    next.width == (unsigned int)g_soft_fb_w &&
+                    next.height == (unsigned int)g_soft_fb_h &&
+                    next.pitch >= ((unsigned int)g_soft_fb_w * 4u)){
+                    g_soft_fb = (Uint8*)next.pixels;
+                    g_soft_fb_pitch = (int)next.pitch;
+                }
+            } else{
+                rc = qos_fb_present();
+            }
             g_sdl_profile.present_kernel_us += qos_get_time_us() - kernel_start;
             if (rc == 0 && g_soft_fb_attached){
                 g_soft_fb_dirty = 0;

@@ -32,6 +32,8 @@ typedef struct {
     int external_framebuffer;
     int direct_framebuffer;
     unsigned int direct_page;
+    unsigned int direct_page_a;
+    unsigned int direct_page_b;
     int scanout_attached;
     unsigned int scanout_page;
 } display_session_t;
@@ -57,7 +59,10 @@ int display_attach_external_framebuffer_for_pid(int owner_pid,
                                                 unsigned int pitch,
                                                 unsigned long size);
 int display_attach_direct_framebuffer_for_pid(int owner_pid,
-                                              unsigned int page);
+                                              unsigned int page_a,
+                                              unsigned int page_b);
+int display_direct_present_for_pid(int owner_pid,
+                                   unsigned int* out_next_page);
 int display_clear_for_pid(int owner_pid, unsigned int color);
 int display_rect_for_pid(int owner_pid,
                          unsigned int x,

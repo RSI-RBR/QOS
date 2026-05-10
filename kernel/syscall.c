@@ -417,6 +417,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_BLIT_NATIVE:
         case SYS_FB_ATTACH_BUFFER:
         case SYS_FB_DIRECT_ACQUIRE:
+        case SYS_FB_DIRECT_PRESENT:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -742,14 +743,17 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
             int pid = process_current_pid();
             unsigned int page = 1u;
+            unsigned int page_b = 2u;
             unsigned long base = fb_get_page_base(page);
             unsigned int pitch = fb_get_pitch();
             unsigned int width = fb_get_width();
             unsigned int height = fb_get_height();
             unsigned long size = (unsigned long)pitch * (unsigned long)height;
+            unsigned long map_size = size * 2UL;
 
-            if (!user_info || fb_get_page_count() < 2u || !base ||
-                pitch == 0u || width == 0u || height == 0u || size == 0UL){
+            if (!user_info || fb_get_page_count() < 3u || !base ||
+                pitch == 0u || width == 0u || height == 0u || size == 0UL ||
+                (base & 0xFFFUL) != 0UL || map_size < size){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -757,18 +761,18 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-            if (mmu_process_map_framebuffer(pid, base, size) != 0){
+            if (mmu_process_map_framebuffer(pid, base, map_size) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
 
             unsigned int* fb_words = (unsigned int*)base;
-            unsigned long words = size / sizeof(unsigned int);
+            unsigned long words = map_size / sizeof(unsigned int);
             for (unsigned long i = 0; i < words; i++){
                 fb_words[i] = 0u;
             }
 
-            if (display_attach_direct_framebuffer_for_pid(pid, page) != 0){
+            if (display_attach_direct_framebuffer_for_pid(pid, page, page_b) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -778,6 +782,38 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             info.height = height;
             info.pitch = pitch;
             info.page = page;
+            frame[TF_X0] = (process_copy_to_user(user_info,
+                                                 &info,
+                                                 sizeof(info)) == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FB_DIRECT_PRESENT: {
+            qos_fb_direct_info_t info;
+            qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
+            int pid = process_current_pid();
+            unsigned int next_page = 0u;
+            unsigned int pitch = fb_get_pitch();
+            unsigned int width = fb_get_width();
+            unsigned int height = fb_get_height();
+            unsigned long size = (unsigned long)pitch * (unsigned long)height;
+
+            if (!user_info || !process_user_range_writable(user_info, sizeof(*user_info)) ||
+                pitch == 0u || width == 0u || height == 0u || size == 0UL){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (display_direct_present_for_pid(pid, &next_page) != 0 ||
+                next_page == 0u || next_page >= fb_get_page_count()){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            info.pixels = (unsigned int*)fb_get_page_base(next_page);
+            info.width = width;
+            info.height = height;
+            info.pitch = pitch;
+            info.page = next_page;
             frame[TF_X0] = (process_copy_to_user(user_info,
                                                  &info,
                                                  sizeof(info)) == 0) ? 0ul : (unsigned long)-1;
