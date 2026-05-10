@@ -1,6 +1,5 @@
 #include "mailbox.h"
 #include "uart.h"
-#include "spinlock.h"
 
 #define MMIO_BASE 0x3F000000
 #define MBOX_BASE (MMIO_BASE + 0xB880)
@@ -15,7 +14,6 @@
 #define MAILBOX_CHANNEL_PROP 8
 
 volatile unsigned int mbox[36] __attribute__((aligned(16)));
-static spinlock_t g_mailbox_lock;
 
 static unsigned long cache_line_size(void){
     unsigned long ctr;
@@ -36,11 +34,9 @@ static void clean_invalidate_dcache_range(unsigned long start, unsigned long siz
 }
 
 void mailbox_lock(void){
-    spin_lock(&g_mailbox_lock);
 }
 
 void mailbox_unlock(void){
-    spin_unlock(&g_mailbox_lock);
 }
 
 int mailbox_call_locked(unsigned char ch){
@@ -66,10 +62,7 @@ int mailbox_call_locked(unsigned char ch){
 }
 
 int mailbox_call(unsigned char ch){
-    mailbox_lock();
-    int ok = mailbox_call_locked(ch);
-    mailbox_unlock();
-    return ok;
+    return mailbox_call_locked(ch);
 }
 
 int mailbox_set_emmc_clock(unsigned int hz){
