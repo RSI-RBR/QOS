@@ -791,6 +791,8 @@ static int sdl_time_reached(Uint32 now, Uint32 target){
     return (int)(now - target) >= 0;
 }
 
+static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len);
+static void sdl_zero_bytes(Uint8* dst, Uint32 len);
 static void sdl_texture_free_native(SDL_Texture* texture);
 static void sdl_texture_invalidate_native(SDL_Texture* texture);
 static int sdl_texture_ensure_native(SDL_Texture* texture);
