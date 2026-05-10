@@ -141,7 +141,13 @@ enum {
     SYS_GPU2D_CLEAR = 115,
     SYS_GPU2D_CLEAR_COUNT = 116,
     SYS_GPU2D_FILL_RECT = 117,
-    SYS_GPU2D_FILL_COUNT = 118
+    SYS_GPU2D_FILL_COUNT = 118,
+    SYS_GPU2D_TEXTURE_UPLOAD = 119,
+    SYS_GPU2D_TEXTURE_FREE = 120,
+    SYS_GPU2D_TEXTURE_COUNT = 121,
+    SYS_GPU2D_TEXTURE_UPLOAD_COUNT = 122,
+    SYS_GPU2D_TEXTURE_FREE_COUNT = 123,
+    SYS_GPU2D_TEXTURE_BYTES = 124
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -533,6 +539,30 @@ static inline unsigned int qos_gpu2d_clear_count(void){
 
 static inline unsigned int qos_gpu2d_fill_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_FILL_COUNT);
+}
+
+static inline int qos_gpu2d_texture_upload(qos_gpu2d_texture_upload_t* req){
+    return (int)qos_syscall1(SYS_GPU2D_TEXTURE_UPLOAD, (unsigned long)req);
+}
+
+static inline int qos_gpu2d_texture_free(unsigned int texture_id){
+    return (int)qos_syscall1(SYS_GPU2D_TEXTURE_FREE, (unsigned long)texture_id);
+}
+
+static inline unsigned int qos_gpu2d_texture_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_TEXTURE_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_texture_upload_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_TEXTURE_UPLOAD_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_texture_free_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_TEXTURE_FREE_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_texture_bytes(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_TEXTURE_BYTES);
 }
 
 static inline unsigned int qos_gpu2d_fallback_count(void){

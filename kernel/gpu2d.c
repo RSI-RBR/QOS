@@ -1,12 +1,47 @@
 #include "gpu2d.h"
 #include "display.h"
+#include "cache.h"
+#include "memory.h"
+#include "process.h"
+#include "spinlock.h"
 #include "v3d.h"
+
+#define GPU2D_MAX_TEXTURES 96u
+#define GPU2D_TEXTURE_MAX_BYTES (4u * 1024u * 1024u)
+#define GPU2D_TEXTURE_TOTAL_MAX_BYTES (128u * 1024u * 1024u)
+
+typedef struct {
+    int used;
+    int pid;
+    unsigned int id;
+    unsigned int width;
+    unsigned int height;
+    unsigned int pitch;
+    unsigned int flags;
+    unsigned long bytes;
+    unsigned int* pixels;
+} gpu2d_texture_t;
 
 static unsigned int g_gpu2d_blit_count = 0u;
 static unsigned int g_gpu2d_clear_count = 0u;
 static unsigned int g_gpu2d_fill_count = 0u;
 static unsigned int g_gpu2d_fallback_count = 0u;
 static unsigned int g_gpu2d_unsupported_count = 0u;
+static unsigned int g_gpu2d_texture_upload_count = 0u;
+static unsigned int g_gpu2d_texture_free_count = 0u;
+static unsigned int g_gpu2d_next_texture_id = 1u;
+static unsigned int g_gpu2d_texture_live_count = 0u;
+static unsigned int g_gpu2d_texture_live_bytes = 0u;
+static gpu2d_texture_t g_gpu2d_textures[GPU2D_MAX_TEXTURES];
+static spinlock_t g_gpu2d_lock = {0};
+
+static unsigned int gpu2d_next_id_locked(void){
+    unsigned int id = g_gpu2d_next_texture_id++;
+    if (id == 0u){
+        id = g_gpu2d_next_texture_id++;
+    }
+    return id;
+}
 
 unsigned int gpu2d_status(void){
     qos_v3d_status_t st;
@@ -17,7 +52,8 @@ unsigned int gpu2d_status(void){
         (st.flags & QOS_V3D_FLAG_SCRATCH_OK)){
         status |= QOS_GPU2D_STATUS_BACKEND_HW |
                   QOS_GPU2D_CAP_ACCEL_CLEAR |
-                  QOS_GPU2D_CAP_ACCEL_FILL_TILE;
+                  QOS_GPU2D_CAP_ACCEL_FILL_TILE |
+                  QOS_GPU2D_CAP_TEXTURE_OBJECTS;
     }
     return status;
 }
@@ -32,6 +68,22 @@ unsigned int gpu2d_clear_count(void){
 
 unsigned int gpu2d_fill_count(void){
     return g_gpu2d_fill_count;
+}
+
+unsigned int gpu2d_texture_count(void){
+    return g_gpu2d_texture_live_count;
+}
+
+unsigned int gpu2d_texture_upload_count(void){
+    return g_gpu2d_texture_upload_count;
+}
+
+unsigned int gpu2d_texture_free_count(void){
+    return g_gpu2d_texture_free_count;
+}
+
+unsigned int gpu2d_texture_bytes(void){
+    return g_gpu2d_texture_live_bytes;
 }
 
 unsigned int gpu2d_fallback_count(void){
@@ -141,4 +193,122 @@ int gpu2d_fill_rect_for_pid(int pid,
     }
     g_gpu2d_fill_count++;
     return 0;
+}
+
+int gpu2d_texture_upload_for_pid(int pid, qos_gpu2d_texture_upload_t* req){
+    if (pid < 0 || !req || !req->pixels ||
+        req->width == 0u || req->height == 0u ||
+        req->width > 4096u || req->height > 4096u ||
+        req->pitch != req->width * sizeof(unsigned int)){
+        return -1;
+    }
+    if (req->height > (GPU2D_TEXTURE_MAX_BYTES / req->pitch)){
+        return -1;
+    }
+
+    unsigned long bytes = (unsigned long)req->pitch * (unsigned long)req->height;
+    if (bytes == 0UL || bytes > GPU2D_TEXTURE_MAX_BYTES){
+        return -1;
+    }
+    if (!process_user_range_readable(req->pixels, bytes)){
+        return -1;
+    }
+
+    unsigned int* pixels = (unsigned int*)kmalloc(bytes);
+    if (!pixels){
+        return -1;
+    }
+    if (process_copy_from_user(pixels, req->pixels, bytes) != 0){
+        kfree_secure(pixels, bytes);
+        return -1;
+    }
+    clean_data_cache_range((unsigned long)pixels, bytes);
+
+    spin_lock(&g_gpu2d_lock);
+    int slot = -1;
+    for (unsigned int i = 0u; i < GPU2D_MAX_TEXTURES; i++){
+        if (!g_gpu2d_textures[i].used){
+            slot = (int)i;
+            break;
+        }
+    }
+    if (slot < 0 ||
+        (unsigned int)bytes > GPU2D_TEXTURE_TOTAL_MAX_BYTES ||
+        g_gpu2d_texture_live_bytes > GPU2D_TEXTURE_TOTAL_MAX_BYTES - (unsigned int)bytes){
+        spin_unlock(&g_gpu2d_lock);
+        kfree_secure(pixels, bytes);
+        return -1;
+    }
+
+    unsigned int id = gpu2d_next_id_locked();
+    g_gpu2d_textures[slot].used = 1;
+    g_gpu2d_textures[slot].pid = pid;
+    g_gpu2d_textures[slot].id = id;
+    g_gpu2d_textures[slot].width = req->width;
+    g_gpu2d_textures[slot].height = req->height;
+    g_gpu2d_textures[slot].pitch = req->pitch;
+    g_gpu2d_textures[slot].flags = req->flags;
+    g_gpu2d_textures[slot].bytes = bytes;
+    g_gpu2d_textures[slot].pixels = pixels;
+    g_gpu2d_texture_live_count++;
+    g_gpu2d_texture_upload_count++;
+    if (g_gpu2d_texture_live_bytes <= 0xFFFFFFFFu - (unsigned int)bytes){
+        g_gpu2d_texture_live_bytes += (unsigned int)bytes;
+    }
+    spin_unlock(&g_gpu2d_lock);
+
+    req->texture_id = id;
+    return 0;
+}
+
+int gpu2d_texture_free_for_pid(int pid, unsigned int texture_id){
+    if (pid < 0 || texture_id == 0u){
+        return -1;
+    }
+    spin_lock(&g_gpu2d_lock);
+    for (unsigned int i = 0u; i < GPU2D_MAX_TEXTURES; i++){
+        gpu2d_texture_t* t = &g_gpu2d_textures[i];
+        if (t->used && t->pid == pid && t->id == texture_id){
+            unsigned int* pixels = t->pixels;
+            unsigned long bytes = t->bytes;
+            t->used = 0;
+            t->pid = -1;
+            t->id = 0u;
+            t->pixels = 0;
+            t->bytes = 0UL;
+            if (g_gpu2d_texture_live_count > 0u){
+                g_gpu2d_texture_live_count--;
+            }
+            if (g_gpu2d_texture_live_bytes >= (unsigned int)bytes){
+                g_gpu2d_texture_live_bytes -= (unsigned int)bytes;
+            } else{
+                g_gpu2d_texture_live_bytes = 0u;
+            }
+            g_gpu2d_texture_free_count++;
+            spin_unlock(&g_gpu2d_lock);
+            if (pixels && bytes > 0UL){
+                kfree_secure(pixels, bytes);
+            }
+            return 0;
+        }
+    }
+    spin_unlock(&g_gpu2d_lock);
+    return -1;
+}
+
+void gpu2d_release_for_pid(int pid){
+    if (pid < 0){
+        return;
+    }
+    for (unsigned int i = 0u; i < GPU2D_MAX_TEXTURES; i++){
+        unsigned int id = 0u;
+        spin_lock(&g_gpu2d_lock);
+        if (g_gpu2d_textures[i].used && g_gpu2d_textures[i].pid == pid){
+            id = g_gpu2d_textures[i].id;
+        }
+        spin_unlock(&g_gpu2d_lock);
+        if (id){
+            (void)gpu2d_texture_free_for_pid(pid, id);
+        }
+    }
 }

@@ -55,7 +55,9 @@ typedef struct SDL_Texture {
     Uint32* native_pixels;
     Uint32 capacity;
     Uint32 native_capacity;
+    Uint32 gpu_texture_id;
     int native_valid;
+    int gpu_texture_valid;
     Uint8 color_r;
     Uint8 color_g;
     Uint8 color_b;

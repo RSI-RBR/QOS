@@ -12,6 +12,7 @@
 #include "terminal.h"
 #include "display.h"
 #include "usb_host.h"
+#include "gpu2d.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -665,6 +666,7 @@ static void release_process_resources(process_cleanup_t* c){
     console_owner_on_process_exit(pid);
     terminal_detach_pid(pid);
     display_destroy_for_pid(pid);
+    gpu2d_release_for_pid(pid);
     if (display_was_active){
         (void)terminal_set_active(0);
     }

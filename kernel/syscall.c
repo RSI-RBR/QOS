@@ -459,6 +459,12 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU2D_CLEAR_COUNT:
         case SYS_GPU2D_FILL_RECT:
         case SYS_GPU2D_FILL_COUNT:
+        case SYS_GPU2D_TEXTURE_UPLOAD:
+        case SYS_GPU2D_TEXTURE_FREE:
+        case SYS_GPU2D_TEXTURE_COUNT:
+        case SYS_GPU2D_TEXTURE_UPLOAD_COUNT:
+        case SYS_GPU2D_TEXTURE_FREE_COUNT:
+        case SYS_GPU2D_TEXTURE_BYTES:
         case SYS_V3D_STATUS:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
@@ -937,6 +943,46 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_GPU2D_FILL_COUNT:
             frame[TF_X0] = (unsigned long)gpu2d_fill_count();
+            return frame_sp;
+
+        case SYS_GPU2D_TEXTURE_UPLOAD: {
+            qos_gpu2d_texture_upload_t req;
+            qos_gpu2d_texture_upload_t* user_req = (qos_gpu2d_texture_upload_t*)frame[TF_X0];
+            if (!user_req ||
+                process_copy_from_user(&req, user_req, sizeof(req)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int rc = gpu2d_texture_upload_for_pid(process_current_pid(), &req);
+            if (rc == 0 &&
+                process_copy_to_user(user_req, &req, sizeof(req)) != 0){
+                (void)gpu2d_texture_free_for_pid(process_current_pid(), req.texture_id);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_GPU2D_TEXTURE_FREE:
+            frame[TF_X0] = (unsigned long)gpu2d_texture_free_for_pid(process_current_pid(),
+                                                                     (unsigned int)frame[TF_X0]);
+            return frame_sp;
+
+        case SYS_GPU2D_TEXTURE_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_texture_count();
+            return frame_sp;
+
+        case SYS_GPU2D_TEXTURE_UPLOAD_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_texture_upload_count();
+            return frame_sp;
+
+        case SYS_GPU2D_TEXTURE_FREE_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_texture_free_count();
+            return frame_sp;
+
+        case SYS_GPU2D_TEXTURE_BYTES:
+            frame[TF_X0] = (unsigned long)gpu2d_texture_bytes();
             return frame_sp;
 
         case SYS_V3D_PROBE: {

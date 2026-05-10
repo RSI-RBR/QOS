@@ -16,6 +16,9 @@
 #define SDL_SHIM_SOFT_BACKBUFFER 1
 #define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
 #define SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH 1
+#ifndef SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
+#define SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD 1
+#endif
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -807,6 +810,9 @@ static int sdl_time_reached(Uint32 now, Uint32 target){
 
 static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len);
 static void sdl_zero_bytes(Uint8* dst, Uint32 len);
+static void sdl_texture_free_gpu(SDL_Texture* texture);
+static void sdl_texture_invalidate_gpu(SDL_Texture* texture);
+static int sdl_texture_upload_gpu(SDL_Texture* texture);
 static void sdl_texture_free_native(SDL_Texture* texture);
 static void sdl_texture_invalidate_native(SDL_Texture* texture);
 static int sdl_texture_ensure_native(SDL_Texture* texture);
@@ -1456,6 +1462,60 @@ static void sdl_free_pixels(Uint8* pixels){
     }
 }
 
+static void sdl_texture_free_gpu(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+#if SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
+    if (texture->gpu_texture_valid && texture->gpu_texture_id != 0u){
+        (void)qos_gpu2d_texture_free(texture->gpu_texture_id);
+    }
+#endif
+    texture->gpu_texture_id = 0u;
+    texture->gpu_texture_valid = 0;
+}
+
+static void sdl_texture_invalidate_gpu(SDL_Texture* texture){
+    sdl_texture_free_gpu(texture);
+}
+
+static int sdl_texture_upload_gpu(SDL_Texture* texture){
+#if SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
+    qos_gpu2d_texture_upload_t req;
+    unsigned int status;
+
+    if (!texture || !texture->alive || !texture->pixels ||
+        texture->w <= 0 || texture->h <= 0 || texture->pitch <= 0){
+        return -1;
+    }
+    if (texture->gpu_texture_valid && texture->gpu_texture_id != 0u){
+        return 0;
+    }
+
+    status = sdl_gpu2d_status_cached();
+    if ((status & QOS_GPU2D_CAP_TEXTURE_OBJECTS) == 0u){
+        return -1;
+    }
+
+    req.pixels = (const unsigned int*)texture->pixels;
+    req.width = (unsigned int)texture->w;
+    req.height = (unsigned int)texture->h;
+    req.pitch = (unsigned int)texture->pitch;
+    req.flags = texture->opaque ? QOS_GPU2D_TEXTURE_OPAQUE : 0u;
+    req.texture_id = 0u;
+
+    if (qos_gpu2d_texture_upload(&req) != 0 || req.texture_id == 0u){
+        return -1;
+    }
+    texture->gpu_texture_id = req.texture_id;
+    texture->gpu_texture_valid = 1;
+    return 0;
+#else
+    (void)texture;
+    return -1;
+#endif
+}
+
 static void sdl_texture_free_native(SDL_Texture* texture){
     if (!texture){
         return;
@@ -1471,6 +1531,7 @@ static void sdl_texture_free_native(SDL_Texture* texture){
 static void sdl_texture_invalidate_native(SDL_Texture* texture){
     if (texture){
         texture->native_valid = 0;
+        sdl_texture_invalidate_gpu(texture);
     }
 }
 
@@ -2250,7 +2311,9 @@ SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access
     t->capacity = bytes;
     t->native_pixels = 0;
     t->native_capacity = 0u;
+    t->gpu_texture_id = 0u;
     t->native_valid = 0;
+    t->gpu_texture_valid = 0;
     t->color_r = 255u;
     t->color_g = 255u;
     t->color_b = 255u;
@@ -2309,7 +2372,9 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     t->capacity = expected_capacity;
     t->native_pixels = 0;
     t->native_capacity = 0u;
+    t->gpu_texture_id = 0u;
     t->native_valid = 0;
+    t->gpu_texture_valid = 0;
 
     if (surface->owns_pixels &&
         surface->pitch == (int)row_bytes &&
@@ -2348,6 +2413,7 @@ SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* s
     if (t->opaque){
         (void)sdl_texture_ensure_native(t);
     }
+    (void)sdl_texture_upload_gpu(t);
     if (adopted_pixels){
         surface->pixels = t->pixels;
     }
@@ -2364,6 +2430,7 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     if (texture->alive && texture->owns_pixels){
         sdl_free_pixels(texture->pixels);
     }
+    sdl_texture_free_gpu(texture);
     sdl_texture_free_native(texture);
     texture->alive = 0;
     texture->locked = 0;
