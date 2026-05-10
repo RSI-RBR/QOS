@@ -17,6 +17,8 @@ typedef struct {
     int active;
     void* framebuffer;
     unsigned long framebuffer_size;
+    void* allocation;
+    unsigned long allocation_size;
     unsigned int dirty;
     unsigned int dirty_x0;
     unsigned int dirty_y0;

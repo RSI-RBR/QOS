@@ -16,6 +16,7 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_MIN_BYTES (256u * 1024u)
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
+#define DISPLAY_FRAMEBUFFER_ALIGN 64UL
 
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
@@ -65,6 +66,10 @@ static void display_memset(void* ptr, unsigned char value, unsigned long len){
     for (unsigned long i = 0; i < len; i++){
         p[i] = value;
     }
+}
+
+static unsigned long display_align_up(unsigned long v, unsigned long align){
+    return (v + (align - 1UL)) & ~(align - 1UL);
 }
 
 static int display_cursor_rect(int x,
@@ -288,6 +293,8 @@ static void display_clear_session_locked(int session_id){
     g_display_sessions[session_id].active = 0;
     g_display_sessions[session_id].framebuffer = 0;
     g_display_sessions[session_id].framebuffer_size = 0UL;
+    g_display_sessions[session_id].allocation = 0;
+    g_display_sessions[session_id].allocation_size = 0UL;
     g_display_sessions[session_id].dirty = 0u;
     g_display_sessions[session_id].dirty_x0 = 0u;
     g_display_sessions[session_id].dirty_y0 = 0u;
@@ -356,6 +363,8 @@ static void display_init_text_locked(void){
     s->active = 1;
     s->framebuffer = (void*)fb_get_base();
     s->framebuffer_size = display_fb_size();
+    s->allocation = 0;
+    s->allocation_size = 0UL;
     s->dirty = 1u;
     s->width = fb_get_width();
     s->height = fb_get_height();
@@ -426,17 +435,23 @@ int display_create_graphics_session(int owner_pid){
         return -1;
     }
 
-    void* fb = kmalloc(size);
-    if (!fb){
+    unsigned long alloc_size = size + DISPLAY_FRAMEBUFFER_ALIGN;
+    if (alloc_size < size){
         return -1;
     }
+    void* raw_fb = kmalloc(alloc_size);
+    if (!raw_fb){
+        return -1;
+    }
+    void* fb = (void*)display_align_up((unsigned long)raw_fb,
+                                       DISPLAY_FRAMEBUFFER_ALIGN);
     display_memset(fb, 0, size);
 
     irq = spin_lock_irqsave(&g_display_lock);
     existing = display_find_graphics_for_pid_locked(owner_pid);
     if (existing >= 0){
         spin_unlock_irqrestore(&g_display_lock, irq);
-        kfree_secure(fb, size);
+        kfree_secure(raw_fb, alloc_size);
         return existing;
     }
 
@@ -449,7 +464,7 @@ int display_create_graphics_session(int owner_pid){
     }
     if (slot < 0){
         spin_unlock_irqrestore(&g_display_lock, irq);
-        kfree_secure(fb, size);
+        kfree_secure(raw_fb, alloc_size);
         return -1;
     }
 
@@ -459,6 +474,8 @@ int display_create_graphics_session(int owner_pid){
     g_display_sessions[slot].active = 0;
     g_display_sessions[slot].framebuffer = fb;
     g_display_sessions[slot].framebuffer_size = size;
+    g_display_sessions[slot].allocation = raw_fb;
+    g_display_sessions[slot].allocation_size = alloc_size;
     g_display_sessions[slot].dirty = 0u;
     g_display_sessions[slot].dirty_x0 = 0u;
     g_display_sessions[slot].dirty_y0 = 0u;
@@ -488,8 +505,12 @@ int display_destroy_session(int session_id){
         return -1;
     }
 
-    fb = g_display_sessions[session_id].framebuffer;
-    size = g_display_sessions[session_id].framebuffer_size;
+    fb = g_display_sessions[session_id].allocation ?
+         g_display_sessions[session_id].allocation :
+         g_display_sessions[session_id].framebuffer;
+    size = g_display_sessions[session_id].allocation ?
+           g_display_sessions[session_id].allocation_size :
+           g_display_sessions[session_id].framebuffer_size;
     display_clear_session_locked(session_id);
     if (g_display_active == session_id){
         display_init_text_locked();

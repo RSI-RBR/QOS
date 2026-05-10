@@ -548,6 +548,14 @@ static void usb_hid_save_prev_report(const unsigned char report[USB_HID_REPORT_L
     g_kbd.last_report_tick = system_ticks;
 }
 
+static void usb_hid_clear_prev_report(void){
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        g_kbd.prev_report[i] = 0;
+    }
+    g_kbd.have_prev_report = 0;
+    g_kbd_switch_combo = 0u;
+}
+
 static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift){
     if (key >= 0x04u && key <= 0x1Du){
         unsigned char base = (unsigned char)('a' + (key - 0x04u));
@@ -890,15 +898,21 @@ static int usb_hid_keyboard_configure(unsigned char addr,
         usb_set_split_context(hub_addr, hub_port, 1, low_speed);
     }
 
-    if (boot_kbd){
-        // Boot protocol for fixed 8-byte reports.
-        (void)usb_std_request(addr,
-                              0x21,
-                              USB_HID_REQ_SET_PROTOCOL,
-                              0u,
-                              iface,
-                              0,
-                              0);
+    /*
+     * Prefer boot protocol even when the interface descriptor did not advertise
+     * boot keyboard subclass. Several cheap USB keyboards still accept this and
+     * then emit the simple 8-byte report shape we parse here. If it stalls, the
+     * request is harmless and we fall back to tolerant report normalization.
+     */
+    int boot_mode = boot_kbd ? 1 : 0;
+    if (usb_std_request(addr,
+                        0x21,
+                        USB_HID_REQ_SET_PROTOCOL,
+                        0u,
+                        iface,
+                        0,
+                        0) == 0){
+        boot_mode = 1;
     }
 
     // Request periodic reports while keys are held. A 4ms idle interval makes
@@ -924,14 +938,11 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.hub_port = hub_port;
     g_kbd.use_split = use_split ? 1 : 0;
     g_kbd.low_speed = low_speed ? 1 : 0;
-    g_kbd.boot_kbd = boot_kbd ? 1 : 0;
+    g_kbd.boot_kbd = boot_mode ? 1 : 0;
     g_kbd.in_toggle = 0;
-    g_kbd.have_prev_report = 0;
+    usb_hid_clear_prev_report();
     g_kbd.last_report_tick = system_ticks;
     g_kbd_active_until_tick = 0;
-    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
-        g_kbd.prev_report[i] = 0;
-    }
     g_kbd_next_poll_tick = 0;
     usb_hid_queue_reset();
     return 0;
@@ -1200,14 +1211,20 @@ static int usb_hid_poll_once(void){
     g_root_info.hid_report_count++;
     g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
     if (actual >= 9u &&
-        !g_kbd.boot_kbd &&
-        report[0] != 0u &&
-        report[2] == 0u){
+        report[2] == 0u &&
+        (report[1] != 0u ||
+         report[3] != 0u ||
+         report[4] != 0u ||
+         report[5] != 0u ||
+         report[6] != 0u ||
+         report[7] != 0u ||
+         report[8] != 0u)){
         /*
          * Report-ID prefixed packet:
          *   [report_id, modifiers, reserved, key0, ...]
-         * Do not treat a plain boot report with Alt held as report-ID
-         * prefixed; in that case report[2] is the first key slot.
+         * Some keyboards use report_id=0, so do not require report[0] != 0.
+         * A real compact boot report with key0 populated has report[2] != 0,
+         * so the report[2] guard keeps normal packets from being shifted.
          */
         usb_hid_process_report(&report[1]);
     } else{
@@ -3287,6 +3304,7 @@ void usb_host_flush_input(void){
     unsigned long irq = spin_lock_irqsave(&g_usb_input_lock);
     usb_hid_queue_reset();
     usb_input_event_queue_reset();
+    usb_hid_clear_prev_report();
     spin_unlock_irqrestore(&g_usb_input_lock, irq);
 }
 
