@@ -139,6 +139,8 @@
 
 #define USB_CTRL_EP_MPS_DEFAULT 8u
 #define USB_HUB_DESC_TYPE 0x29u
+#define USB_DESC_TYPE_HID 0x21u
+#define USB_DESC_TYPE_REPORT 0x22u
 #define USB_DESC_TYPE_INTERFACE 0x04u
 #define USB_DESC_TYPE_ENDPOINT 0x05u
 #define USB_ENDPOINT_XFER_BULK 0x02u
@@ -157,6 +159,7 @@
 #define USB_HID_CHAR_QUEUE_LEN 128u
 #define USB_INPUT_EVENT_QUEUE_LEN 128u
 #define USB_HID_MOUSE_REPORT_LEN 4u
+#define USB_HID_MAX_ENDPOINT_CANDIDATES 6u
 #define USB_HID_ACTIVE_POLL_MS 12u
 #define USB_HID_IDLE_POLL_MS 32u
 #define USB_HID_MOUSE_ACTIVE_POLL_MS 24u
@@ -292,6 +295,15 @@ typedef struct {
 static usb_hid_keyboard_state_t g_kbd;
 
 typedef struct {
+    unsigned char iface;
+    unsigned char ep;
+    unsigned short mps;
+    unsigned short report_len;
+    unsigned char subclass;
+    unsigned char protocol;
+} usb_hid_endpoint_candidate_t;
+
+typedef struct {
     int present;
     unsigned char addr;
     unsigned char iface;
@@ -373,6 +385,28 @@ static int usb_parse_hid_mouse_from_config(const unsigned char* cfg,
                                            unsigned char* out_ep,
                                            unsigned short* out_mps,
                                            int* out_boot_mouse);
+static unsigned int usb_collect_hid_endpoint_candidates(const unsigned char* cfg,
+                                                        unsigned int len,
+                                                        usb_hid_endpoint_candidate_t* out,
+                                                        unsigned int max_out);
+static int usb_hid_report_descriptor_score(unsigned char addr,
+                                           unsigned char iface,
+                                           unsigned short report_len,
+                                           int want_keyboard);
+static int usb_choose_hid_keyboard_endpoint(unsigned char addr,
+                                            const usb_hid_endpoint_candidate_t* candidates,
+                                            unsigned int count,
+                                            unsigned char* out_iface,
+                                            unsigned char* out_ep,
+                                            unsigned short* out_mps,
+                                            int* out_boot_kbd);
+static int usb_choose_hid_mouse_endpoint(unsigned char addr,
+                                         const usb_hid_endpoint_candidate_t* candidates,
+                                         unsigned int count,
+                                         unsigned char* out_iface,
+                                         unsigned char* out_ep,
+                                         unsigned short* out_mps,
+                                         int* out_boot_mouse);
 static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
@@ -1067,6 +1101,238 @@ static int usb_parse_hid_mouse_from_config(const unsigned char* cfg,
     return -1;
 }
 
+static unsigned int usb_collect_hid_endpoint_candidates(const unsigned char* cfg,
+                                                        unsigned int len,
+                                                        usb_hid_endpoint_candidate_t* out,
+                                                        unsigned int max_out){
+    unsigned char cur_iface = 0xFFu;
+    unsigned char cur_class = 0u;
+    unsigned char cur_subclass = 0u;
+    unsigned char cur_protocol = 0u;
+    unsigned short cur_report_len = 0u;
+    unsigned int count = 0u;
+
+    if (!cfg || !out || max_out == 0u || len < 9u){
+        return 0u;
+    }
+
+    unsigned int off = 0u;
+    while (off + 2u <= len){
+        unsigned int desc_len = cfg[off];
+        unsigned int desc_type = cfg[off + 1u];
+        if (desc_len < 2u || off + desc_len > len){
+            break;
+        }
+
+        if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9u){
+            cur_iface = cfg[off + 2u];
+            cur_class = cfg[off + 5u];
+            cur_subclass = cfg[off + 6u];
+            cur_protocol = cfg[off + 7u];
+            cur_report_len = 0u;
+        } else if (desc_type == USB_DESC_TYPE_HID &&
+                   cur_class == 0x03u &&
+                   desc_len >= 9u){
+            unsigned int num_desc = cfg[off + 5u];
+            unsigned int pos = off + 6u;
+            for (unsigned int i = 0; i < num_desc && pos + 2u < off + desc_len; i++){
+                unsigned char dtype = cfg[pos];
+                unsigned short dlen = le16(&cfg[pos + 1u]);
+                if (dtype == USB_DESC_TYPE_REPORT){
+                    cur_report_len = dlen;
+                    break;
+                }
+                pos += 3u;
+            }
+        } else if (desc_type == USB_DESC_TYPE_ENDPOINT &&
+                   cur_class == 0x03u &&
+                   desc_len >= 7u &&
+                   count < max_out){
+            unsigned char ep_addr = cfg[off + 2u];
+            unsigned char attrs = cfg[off + 3u];
+            unsigned short mps = (unsigned short)(le16(&cfg[off + 4u]) & 0x7FFu);
+            if ((attrs & 0x3u) == USB_ENDPOINT_XFER_INTERRUPT &&
+                (ep_addr & 0x80u) &&
+                mps >= 1u){
+                out[count].iface = cur_iface;
+                out[count].ep = ep_addr;
+                out[count].mps = mps;
+                out[count].report_len = cur_report_len;
+                out[count].subclass = cur_subclass;
+                out[count].protocol = cur_protocol;
+                count++;
+            }
+        }
+
+        off += desc_len;
+    }
+
+    return count;
+}
+
+static int usb_hid_report_descriptor_score(unsigned char addr,
+                                           unsigned char iface,
+                                           unsigned short report_len,
+                                           int want_keyboard){
+    unsigned char desc[128];
+    unsigned short req_len = report_len;
+    int keyboard = 0;
+    int mouse = 0;
+    int consumer = 0;
+
+    if (req_len == 0u){
+        return 0;
+    }
+    if (req_len > sizeof(desc)){
+        req_len = sizeof(desc);
+    }
+    for (unsigned int i = 0; i < sizeof(desc); i++){
+        desc[i] = 0;
+    }
+
+    if (usb_std_request(addr,
+                        0x81,
+                        HUB_REQ_GET_DESCRIPTOR,
+                        (unsigned short)(USB_DESC_TYPE_REPORT << 8),
+                        iface,
+                        desc,
+                        req_len) != 0){
+        return 0;
+    }
+
+    for (unsigned int i = 0; i + 1u < req_len; i++){
+        if (desc[i] == 0x05u && desc[i + 1u] == 0x07u){
+            keyboard = 1;
+        }
+        if (desc[i] == 0x05u && desc[i + 1u] == 0x0Cu){
+            consumer = 1;
+        }
+    }
+    for (unsigned int i = 0; i + 3u < req_len; i++){
+        if (desc[i] == 0x05u && desc[i + 1u] == 0x01u &&
+            desc[i + 2u] == 0x09u && desc[i + 3u] == 0x06u){
+            keyboard = 1;
+        }
+        if (desc[i] == 0x05u && desc[i + 1u] == 0x01u &&
+            desc[i + 2u] == 0x09u && desc[i + 3u] == 0x02u){
+            mouse = 1;
+        }
+    }
+
+    if (want_keyboard){
+        if (keyboard){
+            return 100;
+        }
+        if (mouse){
+            return -100;
+        }
+        if (consumer){
+            return -40;
+        }
+        return 0;
+    }
+
+    if (mouse){
+        return 100;
+    }
+    if (keyboard){
+        return -80;
+    }
+    return 0;
+}
+
+static int usb_choose_hid_keyboard_endpoint(unsigned char addr,
+                                            const usb_hid_endpoint_candidate_t* candidates,
+                                            unsigned int count,
+                                            unsigned char* out_iface,
+                                            unsigned char* out_ep,
+                                            unsigned short* out_mps,
+                                            int* out_boot_kbd){
+    int best_score = -1000;
+    int best = -1;
+
+    if (!candidates || !out_iface || !out_ep || !out_mps || !out_boot_kbd){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < count; i++){
+        int score = 0;
+        if (candidates[i].subclass == 0x01u && candidates[i].protocol == 0x01u){
+            score += 80;
+        } else if (candidates[i].protocol == 0x01u){
+            score += 50;
+        } else if (candidates[i].protocol == 0x02u){
+            score -= 80;
+        } else{
+            score += 5;
+        }
+        score += usb_hid_report_descriptor_score(addr,
+                                                 candidates[i].iface,
+                                                 candidates[i].report_len,
+                                                 1);
+        if (score > best_score){
+            best_score = score;
+            best = (int)i;
+        }
+    }
+
+    if (best < 0 || best_score <= 0){
+        return -1;
+    }
+
+    *out_iface = candidates[best].iface;
+    *out_ep = candidates[best].ep;
+    *out_mps = candidates[best].mps;
+    *out_boot_kbd = (candidates[best].subclass == 0x01u &&
+                     candidates[best].protocol == 0x01u) ? 1 : 0;
+    return 0;
+}
+
+static int usb_choose_hid_mouse_endpoint(unsigned char addr,
+                                         const usb_hid_endpoint_candidate_t* candidates,
+                                         unsigned int count,
+                                         unsigned char* out_iface,
+                                         unsigned char* out_ep,
+                                         unsigned short* out_mps,
+                                         int* out_boot_mouse){
+    int best_score = -1000;
+    int best = -1;
+
+    if (!candidates || !out_iface || !out_ep || !out_mps || !out_boot_mouse){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < count; i++){
+        int score = 0;
+        if (candidates[i].subclass == 0x01u && candidates[i].protocol == 0x02u){
+            score += 80;
+        } else if (candidates[i].protocol == 0x02u){
+            score += 50;
+        } else if (candidates[i].protocol == 0x01u){
+            score -= 80;
+        }
+        score += usb_hid_report_descriptor_score(addr,
+                                                 candidates[i].iface,
+                                                 candidates[i].report_len,
+                                                 0);
+        if (score > best_score){
+            best_score = score;
+            best = (int)i;
+        }
+    }
+
+    if (best < 0 || best_score <= 0){
+        return -1;
+    }
+
+    *out_iface = candidates[best].iface;
+    *out_ep = candidates[best].ep;
+    *out_mps = candidates[best].mps;
+    *out_boot_mouse = (candidates[best].subclass == 0x01u &&
+                       candidates[best].protocol == 0x02u) ? 1 : 0;
+    return 0;
+}
+
 static int usb_hid_keyboard_configure(unsigned char addr,
                                       unsigned char iface,
                                       unsigned char in_ep,
@@ -1389,14 +1655,14 @@ static int usb_hid_poll_once(void){
         g_root_info.hid_error_count++;
         return -1;
     }
-    g_root_info.hid_last_actual = actual;
-    usb_hid_pack_last_raw(report, actual);
     if (actual == 0u){
         g_root_info.hid_nodata_count++;
         // No-data/NAK is not a key-release report. Clearing prev_report here
         // makes held keys look newly pressed after another key changes.
         return 0;
     }
+    g_root_info.hid_last_actual = actual;
+    usb_hid_pack_last_raw(report, actual);
     g_root_info.hid_report_count++;
     g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
     unsigned char normalized[USB_HID_REPORT_LEN];
@@ -1664,6 +1930,8 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
     unsigned char intr_iface = 0;
     unsigned char intr_ep = 0;
     unsigned short intr_mps = 0;
+    usb_hid_endpoint_candidate_t hid_candidates[USB_HID_MAX_ENDPOINT_CANDIDATES];
+    unsigned int hid_candidate_count = 0;
     int hid_found = 0;
     int mouse_found = 0;
     int child_is_high_speed = 0;
@@ -1757,6 +2025,11 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                     &intr_iface,
                                                     &intr_ep,
                                                     &intr_mps);
+        hid_candidate_count = usb_collect_hid_endpoint_candidates(
+            cfg_desc,
+            (unsigned int)cfg_read,
+            hid_candidates,
+            USB_HID_MAX_ENDPOINT_CANDIDATES);
         if (cfg_value != 0){
             if (usb_std_request(child_addr, 0x00, HUB_REQ_SET_CONFIGURATION, cfg_value, 0, 0, 0) == 0){
                 cfg_set = 1;
@@ -1774,6 +2047,38 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                                                        &mouse_ep,
                                                        &mouse_mps,
                                                        &mouse_boot) == 0) ? 1 : 0;
+        if (hid_candidate_count > 0u){
+            unsigned char chosen_iface = 0u;
+            unsigned char chosen_ep = 0u;
+            unsigned short chosen_mps = 0u;
+            int chosen_boot = 0;
+            if (usb_choose_hid_keyboard_endpoint(child_addr,
+                                                 hid_candidates,
+                                                 hid_candidate_count,
+                                                 &chosen_iface,
+                                                 &chosen_ep,
+                                                 &chosen_mps,
+                                                 &chosen_boot) == 0){
+                hid_found = 1;
+                hid_iface = chosen_iface;
+                hid_ep = chosen_ep;
+                hid_mps = chosen_mps;
+                hid_boot = chosen_boot;
+            }
+            if (usb_choose_hid_mouse_endpoint(child_addr,
+                                              hid_candidates,
+                                              hid_candidate_count,
+                                              &chosen_iface,
+                                              &chosen_ep,
+                                              &chosen_mps,
+                                              &chosen_boot) == 0){
+                mouse_found = 1;
+                mouse_iface = chosen_iface;
+                mouse_ep = chosen_ep;
+                mouse_mps = chosen_mps;
+                mouse_boot = chosen_boot;
+            }
+        }
         if (!hid_found &&
             intr_ep &&
             intr_ep != mouse_ep &&
