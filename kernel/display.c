@@ -22,7 +22,7 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
-#define DISPLAY_HOTKEY_POLL_MS 16UL
+#define DISPLAY_HOTKEY_POLL_MS 64UL
 
 static int g_display_gpu_enabled = 0;
 static unsigned int g_display_gpu_flip_count = 0;
@@ -1497,13 +1497,13 @@ int display_present_active_graphics(void){
         unsigned int previous_visible_page = fb_get_display_page();
         unsigned int presented_page = s->scanout_page;
         unsigned long flip_start = display_read_cntpct();
-        /*
-         * Circle's framebuffer path uses firmware VSYNC waiting with virtual
-         * offset flips. On Pi 3 we often only get two pages, so syncing the
-         * offset update to vblank is the best available anti-tear guard.
-         */
-        (void)fb_wait_vsync();
         if (fb_set_display_page(s->scanout_page) == 0){
+            /*
+             * Circle-style firmware double buffering: change the virtual
+             * offset, then wait until the next vblank has accepted it before
+             * giving the old visible page back to the renderer.
+             */
+            (void)fb_wait_vsync();
             flip_us += display_elapsed_us(flip_start, prof_hz);
             g_display_gpu_flip_count++;
             g_display_profile.pageflip_calls++;
