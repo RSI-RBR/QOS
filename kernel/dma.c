@@ -20,8 +20,8 @@
 #define DMA_CS_ERROR          (1u << 8)
 #define DMA_CS_PANIC_PRIORITY_SHIFT 20
 #define DMA_CS_PRIORITY_SHIFT 16
-#define DMA_SAFE_PRIORITY 4u
-#define DMA_SAFE_BURST_LENGTH 4u
+#define DMA_SAFE_PRIORITY 8u
+#define DMA_SAFE_BURST_LENGTH 8u
 #define DMA_CS_DISDEBUG       (1u << 29)
 #define DMA_CS_ABORT          (1u << 30)
 #define DMA_CS_RESET          (1u << 31)
@@ -241,7 +241,6 @@ static int dma_start_memcopy(unsigned int src_bus,
 
     g_dma_cb.ti = DMA_TI_DEST_INC |
                   DMA_TI_SRC_INC |
-                  DMA_TI_WAIT_RESP |
                   (DMA_SAFE_BURST_LENGTH << DMA_TI_BURST_LENGTH_SHIFT) |
                   ti_extra;
     g_dma_cb.source_ad = src_bus;

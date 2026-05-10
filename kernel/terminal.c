@@ -316,18 +316,30 @@ static int terminal_active_graphics_pid(void){
     return info.owner_pid;
 }
 
+static unsigned long g_uart_overlay_last_len = 0;
+
 static void terminal_uart_overlay_write(const char* s, unsigned long len){
     if (!s){
         return;
     }
+
+    /*
+     * Keep UART compatible with simple serial monitors that do not implement
+     * ANSI escape sequences. Rewrite the whole edit line with carriage returns
+     * and trailing spaces instead of ESC[K.
+     */
     uart_send('\r');
-    uart_send(0x1B);
-    uart_send('[');
-    uart_send('2');
-    uart_send('K');
     for (unsigned long i = 0; i < len; i++){
         uart_send(s[i]);
     }
+    for (unsigned long i = len; i < g_uart_overlay_last_len; i++){
+        uart_send(' ');
+    }
+    uart_send('\r');
+    for (unsigned long i = 0; i < len; i++){
+        uart_send(s[i]);
+    }
+    g_uart_overlay_last_len = len;
 }
 
 void terminal_init(void){
