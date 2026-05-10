@@ -637,6 +637,17 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
 
+            /*
+             * Keyboard polling must happen before returning queued app events.
+             * Otherwise steady mouse motion can keep the queue non-empty and
+             * starve reserved global shortcuts such as Alt+Left/Alt+Right.
+             */
+            usb_host_poll();
+            if (!display_is_active_graphics_pid(pid)){
+                frame[TF_X0] = 0;
+                return frame_sp;
+            }
+
             if (usb_host_poll_event(&ev)){
                 frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
                                                      &ev,
