@@ -81,7 +81,7 @@ Current programs:
 - `programs/shell`: signed user shell, login, launcher, diagnostics, network commands, session commands.
 - `programs/hello`: cube/demo graphics program and performance test scaffold.
 - `programs/webbrowser`: text-mode web browser using DNS/socket/TCP/HTTPS syscalls.
-- `programs/game`: QOS wrapper/Makefile for a private local game build; private source/assets remain ignored by git.
+- `programs/game`: optional QOS wrapper/Makefile for a private local game build; missing private source/assets are skipped so public QOS builds still work.
 
 SD filenames:
 
@@ -330,7 +330,7 @@ cp boot/config.txt /media/sd/config.txt
 
 ## Build A User Program
 
-Use `programs/hello` as the public example. `programs/game/` keeps a tracked QOS wrapper, but its private source/assets are ignored so commercial game code can live there without being pushed to the public QOS repo.
+Use `programs/hello` as the public example. `programs/game/` keeps a tracked QOS wrapper, but its private source/assets are ignored so commercial game code can live there without being pushed to the public QOS repo. If private game sources are absent, `make -C programs/game` and `tools/build_and_copy_sd.sh` skip `GAME.BIN` instead of failing the OS build.
 
 Developer-signed app:
 
@@ -356,6 +356,8 @@ make -C programs/game clean all \
 cp programs/game/game.bin /media/sd/GAME.BIN
 cp programs/game/game.pqs /media/sd/GAME.PQS
 ```
+
+Full public SD builds do not require these private files. The build/copy script removes stale `GAME.BIN`/`GAME.PQS` from the SD card when no fresh game binary is produced.
 
 The game wrapper force-includes QOS stdio compatibility:
 

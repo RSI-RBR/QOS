@@ -22,6 +22,7 @@ QF2D_ROOT="${QF2D_ROOT:-}"
 GAME_SRC_DIR="${GAME_SRC_DIR:-}"
 GAME_IMG_DIR="${GAME_IMG_DIR:-}"
 GAME_BUILD_SRC_DIR=""
+GAME_ENTRY_NAME="${GAME_ENTRY:-gui_main.c}"
 
 TMP_CA_DIR=""
 cleanup_tmp_ca() {
@@ -144,14 +145,23 @@ make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY
 make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 if [[ -d programs/game && -f programs/game/Makefile ]]; then
+  make -C programs/game clean
   if [[ -n "$GAME_SRC_DIR" ]]; then
-    GAME_BUILD_SRC_DIR="build/private_game_src"
-    rm -rf "$GAME_BUILD_SRC_DIR"
-    mkdir -p "$GAME_BUILD_SRC_DIR/src"
-    cp -a "$GAME_SRC_DIR"/. "$GAME_BUILD_SRC_DIR/src/"
-    make -C programs/game clean all GAME_SRC_DIR="../../$GAME_BUILD_SRC_DIR/src" GAME_ENTRY="${GAME_ENTRY:-gui_main.c}" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+    if [[ -f "$GAME_SRC_DIR/$GAME_ENTRY_NAME" ]]; then
+      GAME_BUILD_SRC_DIR="build/private_game_src"
+      rm -rf "$GAME_BUILD_SRC_DIR"
+      mkdir -p "$GAME_BUILD_SRC_DIR/src"
+      cp -a "$GAME_SRC_DIR"/. "$GAME_BUILD_SRC_DIR/src/"
+      make -C programs/game all GAME_SRC_DIR="../../$GAME_BUILD_SRC_DIR/src" GAME_ENTRY="$GAME_ENTRY_NAME" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+    else
+      echo "Private game entry not found: $GAME_SRC_DIR/$GAME_ENTRY_NAME"
+      echo "Skipping GAME.BIN build."
+    fi
+  elif [[ -f "programs/game/src/$GAME_ENTRY_NAME" ]]; then
+    make -C programs/game all GAME_ENTRY="$GAME_ENTRY_NAME" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
   else
-    make -C programs/game clean all GAME_ENTRY="${GAME_ENTRY:-gui_main.c}" OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
+    echo "No private game sources found; skipping GAME.BIN build."
+    echo "Provide QF2D_ROOT or GAME_SRC_DIR to build the private game."
   fi
 else
   echo "programs/game not present; skipping private game build."

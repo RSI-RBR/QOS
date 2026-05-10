@@ -3,6 +3,8 @@ QOS Game Wrapper
 
 This folder is the public QOS-side build wrapper for QuantumFront2D.
 Private game source and assets should stay local and ignored by git.
+If the private sources are not present, this wrapper deliberately skips
+`GAME.BIN` so public QOS builds can still complete.
 
 How it works:
 - QOS enters user programs through `program_main(void)`.
@@ -50,9 +52,9 @@ QF2D_ROOT=/path/to/QuantumFront2D GAME_ENTRY=new_gui_entry.c SD_MOUNT=/media/sd 
 
 The script stages private source under ignored `build/private_game_src`, builds
 `GAME.BIN`, copies `GAME.BIN`/`GAME.PQS`, and copies BMP assets into
-`QF2D/IMG` on the SD card. If a fresh game binary is not produced, it removes
-stale `GAME.BIN` from the SD card so the shell cannot accidentally launch an
-older build.
+`QF2D/IMG` on the SD card. If private source is absent or a fresh game binary
+is not produced, it skips the game and removes stale `GAME.BIN`/`GAME.PQS`
+from the SD card so the shell cannot accidentally launch an older build.
 
 Notes:
 - `programs/game/src`, `programs/game/img`, and build outputs are ignored.

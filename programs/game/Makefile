@@ -13,6 +13,7 @@ GAME_EXCLUDE_PATHS = $(addprefix $(GAME_SRC_DIR)/,$(GAME_ENTRY) $(GAME_EXCLUDE))
 GAME_SOURCES ?= $(filter-out $(GAME_EXCLUDE_PATHS),$(GAME_ALL_SOURCES))
 GAME_BUILD_OBJS = $(patsubst $(GAME_SRC_DIR)/%.c,game_%.o,$(GAME_SOURCES))
 GAME_ENTRY_OBJ = game_entry.o
+GAME_AVAILABLE = $(and $(wildcard $(GAME_ENTRY_SOURCE)),$(GAME_ALL_SOURCES))
 USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o qos_random.o
 SDL_OBJS = sdl_shim.o
 SIGN_KEY ?=
@@ -29,7 +30,13 @@ ifeq ($(QOS_PROFILE_ASSETS),1)
 GAME_CFLAGS += -DQOS_PROFILE_ASSETS=1
 endif
 
+ifeq ($(strip $(GAME_AVAILABLE)),)
+all:
+	@echo "No private game sources found; skipping GAME.BIN build."
+	@echo "Expected $(GAME_ENTRY_SOURCE), or pass GAME_SRC_DIR=/path/to/QuantumFront2D/src."
+else
 all: game.bin
+endif
 
 program_main.o: program_main.c
 	$(CC) $(COMMON_CFLAGS) -c program_main.c -o program_main.o
