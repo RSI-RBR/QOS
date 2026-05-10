@@ -535,6 +535,9 @@ static void cmd_run(void){
     qos_puts("Program queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
+    if (qos_display_create_graphics(pid) < 0){
+        qos_puts("Warning: graphics session create failed.\n");
+    }
     if (qos_display_switch_graphics(pid) != 0){
         qos_puts("Warning: graphics switch request failed.\n");
     }
@@ -585,13 +588,11 @@ static void cmd_game(void){
     qos_puts("Game queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
+    if (qos_display_create_graphics(pid) < 0){
+        qos_puts("Warning: graphics session create failed.\n");
+    }
     if (qos_display_switch_graphics(pid) != 0){
         qos_puts("Warning: graphics switch request failed.\n");
-    }
-    if (qos_tty_set_owner(pid) != 0){
-        qos_puts("Warning: could not transfer TTY ownership.\n");
-    } else{
-        g_tty_owned = 0;
     }
 }
 
