@@ -25,9 +25,12 @@
 #define DMA_CS_RESET          (1u << 31)
 
 #define DMA_TI_TDMODE         (1u << 1)
+#define DMA_TI_WAIT_RESP      (1u << 3)
 #define DMA_TI_DEST_INC       (1u << 4)
+#define DMA_TI_DEST_WIDTH     (1u << 5)
 #define DMA_TI_SRC_INC        (1u << 8)
-#define DMA_TI_NO_WIDE_BURSTS (1u << 26)
+#define DMA_TI_SRC_WIDTH      (1u << 9)
+#define DMA_TI_BURST_LENGTH_SHIFT 12
 
 #define DMA_BUS_UNCACHED_BASE 0xC0000000UL
 #define DMA_TIMEOUT_BASE_LOOPS     2000000u
@@ -56,14 +59,48 @@ static unsigned int g_dma_last_cs = 0;
 static unsigned int g_dma_last_debug = 0;
 static unsigned int g_dma_transfer_count = 0;
 static unsigned int g_dma_last_bytes = 0;
+static unsigned int g_dma_last_clean_us = 0;
+static unsigned int g_dma_last_wait_us = 0;
+static unsigned int g_dma_last_total_us = 0;
 
 static void dma_barrier(void){
     asm volatile("dsb sy" : : : "memory");
 }
 
+static unsigned long dma_read_cntpct(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long dma_read_cntfrq(void){
+    unsigned long v;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned int dma_cycles_to_us(unsigned long cycles, unsigned long hz){
+    if (hz == 0UL){
+        return 0u;
+    }
+    return (unsigned int)(((unsigned long long)cycles * 1000000ULL) /
+                          (unsigned long long)hz);
+}
+
+static unsigned int dma_elapsed_us(unsigned long start_cycles){
+    return dma_cycles_to_us(dma_read_cntpct() - start_cycles, dma_read_cntfrq());
+}
+
 static unsigned int dma_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
     return (unsigned int)((addr & 0x3FFFFFFFUL) | DMA_BUS_UNCACHED_BASE);
+}
+
+static void dma_clear_channel_status(void){
+    DMA_CS = DMA_CS_END | DMA_CS_INT | DMA_CS_ERROR;
+    DMA_DEBUG = 0x7u;
+    DMA_CONBLK_AD = 0;
+    dma_barrier();
 }
 
 static void dma_reset_channel(void){
@@ -112,6 +149,9 @@ void dma_set_enabled(int enabled){
         g_dma_last_debug = 0;
         g_dma_transfer_count = 0;
         g_dma_last_bytes = 0;
+        g_dma_last_clean_us = 0;
+        g_dma_last_wait_us = 0;
+        g_dma_last_total_us = 0;
     } else{
         g_dma_enabled = 0;
         dma_reset_channel();
@@ -143,12 +183,54 @@ unsigned int dma_last_bytes(void){
     return g_dma_last_bytes;
 }
 
+unsigned int dma_last_clean_us(void){
+    return g_dma_last_clean_us;
+}
+
+unsigned int dma_last_wait_us(void){
+    return g_dma_last_wait_us;
+}
+
+unsigned int dma_last_total_us(void){
+    return g_dma_last_total_us;
+}
+
+static void dma_note_transfer_timing(unsigned int bytes,
+                                     unsigned int clean_us,
+                                     unsigned int wait_us,
+                                     unsigned int total_us,
+                                     int rc){
+    (void)bytes;
+    unsigned long irq = spin_lock_irqsave(&g_dma_lock);
+    g_dma_last_clean_us = clean_us;
+    g_dma_last_wait_us = wait_us;
+    g_dma_last_total_us = total_us;
+    (void)rc;
+    spin_unlock_irqrestore(&g_dma_lock, irq);
+}
+
+static int dma_wide_ok(unsigned int src_bus,
+                       unsigned int dst_bus,
+                       unsigned int txfr_len,
+                       unsigned int stride,
+                       unsigned int ti_extra){
+    if (((src_bus | dst_bus) & 0xFu) != 0u){
+        return 0;
+    }
+    if (ti_extra & DMA_TI_TDMODE){
+        unsigned int row_bytes = txfr_len & 0xFFFFu;
+        unsigned int dst_stride = (stride >> 16) & 0xFFFFu;
+        unsigned int src_stride = stride & 0xFFFFu;
+        return (((row_bytes | dst_stride | src_stride) & 0xFu) == 0u) ? 1 : 0;
+    }
+    return (txfr_len & 0xFu) == 0u ? 1 : 0;
+}
+
 static int dma_start_memcopy(unsigned int src_bus,
                              unsigned int dst_bus,
                              unsigned int txfr_len,
                              unsigned int stride,
                              unsigned int ti_extra){
-    unsigned long irq = spin_lock_irqsave(&g_dma_lock);
     unsigned int timeout_loops = DMA_TIMEOUT_BASE_LOOPS;
     unsigned int transfer_bytes = txfr_len;
 
@@ -165,12 +247,21 @@ static int dma_start_memcopy(unsigned int src_bus,
                             : (unsigned int)scaled;
     }
 
-    dma_reset_channel();
+    spin_lock(&g_dma_lock);
+    if (DMA_CS & DMA_CS_ACTIVE){
+        dma_reset_channel();
+    } else{
+        dma_clear_channel_status();
+    }
 
     g_dma_cb.ti = DMA_TI_DEST_INC |
                   DMA_TI_SRC_INC |
-                  DMA_TI_NO_WIDE_BURSTS |
+                  DMA_TI_WAIT_RESP |
+                  (8u << DMA_TI_BURST_LENGTH_SHIFT) |
                   ti_extra;
+    if (dma_wide_ok(src_bus, dst_bus, txfr_len, stride, ti_extra)){
+        g_dma_cb.ti |= DMA_TI_SRC_WIDTH | DMA_TI_DEST_WIDTH;
+    }
     g_dma_cb.source_ad = src_bus;
     g_dma_cb.dest_ad = dst_bus;
     g_dma_cb.txfr_len = txfr_len;
@@ -194,6 +285,7 @@ static int dma_start_memcopy(unsigned int src_bus,
              (8u << DMA_CS_PRIORITY_SHIFT) |
              (8u << DMA_CS_PANIC_PRIORITY_SHIFT);
 
+    unsigned long wait_start = dma_read_cntpct();
     int rc = -1;
     for (unsigned int i = 0; i < timeout_loops; i++){
         unsigned int cs = DMA_CS;
@@ -205,7 +297,11 @@ static int dma_start_memcopy(unsigned int src_bus,
             rc = 0;
             break;
         }
+        if ((i & 0x3FFu) == 0u){
+            asm volatile("yield" : : : "memory");
+        }
     }
+    g_dma_last_wait_us = dma_elapsed_us(wait_start);
 
     if (rc != 0){
         g_dma_last_cs = DMA_CS;
@@ -220,7 +316,7 @@ static int dma_start_memcopy(unsigned int src_bus,
         dma_barrier();
     }
 
-    spin_unlock_irqrestore(&g_dma_lock, irq);
+    spin_unlock(&g_dma_lock);
     return rc;
 }
 
@@ -236,8 +332,17 @@ int dma_memcpy_to_bus(unsigned int dst_bus, const void* src, unsigned int bytes)
     }
 
     dma_init();
+    unsigned long total_start = dma_read_cntpct();
+    unsigned long clean_start = dma_read_cntpct();
     clean_data_cache_range((unsigned long)src, bytes);
-    return dma_start_memcopy(dma_bus_address(src), dst_bus, bytes, 0u, 0u);
+    unsigned int clean_us = dma_elapsed_us(clean_start);
+    int rc = dma_start_memcopy(dma_bus_address(src), dst_bus, bytes, 0u, 0u);
+    dma_note_transfer_timing(bytes,
+                             clean_us,
+                             g_dma_last_wait_us,
+                             dma_elapsed_us(total_start),
+                             rc);
+    return rc;
 }
 
 int dma_memcpy_2d_to_bus(unsigned int dst_bus,
@@ -263,13 +368,22 @@ int dma_memcpy_2d_to_bus(unsigned int dst_bus,
 
     unsigned long src_total = ((unsigned long)(row_bytes + src_stride) * (unsigned long)(rows - 1u)) +
                               (unsigned long)row_bytes;
+    unsigned long total_start = dma_read_cntpct();
+    unsigned long clean_start = dma_read_cntpct();
     clean_data_cache_range((unsigned long)src, src_total);
+    unsigned int clean_us = dma_elapsed_us(clean_start);
 
-    return dma_start_memcopy(dma_bus_address(src),
-                             dst_bus,
-                             (rows << 16) | row_bytes,
-                             ((dst_stride & 0xFFFFu) << 16) | (src_stride & 0xFFFFu),
-                             DMA_TI_TDMODE);
+    int rc = dma_start_memcopy(dma_bus_address(src),
+                               dst_bus,
+                               (rows << 16) | row_bytes,
+                               ((dst_stride & 0xFFFFu) << 16) | (src_stride & 0xFFFFu),
+                               DMA_TI_TDMODE);
+    dma_note_transfer_timing((unsigned int)src_total,
+                             clean_us,
+                             g_dma_last_wait_us,
+                             dma_elapsed_us(total_start),
+                             rc);
+    return rc;
 }
 
 int dma_memcpy_2d(void* dst,

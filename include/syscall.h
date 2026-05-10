@@ -110,7 +110,10 @@ enum {
     SYS_FILE_PROFILE_RESET = 86,
     SYS_FILE_PROFILE_DUMP = 87,
     SYS_DMA_TRANSFER_COUNT = 88,
-    SYS_DMA_LAST_BYTES = 89
+    SYS_DMA_LAST_BYTES = 89,
+    SYS_DMA_LAST_CLEAN_US = 90,
+    SYS_DMA_LAST_WAIT_US = 91,
+    SYS_DMA_LAST_TOTAL_US = 92
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -369,6 +372,18 @@ static inline unsigned int qos_dma_transfer_count(void){
 
 static inline unsigned int qos_dma_last_bytes(void){
     return (unsigned int)qos_syscall0(SYS_DMA_LAST_BYTES);
+}
+
+static inline unsigned int qos_dma_last_clean_us(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_LAST_CLEAN_US);
+}
+
+static inline unsigned int qos_dma_last_wait_us(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_LAST_WAIT_US);
+}
+
+static inline unsigned int qos_dma_last_total_us(void){
+    return (unsigned int)qos_syscall0(SYS_DMA_LAST_TOTAL_US);
 }
 
 static inline void qos_security_log_dump(void){

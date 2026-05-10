@@ -9,6 +9,9 @@ unsigned int dma_last_cs(void);
 unsigned int dma_last_debug(void);
 unsigned int dma_transfer_count(void);
 unsigned int dma_last_bytes(void);
+unsigned int dma_last_clean_us(void);
+unsigned int dma_last_wait_us(void);
+unsigned int dma_last_total_us(void);
 int dma_memcpy_to_bus(unsigned int dst_bus, const void* src, unsigned int bytes);
 int dma_memcpy_2d_to_bus(unsigned int dst_bus,
                          unsigned int dst_stride,
