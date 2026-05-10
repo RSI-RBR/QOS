@@ -1,23 +1,31 @@
 #include "gpu2d.h"
 #include "display.h"
+#include "v3d.h"
 
 static unsigned int g_gpu2d_blit_count = 0u;
+static unsigned int g_gpu2d_clear_count = 0u;
 static unsigned int g_gpu2d_fallback_count = 0u;
 static unsigned int g_gpu2d_unsupported_count = 0u;
 
 unsigned int gpu2d_status(void){
-    /*
-     * This is the stable ABI layer for future VideoCore/2D acceleration.
-     * Today it intentionally reports no accelerated blit capability, so SDL
-     * keeps using its current userspace direct-framebuffer renderer.
-     */
-    return QOS_GPU2D_STATUS_READY |
-           QOS_GPU2D_STATUS_BACKEND_SOFT |
-           QOS_GPU2D_CAP_SOFTWARE_FALLBACK;
+    qos_v3d_status_t st;
+    unsigned int status = QOS_GPU2D_STATUS_READY |
+                          QOS_GPU2D_STATUS_BACKEND_SOFT |
+                          QOS_GPU2D_CAP_SOFTWARE_FALLBACK;
+    if (v3d_get_status(&st) == 0 &&
+        (st.flags & QOS_V3D_FLAG_SCRATCH_OK)){
+        status |= QOS_GPU2D_STATUS_BACKEND_HW |
+                  QOS_GPU2D_CAP_ACCEL_CLEAR;
+    }
+    return status;
 }
 
 unsigned int gpu2d_blit_count(void){
     return g_gpu2d_blit_count;
+}
+
+unsigned int gpu2d_clear_count(void){
+    return g_gpu2d_clear_count;
 }
 
 unsigned int gpu2d_fallback_count(void){
@@ -73,4 +81,23 @@ int gpu2d_blit_rgba_for_pid(int pid, const qos_gpu2d_blit_t* blit){
         g_gpu2d_fallback_count++;
     }
     return rc;
+}
+
+int gpu2d_clear_for_pid(int pid, unsigned int color){
+    int session_id = display_get_for_pid(pid);
+    display_session_t info;
+    if (session_id < 0 || display_get_info(session_id, &info) != 0){
+        return -1;
+    }
+    if (info.type != DISPLAY_GRAPHICS || !info.direct_framebuffer ||
+        info.direct_page >= 4u){
+        g_gpu2d_unsupported_count++;
+        return -2;
+    }
+    if (v3d_clear_page(info.direct_page, color, 0) != 0){
+        g_gpu2d_unsupported_count++;
+        return -2;
+    }
+    g_gpu2d_clear_count++;
+    return 0;
 }

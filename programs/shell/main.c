@@ -884,8 +884,11 @@ static void cmd_gpu2d(const char* mode){
     if (st & QOS_GPU2D_CAP_ACCEL_SCALE) qos_puts("scale ");
     if (st & QOS_GPU2D_CAP_ACCEL_ALPHA) qos_puts("alpha ");
     if (st & QOS_GPU2D_CAP_ACCEL_ROTATE) qos_puts("rotate ");
+    if (st & QOS_GPU2D_CAP_ACCEL_CLEAR) qos_puts("clear ");
     qos_puts("blits=");
     print_uint(qos_gpu2d_blit_count());
+    qos_puts(" clears=");
+    print_uint(qos_gpu2d_clear_count());
     qos_puts(" fallback=");
     print_uint(qos_gpu2d_fallback_count());
     qos_puts(" unsupported=");

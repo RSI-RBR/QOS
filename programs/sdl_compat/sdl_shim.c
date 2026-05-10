@@ -1885,6 +1885,11 @@ int SDL_RenderClear(SDL_Renderer* renderer){
      * frames as partial updates, which disables page flipping and drops back to
      * the slow full-screen copy path. Clear the whole graphics session instead.
      */
+    if (g_soft_fb_direct && qos_gpu2d_clear(renderer->draw_color) == 0){
+        g_sdl_profile.clear_calls++;
+        g_sdl_profile.clear_us += qos_get_time_us() - t0;
+        return 0;
+    }
     if (sdl_soft_backbuffer_valid(renderer)){
         sdl_soft_fill_rect(0u,
                            0u,

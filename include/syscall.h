@@ -137,7 +137,9 @@ enum {
     SYS_V3D_PROBE = 111,
     SYS_V3D_STATUS = 112,
     SYS_V3D_NOOP = 113,
-    SYS_V3D_CLEAR = 114
+    SYS_V3D_CLEAR = 114,
+    SYS_GPU2D_CLEAR = 115,
+    SYS_GPU2D_CLEAR_COUNT = 116
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -502,8 +504,16 @@ static inline int qos_gpu2d_blit_rgba(const qos_gpu2d_blit_t* blit){
     return (int)qos_syscall1(SYS_GPU2D_BLIT_RGBA, (unsigned long)blit);
 }
 
+static inline int qos_gpu2d_clear(unsigned int color){
+    return (int)qos_syscall1(SYS_GPU2D_CLEAR, (unsigned long)color);
+}
+
 static inline unsigned int qos_gpu2d_blit_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_BLIT_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_clear_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_CLEAR_COUNT);
 }
 
 static inline unsigned int qos_gpu2d_fallback_count(void){

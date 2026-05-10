@@ -348,9 +348,8 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out){
     return rc;
 }
 
-int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
+int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out){
     qos_v3d_status_t st;
-    unsigned int page = fb_get_display_page();
     unsigned int width = fb_get_width();
     unsigned int height = fb_get_height();
     unsigned int pitch = fb_get_pitch();
@@ -480,4 +479,8 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
         *out = st;
     }
     return rc;
+}
+
+int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
+    return v3d_clear_page(fb_get_display_page(), rgba, out);
 }
