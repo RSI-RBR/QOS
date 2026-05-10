@@ -159,9 +159,10 @@
 #define USB_HID_MOUSE_REPORT_LEN 4u
 #define USB_HID_ACTIVE_POLL_MS 12u
 #define USB_HID_IDLE_POLL_MS 32u
-#define USB_HID_MOUSE_ACTIVE_POLL_MS 16u
-#define USB_HID_MOUSE_IDLE_POLL_MS 32u
+#define USB_HID_MOUSE_ACTIVE_POLL_MS 24u
+#define USB_HID_MOUSE_IDLE_POLL_MS 96u
 #define USB_HID_ACTIVE_HOLD_MS 250u
+#define USB_HID_MOUSE_ACTIVE_HOLD_MS 120u
 #define USB_HID_MOD_LEFT_ALT  0x04u
 #define USB_HID_MOD_RIGHT_ALT 0x40u
 #define USB_HID_KEY_RIGHT_ARROW 0x4Fu
@@ -1007,7 +1008,7 @@ static void usb_hid_mouse_process_report(const unsigned char* report, unsigned i
         g_mouse.y = mouse_y;
         g_mouse.buttons = buttons;
         g_mouse.seq++;
-        g_mouse_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
+        g_mouse_active_until_tick = system_ticks + USB_HID_MOUSE_ACTIVE_HOLD_MS;
         spin_unlock_irqrestore(&g_usb_input_lock, irq);
 
         if (moved){

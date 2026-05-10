@@ -103,6 +103,20 @@ static int display_cursor_rect(int x,
     return 0;
 }
 
+static int display_rect_contains(unsigned int outer_x0,
+                                 unsigned int outer_y0,
+                                 unsigned int outer_x1,
+                                 unsigned int outer_y1,
+                                 unsigned int inner_x0,
+                                 unsigned int inner_y0,
+                                 unsigned int inner_x1,
+                                 unsigned int inner_y1){
+    return outer_x0 <= inner_x0 &&
+           outer_y0 <= inner_y0 &&
+           outer_x1 >= inner_x1 &&
+           outer_y1 >= inner_y1;
+}
+
 static int display_copy_rect_locked(const display_session_t* s,
                                     unsigned long dst_base,
                                     unsigned int dst_pitch,
@@ -908,15 +922,19 @@ int display_present_active_graphics(void){
                                     &ny0,
                                     &nx1,
                                     &ny1) == 0){
-                (void)display_copy_rect_locked(s,
-                                               dst_base,
-                                               dst_pitch,
-                                               dst_width,
-                                               dst_height,
-                                               nx0,
-                                               ny0,
-                                               nx1,
-                                               ny1);
+                if (!have_dirty ||
+                    !display_rect_contains(copy_x0, copy_y0, copy_x1, copy_y1,
+                                           nx0, ny0, nx1, ny1)){
+                    (void)display_copy_rect_locked(s,
+                                                   dst_base,
+                                                   dst_pitch,
+                                                   dst_width,
+                                                   dst_height,
+                                                   nx0,
+                                                   ny0,
+                                                   nx1,
+                                                   ny1);
+                }
             }
             display_draw_cursor_overlay(dst_base,
                                         dst_pitch,
