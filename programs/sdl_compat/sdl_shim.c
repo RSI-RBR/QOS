@@ -80,6 +80,8 @@ typedef struct sdl_qos_profile {
 } sdl_qos_profile_t;
 
 static sdl_qos_profile_t g_sdl_profile;
+static sdl_qos_profile_t g_sdl_auto_last_profile;
+static Uint64 g_sdl_auto_last_us = 0ull;
 
 static void sdl_profile_put_u64(Uint64 v){
     char tmp[32];
@@ -115,6 +117,10 @@ static void sdl_profile_note_bmp(int ok, int bytes, Uint64 read_us, Uint64 decod
     }
 }
 
+static Uint64 sdl_profile_delta(Uint64 now, Uint64 last){
+    return (now >= last) ? (now - last) : 0ull;
+}
+
 void SDL_QOS_ProfileReset(void){
     g_sdl_profile.bmp_calls = 0ull;
     g_sdl_profile.bmp_ok = 0ull;
@@ -144,6 +150,8 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.poll_us = 0ull;
     g_sdl_profile.present_calls = 0ull;
     g_sdl_profile.present_us = 0ull;
+    g_sdl_auto_last_profile = g_sdl_profile;
+    g_sdl_auto_last_us = qos_get_time_us();
     qos_file_profile_reset();
 }
 
@@ -231,6 +239,68 @@ void SDL_QOS_ProfileDump(void){
     qos_file_profile_dump();
     qos_puts("SDL profile: file profile complete\n");
 }
+
+#ifdef QOS_PROFILE_SDL_AUTO
+static void sdl_profile_auto_tick(void){
+    Uint64 now_us = qos_get_time_us();
+    if (g_sdl_auto_last_us != 0ull &&
+        now_us - g_sdl_auto_last_us < 1000000ull){
+        return;
+    }
+
+    Uint64 frames = sdl_profile_delta(g_sdl_profile.present_calls,
+                                      g_sdl_auto_last_profile.present_calls);
+    if (frames == 0ull){
+        g_sdl_auto_last_us = now_us;
+        g_sdl_auto_last_profile = g_sdl_profile;
+        return;
+    }
+
+    Uint64 clear_us = sdl_profile_delta(g_sdl_profile.clear_us,
+                                        g_sdl_auto_last_profile.clear_us);
+    Uint64 poll_us = sdl_profile_delta(g_sdl_profile.poll_us,
+                                       g_sdl_auto_last_profile.poll_us);
+    Uint64 render_us = sdl_profile_delta(g_sdl_profile.rendercopy_us,
+                                         g_sdl_auto_last_profile.rendercopy_us);
+    Uint64 present_us = sdl_profile_delta(g_sdl_profile.present_us,
+                                          g_sdl_auto_last_profile.present_us);
+    Uint64 direct = sdl_profile_delta(g_sdl_profile.rendercopy_direct_calls,
+                                      g_sdl_auto_last_profile.rendercopy_direct_calls);
+    Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
+                                       g_sdl_auto_last_profile.rendercopy_blitbuf_calls);
+    Uint64 row = sdl_profile_delta(g_sdl_profile.rendercopy_row_calls,
+                                   g_sdl_auto_last_profile.rendercopy_row_calls);
+    Uint64 fill = sdl_profile_delta(g_sdl_profile.rendercopy_fill_calls,
+                                    g_sdl_auto_last_profile.rendercopy_fill_calls);
+    Uint64 pixels = sdl_profile_delta(g_sdl_profile.rendercopy_pixels,
+                                      g_sdl_auto_last_profile.rendercopy_pixels);
+
+    qos_puts("SDL 1s: frames=");
+    sdl_profile_put_u64(frames);
+    qos_puts(" avg_us clear=");
+    sdl_profile_put_u64(clear_us / frames);
+    qos_puts(" poll=");
+    sdl_profile_put_u64(poll_us / frames);
+    qos_puts(" copy=");
+    sdl_profile_put_u64(render_us / frames);
+    qos_puts(" present=");
+    sdl_profile_put_u64(present_us / frames);
+    qos_puts(" paths d/b/r/f=");
+    sdl_profile_put_u64(direct);
+    qos_putc('/');
+    sdl_profile_put_u64(blitbuf);
+    qos_putc('/');
+    sdl_profile_put_u64(row);
+    qos_putc('/');
+    sdl_profile_put_u64(fill);
+    qos_puts(" px=");
+    sdl_profile_put_u64(pixels);
+    qos_puts("\n");
+
+    g_sdl_auto_last_us = now_us;
+    g_sdl_auto_last_profile = g_sdl_profile;
+}
+#endif
 
 static Uint32 rgb_to_color(Uint8 r, Uint8 g, Uint8 b){
     return ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b;
@@ -1235,9 +1305,7 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     g_sdl_profile.present_calls++;
     g_sdl_profile.present_us += qos_get_time_us() - t0;
 #ifdef QOS_PROFILE_SDL_AUTO
-    if ((g_sdl_profile.present_calls % 300ull) == 0ull){
-        SDL_QOS_ProfileDump();
-    }
+    sdl_profile_auto_tick();
 #endif
 }
 
