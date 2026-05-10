@@ -1044,18 +1044,16 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
 
     /*
      * Quantum Front's common path is 256x256 BMP terrain/text glyph textures
-     * scaled down to tile-sized rectangles (for example 256 -> 32). The
-     * generic scaler below uses 32.32 fixed-point math per pixel, which is
-     * flexible but unnecessarily expensive for exact integer downscales.
+     * scaled down to tile-sized rectangles. Cache full-texture downscales so
+     * map scrolling copies prebuilt native rows instead of resampling every
+     * visible tile each frame.
      */
     if (flip == SDL_FLIP_NONE &&
-        sw >= dw && sh >= dh &&
-        dw > 0 && dh > 0 &&
-        (sw % dw) == 0 && (sh % dh) == 0){
+        sx == 0 && sy == 0 &&
+        sw == texture->w && sh == texture->h &&
+        dw <= texture->w && dh <= texture->h){
         const Uint32* cached_pixels = 0;
-        if (sx == 0 && sy == 0 &&
-            sw == texture->w && sh == texture->h &&
-            sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
+        if (sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
             for (int oy = visible_y0; oy < visible_y1; oy++){
                 int py = dy + oy;
                 if (py < 0 || py >= g_soft_fb_h){
@@ -1073,7 +1071,12 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
             g_sdl_profile.rendercopy_native_cached_scale_calls++;
             return 0;
         }
+    }
 
+    if (flip == SDL_FLIP_NONE &&
+        sw >= dw && sh >= dh &&
+        dw > 0 && dh > 0 &&
+        (sw % dw) == 0 && (sh % dh) == 0){
         int x_step_i = sw / dw;
         int y_step_i = sh / dh;
         for (int oy = visible_y0; oy < visible_y1; oy++){
@@ -2173,8 +2176,6 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
                                             const Uint32** out_pixels){
     Uint32 bytes;
     int slot;
-    int x_step_i;
-    int y_step_i;
 
     if (out_pixels){
         *out_pixels = 0;
@@ -2182,8 +2183,7 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
     if (!texture || !out_pixels || !texture->alive ||
         out_w <= 0 || out_h <= 0 ||
         texture->w <= 0 || texture->h <= 0 ||
-        out_w > texture->w || out_h > texture->h ||
-        (texture->w % out_w) != 0 || (texture->h % out_h) != 0){
+        out_w > texture->w || out_h > texture->h){
         return -1;
     }
     if ((Uint32)out_w > (0xFFFFFFFFu / (Uint32)out_h) / 4u){
@@ -2217,16 +2217,32 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
     if (!texture->native_scaled_valid[slot] ||
         texture->native_scaled_w[slot] != (Uint32)out_w ||
         texture->native_scaled_h[slot] != (Uint32)out_h){
-        x_step_i = texture->w / out_w;
-        y_step_i = texture->h / out_h;
+        unsigned long long x_step =
+            ((unsigned long long)(unsigned int)texture->w << 32) /
+            (unsigned int)out_w;
+        unsigned long long y_step =
+            ((unsigned long long)(unsigned int)texture->h << 32) /
+            (unsigned int)out_h;
+        unsigned long long y_acc = 0ull;
         for (int y = 0; y < out_h; y++){
+            unsigned int sy = (unsigned int)(y_acc >> 32);
+            if (sy >= (unsigned int)texture->h){
+                sy = (unsigned int)texture->h - 1u;
+            }
             const Uint32* src = texture->native_pixels +
-                                ((Uint32)(y * y_step_i) * (Uint32)texture->w);
+                                (sy * (Uint32)texture->w);
             Uint32* dst = texture->native_scaled_pixels[slot] +
                           ((Uint32)y * (Uint32)out_w);
+            unsigned long long x_acc = 0ull;
             for (int x = 0; x < out_w; x++){
-                dst[x] = src[x * x_step_i];
+                unsigned int sx = (unsigned int)(x_acc >> 32);
+                if (sx >= (unsigned int)texture->w){
+                    sx = (unsigned int)texture->w - 1u;
+                }
+                dst[x] = src[sx];
+                x_acc += x_step;
             }
+            y_acc += y_step;
         }
         texture->native_scaled_w[slot] = (Uint32)out_w;
         texture->native_scaled_h[slot] = (Uint32)out_h;
