@@ -502,6 +502,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU_STATUS:
         case SYS_GPU_FLIP_COUNT:
         case SYS_SYSTEM_STATUS:
+        case SYS_SYSTEM_SET_CLOCK:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_SECURITY_LOG_DUMP:
@@ -1532,6 +1533,17 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
                                                  &st,
                                                  sizeof(st)) == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_SYSTEM_SET_CLOCK: {
+            unsigned int clock_id = (unsigned int)frame[TF_X0];
+            unsigned int hz = (unsigned int)frame[TF_X1];
+            if (clock_id != 3u && clock_id != 4u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)mailbox_set_clock_rate(clock_id, hz);
             return frame_sp;
         }
 

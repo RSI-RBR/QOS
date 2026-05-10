@@ -146,7 +146,7 @@ static int parse_uint(const char* s, unsigned int* out){
             return -1;
         }
         v = (v * 10u) + (unsigned int)(c - '0');
-        if (v > 1000u){
+        if (v > 10000u){
             return -1;
         }
         n++;
@@ -461,6 +461,7 @@ static void cmd_help(void){
     qos_puts(" gpu on|off|status\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
+    qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
     qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -877,6 +878,70 @@ static void cmd_sysstat(void){
         if (st.throttled_flags & 0x80000u) qos_puts(" soft_temp_seen");
         qos_puts("\n");
     }
+}
+
+static void cmd_clock(const char* arg){
+    const char* p = arg;
+    while (p && *p == ' '){
+        p++;
+    }
+    if (!p || !*p || str_eq(p, "status")){
+        cmd_sysstat();
+        return;
+    }
+    if (str_eq(p, "fast")){
+        if (qos_system_set_clock(3u, 1200000000u) != 0){
+            qos_puts("clock fast failed.\n");
+            return;
+        }
+        qos_puts("ARM clock requested: 1200 MHz\n");
+        cmd_sysstat();
+        return;
+    }
+    if (str_eq(p, "normal")){
+        int ok = 0;
+        ok |= qos_system_set_clock(3u, 600000000u);
+        ok |= qos_system_set_clock(4u, 250000000u);
+        if (ok != 0){
+            qos_puts("clock normal partially failed.\n");
+        } else{
+            qos_puts("ARM/core clocks requested: normal\n");
+        }
+        cmd_sysstat();
+        return;
+    }
+
+    unsigned int clock_id = 0u;
+    unsigned int min_mhz = 0u;
+    unsigned int max_mhz = 0u;
+    if (str_starts_with(p, "arm ")){
+        clock_id = 3u;
+        min_mhz = 600u;
+        max_mhz = 1400u;
+        p += 4;
+    } else if (str_starts_with(p, "core ")){
+        clock_id = 4u;
+        min_mhz = 250u;
+        max_mhz = 500u;
+        p += 5;
+    } else{
+        qos_puts("Usage: clock status|fast|normal|arm <mhz>|core <mhz>\n");
+        return;
+    }
+    while (*p == ' '){
+        p++;
+    }
+    unsigned int mhz = 0u;
+    if (parse_uint(p, &mhz) != 0 || mhz < min_mhz || mhz > max_mhz){
+        qos_puts("Clock MHz out of safe range.\n");
+        return;
+    }
+    if (qos_system_set_clock(clock_id, mhz * 1000000u) != 0){
+        qos_puts("clock set failed.\n");
+        return;
+    }
+    qos_puts("Clock requested.\n");
+    cmd_sysstat();
 }
 
 static void cmd_securitylog(void){
@@ -1370,6 +1435,14 @@ static void execute_line(void){
         cmd_gfxstat(0);
     } else if (str_eq(g_buf, "sysstat")){
         cmd_sysstat();
+    } else if (str_starts_with(g_buf, "clock ")){
+        const char* p = g_buf + 6;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_clock(p);
+    } else if (str_eq(g_buf, "clock")){
+        cmd_clock("status");
     } else if (str_eq(g_buf, "securitylog")){
         cmd_securitylog();
     } else if (str_eq(g_buf, "clear")){

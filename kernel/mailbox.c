@@ -198,6 +198,31 @@ int mailbox_get_clock_rate(unsigned int clock_id, unsigned int* hz_out){
     return (*hz_out != 0u) ? 0 : -1;
 }
 
+int mailbox_set_clock_rate(unsigned int clock_id, unsigned int hz){
+    if (hz == 0u){
+        return -1;
+    }
+
+    mailbox_lock();
+    mbox[0] = 10 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00038002; // Set clock rate
+    mbox[3] = 12;
+    mbox[4] = 12;
+    mbox[5] = clock_id;
+    mbox[6] = hz;
+    mbox[7] = 0; // allow firmware turbo/voltage policy if configured
+    mbox[8] = 0;
+    mbox[9] = 0;
+
+    if (!mailbox_call_locked(MAILBOX_CHANNEL_PROP)){
+        mailbox_unlock();
+        return -1;
+    }
+    mailbox_unlock();
+    return 0;
+}
+
 int mailbox_get_temperature(unsigned int sensor_id, unsigned int* milli_c_out){
     if (!milli_c_out){
         return -1;

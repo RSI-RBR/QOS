@@ -60,6 +60,7 @@ typedef struct {
     unsigned long flip_us;
     unsigned long flip_set_us;
     unsigned long vsync_us;
+    unsigned long clean_us;
 } display_profile_t;
 
 static display_profile_t g_display_profile;
@@ -1182,7 +1183,12 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     unsigned long prof_start = display_read_cntpct();
     unsigned long flip_us = 0UL;
     unsigned long flip_set_us = 0UL;
+    unsigned long cursor_us = 0UL;
     unsigned long next_page = 0u;
+    usb_mouse_state_t mouse;
+    if (usb_host_get_mouse_state(&mouse) != 0){
+        mouse.present = 0;
+    }
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     display_session_t* s = &g_display_sessions[session_id];
@@ -1219,8 +1225,29 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     unsigned int previous_page = fb_get_display_page();
     unsigned long draw_base = fb_get_page_base(draw_page);
     if (draw_base && s->pitch > 0u && s->height > 0u){
+        if (mouse.present){
+            unsigned long cursor_start = display_read_cntpct();
+            display_draw_cursor_overlay(draw_base,
+                                        s->pitch,
+                                        s->width,
+                                        s->height,
+                                        mouse.x,
+                                        mouse.y,
+                                        mouse.buttons);
+            cursor_us += display_elapsed_us(cursor_start, prof_hz);
+            g_cursor_drawn = 1;
+            g_cursor_session_id = session_id;
+            g_cursor_x = mouse.x;
+            g_cursor_y = mouse.y;
+            g_cursor_seq = mouse.seq;
+            g_cursor_saved_valid = 0;
+        } else{
+            display_invalidate_cursor_locked();
+        }
+        unsigned long clean_start = display_read_cntpct();
         clean_data_cache_range(draw_base,
                                (unsigned long)s->pitch * (unsigned long)s->height);
+        g_display_profile.clean_us += display_elapsed_us(clean_start, prof_hz);
     }
     unsigned long flip_start = display_read_cntpct();
     if (fb_set_display_page(draw_page) == 0){
@@ -1261,6 +1288,7 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     g_display_profile.flip_us += flip_us;
     g_display_profile.flip_set_us += flip_set_us;
     g_display_profile.vsync_us += flip_us - flip_set_us;
+    g_display_profile.cursor_us += cursor_us;
     g_display_profile.no_work_calls++;
     unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
     g_display_profile.present_us += total_us;
@@ -1988,6 +2016,7 @@ void display_profile_reset(void){
     g_display_profile.flip_us = 0UL;
     g_display_profile.flip_set_us = 0UL;
     g_display_profile.vsync_us = 0UL;
+    g_display_profile.clean_us = 0UL;
     spin_unlock_irqrestore(&g_display_lock, irq);
 }
 
@@ -2040,5 +2069,7 @@ void display_profile_dump(void){
     klog_putdec(snap.flip_set_us);
     klog_puts(" vsync=");
     klog_putdec(snap.vsync_us);
+    klog_puts(" clean=");
+    klog_putdec(snap.clean_us);
     klog_puts("\n");
 }
