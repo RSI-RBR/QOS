@@ -1128,7 +1128,6 @@ int display_attach_direct_framebuffer_for_pid(int owner_pid,
                                               unsigned int page_b){
     int session_id = display_get_or_create_graphics_for_pid(owner_pid);
     if (session_id < 0 ||
-        page_a == page_b ||
         page_a >= fb_get_page_count() ||
         page_b >= fb_get_page_count()){
         return -1;
@@ -1195,8 +1194,7 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     display_session_t* s = &g_display_sessions[session_id];
     if (s->type != DISPLAY_GRAPHICS || !s->direct_framebuffer ||
         s->direct_page_a >= fb_get_page_count() ||
-        s->direct_page_b >= fb_get_page_count() ||
-        s->direct_page_a == s->direct_page_b){
+        s->direct_page_b >= fb_get_page_count()){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -1;
     }
@@ -1256,12 +1254,15 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
         unsigned long set_us = display_cycles_to_us(after_set - flip_start,
                                                     prof_hz);
         unsigned long vsync_start = display_read_cntpct();
-        /*
-         * With two framebuffer pages, the old visible page is the next draw
-         * page. Wait for vblank before giving it back to userspace so the app
-         * does not draw into a page the display is still scanning out.
-         */
-        (void)fb_wait_vsync();
+        if (s->direct_page_a != s->direct_page_b){
+            /*
+             * With double-buffered direct pages, the old visible page is the
+             * next draw page. Wait for vblank before giving it back to
+             * userspace so the app does not draw into a page the display is
+             * still scanning out.
+             */
+            (void)fb_wait_vsync();
+        }
         flip_set_us += set_us;
         flip_us += set_us + display_elapsed_us(vsync_start, prof_hz);
         g_display_gpu_flip_count++;
@@ -1273,10 +1274,14 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
         g_display_gpu_failure_count++;
     }
 
-    next_page = (draw_page == s->direct_page_a) ? s->direct_page_b : s->direct_page_a;
-    if (next_page == fb_get_display_page() && previous_page != draw_page &&
-        (previous_page == s->direct_page_a || previous_page == s->direct_page_b)){
-        next_page = previous_page;
+    if (s->direct_page_a == s->direct_page_b){
+        next_page = s->direct_page_a;
+    } else{
+        next_page = (draw_page == s->direct_page_a) ? s->direct_page_b : s->direct_page_a;
+        if (next_page == fb_get_display_page() && previous_page != draw_page &&
+            (previous_page == s->direct_page_a || previous_page == s->direct_page_b)){
+            next_page = previous_page;
+        }
     }
     s->direct_page = next_page;
     s->framebuffer = (void*)fb_get_page_base(next_page);

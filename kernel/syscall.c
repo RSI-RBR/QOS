@@ -813,6 +813,18 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 page_b = 2u;
                 map_first_page = 1u;
                 map_last_page = 2u;
+            } else if (page_count == 2u){
+                /*
+                 * Pi 3 commonly only gives us two pages. Keep page 0 reserved
+                 * for tty0 and expose page 1 as a single direct graphics page.
+                 * This is faster than the buffered upload path while avoiding
+                 * the old bug where a background game could draw over shell
+                 * text by writing into page 0.
+                 */
+                page = 1u;
+                page_b = 1u;
+                map_first_page = 1u;
+                map_last_page = 1u;
             }
 
             base = fb_get_page_base(page);
@@ -820,14 +832,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             map_size = size * ((unsigned long)(map_last_page - map_first_page) + 1UL);
 
             /*
-             * Direct userspace page flipping needs two graphics-only pages.
-             * With only two total HDMI pages, page 0 is also the text console,
-             * so a background graphics app can scribble over the shell after a
-             * session switch. Keep two-page systems on the safer per-session
-             * buffered path until the framebuffer allocator can reserve a
-             * dedicated text page plus two graphics pages.
+             * Direct userspace double-buffering needs two graphics-only pages.
+             * With only two total HDMI pages, page 0 is reserved for tty0 and
+             * page 1 becomes a single direct graphics page.
              */
-            if (!user_info || page_count < 3u || !base || !map_base ||
+            if (!user_info || page_count < 2u || !base || !map_base ||
                 pitch == 0u || width == 0u || height == 0u || size == 0UL ||
                 (map_base & 0xFFFUL) != 0UL || map_size < size){
                 frame[TF_X0] = (unsigned long)-2;
