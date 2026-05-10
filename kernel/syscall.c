@@ -796,7 +796,6 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
             int pid = process_current_pid();
             unsigned int page_count = fb_get_page_count();
-            unsigned int visible_page = fb_get_display_page();
             unsigned int page = 1u;
             unsigned int page_b = 2u;
             unsigned int map_first_page = 1u;
@@ -814,18 +813,21 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 page_b = 2u;
                 map_first_page = 1u;
                 map_last_page = 2u;
-            } else if (page_count == 2u){
-                page = (visible_page == 0u) ? 1u : 0u;
-                page_b = (page == 0u) ? 1u : 0u;
-                map_first_page = 0u;
-                map_last_page = 1u;
             }
 
             base = fb_get_page_base(page);
             map_base = fb_get_page_base(map_first_page);
             map_size = size * ((unsigned long)(map_last_page - map_first_page) + 1UL);
 
-            if (!user_info || page_count < 2u || !base || !map_base ||
+            /*
+             * Direct userspace page flipping needs two graphics-only pages.
+             * With only two total HDMI pages, page 0 is also the text console,
+             * so a background graphics app can scribble over the shell after a
+             * session switch. Keep two-page systems on the safer per-session
+             * buffered path until the framebuffer allocator can reserve a
+             * dedicated text page plus two graphics pages.
+             */
+            if (!user_info || page_count < 3u || !base || !map_base ||
                 pitch == 0u || width == 0u || height == 0u || size == 0UL ||
                 (map_base & 0xFFFUL) != 0UL || map_size < size){
                 frame[TF_X0] = (unsigned long)-2;
