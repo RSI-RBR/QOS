@@ -21,7 +21,7 @@
 #define DMA_CS_PANIC_PRIORITY_SHIFT 20
 #define DMA_CS_PRIORITY_SHIFT 16
 #define DMA_SAFE_PRIORITY 4u
-#define DMA_SAFE_BURST_LENGTH 0u
+#define DMA_SAFE_BURST_LENGTH 4u
 #define DMA_CS_DISDEBUG       (1u << 29)
 #define DMA_CS_ABORT          (1u << 30)
 #define DMA_CS_RESET          (1u << 31)

@@ -316,6 +316,20 @@ static int terminal_active_graphics_pid(void){
     return info.owner_pid;
 }
 
+static void terminal_uart_overlay_write(const char* s, unsigned long len){
+    if (!s){
+        return;
+    }
+    uart_send('\r');
+    uart_send(0x1B);
+    uart_send('[');
+    uart_send('2');
+    uart_send('K');
+    for (unsigned long i = 0; i < len; i++){
+        uart_send(s[i]);
+    }
+}
+
 void terminal_init(void){
     spinlock_init(&g_terminal_lock);
     spinlock_init(&g_terminal_render_lock);
@@ -652,6 +666,7 @@ int terminal_set_input_overlay_for_pid(int pid, const char* s, unsigned long len
     if (len > term->cols){
         len = term->cols;
     }
+    int mirror_uart = (term->flags & TERM_FLAG_UART) ? 1 : 0;
     unsigned int row = term->rows - 1u;
     for (unsigned int col = 0; col < term->cols; col++){
         term->overlay[col] = (col < len) ? (unsigned char)s[col] : ' ';
@@ -665,6 +680,9 @@ int terminal_set_input_overlay_for_pid(int pid, const char* s, unsigned long len
         term->cursor_col = 0u;
     }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (mirror_uart){
+        terminal_uart_overlay_write(s, len);
+    }
     terminal_render_rows_unlocked(term_id, row, row);
     return 0;
 }
@@ -680,6 +698,7 @@ int terminal_clear_input_overlay_for_pid(int pid){
         spin_unlock_irqrestore(&g_terminal_lock, irq);
         return -1;
     }
+    int mirror_uart = (term->flags & TERM_FLAG_UART) ? 1 : 0;
     unsigned int row = term->rows ? term->rows - 1u : 0u;
     term->overlay_active = 0;
     term->overlay_pid = -1;
@@ -692,6 +711,9 @@ int terminal_clear_input_overlay_for_pid(int pid){
         }
     }
     spin_unlock_irqrestore(&g_terminal_lock, irq);
+    if (mirror_uart){
+        terminal_uart_overlay_write("", 0u);
+    }
     if (row < TERM_MAX_ROWS){
         terminal_render_rows_unlocked(term_id, row, row);
     }

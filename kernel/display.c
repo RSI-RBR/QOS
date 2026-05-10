@@ -72,6 +72,49 @@ static unsigned long display_align_up(unsigned long v, unsigned long align){
     return (v + (align - 1UL)) & ~(align - 1UL);
 }
 
+static void display_fill_u32(unsigned int* dst, unsigned int color, unsigned long count){
+    if (!dst){
+        return;
+    }
+    while (count >= 8ul){
+        dst[0] = color;
+        dst[1] = color;
+        dst[2] = color;
+        dst[3] = color;
+        dst[4] = color;
+        dst[5] = color;
+        dst[6] = color;
+        dst[7] = color;
+        dst += 8;
+        count -= 8ul;
+    }
+    while (count--){
+        *dst++ = color;
+    }
+}
+
+static void display_copy_u32(unsigned int* dst, const unsigned int* src, unsigned long count){
+    if (!dst || !src){
+        return;
+    }
+    while (count >= 8ul){
+        dst[0] = src[0];
+        dst[1] = src[1];
+        dst[2] = src[2];
+        dst[3] = src[3];
+        dst[4] = src[4];
+        dst[5] = src[5];
+        dst[6] = src[6];
+        dst[7] = src[7];
+        dst += 8;
+        src += 8;
+        count -= 8ul;
+    }
+    while (count--){
+        *dst++ = *src++;
+    }
+}
+
 static int display_cursor_rect(int x,
                                int y,
                                unsigned int max_w,
@@ -220,9 +263,7 @@ static int display_copy_rect_locked(const display_session_t* s,
         unsigned int* dst = (unsigned int*)((unsigned char*)dst_base +
                                             ((unsigned long)(y0 + y) * dst_pitch) +
                                             row_offset);
-        for (unsigned int x = 0; x < copy_width; x++){
-            dst[x] = src[x];
-        }
+        display_copy_u32(dst, src, copy_width);
     }
     return 0;
 }
@@ -720,9 +761,7 @@ int display_clear_for_pid(int owner_pid, unsigned int color){
     for (unsigned int y = 0; y < s->height; y++){
         unsigned int* row = (unsigned int*)((unsigned char*)s->framebuffer +
                                             ((unsigned long)y * s->pitch));
-        for (unsigned int x = 0; x < s->width; x++){
-            row[x] = color;
-        }
+        display_fill_u32(row, color, s->width);
     }
     display_mark_full_dirty_locked(s);
     spin_unlock_irqrestore(&g_display_lock, irq);
@@ -759,9 +798,7 @@ int display_rect_for_pid(int owner_pid,
     for (unsigned int py = y; py < y + h; py++){
         unsigned int* row = (unsigned int*)((unsigned char*)s->framebuffer +
                                             ((unsigned long)py * s->pitch));
-        for (unsigned int px = x; px < x + w; px++){
-            row[px] = color;
-        }
+        display_fill_u32(row + x, color, w);
     }
     display_mark_rect_dirty_locked(s, x, y, w, h);
     spin_unlock_irqrestore(&g_display_lock, irq);
