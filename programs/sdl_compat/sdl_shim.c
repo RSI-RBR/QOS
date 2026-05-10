@@ -87,6 +87,8 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
+    Uint64 rendercopy_scaled_calls;
+    Uint64 rendercopy_generic_calls;
     Uint64 rendercopy_soft_calls;
     Uint64 rendercopy_pixels;
     Uint64 fill_calls;
@@ -170,6 +172,8 @@ static void sdl_profile_copy(sdl_qos_profile_t* dst, const sdl_qos_profile_t* sr
     dst->rendercopy_blitbuf_calls = src->rendercopy_blitbuf_calls;
     dst->rendercopy_row_calls = src->rendercopy_row_calls;
     dst->rendercopy_fill_calls = src->rendercopy_fill_calls;
+    dst->rendercopy_scaled_calls = src->rendercopy_scaled_calls;
+    dst->rendercopy_generic_calls = src->rendercopy_generic_calls;
     dst->rendercopy_soft_calls = src->rendercopy_soft_calls;
     dst->rendercopy_pixels = src->rendercopy_pixels;
     dst->fill_calls = src->fill_calls;
@@ -208,6 +212,8 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
+    g_sdl_profile.rendercopy_scaled_calls = 0ull;
+    g_sdl_profile.rendercopy_generic_calls = 0ull;
     g_sdl_profile.rendercopy_soft_calls = 0ull;
     g_sdl_profile.rendercopy_pixels = 0ull;
     g_sdl_profile.fill_calls = 0ull;
@@ -279,7 +285,11 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_row_calls);
     qos_puts(" fill=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_fill_calls);
-    qos_puts(" soft=");
+    qos_puts(" scaled=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_scaled_calls);
+    qos_puts(" generic=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_generic_calls);
+    qos_puts(" soft_total=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_soft_calls);
     qos_puts("\n");
 
@@ -383,6 +393,10 @@ static void sdl_profile_auto_tick(void){
                                    g_sdl_auto_last_profile.rendercopy_row_calls);
     Uint64 fill = sdl_profile_delta(g_sdl_profile.rendercopy_fill_calls,
                                     g_sdl_auto_last_profile.rendercopy_fill_calls);
+    Uint64 scaled = sdl_profile_delta(g_sdl_profile.rendercopy_scaled_calls,
+                                      g_sdl_auto_last_profile.rendercopy_scaled_calls);
+    Uint64 generic = sdl_profile_delta(g_sdl_profile.rendercopy_generic_calls,
+                                       g_sdl_auto_last_profile.rendercopy_generic_calls);
     Uint64 soft = sdl_profile_delta(g_sdl_profile.rendercopy_soft_calls,
                                     g_sdl_auto_last_profile.rendercopy_soft_calls);
     Uint64 pixels = sdl_profile_delta(g_sdl_profile.rendercopy_pixels,
@@ -436,7 +450,11 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(row);
     qos_puts(" fill=");
     sdl_profile_put_u64(fill);
-    qos_puts(" soft=");
+    qos_puts(" scaled=");
+    sdl_profile_put_u64(scaled);
+    qos_puts(" generic=");
+    sdl_profile_put_u64(generic);
+    qos_puts(" soft_total=");
     sdl_profile_put_u64(soft);
     qos_puts("\n");
 
@@ -858,6 +876,10 @@ static int sdl_i_min(int a, int b){
     return (a < b) ? a : b;
 }
 
+static Uint32 sdl_div255_u32(Uint32 v){
+    return ((v + 128u) * 257u) >> 16;
+}
+
 static int sdl_time_reached(Uint32 now, Uint32 target){
     return (int)(now - target) >= 0;
 }
@@ -1042,6 +1064,107 @@ static int sdl_soft_blit_rgba_unscaled_texture(SDL_Texture* texture,
             src += 4u;
             dst++;
         }
+    }
+
+    return 0;
+}
+
+static int sdl_soft_blit_rgba_scaled_texture(SDL_Texture* texture,
+                                             int sx,
+                                             int sy,
+                                             int sw,
+                                             int sh,
+                                             int dx,
+                                             int dy,
+                                             int dw,
+                                             int dh,
+                                             int visible_x0,
+                                             int visible_y0,
+                                             int visible_x1,
+                                             int visible_y1,
+                                             int flip){
+    if (!texture || !texture->pixels || !g_soft_fb ||
+        sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 ||
+        flip != SDL_FLIP_NONE ||
+        visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
+        return -2;
+    }
+
+    unsigned long long x_step = ((unsigned long long)(unsigned int)sw << 32) /
+                                (unsigned int)dw;
+    unsigned long long y_step = ((unsigned long long)(unsigned int)sh << 32) /
+                                (unsigned int)dh;
+    unsigned long long y_acc = (unsigned long long)(unsigned int)visible_y0 * y_step;
+    int color_identity = (texture->color_r == 255u &&
+                          texture->color_g == 255u &&
+                          texture->color_b == 255u);
+    int alpha_identity = (texture->alpha_mod == 255u);
+    int blend = (texture->blend_mode != SDL_BLENDMODE_NONE);
+
+    for (int oy = visible_y0; oy < visible_y1; oy++){
+        int py = dy + oy;
+        if (py < 0 || py >= g_soft_fb_h){
+            y_acc += y_step;
+            continue;
+        }
+
+        int tx_y = sy + (int)(y_acc >> 32);
+        if (tx_y < sy){
+            tx_y = sy;
+        } else if (tx_y >= sy + sh){
+            tx_y = sy + sh - 1;
+        }
+
+        unsigned long long x_acc = (unsigned long long)(unsigned int)visible_x0 * x_step;
+        Uint32* dst = (Uint32*)(g_soft_fb +
+                                ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                                ((unsigned long)(dx + visible_x0) * 4ul));
+
+        for (int ox = visible_x0; ox < visible_x1; ox++){
+            int tx_x = sx + (int)(x_acc >> 32);
+            if (tx_x < sx){
+                tx_x = sx;
+            } else if (tx_x >= sx + sw){
+                tx_x = sx + sw - 1;
+            }
+
+            const Uint8* sp = texture->pixels +
+                              ((unsigned long)tx_y * (unsigned long)texture->pitch) +
+                              ((unsigned long)tx_x * 4ul);
+            Uint32 sr = sp[0];
+            Uint32 sg = sp[1];
+            Uint32 sb = sp[2];
+            Uint32 sa = blend ? sp[3] : 255u;
+
+            if (!color_identity){
+                sr = sdl_div255_u32(sr * (Uint32)texture->color_r);
+                sg = sdl_div255_u32(sg * (Uint32)texture->color_g);
+                sb = sdl_div255_u32(sb * (Uint32)texture->color_b);
+            }
+            if (!alpha_identity && blend){
+                sa = sdl_div255_u32(sa * (Uint32)texture->alpha_mod);
+            }
+
+            if (sa != 0u){
+                if (!blend || sa >= 255u){
+                    *dst = (sr << 16) | (sg << 8) | sb;
+                } else{
+                    Uint32 ia = 255u - sa;
+                    Uint32 dc = *dst;
+                    Uint32 dr = (dc >> 16) & 0xFFu;
+                    Uint32 dg = (dc >> 8) & 0xFFu;
+                    Uint32 db = dc & 0xFFu;
+                    Uint32 orv = sdl_div255_u32((sr * sa) + (dr * ia));
+                    Uint32 ogv = sdl_div255_u32((sg * sa) + (dg * ia));
+                    Uint32 obv = sdl_div255_u32((sb * sa) + (db * ia));
+                    *dst = (orv << 16) | (ogv << 8) | obv;
+                }
+            }
+
+            dst++;
+            x_acc += x_step;
+        }
+        y_acc += y_step;
     }
 
     return 0;
@@ -1257,6 +1380,26 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         return 0;
     }
 
+    if (sdl_soft_blit_rgba_scaled_texture(texture,
+                                          sx,
+                                          sy,
+                                          sw,
+                                          sh,
+                                          dx,
+                                          dy,
+                                          dw,
+                                          dh,
+                                          visible_x0,
+                                          visible_y0,
+                                          visible_x1,
+                                          visible_y1,
+                                          flip) == 0){
+        g_sdl_profile.rendercopy_scaled_calls++;
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
+
+    g_sdl_profile.rendercopy_generic_calls++;
     for (int oy = visible_y0; oy < visible_y1; oy++){
         int py = dy + oy;
         if (py < 0 || py >= g_soft_fb_h){
