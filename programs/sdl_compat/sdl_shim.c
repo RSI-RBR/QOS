@@ -70,6 +70,13 @@ static int g_soft_fb_direct_inactive = 0;
 static int g_soft_fb_direct_checked = 0;
 static Uint32 g_native_scaled_cache_clock = 1u;
 
+static int sdl_soft_fill_rect_32_fast(unsigned int x,
+                                      unsigned int y,
+                                      unsigned int color);
+static int sdl_soft_blit_32x32_native_fast(int x,
+                                           int y,
+                                           const Uint32* src_pixels);
+
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
     Uint64 bmp_ok;
@@ -680,6 +687,10 @@ static void sdl_soft_fill_rect(unsigned int x,
     Uint32 packed = ((Uint32)r << 16) |
                     ((Uint32)g << 8) |
                     (Uint32)b;
+    if (w == 32u && h == 32u &&
+        sdl_soft_fill_rect_32_fast(x, y, packed) == 0){
+        return;
+    }
     for (unsigned int py = 0u; py < h; py++){
         Uint32* row = (Uint32*)(g_soft_fb +
                                 ((unsigned long)(y + py) * (unsigned long)g_soft_fb_pitch) +
@@ -851,13 +862,6 @@ static int sdl_queue_fill_rect(unsigned int x,
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
         return 0;
     }
-    if (g_soft_fb_enabled && g_soft_fb){
-        sdl_soft_fill_rect(x, y, w, h, color);
-        g_sdl_profile.fill_flushes++;
-        g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;
-        g_sdl_profile.fill_us += qos_get_time_us() - t0;
-        return 0;
-    }
     if (g_pending_fill_valid &&
         g_pending_fill_y == y &&
         g_pending_fill_h == h &&
@@ -868,6 +872,7 @@ static int sdl_queue_fill_rect(unsigned int x,
     }
 
     sdl_flush_pending_fill();
+    (void)t0;
     g_pending_fill_valid = 1;
     g_pending_fill_x = x;
     g_pending_fill_y = y;
@@ -1055,6 +1060,13 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
         dw <= texture->w && dh <= texture->h){
         const Uint32* cached_pixels = 0;
         if (sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
+            if (dw == 32 && dh == 32 &&
+                visible_x0 == 0 && visible_y0 == 0 &&
+                visible_x1 == 32 && visible_y1 == 32 &&
+                sdl_soft_blit_32x32_native_fast(dx, dy, cached_pixels) == 0){
+                g_sdl_profile.rendercopy_native_cached_scale_calls++;
+                return 0;
+            }
             for (int oy = visible_y0; oy < visible_y1; oy++){
                 int py = dy + oy;
                 if (py < 0 || py >= g_soft_fb_h){
@@ -2040,6 +2052,68 @@ static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len){
         *dst++ = *src++;
         len--;
     }
+}
+
+static int sdl_soft_fill_rect_32_fast(unsigned int x,
+                                      unsigned int y,
+                                      unsigned int color){
+    if (!g_soft_fb ||
+        x + 32u > (unsigned int)g_soft_fb_w ||
+        y + 32u > (unsigned int)g_soft_fb_h){
+        return -1;
+    }
+
+    Uint8* dst0 = g_soft_fb +
+                  ((unsigned long)y * (unsigned long)g_soft_fb_pitch) +
+                  ((unsigned long)x * 4ul);
+    if (((unsigned long)dst0 & 7ul) != 0ul){
+        return -1;
+    }
+
+    Uint64 pair = (Uint64)color | ((Uint64)color << 32);
+    for (unsigned int row = 0u; row < 32u; row++){
+        sdl_alias_u64* dst = (sdl_alias_u64*)(dst0 +
+                                              ((unsigned long)row *
+                                               (unsigned long)g_soft_fb_pitch));
+        dst[0] = pair;  dst[1] = pair;  dst[2] = pair;  dst[3] = pair;
+        dst[4] = pair;  dst[5] = pair;  dst[6] = pair;  dst[7] = pair;
+        dst[8] = pair;  dst[9] = pair;  dst[10] = pair; dst[11] = pair;
+        dst[12] = pair; dst[13] = pair; dst[14] = pair; dst[15] = pair;
+    }
+    g_soft_fb_dirty = 1;
+    return 0;
+}
+
+static int sdl_soft_blit_32x32_native_fast(int x,
+                                           int y,
+                                           const Uint32* src_pixels){
+    if (!g_soft_fb || !src_pixels ||
+        x < 0 || y < 0 ||
+        x + 32 > g_soft_fb_w ||
+        y + 32 > g_soft_fb_h){
+        return -1;
+    }
+
+    Uint8* dst0 = g_soft_fb +
+                  ((unsigned long)y * (unsigned long)g_soft_fb_pitch) +
+                  ((unsigned long)x * 4ul);
+    if ((((unsigned long)dst0 | (unsigned long)src_pixels) & 7ul) != 0ul){
+        return -1;
+    }
+
+    for (unsigned int row = 0u; row < 32u; row++){
+        sdl_alias_u64* dst = (sdl_alias_u64*)(dst0 +
+                                              ((unsigned long)row *
+                                               (unsigned long)g_soft_fb_pitch));
+        const sdl_alias_u64* src =
+            (const sdl_alias_u64*)(src_pixels + (row * 32u));
+        dst[0] = src[0];   dst[1] = src[1];   dst[2] = src[2];   dst[3] = src[3];
+        dst[4] = src[4];   dst[5] = src[5];   dst[6] = src[6];   dst[7] = src[7];
+        dst[8] = src[8];   dst[9] = src[9];   dst[10] = src[10]; dst[11] = src[11];
+        dst[12] = src[12]; dst[13] = src[13]; dst[14] = src[14]; dst[15] = src[15];
+    }
+    g_soft_fb_dirty = 1;
+    return 0;
 }
 
 static void sdl_zero_bytes(Uint8* dst, Uint32 len){
