@@ -9,9 +9,13 @@
 
 static unsigned int width = 1920;
 static unsigned int height = 1080;
+static unsigned int virtual_height = 1080;
 static unsigned int pitch;
 static unsigned int *fb;
 static unsigned long fb_bus;
+static unsigned long fb_size;
+static unsigned int fb_page_count = 1;
+static unsigned int fb_display_page = 0;
 //static unsigned char bytes_per_pixel = 4;
 
 static unsigned char dirty_map[MAX_HEIGHT][MAX_WIDTH];
@@ -27,6 +31,9 @@ static spinlock_t g_fb_lock;
 
 void fb_init(){
     spinlock_init(&g_fb_lock);
+    unsigned int requested_height = height;
+    unsigned int requested_virtual_height = requested_height * 2u;
+
     mbox[0] = 35 * 4;
     mbox[1] = 0;
 
@@ -40,7 +47,7 @@ void fb_init(){
     mbox[8] = 8;
     mbox[9] = 8;
     mbox[10] = width;
-    mbox[11] = height;
+    mbox[11] = requested_virtual_height;
 
     mbox[12] = 0x48005; // set depth
     mbox[13] = 4;
@@ -67,11 +74,13 @@ void fb_init(){
         fb_bus = (unsigned long)mbox[23];
         fb = (unsigned int*)((unsigned long)(fb_bus & 0x3FFFFFFF));
         pitch = mbox[19];
+        fb_size = (unsigned long)mbox[24];
         // Use actual dimensions returned by firmware, not only requested values.
         if (mbox[5] > 0 && mbox[6] > 0){
             width = mbox[5];
             height = mbox[6];
         }
+        virtual_height = mbox[11] ? mbox[11] : height;
         if (width > MAX_WIDTH || height > MAX_HEIGHT){
             uart_puts("FB dims exceed static buffers; clamping.\n");
             uart_puts("Reported width=");
@@ -86,12 +95,21 @@ void fb_init(){
                 height = MAX_HEIGHT;
             }
         }
+        if (height > 0u && virtual_height >= height * 2u &&
+            fb_size >= ((unsigned long)pitch * (unsigned long)height * 2ul)){
+            fb_page_count = 2u;
+        } else{
+            fb_page_count = 1u;
+        }
+        fb_display_page = 0u;
         uart_puts("FB active width=");
         uart_puthex(width);
         uart_puts(" height=");
         uart_puthex(height);
         uart_puts(" pitch=");
         uart_puthex(pitch);
+        uart_puts(" pages=");
+        uart_puthex(fb_page_count);
         uart_puts("\n");
     }
 }
@@ -266,4 +284,49 @@ unsigned long fb_get_base(){
 
 unsigned long fb_get_bus_base(){
     return fb_bus;
+}
+
+unsigned int fb_get_page_count(void){
+    return fb_page_count;
+}
+
+unsigned int fb_get_display_page(void){
+    return fb_display_page;
+}
+
+unsigned long fb_get_page_base(unsigned int page){
+    if (!fb || pitch == 0u || height == 0u || page >= fb_page_count){
+        return 0UL;
+    }
+    return ((unsigned long)fb) + ((unsigned long)page * (unsigned long)pitch * (unsigned long)height);
+}
+
+unsigned long fb_get_page_bus_base(unsigned int page){
+    if (fb_bus == 0UL || pitch == 0u || height == 0u || page >= fb_page_count){
+        return 0UL;
+    }
+    return fb_bus + ((unsigned long)page * (unsigned long)pitch * (unsigned long)height);
+}
+
+int fb_set_display_page(unsigned int page){
+    if (page >= fb_page_count || pitch == 0u || height == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x00048009; // set virtual framebuffer offset
+    mbox[3] = 8;
+    mbox[4] = 8;
+    mbox[5] = 0;
+    mbox[6] = page * height;
+    mbox[7] = 0;
+
+    int ok = mailbox_call(8);
+    if (ok){
+        fb_display_page = page;
+    }
+    spin_unlock_irqrestore(&g_fb_lock, irq);
+    return ok ? 0 : -1;
 }

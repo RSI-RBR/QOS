@@ -486,6 +486,9 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_DMA_LAST_CLEAN_US:
         case SYS_DMA_LAST_WAIT_US:
         case SYS_DMA_LAST_TOTAL_US:
+        case SYS_GPU_SET_ENABLED:
+        case SYS_GPU_STATUS:
+        case SYS_GPU_FLIP_COUNT:
         case SYS_SECURITY_LOG_DUMP:
         case SYS_PROCESS_DUMP:
         case SYS_REMOTE_LOGIN_STATS:
@@ -1286,6 +1289,18 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_DMA_LAST_TOTAL_US:
             frame[TF_X0] = (unsigned long)dma_last_total_us();
+            return frame_sp;
+
+        case SYS_GPU_SET_ENABLED:
+            frame[TF_X0] = (unsigned long)display_gpu_set_enabled(frame[TF_X0] ? 1 : 0);
+            return frame_sp;
+
+        case SYS_GPU_STATUS:
+            frame[TF_X0] = (unsigned long)display_gpu_status();
+            return frame_sp;
+
+        case SYS_GPU_FLIP_COUNT:
+            frame[TF_X0] = (unsigned long)display_gpu_flip_count();
             return frame_sp;
 
         case SYS_SECURITY_LOG_DUMP:

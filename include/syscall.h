@@ -115,7 +115,10 @@ enum {
     SYS_DMA_LAST_WAIT_US = 91,
     SYS_DMA_LAST_TOTAL_US = 92,
     SYS_TERM_SET_INPUT_LINE = 93,
-    SYS_TERM_CLEAR_INPUT_LINE = 94
+    SYS_TERM_CLEAR_INPUT_LINE = 94,
+    SYS_GPU_SET_ENABLED = 95,
+    SYS_GPU_STATUS = 96,
+    SYS_GPU_FLIP_COUNT = 97
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -394,6 +397,18 @@ static inline unsigned int qos_dma_last_wait_us(void){
 
 static inline unsigned int qos_dma_last_total_us(void){
     return (unsigned int)qos_syscall0(SYS_DMA_LAST_TOTAL_US);
+}
+
+static inline int qos_gpu_set_enabled(int enabled){
+    return (int)qos_syscall1(SYS_GPU_SET_ENABLED, (unsigned long)(enabled ? 1u : 0u));
+}
+
+static inline unsigned int qos_gpu_status(void){
+    return (unsigned int)qos_syscall0(SYS_GPU_STATUS);
+}
+
+static inline unsigned int qos_gpu_flip_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU_FLIP_COUNT);
 }
 
 static inline void qos_security_log_dump(void){

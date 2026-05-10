@@ -437,6 +437,7 @@ static void cmd_help(void){
     qos_puts(" chvt <0-3>\n");
     qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" dma on|off|status\n");
+    qos_puts(" gpu on|off|status\n");
     qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -762,6 +763,39 @@ static void cmd_dma(const char* mode){
         return;
     }
     qos_puts("Usage: dma on|off|status\n");
+}
+
+static void cmd_gpu(const char* mode){
+    unsigned int st;
+    if (!mode || !*mode || str_eq(mode, "status")){
+        st = qos_gpu_status();
+        qos_puts("gpu=");
+        qos_puts((st & 1u) ? "on" : "off");
+        qos_puts(" pageflip=");
+        qos_puts((st & 2u) ? "yes" : "no");
+        qos_puts(" scanout=");
+        qos_puts((st & 4u) ? "direct" : "buffered");
+        qos_puts(" failures=");
+        print_uint((st >> 16) & 0xFFFFu);
+        qos_puts(" flips=");
+        print_uint(qos_gpu_flip_count());
+        qos_puts("\n");
+        return;
+    }
+    if (str_eq(mode, "on")){
+        if (qos_gpu_set_enabled(1) == 0){
+            qos_puts("gpu page-flip acceleration enabled.\n");
+        } else{
+            qos_puts("gpu page-flip unavailable on this framebuffer.\n");
+        }
+        return;
+    }
+    if (str_eq(mode, "off")){
+        (void)qos_gpu_set_enabled(0);
+        qos_puts("gpu acceleration disabled; graphics use buffered CPU present.\n");
+        return;
+    }
+    qos_puts("Usage: gpu on|off|status\n");
 }
 
 static void cmd_securitylog(void){
@@ -1237,6 +1271,14 @@ static void execute_line(void){
         cmd_dma(p);
     } else if (str_eq(g_buf, "dma")){
         cmd_dma("status");
+    } else if (str_starts_with(g_buf, "gpu ")){
+        const char* p = g_buf + 4;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_gpu(p);
+    } else if (str_eq(g_buf, "gpu")){
+        cmd_gpu("status");
     } else if (str_eq(g_buf, "securitylog")){
         cmd_securitylog();
     } else if (str_eq(g_buf, "clear")){

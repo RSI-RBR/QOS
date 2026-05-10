@@ -17,6 +17,8 @@ typedef struct {
     int active;
     void* framebuffer;
     unsigned long framebuffer_size;
+    void* backing_framebuffer;
+    unsigned long backing_framebuffer_size;
     void* allocation;
     unsigned long allocation_size;
     unsigned int dirty;
@@ -27,6 +29,8 @@ typedef struct {
     unsigned int width;
     unsigned int height;
     unsigned int pitch;
+    int scanout_attached;
+    unsigned int scanout_page;
 } display_session_t;
 
 void display_init(void);
@@ -60,5 +64,9 @@ int display_blit_rgba32_for_pid(int owner_pid,
 int display_present_for_pid(int owner_pid);
 int display_present_active_graphics(void);
 int display_present_active(void);
+int display_gpu_set_enabled(int enabled);
+unsigned int display_gpu_status(void);
+unsigned int display_gpu_flip_count(void);
+unsigned int display_gpu_failure_count(void);
 
 #endif
