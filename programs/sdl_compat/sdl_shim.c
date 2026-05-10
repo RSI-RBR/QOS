@@ -17,6 +17,9 @@
 #define SDL_SHIM_SOFT_BACKBUFFER 1
 #define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
 #define SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH 1
+#ifndef SDL_SHIM_ENABLE_GPU2D_LARGE_FILL
+#define SDL_SHIM_ENABLE_GPU2D_LARGE_FILL 0
+#endif
 #ifndef SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
 #define SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD 1
 #endif
@@ -683,6 +686,7 @@ static int sdl_gpu2d_try_large_fill_direct(unsigned int x,
                                            unsigned int w,
                                            unsigned int h,
                                            unsigned int color){
+#if SDL_SHIM_ENABLE_GPU2D_LARGE_FILL
     if (!g_soft_fb_direct || g_soft_fb_direct_inactive || !g_soft_fb ||
         g_soft_fb_w <= 0 || g_soft_fb_h <= 0 ||
         w == 0u || h == 0u){
@@ -742,6 +746,14 @@ static int sdl_gpu2d_try_large_fill_direct(unsigned int x,
     }
     g_soft_fb_dirty = 1;
     return 0;
+#else
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    (void)color;
+    return -1;
+#endif
 }
 
 static void surface_set_format(SDL_Surface* surface, Uint32 format){
