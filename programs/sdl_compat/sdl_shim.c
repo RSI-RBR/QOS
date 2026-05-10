@@ -72,6 +72,8 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_calls;
     Uint64 rendercopy_us;
     Uint64 rendercopy_direct_calls;
+    Uint64 rendercopy_gpu2d_calls;
+    Uint64 rendercopy_gpu2d_miss;
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
@@ -149,6 +151,8 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_calls = 0ull;
     g_sdl_profile.rendercopy_us = 0ull;
     g_sdl_profile.rendercopy_direct_calls = 0ull;
+    g_sdl_profile.rendercopy_gpu2d_calls = 0ull;
+    g_sdl_profile.rendercopy_gpu2d_miss = 0ull;
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
@@ -211,6 +215,10 @@ void SDL_QOS_ProfileDump(void){
 
     qos_puts("SDL render paths: direct=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_direct_calls);
+    qos_puts(" gpu2d=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_gpu2d_calls);
+    qos_puts(" gpu2d_miss=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_gpu2d_miss);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_blitbuf_calls);
     qos_puts(" row=");
@@ -311,6 +319,8 @@ static void sdl_profile_auto_tick(void){
                                                  g_sdl_auto_last_profile.present_kernel_us);
     Uint64 direct = sdl_profile_delta(g_sdl_profile.rendercopy_direct_calls,
                                       g_sdl_auto_last_profile.rendercopy_direct_calls);
+    Uint64 gpu2d = sdl_profile_delta(g_sdl_profile.rendercopy_gpu2d_calls,
+                                     g_sdl_auto_last_profile.rendercopy_gpu2d_calls);
     Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
                                        g_sdl_auto_last_profile.rendercopy_blitbuf_calls);
     Uint64 row = sdl_profile_delta(g_sdl_profile.rendercopy_row_calls,
@@ -350,8 +360,10 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(render_calls / frames);
     qos_putc('/');
     sdl_profile_put_u64(fill_calls / frames);
-    qos_puts(" paths d/b/r/f/s=");
+    qos_puts(" paths d/g/b/r/f/s=");
     sdl_profile_put_u64(direct);
+    qos_putc('/');
+    sdl_profile_put_u64(gpu2d);
     qos_putc('/');
     sdl_profile_put_u64(blitbuf);
     qos_putc('/');
@@ -621,6 +633,105 @@ static int sdl_queue_fill_rect(unsigned int x,
     g_pending_fill_h = h;
     g_pending_fill_color = color;
     return 0;
+}
+
+static unsigned int sdl_gpu2d_status_cached(void){
+    static int cached = 0;
+    static unsigned int status = 0u;
+    if (!cached){
+        status = qos_gpu2d_status();
+        cached = 1;
+    }
+    return status;
+}
+
+static int sdl_gpu2d_try_blit(SDL_Texture* texture,
+                              int sx,
+                              int sy,
+                              int sw,
+                              int sh,
+                              int dx,
+                              int dy,
+                              int dw,
+                              int dh,
+                              int visible_x0,
+                              int visible_y0,
+                              int visible_x1,
+                              int visible_y1,
+                              int flip){
+    qos_gpu2d_blit_t blit;
+    unsigned int status = sdl_gpu2d_status_cached();
+
+    if ((status & QOS_GPU2D_CAP_ACCEL_BLIT) == 0u){
+        return -2;
+    }
+    if (!texture || !texture->pixels || texture->w <= 0 || texture->h <= 0 ||
+        texture->pitch <= 0 || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0){
+        return -1;
+    }
+
+    /*
+     * Direct page-flip rendering writes straight into the mapped scanout page.
+     * The first GPU2D ABI targets the process display session instead, so do
+     * not mix the two until the hardware backend can target direct pages too.
+     */
+    if (g_soft_fb_direct){
+        return -2;
+    }
+
+    if (visible_x0 != 0 || visible_y0 != 0 || visible_x1 != dw || visible_y1 != dh){
+        return -2;
+    }
+    if ((sw != dw || sh != dh) && (status & QOS_GPU2D_CAP_ACCEL_SCALE) == 0u){
+        return -2;
+    }
+    if ((flip & SDL_FLIP_HORIZONTAL) && (status & QOS_GPU2D_CAP_ACCEL_BLIT) == 0u){
+        return -2;
+    }
+    if ((flip & SDL_FLIP_VERTICAL) && (status & QOS_GPU2D_CAP_ACCEL_BLIT) == 0u){
+        return -2;
+    }
+    if ((texture->alpha_mod != 255u ||
+         texture->color_r != 255u ||
+         texture->color_g != 255u ||
+         texture->color_b != 255u ||
+         (!texture->opaque && texture->blend_mode != SDL_BLENDMODE_NONE)) &&
+        (status & QOS_GPU2D_CAP_ACCEL_ALPHA) == 0u){
+        return -2;
+    }
+
+    blit.pixels = texture->pixels;
+    blit.texture_w = (unsigned int)texture->w;
+    blit.texture_h = (unsigned int)texture->h;
+    blit.pitch = (unsigned int)texture->pitch;
+    blit.src_x = (unsigned int)sx;
+    blit.src_y = (unsigned int)sy;
+    blit.src_w = (unsigned int)sw;
+    blit.src_h = (unsigned int)sh;
+    blit.dst_x = dx;
+    blit.dst_y = dy;
+    blit.dst_w = (unsigned int)dw;
+    blit.dst_h = (unsigned int)dh;
+    blit.color_rgba = ((Uint32)texture->color_r << 24) |
+                      ((Uint32)texture->color_g << 16) |
+                      ((Uint32)texture->color_b << 8) |
+                      (Uint32)texture->alpha_mod;
+    blit.flags = 0u;
+    if (texture->opaque){
+        blit.flags |= QOS_GPU2D_BLIT_OPAQUE;
+    }
+    if (texture->blend_mode != SDL_BLENDMODE_NONE){
+        blit.flags |= QOS_GPU2D_BLIT_BLEND;
+    }
+    if (flip & SDL_FLIP_HORIZONTAL){
+        blit.flags |= QOS_GPU2D_BLIT_FLIP_X;
+    }
+    if (flip & SDL_FLIP_VERTICAL){
+        blit.flags |= QOS_GPU2D_BLIT_FLIP_Y;
+    }
+
+    sdl_flush_pending_fill();
+    return qos_gpu2d_blit_rgba(&blit);
 }
 
 static int sdl_i_min(int a, int b){
@@ -2636,6 +2747,28 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
     }
     g_sdl_profile.rendercopy_pixels +=
         (Uint64)(visible_x1 - visible_x0) * (Uint64)(visible_y1 - visible_y0);
+
+    if (sdl_gpu2d_status_cached() & QOS_GPU2D_CAP_ACCEL_BLIT){
+        int gpu2d_rc = sdl_gpu2d_try_blit(texture,
+                                          sx,
+                                          sy,
+                                          sw,
+                                          sh,
+                                          dx,
+                                          dy,
+                                          dw,
+                                          dh,
+                                          visible_x0,
+                                          visible_y0,
+                                          visible_x1,
+                                          visible_y1,
+                                          flip);
+        if (gpu2d_rc == 0){
+            g_sdl_profile.rendercopy_gpu2d_calls++;
+            return 0;
+        }
+        g_sdl_profile.rendercopy_gpu2d_miss++;
+    }
 
     if (sdl_soft_backbuffer_valid(renderer)){
         if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&

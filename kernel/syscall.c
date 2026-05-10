@@ -25,6 +25,7 @@
 #include "fat32.h"
 #include "mmu.h"
 #include "mailbox.h"
+#include "gpu2d.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -36,6 +37,29 @@
 #define USER_BMP_FILE_MAX (4u * 1024u * 1024u)
 #define USER_BMP_PATH_MAX 96u
 #define GRAPHICS_USB_POLL_BURST_MAX 3u
+
+static int validate_gpu2d_blit_source(const qos_gpu2d_blit_t* blit){
+    if (!blit || !blit->pixels || blit->texture_w == 0u || blit->texture_h == 0u ||
+        blit->src_w == 0u || blit->src_h == 0u ||
+        blit->texture_w > 0x3FFFFFFFu ||
+        blit->pitch < blit->texture_w * 4u ||
+        blit->src_x + blit->src_w < blit->src_x ||
+        blit->src_y + blit->src_h < blit->src_y ||
+        blit->src_x + blit->src_w > blit->texture_w ||
+        blit->src_y + blit->src_h > blit->texture_h){
+        return -1;
+    }
+    unsigned long first = ((unsigned long)blit->src_y * (unsigned long)blit->pitch) +
+                          ((unsigned long)blit->src_x * 4ul);
+    unsigned long last = ((unsigned long)(blit->src_y + blit->src_h - 1u) *
+                         (unsigned long)blit->pitch) +
+                         ((unsigned long)(blit->src_x + blit->src_w) * 4ul);
+    unsigned long base = (unsigned long)blit->pixels;
+    if (last < first || (~0ul - base) < first){
+        return -1;
+    }
+    return process_user_range_readable((const void*)(base + first), last - first) ? 0 : -1;
+}
 
 // Trap frame layout in vectors.S
 #define TF_X0   0
@@ -425,6 +449,11 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_ATTACH_BUFFER:
         case SYS_FB_DIRECT_ACQUIRE:
         case SYS_FB_DIRECT_PRESENT:
+        case SYS_GPU2D_STATUS:
+        case SYS_GPU2D_BLIT_RGBA:
+        case SYS_GPU2D_BLIT_COUNT:
+        case SYS_GPU2D_FALLBACK_COUNT:
+        case SYS_GPU2D_UNSUPPORTED_COUNT:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -849,6 +878,35 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                  sizeof(info)) == 0) ? 0ul : (unsigned long)-1;
             return frame_sp;
         }
+
+        case SYS_GPU2D_STATUS:
+            frame[TF_X0] = (unsigned long)gpu2d_status();
+            return frame_sp;
+
+        case SYS_GPU2D_BLIT_RGBA: {
+            qos_gpu2d_blit_t blit;
+            const qos_gpu2d_blit_t* user_blit = (const qos_gpu2d_blit_t*)frame[TF_X0];
+            if (!user_blit ||
+                process_copy_from_user(&blit, user_blit, sizeof(blit)) != 0 ||
+                validate_gpu2d_blit_source(&blit) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)gpu2d_blit_rgba_for_pid(process_current_pid(), &blit);
+            return frame_sp;
+        }
+
+        case SYS_GPU2D_BLIT_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_blit_count();
+            return frame_sp;
+
+        case SYS_GPU2D_FALLBACK_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_fallback_count();
+            return frame_sp;
+
+        case SYS_GPU2D_UNSUPPORTED_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_unsupported_count();
+            return frame_sp;
 
         case SYS_TRY_GETC: {
             char c = 0;

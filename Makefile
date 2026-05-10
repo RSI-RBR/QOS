@@ -47,6 +47,7 @@ kernel/smp.c \
 kernel/mailbox.c \
 kernel/framebuffer.c \
 kernel/display.c \
+kernel/gpu2d.c \
 kernel/fb_console.c \
 kernel/console.c \
 kernel/terminal.c \

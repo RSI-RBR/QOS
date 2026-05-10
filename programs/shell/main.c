@@ -459,6 +459,7 @@ static void cmd_help(void){
     qos_puts(" termout both|uart|hdmi|status\n");
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
+    qos_puts(" gpu2d status\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
@@ -822,6 +823,39 @@ static void cmd_gpu(const char* mode){
         return;
     }
     qos_puts("Usage: gpu on|off|status\n");
+}
+
+static void cmd_gpu2d(const char* mode){
+    unsigned int st;
+    if (mode && *mode && !str_eq(mode, "status")){
+        qos_puts("Usage: gpu2d status\n");
+        return;
+    }
+
+    st = qos_gpu2d_status();
+    qos_puts("gpu2d status=");
+    print_hex32(st);
+    qos_puts(" backend=");
+    if (st & QOS_GPU2D_STATUS_BACKEND_HW){
+        qos_puts("hw");
+    } else if (st & QOS_GPU2D_STATUS_BACKEND_SOFT){
+        qos_puts("soft");
+    } else{
+        qos_puts("none");
+    }
+    qos_puts(" caps=");
+    if (st & QOS_GPU2D_CAP_SOFTWARE_FALLBACK) qos_puts("sw ");
+    if (st & QOS_GPU2D_CAP_ACCEL_BLIT) qos_puts("blit ");
+    if (st & QOS_GPU2D_CAP_ACCEL_SCALE) qos_puts("scale ");
+    if (st & QOS_GPU2D_CAP_ACCEL_ALPHA) qos_puts("alpha ");
+    if (st & QOS_GPU2D_CAP_ACCEL_ROTATE) qos_puts("rotate ");
+    qos_puts("blits=");
+    print_uint(qos_gpu2d_blit_count());
+    qos_puts(" fallback=");
+    print_uint(qos_gpu2d_fallback_count());
+    qos_puts(" unsupported=");
+    print_uint(qos_gpu2d_unsupported_count());
+    qos_puts("\n");
 }
 
 static void cmd_gfxstat(const char* mode){
@@ -1425,6 +1459,14 @@ static void execute_line(void){
         cmd_gpu(p);
     } else if (str_eq(g_buf, "gpu")){
         cmd_gpu("status");
+    } else if (str_starts_with(g_buf, "gpu2d ")){
+        const char* p = g_buf + 6;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_gpu2d(p);
+    } else if (str_eq(g_buf, "gpu2d")){
+        cmd_gpu2d("status");
     } else if (str_starts_with(g_buf, "gfxstat ")){
         const char* p = g_buf + 8;
         while (*p == ' '){

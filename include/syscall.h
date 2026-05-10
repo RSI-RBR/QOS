@@ -6,6 +6,7 @@
 #include "tls_session.h"
 #include "cyw43.h"
 #include "input_event.h"
+#include "gpu2d.h"
 
 #ifndef QOS_TERM_OUTPUT_UART
 #define QOS_TERM_OUTPUT_UART 1u
@@ -126,7 +127,12 @@ enum {
     SYS_FB_DIRECT_ACQUIRE = 102,
     SYS_FB_DIRECT_PRESENT = 103,
     SYS_SYSTEM_STATUS = 104,
-    SYS_SYSTEM_SET_CLOCK = 105
+    SYS_SYSTEM_SET_CLOCK = 105,
+    SYS_GPU2D_STATUS = 106,
+    SYS_GPU2D_BLIT_RGBA = 107,
+    SYS_GPU2D_BLIT_COUNT = 108,
+    SYS_GPU2D_FALLBACK_COUNT = 109,
+    SYS_GPU2D_UNSUPPORTED_COUNT = 110
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -481,6 +487,26 @@ static inline int qos_system_set_clock(unsigned int clock_id, unsigned int hz){
     return (int)qos_syscall2(SYS_SYSTEM_SET_CLOCK,
                              (unsigned long)clock_id,
                              (unsigned long)hz);
+}
+
+static inline unsigned int qos_gpu2d_status(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_STATUS);
+}
+
+static inline int qos_gpu2d_blit_rgba(const qos_gpu2d_blit_t* blit){
+    return (int)qos_syscall1(SYS_GPU2D_BLIT_RGBA, (unsigned long)blit);
+}
+
+static inline unsigned int qos_gpu2d_blit_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_BLIT_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_fallback_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_FALLBACK_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_unsupported_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_UNSUPPORTED_COUNT);
 }
 
 static inline void qos_display_profile_reset(void){
