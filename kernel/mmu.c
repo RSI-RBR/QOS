@@ -2,6 +2,7 @@
 #include "cpu.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "uart.h"
 
 #define L1_ENTRIES 512
 #define L2_ENTRIES 512
@@ -383,7 +384,12 @@ static void l3_fill_kernel_private(unsigned long* l3, unsigned long chunk_base){
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_NONE,
         .xn = PXN_BIT | UXN_BIT,
-        .ng = 0
+        /*
+         * Program-pool aliases must never be global TLB entries. A stale
+         * global EL1-only/XN block can otherwise outlive a context switch and
+         * make EL0 fault while fetching from its own user RX mapping.
+         */
+        .ng = NG_BIT
     };
     for (unsigned int i = 0; i < L3_ENTRIES; i++){
         l3[i] = page_desc(chunk_base + ((unsigned long)i * MMU_PAGE_SIZE), &kernel_private);
@@ -835,6 +841,81 @@ void mmu_switch_to_pid(int pid){
     spin_unlock_irqrestore(&g_mmu_lock, irq);
 }
 
+void mmu_debug_dump_current(unsigned long va){
+    unsigned int core = mmu_local_core_id();
+    unsigned long ttbr = mmu_read_ttbr0();
+    unsigned long* l1 = (unsigned long*)(ttbr & TTBR0_BADDR_MASK);
+
+    uart_puts("MMUDBG CORE=");
+    uart_puthex(core);
+    uart_puts(" TTBR0=");
+    uart_puthex((unsigned int)(ttbr & TTBR0_BADDR_MASK));
+    uart_puts(" ASID=");
+    uart_puthex((unsigned int)((ttbr & TTBR0_ASID_MASK) >> TTBR0_ASID_SHIFT));
+    uart_puts(" ACTIVE_PID=");
+    if (core < MMU_MAX_CORES && core_active_pid[core] >= 0){
+        uart_puthex((unsigned int)core_active_pid[core]);
+    } else{
+        uart_puts("FFFFFFFF");
+    }
+    uart_puts("\n");
+
+    if (!l1){
+        return;
+    }
+
+    unsigned long l1_idx = va >> 30;
+    if (l1_idx >= L1_ENTRIES){
+        uart_puts("MMUDBG VA outside L1\n");
+        return;
+    }
+
+    unsigned long l1d = l1[l1_idx];
+    uart_puts("MMUDBG VA=");
+    uart_puthex((unsigned int)va);
+    uart_puts(" L1[");
+    uart_puthex((unsigned int)l1_idx);
+    uart_puts("]=");
+    uart_puthex((unsigned int)l1d);
+    uart_puts("\n");
+    if ((l1d & DESC_VALID) == 0UL || (l1d & DESC_TABLE) == 0UL){
+        return;
+    }
+
+    unsigned long* l2 = (unsigned long*)(l1d & TTBR0_BADDR_MASK);
+    unsigned long l2_idx = (va >> 21) & 0x1FFUL;
+    unsigned long l2d = l2[l2_idx];
+    uart_puts("MMUDBG L2[");
+    uart_puthex((unsigned int)l2_idx);
+    uart_puts("]=");
+    uart_puthex((unsigned int)l2d);
+    uart_puts(" AP=");
+    uart_puthex((unsigned int)((l2d & AP_MASK) >> AP_SHIFT));
+    uart_puts(" NG=");
+    uart_puthex((unsigned int)((l2d & NG_BIT) ? 1u : 0u));
+    uart_puts(" XN=");
+    uart_puthex((unsigned int)((l2d & (PXN_BIT | UXN_BIT)) >> 53));
+    uart_puts("\n");
+    if ((l2d & DESC_KIND_MASK) != (DESC_VALID | DESC_TABLE)){
+        return;
+    }
+
+    unsigned long* l3 = (unsigned long*)(l2d & TTBR0_BADDR_MASK);
+    unsigned long l3_idx = (va >> 12) & 0x1FFUL;
+    unsigned long l3d = l3[l3_idx];
+    uart_puts("MMUDBG L3[");
+    uart_puthex((unsigned int)l3_idx);
+    uart_puts("]=");
+    uart_puthex((unsigned int)l3d);
+    uart_puts(" AP=");
+    uart_puthex((unsigned int)((l3d & AP_MASK) >> AP_SHIFT));
+    uart_puts(" NG=");
+    uart_puthex((unsigned int)((l3d & NG_BIT) ? 1u : 0u));
+    uart_puts(" XN=");
+    uart_puthex((unsigned int)((l3d & (PXN_BIT | UXN_BIT)) >> 53));
+    uart_puts("\n");
+}
+
 void mmu_prepare_return_to_pid(int pid){
     unsigned int core = mmu_local_core_id();
     unsigned long* table = l1_table;
@@ -919,7 +1000,12 @@ void mmu_map_kernel_private_region(unsigned long pa_start, unsigned long size){
         .sh = SH_INNER,
         .ap = AP_EL1_RW_EL0_NONE,
         .xn = PXN_BIT | UXN_BIT,
-        .ng = 0
+        /*
+         * This is used for the program pool. Keep it non-global so an EL1-only
+         * block translation cannot be reused while returning to an EL0 process
+         * that maps the same virtual address with per-process RX/RW pages.
+         */
+        .ng = NG_BIT
     };
     unsigned long irq = spin_lock_irqsave(&g_mmu_lock);
     apply_region_attrs_all_spaces(pa_start, size, &kernel_private);

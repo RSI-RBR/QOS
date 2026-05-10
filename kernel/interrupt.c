@@ -347,6 +347,9 @@ void* sync_exception_handler(void* frame_sp, unsigned long esr, unsigned long el
         uart_puts("\n");
     }
     dump_user_fault_layout(elr, far);
+    if (ec == 0x20UL || ec == 0x21UL || ec == 0x24UL || ec == 0x25UL){
+        mmu_debug_dump_current(elr);
+    }
     if (ec == 0x00UL){
         uart_puts("INSN@ELR=");
         unsigned long insn_addr = (elr & ~0x3UL);

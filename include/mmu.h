@@ -21,5 +21,6 @@ int mmu_process_space_create(int pid,
 void mmu_process_space_destroy(int pid);
 void mmu_switch_to_pid(int pid);
 void mmu_prepare_return_to_pid(int pid);
+void mmu_debug_dump_current(unsigned long va);
 
 #endif
