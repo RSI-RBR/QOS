@@ -2092,6 +2092,18 @@ static int usb_enumerate_hub_downstream_child(unsigned char hub_addr, unsigned s
                 hid_boot = 0;
             }
         }
+
+        if (hid_found && mouse_found && !g_kbd.present){
+            /*
+             * Many mice expose an extra HID keyboard/consumer-control interface
+             * for side buttons or macros. If we accept that first, the real
+             * keyboard on a later hub port never gets a chance to own g_kbd.
+             * Prefer the mouse role for mixed HID devices; a standalone
+             * keyboard port will be configured when its child is enumerated.
+             */
+            hid_found = 0;
+        }
+
         if (hid_found){
             g_hub_hid_candidates++;
             if (port < 32u){
