@@ -750,18 +750,39 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_fb_direct_info_t info;
             qos_fb_direct_info_t* user_info = (qos_fb_direct_info_t*)frame[TF_X0];
             int pid = process_current_pid();
+            unsigned int page_count = fb_get_page_count();
+            unsigned int visible_page = fb_get_display_page();
             unsigned int page = 1u;
             unsigned int page_b = 2u;
-            unsigned long base = fb_get_page_base(page);
+            unsigned int map_first_page = 1u;
+            unsigned int map_last_page = 2u;
+            unsigned long base;
+            unsigned long map_base;
             unsigned int pitch = fb_get_pitch();
             unsigned int width = fb_get_width();
             unsigned int height = fb_get_height();
             unsigned long size = (unsigned long)pitch * (unsigned long)height;
-            unsigned long map_size = size * 2UL;
+            unsigned long map_size;
 
-            if (!user_info || fb_get_page_count() < 3u || !base ||
+            if (page_count >= 3u){
+                page = 1u;
+                page_b = 2u;
+                map_first_page = 1u;
+                map_last_page = 2u;
+            } else if (page_count == 2u){
+                page = (visible_page == 0u) ? 1u : 0u;
+                page_b = (page == 0u) ? 1u : 0u;
+                map_first_page = 0u;
+                map_last_page = 1u;
+            }
+
+            base = fb_get_page_base(page);
+            map_base = fb_get_page_base(map_first_page);
+            map_size = size * ((unsigned long)(map_last_page - map_first_page) + 1UL);
+
+            if (!user_info || page_count < 2u || !base || !map_base ||
                 pitch == 0u || width == 0u || height == 0u || size == 0UL ||
-                (base & 0xFFFUL) != 0UL || map_size < size){
+                (map_base & 0xFFFUL) != 0UL || map_size < size){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -769,12 +790,12 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-            if (mmu_process_map_framebuffer(pid, base, map_size) != 0){
+            if (mmu_process_map_framebuffer(pid, map_base, map_size) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
 
-            unsigned int* fb_words = (unsigned int*)base;
+            unsigned int* fb_words = (unsigned int*)map_base;
             unsigned long words = map_size / sizeof(unsigned int);
             for (unsigned long i = 0; i < words; i++){
                 fb_words[i] = 0u;
@@ -812,7 +833,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             if (display_direct_present_for_pid(pid, &next_page) != 0 ||
-                next_page == 0u || next_page >= fb_get_page_count()){
+                next_page >= fb_get_page_count()){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
