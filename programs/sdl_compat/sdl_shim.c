@@ -13,6 +13,9 @@
 #define SDL_SHIM_REPEAT_INTERVAL_MS 33u
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 #define SDL_SHIM_RENDER_HINT_CHAR_16 2
+#define SDL_SHIM_QUAD_BATCH_MAX 4096u
+#define SDL_SHIM_QUAD_FILL32 1u
+#define SDL_SHIM_QUAD_BLIT32 2u
 #define SDL_SHIM_SPAN_MAX_RUNS_PER_TEXTURE 16384u
 #define SDL_SHIM_SOFT_BACKBUFFER 1
 #define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
@@ -70,12 +73,32 @@ static int g_soft_fb_direct_inactive = 0;
 static int g_soft_fb_direct_checked = 0;
 static Uint32 g_native_scaled_cache_clock = 1u;
 
+typedef struct sdl_quad_cmd {
+    Uint8 type;
+    unsigned char pad0;
+    unsigned short pad1;
+    int x;
+    int y;
+    Uint32 color;
+    const Uint32* src;
+} sdl_quad_cmd_t;
+
+static sdl_quad_cmd_t g_quad_batch[SDL_SHIM_QUAD_BATCH_MAX];
+static unsigned int g_quad_batch_count = 0u;
+
 static int sdl_soft_fill_rect_32_fast(unsigned int x,
                                       unsigned int y,
                                       unsigned int color);
 static int sdl_soft_blit_32x32_native_fast(int x,
                                            int y,
                                            const Uint32* src_pixels);
+static void sdl_flush_quad_batch(void);
+static int sdl_queue_quad_fill32(unsigned int x,
+                                 unsigned int y,
+                                 unsigned int color);
+static int sdl_queue_quad_blit32(int x,
+                                 int y,
+                                 const Uint32* src_pixels);
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -520,6 +543,7 @@ static void sdl_soft_backbuffer_destroy(void){
     if (g_soft_fb && !g_soft_fb_direct){
         free(g_soft_fb);
     }
+    g_quad_batch_count = 0u;
     g_soft_fb = 0;
     g_soft_fb_w = 0;
     g_soft_fb_h = 0;
@@ -536,6 +560,8 @@ static int sdl_direct_drop_frame(void){
     if (!g_soft_fb_direct){
         return -1;
     }
+    g_quad_batch_count = 0u;
+    g_pending_fill_valid = 0;
     g_soft_fb = 0;
     g_soft_fb_pitch = 0;
     g_soft_fb_direct_inactive = 1;
@@ -807,6 +833,7 @@ static void set_error(const char* msg){
 }
 
 static void sdl_flush_pending_fill(void){
+    sdl_flush_quad_batch();
     if (!g_pending_fill_valid){
         return;
     }
@@ -859,6 +886,11 @@ static int sdl_queue_fill_rect(unsigned int x,
         qos_gpu2d_fill_rect(x, y, w, h, color) == 0){
         g_sdl_profile.fill_flushes++;
         g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+        return 0;
+    }
+    if (w == 32u && h == 32u &&
+        sdl_queue_quad_fill32(x, y, color) == 0){
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
         return 0;
     }
@@ -1060,6 +1092,13 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
         dw <= texture->w && dh <= texture->h){
         const Uint32* cached_pixels = 0;
         if (sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
+            if (dw == 32 && dh == 32 &&
+                visible_x0 == 0 && visible_y0 == 0 &&
+                visible_x1 == 32 && visible_y1 == 32 &&
+                sdl_queue_quad_blit32(dx, dy, cached_pixels) == 0){
+                g_sdl_profile.rendercopy_native_cached_scale_calls++;
+                return 0;
+            }
             if (dw == 32 && dh == 32 &&
                 visible_x0 == 0 && visible_y0 == 0 &&
                 visible_x1 == 32 && visible_y1 == 32 &&
@@ -2116,6 +2155,115 @@ static int sdl_soft_blit_32x32_native_fast(int x,
     return 0;
 }
 
+static void sdl_flush_quad_batch(void){
+    if (g_quad_batch_count == 0u){
+        return;
+    }
+
+    Uint64 t0 = qos_get_time_us();
+    Uint64 fill_cmds = 0ull;
+    Uint64 fill_pixels = 0ull;
+    for (unsigned int i = 0u; i < g_quad_batch_count; i++){
+        const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
+        if (cmd->type == SDL_SHIM_QUAD_FILL32){
+            fill_cmds++;
+            fill_pixels += 32ull * 32ull;
+            if (sdl_soft_fill_rect_32_fast((unsigned int)cmd->x,
+                                           (unsigned int)cmd->y,
+                                           cmd->color) != 0){
+                sdl_soft_fill_rect((unsigned int)cmd->x,
+                                   (unsigned int)cmd->y,
+                                   32u,
+                                   32u,
+                                   cmd->color);
+            }
+        } else if (cmd->type == SDL_SHIM_QUAD_BLIT32){
+            (void)sdl_soft_blit_32x32_native_fast(cmd->x,
+                                                  cmd->y,
+                                                  cmd->src);
+        }
+    }
+
+    if (fill_cmds > 0ull){
+        g_sdl_profile.fill_flushes += fill_cmds;
+        g_sdl_profile.fill_pixels += fill_pixels;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+    }
+    g_quad_batch_count = 0u;
+}
+
+static int sdl_queue_quad_fill32(unsigned int x,
+                                 unsigned int y,
+                                 unsigned int color){
+    if (!g_soft_fb || g_soft_fb_w < 32 || g_soft_fb_h < 32 ||
+        x > ((unsigned int)g_soft_fb_w - 32u) ||
+        y > ((unsigned int)g_soft_fb_h - 32u)){
+        return -1;
+    }
+
+    Uint8* dst0 = g_soft_fb +
+                  ((unsigned long)y * (unsigned long)g_soft_fb_pitch) +
+                  ((unsigned long)x * 4ul);
+    if (((unsigned long)dst0 & 7ul) != 0ul){
+        return -1;
+    }
+
+    if (g_pending_fill_valid){
+        sdl_flush_pending_fill();
+    }
+    if (g_quad_batch_count >= SDL_SHIM_QUAD_BATCH_MAX){
+        sdl_flush_quad_batch();
+    }
+
+    sdl_quad_cmd_t* cmd = &g_quad_batch[g_quad_batch_count++];
+    cmd->type = SDL_SHIM_QUAD_FILL32;
+    cmd->pad0 = 0u;
+    cmd->pad1 = 0u;
+    cmd->x = (int)x;
+    cmd->y = (int)y;
+    cmd->color = color;
+    cmd->src = 0;
+    g_soft_fb_dirty = 1;
+    return 0;
+}
+
+static int sdl_queue_quad_blit32(int x,
+                                 int y,
+                                 const Uint32* src_pixels){
+    if (!g_soft_fb || !src_pixels ||
+        x < 0 || y < 0 ||
+        g_soft_fb_w < 32 || g_soft_fb_h < 32 ||
+        x > (g_soft_fb_w - 32) ||
+        y > (g_soft_fb_h - 32)){
+        return -1;
+    }
+
+    Uint8* dst0 = g_soft_fb +
+                  ((unsigned long)y * (unsigned long)g_soft_fb_pitch) +
+                  ((unsigned long)x * 4ul);
+    if ((((unsigned long)dst0 | (unsigned long)src_pixels) & 7ul) != 0ul){
+        return -1;
+    }
+
+    if (g_pending_fill_valid){
+        sdl_flush_pending_fill();
+    }
+    if (g_quad_batch_count >= SDL_SHIM_QUAD_BATCH_MAX){
+        sdl_flush_quad_batch();
+    }
+
+    sdl_quad_cmd_t* cmd = &g_quad_batch[g_quad_batch_count++];
+    cmd->type = SDL_SHIM_QUAD_BLIT32;
+    cmd->pad0 = 0u;
+    cmd->pad1 = 0u;
+    cmd->x = x;
+    cmd->y = y;
+    cmd->color = 0u;
+    cmd->src = src_pixels;
+    g_soft_fb_dirty = 1;
+    return 0;
+}
+
 static void sdl_zero_bytes(Uint8* dst, Uint32 len){
     Uint32 i;
     if (!dst){
@@ -2382,6 +2530,7 @@ static void sdl_texture_invalidate_spans(SDL_Texture* texture){
 
 static void sdl_texture_invalidate_native(SDL_Texture* texture){
     if (texture){
+        sdl_flush_pending_fill();
         texture->native_valid = 0;
         sdl_texture_free_scaled_native(texture);
         sdl_texture_invalidate_spans(texture);
@@ -2632,6 +2781,8 @@ int SDL_Init(Uint32 flags){
     (void)flags;
     SDL_QOS_ProfileReset();
     sdl_event_queue_reset();
+    g_quad_batch_count = 0u;
+    g_pending_fill_valid = 0;
     for (int i = 0; i < SDL_NUM_SCANCODES; i++){
         g_keyboard_state[i] = 0u;
         g_key_down_ms[i] = 0u;
@@ -2704,6 +2855,8 @@ int SDL_InitSubSystem(Uint32 flags){
 }
 
 void SDL_Quit(void){
+    g_quad_batch_count = 0u;
+    g_pending_fill_valid = 0;
     for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
         if (g_textures[i].alive && g_textures[i].owns_pixels){
             sdl_free_pixels(g_textures[i].pixels);
@@ -2899,6 +3052,7 @@ int SDL_RenderClear(SDL_Renderer* renderer){
         return -1;
     }
     if (g_soft_fb_direct && sdl_direct_refresh_frame() == 0){
+        g_quad_batch_count = 0u;
         g_pending_fill_valid = 0;
         g_sdl_profile.clear_calls++;
         g_sdl_profile.clear_us += qos_get_time_us() - t0;
@@ -3017,6 +3171,7 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
         int was_inactive = g_soft_fb_direct_inactive;
         int active = sdl_direct_refresh_frame();
         if (active <= 0 || was_inactive){
+            g_quad_batch_count = 0u;
             g_pending_fill_valid = 0;
             g_soft_fb_dirty = 0;
             g_soft_fb_direct_checked = 0;
@@ -3421,6 +3576,7 @@ void SDL_DestroyTexture(SDL_Texture* texture){
     if (!texture){
         return;
     }
+    sdl_flush_pending_fill();
     if (texture->alive && texture->owns_pixels){
         sdl_free_pixels(texture->pixels);
     }
@@ -4121,6 +4277,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
                                        texture->average_color);
         }
 #endif
+        sdl_flush_pending_fill();
         if (sdl_soft_blit_texture(texture,
                                   sx,
                                   sy,
