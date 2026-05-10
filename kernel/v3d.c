@@ -1,5 +1,6 @@
 #include "v3d.h"
 #include "cache.h"
+#include "framebuffer.h"
 #include "mailbox.h"
 #include "spinlock.h"
 
@@ -30,12 +31,23 @@
 #define V3D_BUS_UNCACHED_BASE 0xC0000000UL
 #define V3D_NOOP_CL_SIZE      64u
 #define V3D_NOOP_TIMEOUT      1000000u
+#define V3D_CLEAR_CL_SIZE     16384u
+#define V3D_TILE_SIZE         64u
+#define V3D_CL_HALT           0u
+#define V3D_CL_STORE_RESOLVED 24u
+#define V3D_CL_STORE_EOF      25u
+#define V3D_CL_RENDER_CONFIG  113u
+#define V3D_CL_CLEAR_COLORS   114u
+#define V3D_CL_TILE_COORDS    115u
+#define V3D_RENDER_RGBA8888_LINEAR (1u << 2)
 
 static qos_v3d_status_t g_v3d_status;
 static unsigned int g_v3d_probe_count = 0u;
 static unsigned int g_v3d_fail_count = 0u;
 static unsigned int g_v3d_noop_count = 0u;
+static unsigned int g_v3d_clear_count = 0u;
 static unsigned char g_v3d_noop_cl[V3D_NOOP_CL_SIZE] __attribute__((aligned(64)));
+static unsigned char g_v3d_clear_cl[V3D_CLEAR_CL_SIZE] __attribute__((aligned(64)));
 static spinlock_t g_v3d_lock;
 static int g_v3d_lock_ready = 0;
 
@@ -67,6 +79,30 @@ static unsigned int v3d_bus_address(const void* p){
     return (unsigned int)((addr & 0x3FFFFFFFUL) | V3D_BUS_UNCACHED_BASE);
 }
 
+static void v3d_emit_u8(unsigned char** pp, unsigned char* end, unsigned int v){
+    if (*pp < end){
+        *(*pp)++ = (unsigned char)v;
+    }
+}
+
+static void v3d_emit_u16(unsigned char** pp, unsigned char* end, unsigned int v){
+    v3d_emit_u8(pp, end, v);
+    v3d_emit_u8(pp, end, v >> 8);
+}
+
+static void v3d_emit_u24(unsigned char** pp, unsigned char* end, unsigned int v){
+    v3d_emit_u8(pp, end, v);
+    v3d_emit_u8(pp, end, v >> 8);
+    v3d_emit_u8(pp, end, v >> 16);
+}
+
+static void v3d_emit_u32(unsigned char** pp, unsigned char* end, unsigned int v){
+    v3d_emit_u8(pp, end, v);
+    v3d_emit_u8(pp, end, v >> 8);
+    v3d_emit_u8(pp, end, v >> 16);
+    v3d_emit_u8(pp, end, v >> 24);
+}
+
 static void v3d_read_register_snapshot(qos_v3d_status_t* st){
     st->ident0 = v3d_read(V3D_IDENT0);
     st->ident1 = v3d_read(V3D_IDENT1);
@@ -79,6 +115,22 @@ static void v3d_read_register_snapshot(qos_v3d_status_t* st){
     st->ct1ea = v3d_read(V3D_CT1EA);
     st->intctl = v3d_read(V3D_INTCTL);
     st->errstat = v3d_read(V3D_ERRSTAT);
+}
+
+static int v3d_wait_thread_stopped(unsigned int cs_reg){
+    for (unsigned int i = 0u; i < V3D_NOOP_TIMEOUT; i++){
+        unsigned int cs = v3d_read(cs_reg);
+        if ((cs & V3D_CTERR) != 0u){
+            return QOS_V3D_ERR_CONTROL;
+        }
+        if ((cs & V3D_CTRUN) == 0u){
+            return 0;
+        }
+        if ((i & 0x3FFu) == 0u){
+            asm volatile("yield" ::: "memory");
+        }
+    }
+    return QOS_V3D_ERR_TIMEOUT;
 }
 
 static int v3d_update_clock(qos_v3d_status_t* st, int allow_set){
@@ -129,9 +181,13 @@ int v3d_probe(qos_v3d_status_t* out){
     st.probe_count = ++g_v3d_probe_count;
     st.fail_count = g_v3d_fail_count;
     st.noop_count = g_v3d_noop_count;
+    st.clear_count = g_v3d_clear_count;
     st.last_job_thread = g_v3d_status.last_job_thread;
     st.last_job_start_bus = g_v3d_status.last_job_start_bus;
     st.last_job_end_bus = g_v3d_status.last_job_end_bus;
+    st.last_clear_color = g_v3d_status.last_clear_color;
+    st.last_clear_page = g_v3d_status.last_clear_page;
+    st.last_clear_tiles = g_v3d_status.last_clear_tiles;
     st.last_error = 0;
 
     clock_ok = (v3d_update_clock(&st, 1) == 0);
@@ -192,6 +248,7 @@ int v3d_get_status(qos_v3d_status_t* out){
         st.probe_count = g_v3d_probe_count;
         st.fail_count = g_v3d_fail_count;
         st.noop_count = g_v3d_noop_count;
+        st.clear_count = g_v3d_clear_count;
         st.last_error = QOS_V3D_ERR_NOT_PROBED;
         if (out){
             *out = st;
@@ -206,6 +263,7 @@ int v3d_get_status(qos_v3d_status_t* out){
     st.probe_count = g_v3d_probe_count;
     st.fail_count = g_v3d_fail_count;
     st.noop_count = g_v3d_noop_count;
+    st.clear_count = g_v3d_clear_count;
     v3d_store_status(&st);
     if (out){
         *out = st;
@@ -257,37 +315,14 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out){
 
     v3d_write(cs_reg, V3D_CTRSTA);
     v3d_barrier();
-    for (unsigned int i = 0u; i < V3D_NOOP_TIMEOUT; i++){
-        if ((v3d_read(cs_reg) & V3D_CTRUN) == 0u){
-            break;
-        }
-        if ((i & 0x3FFu) == 0u){
-            asm volatile("yield" ::: "memory");
-        }
-    }
+    (void)v3d_wait_thread_stopped(cs_reg);
 
     v3d_write(ca_reg, start_bus);
     v3d_barrier();
     v3d_write(ea_reg, end_bus);
     v3d_barrier();
 
-    for (unsigned int i = 0u; i < V3D_NOOP_TIMEOUT; i++){
-        unsigned int cs = v3d_read(cs_reg);
-        if ((cs & V3D_CTERR) != 0u){
-            rc = QOS_V3D_ERR_CONTROL;
-            break;
-        }
-        if ((cs & V3D_CTRUN) == 0u){
-            rc = 0;
-            break;
-        }
-        if (i + 1u == V3D_NOOP_TIMEOUT){
-            rc = QOS_V3D_ERR_TIMEOUT;
-        }
-        if ((i & 0x3FFu) == 0u){
-            asm volatile("yield" ::: "memory");
-        }
-    }
+    rc = v3d_wait_thread_stopped(cs_reg);
 
     (void)v3d_get_status(&st);
     st.last_job_thread = thread;
@@ -305,6 +340,128 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out){
     }
     v3d_store_status(&st);
 
+    spin_unlock(&g_v3d_lock);
+
+    if (out){
+        *out = st;
+    }
+    return rc;
+}
+
+int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
+    qos_v3d_status_t st;
+    unsigned int page = fb_get_display_page();
+    unsigned int width = fb_get_width();
+    unsigned int height = fb_get_height();
+    unsigned int pitch = fb_get_pitch();
+    unsigned long fb_base = fb_get_page_base(page);
+    unsigned long fb_bus = fb_get_page_bus_base(page);
+    unsigned int tiles_x;
+    unsigned int tiles_y;
+    unsigned char* p = g_v3d_clear_cl;
+    unsigned char* end = g_v3d_clear_cl + V3D_CLEAR_CL_SIZE;
+    unsigned int start_bus;
+    unsigned int end_bus;
+    int rc = 0;
+
+    if (width == 0u || height == 0u || pitch == 0u || fb_base == 0u || fb_bus == 0u){
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    if ((g_v3d_status.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        rc = v3d_probe(&st);
+        if (rc != 0){
+            if (out){ *out = st; }
+            return rc;
+        }
+    }
+
+    tiles_x = (width + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    tiles_y = (height + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    if (tiles_x == 0u || tiles_y == 0u || tiles_x > 255u || tiles_y > 255u){
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+
+    for (unsigned int i = 0u; i < V3D_CLEAR_CL_SIZE; i++){
+        g_v3d_clear_cl[i] = 0u;
+    }
+
+    v3d_emit_u8(&p, end, V3D_CL_RENDER_CONFIG);
+    v3d_emit_u32(&p, end, (unsigned int)fb_bus);
+    v3d_emit_u16(&p, end, width);
+    v3d_emit_u16(&p, end, height);
+    v3d_emit_u16(&p, end, V3D_RENDER_RGBA8888_LINEAR);
+
+    v3d_emit_u8(&p, end, V3D_CL_CLEAR_COLORS);
+    v3d_emit_u32(&p, end, rgba);
+    v3d_emit_u32(&p, end, rgba);
+    v3d_emit_u24(&p, end, 0u);
+    v3d_emit_u8(&p, end, 0u);
+    v3d_emit_u8(&p, end, 0u);
+
+    for (unsigned int y = 0u; y < tiles_y; y++){
+        for (unsigned int x = 0u; x < tiles_x; x++){
+            int last = (x + 1u == tiles_x && y + 1u == tiles_y);
+            v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
+            v3d_emit_u8(&p, end, x);
+            v3d_emit_u8(&p, end, y);
+            v3d_emit_u8(&p, end, last ? V3D_CL_STORE_EOF : V3D_CL_STORE_RESOLVED);
+        }
+    }
+    v3d_emit_u8(&p, end, V3D_CL_HALT);
+
+    if (p >= end){
+        spin_unlock(&g_v3d_lock);
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    clean_data_cache_range((unsigned long)g_v3d_clear_cl,
+                           (unsigned long)(p - g_v3d_clear_cl));
+    clean_invalidate_data_cache_range(fb_base, (unsigned long)pitch * (unsigned long)height);
+    start_bus = v3d_bus_address(g_v3d_clear_cl);
+    end_bus = start_bus + (unsigned int)(p - g_v3d_clear_cl);
+
+    v3d_write(V3D_CT1CS, V3D_CTRSTA);
+    v3d_barrier();
+    (void)v3d_wait_thread_stopped(V3D_CT1CS);
+    v3d_write(V3D_CT1CA, start_bus);
+    v3d_barrier();
+    v3d_write(V3D_CT1EA, end_bus);
+    v3d_barrier();
+
+    rc = v3d_wait_thread_stopped(V3D_CT1CS);
+    clean_invalidate_data_cache_range(fb_base, (unsigned long)pitch * (unsigned long)height);
+
+    (void)v3d_get_status(&st);
+    st.last_job_thread = 1u;
+    st.last_job_start_bus = start_bus;
+    st.last_job_end_bus = end_bus;
+    st.last_clear_color = rgba;
+    st.last_clear_page = page;
+    st.last_clear_tiles = tiles_x * tiles_y;
+    if (rc == 0){
+        st.clear_count = ++g_v3d_clear_count;
+    } else{
+        v3d_write(V3D_CT1CS, V3D_CTRSTA);
+        v3d_barrier();
+        v3d_read_register_snapshot(&st);
+        st.clear_count = g_v3d_clear_count;
+        st.last_error = rc;
+        st.fail_count = ++g_v3d_fail_count;
+    }
+    v3d_store_status(&st);
     spin_unlock(&g_v3d_lock);
 
     if (out){

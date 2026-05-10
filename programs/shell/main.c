@@ -155,6 +155,40 @@ static int parse_uint(const char* s, unsigned int* out){
     return 0;
 }
 
+static int parse_hex32_arg(const char* s, unsigned int* out){
+    unsigned int v = 0u;
+    unsigned int n = 0u;
+    if (!s || !*s || !out){
+        return -1;
+    }
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')){
+        s += 2;
+    }
+    if (!*s){
+        return -1;
+    }
+    while (*s){
+        unsigned int d;
+        char c = *s++;
+        if (c >= '0' && c <= '9'){
+            d = (unsigned int)(c - '0');
+        } else if (c >= 'a' && c <= 'f'){
+            d = (unsigned int)(c - 'a') + 10u;
+        } else if (c >= 'A' && c <= 'F'){
+            d = (unsigned int)(c - 'A') + 10u;
+        } else{
+            return -1;
+        }
+        if (n >= 8u){
+            return -1;
+        }
+        v = (v << 4) | d;
+        n++;
+    }
+    *out = v;
+    return 0;
+}
+
 static void secure_zero(char* buf, unsigned int n){
     volatile char* p = (volatile char*)buf;
     if (!p){
@@ -460,7 +494,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" gpu2d status\n");
-    qos_puts(" v3d probe|status|noop [0|1]\n");
+    qos_puts(" v3d probe|status|noop [0|1]|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
@@ -878,8 +912,19 @@ static void cmd_v3d(const char* mode){
             return;
         }
         rc = qos_v3d_noop(thread, &st);
+    } else if (str_starts_with(mode, "clear")){
+        unsigned int rgba = 0u;
+        const char* p = mode + 5;
+        while (*p == ' '){
+            p++;
+        }
+        if (parse_hex32_arg(p, &rgba) != 0){
+            qos_puts("Usage: v3d clear <rgba32hex>\n");
+            return;
+        }
+        rc = qos_v3d_clear(rgba, &st);
     } else{
-        qos_puts("Usage: v3d probe|status|noop [0|1]\n");
+        qos_puts("Usage: v3d probe|status|noop [0|1]|clear <rgba32hex>\n");
         return;
     }
 
@@ -915,6 +960,10 @@ static void cmd_v3d(const char* mode){
     print_hex32(st.ct0ca);
     qos_puts(" ca1=");
     print_hex32(st.ct1ca);
+    qos_puts(" ea0=");
+    print_hex32(st.ct0ea);
+    qos_puts(" ea1=");
+    print_hex32(st.ct1ea);
     qos_puts(" int=");
     print_hex32(st.intctl);
     qos_puts(" err=");
@@ -934,6 +983,8 @@ static void cmd_v3d(const char* mode){
     print_uint(st.fail_count);
     qos_puts(" noop=");
     print_uint(st.noop_count);
+    qos_puts(" clear=");
+    print_uint(st.clear_count);
     qos_puts(" last=");
     print_int(st.last_error);
     qos_puts("\n");
@@ -944,6 +995,12 @@ static void cmd_v3d(const char* mode){
     print_hex32(st.last_job_start_bus);
     qos_puts(" end=");
     print_hex32(st.last_job_end_bus);
+    qos_puts(" color=");
+    print_hex32(st.last_clear_color);
+    qos_puts(" page=");
+    print_uint(st.last_clear_page);
+    qos_puts(" tiles=");
+    print_uint(st.last_clear_tiles);
     qos_puts("\n");
 }
 

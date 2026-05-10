@@ -34,14 +34,19 @@ typedef struct {
     unsigned int probe_count;
     unsigned int fail_count;
     unsigned int noop_count;
+    unsigned int clear_count;
     unsigned int last_job_thread;
     unsigned int last_job_start_bus;
     unsigned int last_job_end_bus;
+    unsigned int last_clear_color;
+    unsigned int last_clear_page;
+    unsigned int last_clear_tiles;
     int last_error;
 } qos_v3d_status_t;
 
 int v3d_probe(qos_v3d_status_t* out);
 int v3d_get_status(qos_v3d_status_t* out);
 int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
+int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out);
 
 #endif

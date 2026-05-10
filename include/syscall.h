@@ -136,7 +136,8 @@ enum {
     SYS_GPU2D_UNSUPPORTED_COUNT = 110,
     SYS_V3D_PROBE = 111,
     SYS_V3D_STATUS = 112,
-    SYS_V3D_NOOP = 113
+    SYS_V3D_NOOP = 113,
+    SYS_V3D_CLEAR = 114
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -524,6 +525,12 @@ static inline int qos_v3d_status(qos_v3d_status_t* out_status){
 static inline int qos_v3d_noop(unsigned int thread, qos_v3d_status_t* out_status){
     return (int)qos_syscall2(SYS_V3D_NOOP,
                              (unsigned long)thread,
+                             (unsigned long)out_status);
+}
+
+static inline int qos_v3d_clear(unsigned int rgba, qos_v3d_status_t* out_status){
+    return (int)qos_syscall2(SYS_V3D_CLEAR,
+                             (unsigned long)rgba,
                              (unsigned long)out_status);
 }
 
