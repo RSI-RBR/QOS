@@ -2,6 +2,11 @@ arm64_bit=1
 enable_uart=1
 kernel=kernel8.img
 
+# The page-flip path asks firmware for several 1080p framebuffer pages.
+# Reserve enough GPU/framebuffer memory so firmware can grant more than the
+# default double buffer on Pi 3.
+gpu_mem=128
+
 # Force 1:1 output (no overscan/underscan border).
 disable_overscan=1
 overscan_left=0
@@ -14,3 +19,5 @@ hdmi_group=1
 hdmi_mode=16
 framebuffer_width=1920
 framebuffer_height=1080
+framebuffer_depth=32
+framebuffer_ignore_alpha=1

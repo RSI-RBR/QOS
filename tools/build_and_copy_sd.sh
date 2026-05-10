@@ -217,6 +217,7 @@ else
 fi
 
 echo "[4/5] Copying artifacts to $SD_MOUNT ..."
+if [[ -f boot/config.txt ]]; then cp -f boot/config.txt "$SD_MOUNT/config.txt"; fi
 cp -f kernel8.img "$SD_MOUNT/KERNEL8.IMG"
 if [[ -f kernel8.pqs ]]; then cp -f kernel8.pqs "$SD_MOUNT/KERNEL8.PQS"; fi
 cp -f "$KERNEL_FILE_SIG" "$SD_MOUNT/KERNFILE.SIG"
@@ -263,6 +264,7 @@ sync
 
 echo "Done."
 echo "Copied:"
+if [[ -f "$SD_MOUNT/config.txt" ]]; then echo "  $SD_MOUNT/config.txt"; fi
 echo "  $SD_MOUNT/KERNEL8.IMG"
 if [[ -f "$SD_MOUNT/KERNEL8.PQS" ]]; then echo "  $SD_MOUNT/KERNEL8.PQS"; fi
 if [[ -f "$SD_MOUNT/KERNFILE.SIG" ]]; then echo "  $SD_MOUNT/KERNFILE.SIG"; fi
