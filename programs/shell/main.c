@@ -497,7 +497,7 @@ static void cmd_help(void){
     qos_puts(" v3d probe|status|noop [0|1]|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
-    qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
+    qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>|v3d <mhz>\n");
     qos_puts(" securitylog\n");
     qos_puts(" ps\n");
     qos_puts(" validate\n");
@@ -1054,6 +1054,12 @@ static void cmd_sysstat(void){
     } else{
         qos_puts("?");
     }
+    qos_puts(" v3d=");
+    if (st.ok_mask & QOS_SYSTEM_STATUS_V3D_CLOCK_OK){
+        print_mhz(st.v3d_hz);
+    } else{
+        qos_puts("?");
+    }
     qos_puts(" throttled=");
     if (st.ok_mask & QOS_SYSTEM_STATUS_THROTTLE_OK){
         print_hex32(st.throttled_flags);
@@ -1086,11 +1092,15 @@ static void cmd_clock(const char* arg){
         return;
     }
     if (str_eq(p, "fast")){
-        if (qos_system_set_clock(3u, 1200000000u) != 0){
-            qos_puts("clock fast failed.\n");
-            return;
+        int ok = 0;
+        ok |= qos_system_set_clock(3u, 1200000000u);
+        ok |= qos_system_set_clock(4u, 400000000u);
+        ok |= qos_system_set_clock(5u, 400000000u);
+        if (ok != 0){
+            qos_puts("clock fast partially failed.\n");
+        } else{
+            qos_puts("ARM/core/V3D clocks requested: 1200/400/400 MHz\n");
         }
-        qos_puts("ARM clock requested: 1200 MHz\n");
         cmd_sysstat();
         return;
     }
@@ -1098,10 +1108,11 @@ static void cmd_clock(const char* arg){
         int ok = 0;
         ok |= qos_system_set_clock(3u, 600000000u);
         ok |= qos_system_set_clock(4u, 250000000u);
+        ok |= qos_system_set_clock(5u, 250000000u);
         if (ok != 0){
             qos_puts("clock normal partially failed.\n");
         } else{
-            qos_puts("ARM/core clocks requested: normal\n");
+            qos_puts("ARM/core/V3D clocks requested: normal\n");
         }
         cmd_sysstat();
         return;
@@ -1120,8 +1131,13 @@ static void cmd_clock(const char* arg){
         min_mhz = 250u;
         max_mhz = 500u;
         p += 5;
+    } else if (str_starts_with(p, "v3d ")){
+        clock_id = 5u;
+        min_mhz = 250u;
+        max_mhz = 500u;
+        p += 4;
     } else{
-        qos_puts("Usage: clock status|fast|normal|arm <mhz>|core <mhz>\n");
+        qos_puts("Usage: clock status|fast|normal|arm <mhz>|core <mhz>|v3d <mhz>\n");
         return;
     }
     while (*p == ' '){

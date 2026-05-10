@@ -957,6 +957,89 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
     return 0;
 }
 
+static int sdl_soft_blit_rgba_unscaled_texture(SDL_Texture* texture,
+                                               int sx,
+                                               int sy,
+                                               int sw,
+                                               int sh,
+                                               int dx,
+                                               int dy,
+                                               int dw,
+                                               int dh,
+                                               int visible_x0,
+                                               int visible_y0,
+                                               int visible_x1,
+                                               int visible_y1,
+                                               int flip){
+    if (!texture || !texture->pixels || !g_soft_fb ||
+        sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 ||
+        sw != dw || sh != dh ||
+        flip != SDL_FLIP_NONE ||
+        texture->alpha_mod != 255u ||
+        texture->color_r != 255u ||
+        texture->color_g != 255u ||
+        texture->color_b != 255u ||
+        visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
+        return -2;
+    }
+
+    for (int oy = visible_y0; oy < visible_y1; oy++){
+        int py = dy + oy;
+        if (py < 0 || py >= g_soft_fb_h){
+            continue;
+        }
+
+        const Uint8* src = texture->pixels +
+                           ((unsigned long)(sy + oy) * (unsigned long)texture->pitch) +
+                           ((unsigned long)(sx + visible_x0) * 4ul);
+        Uint32* dst = (Uint32*)(g_soft_fb +
+                                ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                                ((unsigned long)(dx + visible_x0) * 4ul));
+
+        if (texture->blend_mode == SDL_BLENDMODE_NONE){
+            for (int ox = visible_x0; ox < visible_x1; ox++){
+                (void)ox;
+                *dst++ = ((Uint32)src[0] << 16) |
+                         ((Uint32)src[1] << 8) |
+                         (Uint32)src[2];
+                src += 4u;
+            }
+            continue;
+        }
+
+        for (int ox = visible_x0; ox < visible_x1; ox++){
+            (void)ox;
+            Uint32 sa = src[3];
+            if (sa == 0u){
+                src += 4u;
+                dst++;
+                continue;
+            }
+
+            Uint32 sr = src[0];
+            Uint32 sg = src[1];
+            Uint32 sb = src[2];
+            if (sa >= 255u){
+                *dst = (sr << 16) | (sg << 8) | sb;
+            } else{
+                Uint32 dc = *dst;
+                Uint32 ia = 255u - sa;
+                Uint32 dr = (dc >> 16) & 0xFFu;
+                Uint32 dg = (dc >> 8) & 0xFFu;
+                Uint32 db = dc & 0xFFu;
+                Uint32 orv = (sr * sa + dr * ia + 127u) / 255u;
+                Uint32 ogv = (sg * sa + dg * ia + 127u) / 255u;
+                Uint32 obv = (sb * sa + db * ia + 127u) / 255u;
+                *dst = (orv << 16) | (ogv << 8) | obv;
+            }
+            src += 4u;
+            dst++;
+        }
+    }
+
+    return 0;
+}
+
 static int sdl_soft_blit_texture(SDL_Texture* texture,
                                  int sx,
                                  int sy,
@@ -1040,6 +1123,24 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         return 0;
     }
 #endif
+
+    if (sdl_soft_blit_rgba_unscaled_texture(texture,
+                                            sx,
+                                            sy,
+                                            sw,
+                                            sh,
+                                            dx,
+                                            dy,
+                                            dw,
+                                            dh,
+                                            visible_x0,
+                                            visible_y0,
+                                            visible_x1,
+                                            visible_y1,
+                                            flip) == 0){
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
 
     for (int oy = visible_y0; oy < visible_y1; oy++){
         int py = dy + oy;
@@ -1480,13 +1581,30 @@ static int sdl_translate_qos_event(const qos_event_t* qos_ev, SDL_Event* event){
     return 0;
 }
 
+typedef Uint32 sdl_alias_u32 __attribute__((__may_alias__));
+typedef Uint64 sdl_alias_u64 __attribute__((__may_alias__));
+
 static void sdl_copy_bytes(Uint8* dst, const Uint8* src, Uint32 len){
-    Uint32 i;
     if (!dst || !src){
         return;
     }
-    for (i = 0u; i < len; i++){
-        dst[i] = src[i];
+    while (len >= 8u &&
+           (((unsigned long)dst | (unsigned long)src) & 7ul) == 0ul){
+        *(sdl_alias_u64*)dst = *(const sdl_alias_u64*)src;
+        dst += 8u;
+        src += 8u;
+        len -= 8u;
+    }
+    while (len >= 4u &&
+           (((unsigned long)dst | (unsigned long)src) & 3ul) == 0ul){
+        *(sdl_alias_u32*)dst = *(const sdl_alias_u32*)src;
+        dst += 4u;
+        src += 4u;
+        len -= 4u;
+    }
+    while (len > 0u){
+        *dst++ = *src++;
+        len--;
     }
 }
 

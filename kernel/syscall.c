@@ -1765,6 +1765,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             st.temp_millic = 0u;
             st.arm_hz = 0u;
             st.core_hz = 0u;
+            st.v3d_hz = 0u;
             st.throttled_flags = 0u;
 
             if (!frame[TF_X0]){
@@ -1780,6 +1781,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             if (mailbox_get_clock_rate(4u, &st.core_hz) == 0){
                 st.ok_mask |= QOS_SYSTEM_STATUS_CORE_CLOCK_OK;
             }
+            if (mailbox_get_clock_rate(5u, &st.v3d_hz) == 0){
+                st.ok_mask |= QOS_SYSTEM_STATUS_V3D_CLOCK_OK;
+            }
             if (mailbox_get_throttled(&st.throttled_flags) == 0){
                 st.ok_mask |= QOS_SYSTEM_STATUS_THROTTLE_OK;
             }
@@ -1792,7 +1796,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_SYSTEM_SET_CLOCK: {
             unsigned int clock_id = (unsigned int)frame[TF_X0];
             unsigned int hz = (unsigned int)frame[TF_X1];
-            if (clock_id != 3u && clock_id != 4u){
+            if (clock_id != 3u && clock_id != 4u && clock_id != 5u){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }

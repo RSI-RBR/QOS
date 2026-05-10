@@ -155,6 +155,7 @@ enum {
 #define QOS_SYSTEM_STATUS_ARM_CLOCK_OK  0x02u
 #define QOS_SYSTEM_STATUS_CORE_CLOCK_OK 0x04u
 #define QOS_SYSTEM_STATUS_THROTTLE_OK   0x08u
+#define QOS_SYSTEM_STATUS_V3D_CLOCK_OK  0x10u
 
 typedef struct {
     unsigned int* pixels;
@@ -169,6 +170,7 @@ typedef struct {
     unsigned int temp_millic;
     unsigned int arm_hz;
     unsigned int core_hz;
+    unsigned int v3d_hz;
     unsigned int throttled_flags;
 } qos_system_status_t;
 
