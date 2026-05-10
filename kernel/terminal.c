@@ -13,6 +13,7 @@
 #define TERM_MAX_COLS 240u
 #define TERM_MAX_ROWS 67u
 #define TERM_INPUT_QUEUE_LEN 256u
+#define TERM_LOG_BYTES 4096u
 #define TERM_TEXT_SHELL_PID 0
 
 typedef struct {
@@ -44,6 +45,10 @@ static int g_active_term = 0;
 static spinlock_t g_terminal_lock;
 static spinlock_t g_terminal_render_lock;
 static unsigned char g_render_cells[TERM_MAX_ROWS][TERM_MAX_COLS];
+static unsigned char g_pid_logs[TERM_PID_MAP_MAX][TERM_LOG_BYTES];
+static unsigned int g_pid_log_head[TERM_PID_MAP_MAX];
+static unsigned int g_pid_log_count[TERM_PID_MAP_MAX];
+static unsigned int g_pid_log_dropped[TERM_PID_MAP_MAX];
 
 static int terminal_valid_id(int term_id){
     return term_id >= 0 && term_id < QOS_TERMINAL_MAX;
@@ -317,6 +322,33 @@ static int terminal_pid_can_write_locked(const terminal_t* term, int pid, int ow
     return 0;
 }
 
+static void terminal_log_clear_locked(int pid){
+    if (pid < 0 || pid >= TERM_PID_MAP_MAX){
+        return;
+    }
+    g_pid_log_head[pid] = 0u;
+    g_pid_log_count[pid] = 0u;
+    g_pid_log_dropped[pid] = 0u;
+}
+
+static void terminal_log_append_locked(int pid, const char* s, unsigned long len){
+    if (pid < 0 || pid >= TERM_PID_MAP_MAX || !s || len == 0UL){
+        return;
+    }
+    for (unsigned long i = 0UL; i < len; i++){
+        g_pid_logs[pid][g_pid_log_head[pid]] = (unsigned char)s[i];
+        g_pid_log_head[pid]++;
+        if (g_pid_log_head[pid] >= TERM_LOG_BYTES){
+            g_pid_log_head[pid] = 0u;
+        }
+        if (g_pid_log_count[pid] < TERM_LOG_BYTES){
+            g_pid_log_count[pid]++;
+        } else{
+            g_pid_log_dropped[pid]++;
+        }
+    }
+}
+
 static int terminal_active_graphics_pid(void){
     int active = display_get_active();
     display_session_t info;
@@ -422,6 +454,7 @@ int terminal_attach_pid(int pid, int term_id){
         }
     }
     g_pid_term[pid] = (signed char)term_id;
+    terminal_log_clear_locked(pid);
     if (g_terms[term_id].foreground_pid < 0){
         g_terms[term_id].foreground_pid = pid;
     }
@@ -506,6 +539,8 @@ void terminal_putc(int term_id, int pid, char c){
         } else{
             terminal_dirty_note(&dirty_start, &dirty_end, term->cursor_row);
         }
+    } else if (!can_write){
+        terminal_log_append_locked(pid, &c, 1UL);
     }
     do_render = mirror_fb;
     spin_unlock_irqrestore(&g_terminal_lock, irq);
@@ -545,6 +580,10 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     unsigned int dirty_start = term ? term->cursor_row : 0u;
     unsigned int dirty_end = dirty_start;
     int dirty_all = 0;
+
+    if (!can_write){
+        terminal_log_append_locked(pid, s, len);
+    }
 
     for (unsigned long i = 0; i < len; i++){
         char c = s[i];
@@ -679,6 +718,37 @@ void terminal_putc_for_pid(int pid, char c){
 
 void terminal_write_for_pid(int pid, const char* s, unsigned long len){
     terminal_write(terminal_get_for_pid(pid), pid, s, len);
+}
+
+int terminal_log_read(int pid, char* out, unsigned int out_cap){
+    if (pid < 0 || pid >= TERM_PID_MAP_MAX || !out || out_cap == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_terminal_lock);
+    unsigned int count = g_pid_log_count[pid];
+    unsigned int to_copy = count;
+    if (to_copy >= out_cap){
+        to_copy = out_cap - 1u;
+    }
+    unsigned int skip = count - to_copy;
+    unsigned int idx = (g_pid_log_head[pid] + TERM_LOG_BYTES - count) % TERM_LOG_BYTES;
+    for (unsigned int i = 0u; i < skip; i++){
+        idx++;
+        if (idx >= TERM_LOG_BYTES){
+            idx = 0u;
+        }
+    }
+    for (unsigned int i = 0u; i < to_copy; i++){
+        out[i] = (char)g_pid_logs[pid][idx];
+        idx++;
+        if (idx >= TERM_LOG_BYTES){
+            idx = 0u;
+        }
+    }
+    out[to_copy] = 0;
+    spin_unlock_irqrestore(&g_terminal_lock, irq);
+    return (int)to_copy;
 }
 
 int terminal_set_input_overlay_for_pid(int pid, const char* s, unsigned long len, unsigned int cursor){

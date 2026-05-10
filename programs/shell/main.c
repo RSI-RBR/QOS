@@ -4,11 +4,13 @@
 #define BUF_SIZE 128
 #define LOGIN_BUF_SIZE 64
 #define LOGIN_MAX_TRIES 3
+#define LOG_BUF_SIZE 2048
 
 static char g_buf[BUF_SIZE];
 static char g_local_buf[BUF_SIZE];
 static int g_local_len = 0;
 static char g_remote_buf[BUF_SIZE];
+static char g_log_buf[LOG_BUF_SIZE];
 static int g_remote_len = 0;
 static int g_tty_owned = 1;
 static int g_shell_pid = -1;
@@ -485,6 +487,7 @@ static void cmd_help(void){
     qos_puts(" run\n");
     qos_puts(" runbg\n");
     qos_puts(" exit [pid]\n");
+    qos_puts(" log [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" web\n");
@@ -750,6 +753,46 @@ static void cmd_exit_process(const char* arg){
     }
     g_foreground_pid = target;
     (void)foreground_process_exited();
+}
+
+static void cmd_log(const char* arg){
+    unsigned int pid_u = 0u;
+    int target = g_foreground_pid;
+
+    if (arg){
+        while (*arg == ' '){
+            arg++;
+        }
+        if (*arg){
+            if (parse_uint(arg, &pid_u) != 0){
+                qos_puts("Usage: log [pid]\n");
+                return;
+            }
+            target = (int)pid_u;
+        }
+    }
+
+    if (target < 0){
+        qos_puts("No foreground process. Use: log <pid>\n");
+        return;
+    }
+
+    int n = qos_process_log_read(target, g_log_buf, sizeof(g_log_buf));
+    if (n < 0){
+        qos_puts("Log unavailable.\n");
+        return;
+    }
+    qos_puts("Log PID ");
+    print_uint((unsigned int)target);
+    qos_puts(":\n");
+    if (n == 0){
+        qos_puts("(empty)\n");
+        return;
+    }
+    qos_puts(g_log_buf);
+    if (g_log_buf[(unsigned int)n - 1u] != '\n'){
+        qos_puts("\n");
+    }
 }
 
 static void cmd_termout(const char* mode){
@@ -1581,6 +1624,10 @@ static void execute_line(void){
         cmd_exit_process(0);
     } else if (str_starts_with(g_buf, "exit ")){
         cmd_exit_process(g_buf + 5);
+    } else if (str_eq(g_buf, "log")){
+        cmd_log(0);
+    } else if (str_starts_with(g_buf, "log ")){
+        cmd_log(g_buf + 4);
     } else if (str_starts_with(g_buf, "gfx ")){
         const char* p = g_buf + 4;
         unsigned int pid = 0;

@@ -512,6 +512,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_DISPLAY_SWITCH_SESSION:
         case SYS_PROCESS_KILL:
         case SYS_PROCESS_STATE:
+        case SYS_PROCESS_LOG_READ:
         case SYS_TTY_SET_OWNER:
         case SYS_TTY_RELEASE:
         case SYS_TTY_GET_OWNER:
@@ -1357,6 +1358,34 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             frame[TF_X0] = (unsigned long)target_proc->state;
+            return frame_sp;
+        }
+
+        case SYS_PROCESS_LOG_READ: {
+            int target = (int)frame[TF_X0];
+            char* user_out = (char*)frame[TF_X1];
+            unsigned int out_cap = (unsigned int)frame[TF_X2];
+            if (!user_out || out_cap == 0u || out_cap > 4096u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            char* tmp = (char*)kmalloc(out_cap);
+            if (!tmp){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int n = terminal_log_read(target, tmp, out_cap);
+            if (n >= 0){
+                unsigned int copy_len = (unsigned int)n + 1u;
+                if (copy_len > out_cap){
+                    copy_len = out_cap;
+                }
+                if (process_copy_to_user(user_out, tmp, copy_len) != 0){
+                    n = -1;
+                }
+            }
+            kfree(tmp);
+            frame[TF_X0] = (unsigned long)n;
             return frame_sp;
         }
 

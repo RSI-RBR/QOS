@@ -148,7 +148,8 @@ enum {
     SYS_GPU2D_TEXTURE_UPLOAD_COUNT = 122,
     SYS_GPU2D_TEXTURE_FREE_COUNT = 123,
     SYS_GPU2D_TEXTURE_BYTES = 124,
-    SYS_FB_DIRECT_GET_DRAW = 125
+    SYS_FB_DIRECT_GET_DRAW = 125,
+    SYS_PROCESS_LOG_READ = 126
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -415,6 +416,13 @@ static inline int qos_process_kill(int pid){
 
 static inline int qos_process_state(int pid){
     return (int)qos_syscall1(SYS_PROCESS_STATE, (unsigned long)pid);
+}
+
+static inline int qos_process_log_read(int pid, char* out, unsigned int out_cap){
+    return (int)qos_syscall3(SYS_PROCESS_LOG_READ,
+                             (unsigned long)pid,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
 }
 
 static inline int qos_tty_set_owner(int pid){
