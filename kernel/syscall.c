@@ -535,6 +535,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_SYSTEM_STATUS:
         case SYS_SYSTEM_SET_CLOCK:
         case SYS_V3D_PROBE:
+        case SYS_V3D_NOOP:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_SECURITY_LOG_DUMP:
@@ -927,6 +928,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_v3d_status_t st;
             qos_v3d_status_t* user_st = (qos_v3d_status_t*)frame[TF_X0];
             int rc = v3d_get_status(&st);
+            if (!user_st || process_copy_to_user(user_st, &st, sizeof(st)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_V3D_NOOP: {
+            qos_v3d_status_t st;
+            unsigned int thread = (unsigned int)frame[TF_X0];
+            qos_v3d_status_t* user_st = (qos_v3d_status_t*)frame[TF_X1];
+            int rc = v3d_submit_noop(thread, &st);
             if (!user_st || process_copy_to_user(user_st, &st, sizeof(st)) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;

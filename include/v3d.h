@@ -12,6 +12,8 @@
 #define QOS_V3D_ERR_CLOCK        (-2)
 #define QOS_V3D_ERR_IDENT        (-3)
 #define QOS_V3D_ERR_SCRATCH      (-4)
+#define QOS_V3D_ERR_CONTROL      (-5)
+#define QOS_V3D_ERR_TIMEOUT      (-6)
 
 typedef struct {
     unsigned int flags;
@@ -22,14 +24,24 @@ typedef struct {
     unsigned int scratch_after;
     unsigned int ct0cs;
     unsigned int ct1cs;
+    unsigned int ct0ca;
+    unsigned int ct1ca;
+    unsigned int ct0ea;
+    unsigned int ct1ea;
     unsigned int intctl;
+    unsigned int errstat;
     unsigned int clock_hz;
     unsigned int probe_count;
     unsigned int fail_count;
+    unsigned int noop_count;
+    unsigned int last_job_thread;
+    unsigned int last_job_start_bus;
+    unsigned int last_job_end_bus;
     int last_error;
 } qos_v3d_status_t;
 
 int v3d_probe(qos_v3d_status_t* out);
 int v3d_get_status(qos_v3d_status_t* out);
+int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
 
 #endif

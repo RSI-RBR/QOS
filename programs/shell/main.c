@@ -460,7 +460,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" gpu2d status\n");
-    qos_puts(" v3d probe|status\n");
+    qos_puts(" v3d probe|status|noop [0|1]\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
     qos_puts(" clock status|fast|normal|arm <mhz>|core <mhz>\n");
@@ -867,8 +867,19 @@ static void cmd_v3d(const char* mode){
         rc = qos_v3d_status(&st);
     } else if (str_eq(mode, "probe")){
         rc = qos_v3d_probe(&st);
+    } else if (str_starts_with(mode, "noop")){
+        unsigned int thread = 1u;
+        const char* p = mode + 4;
+        while (*p == ' '){
+            p++;
+        }
+        if (*p && parse_uint(p, &thread) != 0){
+            qos_puts("Usage: v3d noop [0|1]\n");
+            return;
+        }
+        rc = qos_v3d_noop(thread, &st);
     } else{
-        qos_puts("Usage: v3d probe|status\n");
+        qos_puts("Usage: v3d probe|status|noop [0|1]\n");
         return;
     }
 
@@ -900,8 +911,14 @@ static void cmd_v3d(const char* mode){
     print_hex32(st.ct0cs);
     qos_puts(" ct1=");
     print_hex32(st.ct1cs);
+    qos_puts(" ca0=");
+    print_hex32(st.ct0ca);
+    qos_puts(" ca1=");
+    print_hex32(st.ct1ca);
     qos_puts(" int=");
     print_hex32(st.intctl);
+    qos_puts(" err=");
+    print_hex32(st.errstat);
     qos_puts("\n");
 
     qos_puts(" state:");
@@ -915,8 +932,18 @@ static void cmd_v3d(const char* mode){
     print_uint(st.probe_count);
     qos_puts(" fails=");
     print_uint(st.fail_count);
+    qos_puts(" noop=");
+    print_uint(st.noop_count);
     qos_puts(" last=");
     print_int(st.last_error);
+    qos_puts("\n");
+
+    qos_puts(" job thread=");
+    print_uint(st.last_job_thread);
+    qos_puts(" start=");
+    print_hex32(st.last_job_start_bus);
+    qos_puts(" end=");
+    print_hex32(st.last_job_end_bus);
     qos_puts("\n");
 }
 
