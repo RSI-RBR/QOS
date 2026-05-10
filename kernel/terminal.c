@@ -527,6 +527,10 @@ void terminal_putc(int term_id, int pid, char c){
                     can_write;
     int mirror_remote = (pid >= 0 && owner == pid && can_write);
 
+    if (pid > TERM_TEXT_SHELL_PID){
+        terminal_log_append_locked(pid, &c, 1UL);
+    }
+
     if (term && can_write){
         unsigned int old_row = term->cursor_row;
         int dirty_all = terminal_char_will_scroll(term, c);
@@ -539,8 +543,6 @@ void terminal_putc(int term_id, int pid, char c){
         } else{
             terminal_dirty_note(&dirty_start, &dirty_end, term->cursor_row);
         }
-    } else if (!can_write){
-        terminal_log_append_locked(pid, &c, 1UL);
     }
     do_render = mirror_fb;
     spin_unlock_irqrestore(&g_terminal_lock, irq);
@@ -581,7 +583,7 @@ void terminal_write(int term_id, int pid, const char* s, unsigned long len){
     unsigned int dirty_end = dirty_start;
     int dirty_all = 0;
 
-    if (!can_write){
+    if (pid > TERM_TEXT_SHELL_PID){
         terminal_log_append_locked(pid, s, len);
     }
 
