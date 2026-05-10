@@ -14,6 +14,7 @@
 #define SDL_SHIM_RENDER_HINT_TILE_FILL 1
 #define SDL_SHIM_RENDER_HINT_CHAR_16 2
 #define SDL_SHIM_SOFT_BACKBUFFER 1
+#define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 0
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -42,6 +43,7 @@ static Uint32 g_mouse_buttons = 0u;
 static char g_last_error[96] = "OK";
 static Uint8 g_rowbuf[SDL_SHIM_ROWBUF_PIXELS * 4u];
 static Uint8 g_blitbuf[SDL_SHIM_BLITBUF_BYTES];
+static Uint32 g_native_blitbuf[SDL_SHIM_BLITBUF_BYTES / 4u];
 static int g_pending_fill_valid = 0;
 static unsigned int g_pending_fill_x = 0u;
 static unsigned int g_pending_fill_y = 0u;
@@ -811,8 +813,18 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
                                  int visible_x1,
                                  int visible_y1,
                                  int flip){
+    int native_ok = 0;
     if (!g_soft_fb || !texture || !texture->pixels || dw <= 0 || dh <= 0){
         return -1;
+    }
+
+    if (texture->opaque &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        texture->color_b == 255u &&
+        sdl_texture_ensure_native(texture) == 0){
+        native_ok = 1;
     }
 
     if (flip == SDL_FLIP_NONE &&
@@ -825,31 +837,46 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         texture->color_r == 255u &&
         texture->color_g == 255u &&
         texture->color_b == 255u &&
-        texture->opaque){
-        if (sdl_texture_ensure_native(texture) == 0){
-            for (int y = 0; y < dh; y++){
-                Uint8* dst = g_soft_fb +
-                             ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
-                             ((unsigned long)dx * 4ul);
-                const Uint8* src = (const Uint8*)(texture->native_pixels +
-                                                  ((unsigned long)y * (unsigned long)texture->w));
-                sdl_copy_bytes(dst, src, (Uint32)dw * 4u);
+        native_ok){
+        for (int y = 0; y < dh; y++){
+            Uint8* dst = g_soft_fb +
+                         ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
+                         ((unsigned long)dx * 4ul);
+            const Uint8* src = (const Uint8*)(texture->native_pixels +
+                                              ((unsigned long)y * (unsigned long)texture->w));
+            sdl_copy_bytes(dst, src, (Uint32)dw * 4u);
+        }
+        g_sdl_profile.rendercopy_native_calls++;
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
+
+    if (native_ok){
+        for (int oy = visible_y0; oy < visible_y1; oy++){
+            int py = dy + oy;
+            if (py < 0 || py >= g_soft_fb_h){
+                continue;
             }
-            g_sdl_profile.rendercopy_native_calls++;
-        } else{
-            for (int y = 0; y < dh; y++){
-                Uint32* dst = (Uint32*)(g_soft_fb +
-                                        ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
-                                        ((unsigned long)dx * 4ul));
-                const Uint8* src = texture->pixels + ((unsigned long)y * (unsigned long)texture->pitch);
-                for (int x = 0; x < dw; x++){
-                    const Uint8* sp = src + ((unsigned long)x * 4ul);
-                    dst[x] = ((Uint32)sp[0] << 16) |
-                             ((Uint32)sp[1] << 8) |
-                             (Uint32)sp[2];
+            for (int ox = visible_x0; ox < visible_x1; ox++){
+                int px = dx + ox;
+                if (px < 0 || px >= g_soft_fb_w){
+                    continue;
                 }
+
+                int src_ox = (flip & SDL_FLIP_HORIZONTAL) ? (dw - 1 - ox) : ox;
+                int src_oy = (flip & SDL_FLIP_VERTICAL) ? (dh - 1 - oy) : oy;
+                int tx_x = sx + (int)(((unsigned long long)src_ox * (unsigned long long)sw) /
+                                      (unsigned long long)dw);
+                int tx_y = sy + (int)(((unsigned long long)src_oy * (unsigned long long)sh) /
+                                      (unsigned long long)dh);
+                Uint32* dp = (Uint32*)(g_soft_fb +
+                                       ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                                       ((unsigned long)px * 4ul));
+                *dp = texture->native_pixels[((Uint32)tx_y * (Uint32)texture->w) +
+                                             (Uint32)tx_x];
             }
         }
+        g_sdl_profile.rendercopy_native_calls++;
         g_soft_fb_dirty = 1;
         return 0;
     }
@@ -2904,6 +2931,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
     }
 
     if (sdl_soft_backbuffer_valid(renderer)){
+#if SDL_SHIM_ENABLE_TILE_FILL_FASTPATH
         if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
             texture->opaque &&
             texture->alpha_mod == 255u &&
@@ -2919,6 +2947,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
                                        (unsigned int)(visible_y1 - visible_y0),
                                        texture->average_color);
         }
+#endif
         if (sdl_soft_blit_texture(texture,
                                   sx,
                                   sy,
@@ -2940,6 +2969,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         return 0;
     }
 
+#if SDL_SHIM_ENABLE_TILE_FILL_FASTPATH
     if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
         texture->opaque &&
         texture->alpha_mod == 255u &&
@@ -2955,6 +2985,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
                                    (unsigned int)(visible_y1 - visible_y0),
                                    texture->average_color);
     }
+#endif
 
     if (flip == SDL_FLIP_NONE &&
         visible_x0 == 0 && visible_y0 == 0 &&
@@ -3012,6 +3043,40 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         unsigned long total_bytes = (unsigned long)out_w * (unsigned long)out_h * 4ul;
         if (total_bytes > 0ul && total_bytes <= (unsigned long)SDL_SHIM_BLITBUF_BYTES){
             sdl_flush_pending_fill();
+            if (texture->opaque &&
+                texture->alpha_mod == 255u &&
+                texture->color_r == 255u &&
+                texture->color_g == 255u &&
+                texture->color_b == 255u &&
+                sdl_texture_ensure_native(texture) == 0){
+                Uint32* native_out = g_native_blitbuf;
+                for (unsigned int by = 0u; by < out_h; by++){
+                    int oy = visible_y0 + (int)by;
+                    for (unsigned int bx = 0u; bx < out_w; bx++){
+                        int ox = visible_x0 + (int)bx;
+                        int src_ox = (flip & SDL_FLIP_HORIZONTAL) ? (dw - 1 - ox) : ox;
+                        int src_oy = (flip & SDL_FLIP_VERTICAL) ? (dh - 1 - oy) : oy;
+                        int tx_x = sx + (int)(((unsigned long long)src_ox * (unsigned long long)sw) /
+                                              (unsigned long long)dw);
+                        int tx_y = sy + (int)(((unsigned long long)src_oy * (unsigned long long)sh) /
+                                              (unsigned long long)dh);
+                        native_out[(by * out_w) + bx] =
+                            texture->native_pixels[((Uint32)tx_y * (Uint32)texture->w) +
+                                                   (Uint32)tx_x];
+                    }
+                }
+                if (qos_fb_blit_native((unsigned int)(dx + visible_x0),
+                                       (unsigned int)(dy + visible_y0),
+                                       out_w,
+                                       out_h,
+                                       native_out) != 0){
+                    set_error("fb native blit failed");
+                    return -1;
+                }
+                g_sdl_profile.rendercopy_native_calls++;
+                g_sdl_profile.rendercopy_blitbuf_calls++;
+                return 0;
+            }
             for (unsigned int by = 0u; by < out_h; by++){
                 int oy = visible_y0 + (int)by;
                 for (unsigned int bx = 0u; bx < out_w; bx++){
