@@ -377,11 +377,8 @@ static int sdl_soft_backbuffer_init(int w, int h){
     g_soft_fb_pitch = w * 4;
     g_soft_fb_enabled = 1;
     g_soft_fb_dirty = 1;
-    for (unsigned long i = 0; i < bytes; i += 4ul){
-        g_soft_fb[i + 0ul] = 0u;
-        g_soft_fb[i + 1ul] = 0u;
-        g_soft_fb[i + 2ul] = 0u;
-        g_soft_fb[i + 3ul] = 255u;
+    for (unsigned long i = 0; i < bytes; i++){
+        g_soft_fb[i] = 0u;
     }
     return 0;
 #else
@@ -423,10 +420,9 @@ static void sdl_soft_fill_rect(unsigned int x,
     Uint8 r = (Uint8)((color >> 16) & 0xFFu);
     Uint8 g = (Uint8)((color >> 8) & 0xFFu);
     Uint8 b = (Uint8)(color & 0xFFu);
-    Uint32 packed = (Uint32)r |
+    Uint32 packed = ((Uint32)r << 16) |
                     ((Uint32)g << 8) |
-                    ((Uint32)b << 16) |
-                    (255u << 24);
+                    (Uint32)b;
     for (unsigned int py = 0u; py < h; py++){
         Uint32* row = (Uint32*)(g_soft_fb +
                                 ((unsigned long)(y + py) * (unsigned long)g_soft_fb_pitch) +
@@ -568,13 +564,16 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
         texture->color_g == 255u &&
         texture->color_b == 255u &&
         texture->opaque){
-        unsigned int row_bytes = (unsigned int)dw * 4u;
         for (int y = 0; y < dh; y++){
-            Uint8* dst = g_soft_fb + ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
-                         ((unsigned long)dx * 4ul);
+            Uint32* dst = (Uint32*)(g_soft_fb +
+                                    ((unsigned long)(dy + y) * (unsigned long)g_soft_fb_pitch) +
+                                    ((unsigned long)dx * 4ul));
             const Uint8* src = texture->pixels + ((unsigned long)y * (unsigned long)texture->pitch);
-            for (unsigned int i = 0u; i < row_bytes; i++){
-                dst[i] = src[i];
+            for (int x = 0; x < dw; x++){
+                const Uint8* sp = src + ((unsigned long)x * 4ul);
+                dst[x] = ((Uint32)sp[0] << 16) |
+                         ((Uint32)sp[1] << 8) |
+                         (Uint32)sp[2];
             }
         }
         g_soft_fb_dirty = 1;
@@ -601,9 +600,9 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
             const Uint8* sp = texture->pixels +
                               ((unsigned long)tx_y * (unsigned long)texture->pitch) +
                               ((unsigned long)tx_x * 4ul);
-            Uint8* dp = g_soft_fb +
-                        ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
-                        ((unsigned long)px * 4ul);
+            Uint32* dp = (Uint32*)(g_soft_fb +
+                                   ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                                   ((unsigned long)px * 4ul));
 
             Uint32 sr = ((Uint32)sp[0] * (Uint32)texture->color_r) / 255u;
             Uint32 sg = ((Uint32)sp[1] * (Uint32)texture->color_g) / 255u;
@@ -616,16 +615,17 @@ static int sdl_soft_blit_texture(SDL_Texture* texture,
                 continue;
             }
             if (sa >= 255u){
-                dp[0] = (Uint8)sr;
-                dp[1] = (Uint8)sg;
-                dp[2] = (Uint8)sb;
-                dp[3] = 255u;
+                *dp = (sr << 16) | (sg << 8) | sb;
             } else{
                 Uint32 ia = 255u - sa;
-                dp[0] = (Uint8)((sr * sa + (Uint32)dp[0] * ia + 127u) / 255u);
-                dp[1] = (Uint8)((sg * sa + (Uint32)dp[1] * ia + 127u) / 255u);
-                dp[2] = (Uint8)((sb * sa + (Uint32)dp[2] * ia + 127u) / 255u);
-                dp[3] = 255u;
+                Uint32 dc = *dp;
+                Uint32 dr = (dc >> 16) & 0xFFu;
+                Uint32 dg = (dc >> 8) & 0xFFu;
+                Uint32 db = dc & 0xFFu;
+                Uint32 orv = (sr * sa + dr * ia + 127u) / 255u;
+                Uint32 ogv = (sg * sa + dg * ia + 127u) / 255u;
+                Uint32 obv = (sb * sa + db * ia + 127u) / 255u;
+                *dp = (orv << 16) | (ogv << 8) | obv;
             }
         }
     }
@@ -1534,12 +1534,14 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     int rc = 0;
     if (sdl_soft_backbuffer_valid(renderer)){
         if (g_soft_fb_dirty){
-            rc = qos_fb_blit_rgba(0u,
-                                  0u,
-                                  (unsigned int)g_soft_fb_w,
-                                  (unsigned int)g_soft_fb_h,
-                                  g_soft_fb);
-            g_soft_fb_dirty = 0;
+            rc = qos_fb_blit_native(0u,
+                                    0u,
+                                    (unsigned int)g_soft_fb_w,
+                                    (unsigned int)g_soft_fb_h,
+                                    (const unsigned int*)g_soft_fb);
+            if (rc == 0){
+                g_soft_fb_dirty = 0;
+            }
         }
         if (rc == 0){
             rc = qos_fb_present();

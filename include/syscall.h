@@ -120,7 +120,8 @@ enum {
     SYS_GPU_STATUS = 96,
     SYS_GPU_FLIP_COUNT = 97,
     SYS_DISPLAY_PROFILE_RESET = 98,
-    SYS_DISPLAY_PROFILE_DUMP = 99
+    SYS_DISPLAY_PROFILE_DUMP = 99,
+    SYS_FB_BLIT_NATIVE = 100
 };
 
 void* syscall_handle(void* frame_sp, unsigned long esr);
@@ -255,6 +256,19 @@ static inline int qos_fb_blit_rgba(unsigned int x,
                              (unsigned long)w,
                              (unsigned long)h,
                              (unsigned long)rgba);
+}
+
+static inline int qos_fb_blit_native(unsigned int x,
+                                     unsigned int y,
+                                     unsigned int w,
+                                     unsigned int h,
+                                     const unsigned int* pixels){
+    return (int)qos_syscall5(SYS_FB_BLIT_NATIVE,
+                             (unsigned long)x,
+                             (unsigned long)y,
+                             (unsigned long)w,
+                             (unsigned long)h,
+                             (unsigned long)pixels);
 }
 
 static inline int qos_try_getc(void){

@@ -413,6 +413,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_FB_RECT:
         case SYS_FB_PRESENT:
         case SYS_FB_BLIT_RGBA:
+        case SYS_FB_BLIT_NATIVE:
         case SYS_TRY_GETC:
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
@@ -654,6 +655,44 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                                                       h,
                                                                       user_src,
                                                                       (unsigned int)row_bytes);
+            return frame_sp;
+        }
+
+        case SYS_FB_BLIT_NATIVE: {
+            unsigned int x = (unsigned int)frame[TF_X0];
+            unsigned int y = (unsigned int)frame[TF_X1];
+            unsigned int w = (unsigned int)frame[TF_X2];
+            unsigned int h = (unsigned int)frame[TF_X3];
+            const unsigned int* user_src = (const unsigned int*)frame[TF_X4];
+            int pid = process_current_pid();
+
+            if (!user_src || w == 0u || h == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            unsigned long row_bytes = (unsigned long)w * sizeof(unsigned int);
+            if (row_bytes == 0ul || row_bytes > 0xFFFFFFFFul){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if ((~0ul / row_bytes) < (unsigned long)h){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned long total_bytes = row_bytes * (unsigned long)h;
+            if (!process_user_range_readable(user_src, total_bytes)){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            frame[TF_X0] = (unsigned long)display_blit_native32_for_pid(pid,
+                                                                        x,
+                                                                        y,
+                                                                        w,
+                                                                        h,
+                                                                        user_src,
+                                                                        (unsigned int)row_bytes);
             return frame_sp;
         }
 

@@ -1185,6 +1185,53 @@ int display_blit_rgba32_for_pid(int owner_pid,
     return 0;
 }
 
+int display_blit_native32_for_pid(int owner_pid,
+                                  unsigned int x,
+                                  unsigned int y,
+                                  unsigned int w,
+                                  unsigned int h,
+                                  const unsigned int* pixels,
+                                  unsigned int pixels_pitch){
+    int session_id = display_get_or_create_graphics_for_pid(owner_pid);
+    if (session_id < 0 || !pixels || w == 0u || h == 0u){
+        return -1;
+    }
+
+    unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    display_session_t* s = &g_display_sessions[session_id];
+    if (s->type != DISPLAY_GRAPHICS || !s->framebuffer || s->pitch == 0u ||
+        s->pitch < (s->width * sizeof(unsigned int)) ||
+        x >= s->width || y >= s->height){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    if (pixels_pitch < (w * sizeof(unsigned int))){
+        spin_unlock_irqrestore(&g_display_lock, irq);
+        return -1;
+    }
+
+    if (x + w < x || x + w > s->width){
+        w = s->width - x;
+    }
+    if (y + h < y || y + h > s->height){
+        h = s->height - y;
+    }
+
+    for (unsigned int py = 0u; py < h; py++){
+        const unsigned int* src_row =
+            (const unsigned int*)((const unsigned char*)pixels +
+                                  ((unsigned long)py * pixels_pitch));
+        unsigned int* dst_row = (unsigned int*)((unsigned char*)s->framebuffer +
+                                                 ((unsigned long)(y + py) * s->pitch));
+        dst_row += x;
+        display_copy_u32(dst_row, src_row, w);
+    }
+    display_mark_rect_dirty_locked(s, x, y, w, h);
+    spin_unlock_irqrestore(&g_display_lock, irq);
+    return 0;
+}
+
 int display_present_for_pid(int owner_pid){
     int session_id = display_get_or_create_graphics_for_pid(owner_pid);
     if (session_id < 0){

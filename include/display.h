@@ -61,6 +61,13 @@ int display_blit_rgba32_for_pid(int owner_pid,
                                 unsigned int h,
                                 const unsigned char* rgba,
                                 unsigned int rgba_pitch);
+int display_blit_native32_for_pid(int owner_pid,
+                                  unsigned int x,
+                                  unsigned int y,
+                                  unsigned int w,
+                                  unsigned int h,
+                                  const unsigned int* pixels,
+                                  unsigned int pixels_pitch);
 int display_present_for_pid(int owner_pid);
 int display_present_active_graphics(void);
 int display_present_active(void);
