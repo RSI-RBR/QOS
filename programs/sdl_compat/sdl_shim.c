@@ -1068,10 +1068,13 @@ int SDL_RenderClear(SDL_Renderer* renderer){
         return -1;
     }
     sdl_flush_pending_fill();
-    qos_fb_rect(0u, 0u,
-                (unsigned int)renderer->window->w,
-                (unsigned int)renderer->window->h,
-                renderer->draw_color);
+    /*
+     * QOS presents SDL windows as fullscreen-desktop sessions. Clearing only
+     * the app-requested logical window size can make the kernel see later
+     * frames as partial updates, which disables page flipping and drops back to
+     * the slow full-screen copy path. Clear the whole graphics session instead.
+     */
+    qos_fb_clear(renderer->draw_color);
     return 0;
 }
 
