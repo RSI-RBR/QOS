@@ -76,6 +76,15 @@ int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
 int v3d_qpu_memory_probe(qos_v3d_status_t* out);
 int v3d_qpu_memory_write_probe(qos_v3d_status_t* out);
 int v3d_qpu_execute_probe(qos_v3d_status_t* out);
+int v3d_qpu_copy64_rows(unsigned int src_bus,
+                        unsigned int src_pitch,
+                        unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows);
+int v3d_qpu_fill64_rows(unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows,
+                        unsigned int color);
 int v3d_clear_page_tiles(unsigned int page,
                          unsigned int rgba,
                          unsigned int tile_x,

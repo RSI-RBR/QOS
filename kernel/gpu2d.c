@@ -1,6 +1,7 @@
 #include "gpu2d.h"
 #include "display.h"
 #include "cache.h"
+#include "framebuffer.h"
 #include "memory.h"
 #include "process.h"
 #include "spinlock.h"
@@ -27,6 +28,9 @@ static unsigned int g_gpu2d_clear_count = 0u;
 static unsigned int g_gpu2d_fill_count = 0u;
 static unsigned int g_gpu2d_quad_count = 0u;
 static unsigned int g_gpu2d_quad_batch_count = 0u;
+static unsigned int g_gpu2d_qpu_enabled = 0u;
+static unsigned int g_gpu2d_qpu_quad_count = 0u;
+static unsigned int g_gpu2d_qpu_fail_count = 0u;
 static unsigned int g_gpu2d_fallback_count = 0u;
 static unsigned int g_gpu2d_unsupported_count = 0u;
 static unsigned int g_gpu2d_texture_upload_count = 0u;
@@ -65,7 +69,8 @@ unsigned int gpu2d_status(void){
         status |= QOS_GPU2D_STATUS_BACKEND_HW |
                   QOS_GPU2D_CAP_ACCEL_CLEAR |
                   QOS_GPU2D_CAP_ACCEL_FILL_TILE |
-                  QOS_GPU2D_CAP_TEXTURE_OBJECTS;
+                  QOS_GPU2D_CAP_TEXTURE_OBJECTS |
+                  QOS_GPU2D_CAP_QPU_QUAD;
     }
     return status;
 }
@@ -88,6 +93,23 @@ unsigned int gpu2d_quad_count(void){
 
 unsigned int gpu2d_quad_batch_count(void){
     return g_gpu2d_quad_batch_count;
+}
+
+unsigned int gpu2d_qpu_quad_count(void){
+    return g_gpu2d_qpu_quad_count;
+}
+
+unsigned int gpu2d_qpu_fail_count(void){
+    return g_gpu2d_qpu_fail_count;
+}
+
+unsigned int gpu2d_qpu_is_enabled(void){
+    return g_gpu2d_qpu_enabled;
+}
+
+int gpu2d_qpu_set_enabled(int enabled){
+    g_gpu2d_qpu_enabled = enabled ? 1u : 0u;
+    return 0;
 }
 
 unsigned int gpu2d_texture_count(void){
@@ -232,6 +254,104 @@ static int gpu2d_validate_quad_source(const qos_gpu2d_quad_t* quad){
     return process_user_range_readable(quad->src, last) ? 0 : -1;
 }
 
+static unsigned int gpu2d_bus_from_low_arm(const void* p){
+    unsigned long addr = (unsigned long)p;
+    if (addr == 0UL || addr >= 0x3F000000UL || (addr & 3UL) != 0UL){
+        return 0u;
+    }
+    return (unsigned int)((addr & 0x3FFFFFFFUL) | 0xC0000000UL);
+}
+
+static int gpu2d_try_qpu_quads_for_pid(int pid,
+                                       const qos_gpu2d_quad_t* quads,
+                                       unsigned int count){
+    if (!g_gpu2d_qpu_enabled){
+        return 1;
+    }
+
+    int session_id = display_get_for_pid(pid);
+    display_session_t info;
+    if (session_id < 0 || display_get_info(session_id, &info) != 0){
+        return 1;
+    }
+    if (info.type != DISPLAY_GRAPHICS || !info.direct_framebuffer ||
+        info.direct_page >= fb_get_page_count() ||
+        info.pitch == 0u || info.width == 0u || info.height == 0u){
+        return 1;
+    }
+
+    unsigned long page_bus = fb_get_page_bus_base(info.direct_page);
+    if (page_bus == 0UL){
+        return 1;
+    }
+
+    for (unsigned int i = 0u; i < count; i++){
+        const qos_gpu2d_quad_t* q = &quads[i];
+        if (q->x < 0 || q->y < 0 ||
+            q->w == 0u || q->h == 0u ||
+            (q->w & 63u) != 0u ||
+            (unsigned int)q->x >= info.width ||
+            (unsigned int)q->y >= info.height ||
+            (unsigned int)q->x + q->w < (unsigned int)q->x ||
+            (unsigned int)q->y + q->h < (unsigned int)q->y ||
+            (unsigned int)q->x + q->w > info.width ||
+            (unsigned int)q->y + q->h > info.height){
+            return 1;
+        }
+        if (q->op == QOS_GPU2D_QUAD_BLIT32){
+            if (!q->src || (q->src_pitch & 3u) != 0u ||
+                gpu2d_bus_from_low_arm(q->src) == 0u){
+                return 1;
+            }
+        }
+    }
+
+    unsigned int accelerated = 0u;
+    for (unsigned int i = 0u; i < count; i++){
+        const qos_gpu2d_quad_t* q = &quads[i];
+        unsigned int dst_bus = (unsigned int)(page_bus +
+            ((unsigned long)(unsigned int)q->y * (unsigned long)info.pitch) +
+            ((unsigned long)(unsigned int)q->x * sizeof(unsigned int)));
+
+        for (unsigned int xoff = 0u; xoff < q->w; xoff += 64u){
+            int rc;
+            if (q->op == QOS_GPU2D_QUAD_FILL32){
+                rc = v3d_qpu_fill64_rows(dst_bus + (xoff * sizeof(unsigned int)),
+                                         info.pitch,
+                                         q->h,
+                                         q->color);
+            } else{
+                const unsigned int* src =
+                    (const unsigned int*)((const unsigned char*)q->src +
+                                          ((unsigned long)xoff * sizeof(unsigned int)));
+                unsigned int src_bus = gpu2d_bus_from_low_arm(src);
+                if (src_bus == 0u){
+                    return 1;
+                }
+                rc = v3d_qpu_copy64_rows(src_bus,
+                                         q->src_pitch,
+                                         dst_bus + (xoff * sizeof(unsigned int)),
+                                         info.pitch,
+                                         q->h);
+            }
+            if (rc != 0){
+                g_gpu2d_qpu_fail_count++;
+                return -1;
+            }
+        }
+        accelerated++;
+    }
+
+    if (accelerated > 0u){
+        (void)display_mark_dirty_for_pid(pid);
+        g_gpu2d_qpu_quad_count += accelerated;
+        g_gpu2d_quad_count += accelerated;
+        g_gpu2d_quad_batch_count++;
+        return 0;
+    }
+    return 1;
+}
+
 int gpu2d_submit_quads_for_pid(int pid,
                                const qos_gpu2d_quad_t* quads,
                                unsigned int count){
@@ -251,6 +371,11 @@ int gpu2d_submit_quads_for_pid(int pid,
             gpu2d_validate_quad_source(q) != 0){
             return -1;
         }
+    }
+
+    int qpu_rc = gpu2d_try_qpu_quads_for_pid(pid, quads, count);
+    if (qpu_rc == 0){
+        return 0;
     }
 
     unsigned int done = 0u;

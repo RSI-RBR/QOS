@@ -157,7 +157,11 @@ enum {
     SYS_V3D_QPU_EXEC_PROBE = 131,
     SYS_GPU2D_QUAD_BATCH = 132,
     SYS_GPU2D_QUAD_COUNT = 133,
-    SYS_GPU2D_QUAD_BATCH_COUNT = 134
+    SYS_GPU2D_QUAD_BATCH_COUNT = 134,
+    SYS_GPU2D_QPU_SET_ENABLED = 135,
+    SYS_GPU2D_QPU_STATUS = 136,
+    SYS_GPU2D_QPU_QUAD_COUNT = 137,
+    SYS_GPU2D_QPU_FAIL_COUNT = 138
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -576,6 +580,23 @@ static inline unsigned int qos_gpu2d_quad_count(void){
 
 static inline unsigned int qos_gpu2d_quad_batch_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_QUAD_BATCH_COUNT);
+}
+
+static inline int qos_gpu2d_qpu_set_enabled(int enabled){
+    return (int)qos_syscall1(SYS_GPU2D_QPU_SET_ENABLED,
+                             (unsigned long)(enabled ? 1u : 0u));
+}
+
+static inline unsigned int qos_gpu2d_qpu_status(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_QPU_STATUS);
+}
+
+static inline unsigned int qos_gpu2d_qpu_quad_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_QPU_QUAD_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_qpu_fail_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_QPU_FAIL_COUNT);
 }
 
 static inline int qos_gpu2d_texture_upload(qos_gpu2d_texture_upload_t* req){

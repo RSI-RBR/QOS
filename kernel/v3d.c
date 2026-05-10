@@ -52,6 +52,14 @@
 #define V3D_QPU_EXEC_WORDS 64u
 #define V3D_QPU_EXEC_TIMEOUT 5000000u
 #define V3D_QPU_EXEC_VPM_4KB 16u
+#define V3D_QPU_COPY_MEM_SIZE 4096u
+#define V3D_QPU_COPY_CODE_OFFSET 0x000u
+#define V3D_QPU_COPY_UNIFORM_OFFSET 0x400u
+#define V3D_QPU_COPY_FILL_OFFSET 0xC00u
+#define V3D_QPU_COPY_ROW_WORDS 64u
+#define V3D_QPU_COPY_ROW_BYTES (V3D_QPU_COPY_ROW_WORDS * sizeof(unsigned int))
+#define V3D_QPU_COPY_BATCH_ROWS 8u
+#define V3D_QPU_COPY_TIMEOUT 5000000u
 #define V3D_MEM_FLAG_DIRECT   (1u << 2)
 #define V3D_MEM_FLAG_ZERO     (1u << 4)
 #define V3D_MEM_FLAG_HINT_PERMALOCK (1u << 6)
@@ -105,6 +113,9 @@ static unsigned char g_v3d_noop_cl[V3D_NOOP_CL_SIZE] __attribute__((aligned(64))
 static unsigned char g_v3d_clear_cl[V3D_CLEAR_CL_SIZE] __attribute__((aligned(64)));
 static spinlock_t g_v3d_lock;
 static int g_v3d_lock_ready = 0;
+static unsigned int g_v3d_qpu_copy_handle = 0u;
+static unsigned int g_v3d_qpu_copy_bus = 0u;
+static unsigned long g_v3d_qpu_copy_arm = 0UL;
 
 static unsigned int v3d_read(unsigned long reg){
     return *(volatile unsigned int*)(V3D_MMIO_BASE + reg);
@@ -924,6 +935,250 @@ int v3d_qpu_execute_probe(qos_v3d_status_t* out){
     if (out){
         *out = st;
     }
+    return rc;
+}
+
+static int v3d_qpu_copy_engine_init_locked(void){
+    qos_v3d_status_t st;
+    unsigned int handle = 0u;
+    unsigned int bus = 0u;
+    unsigned long arm = 0UL;
+
+    if (g_v3d_qpu_copy_handle != 0u &&
+        g_v3d_qpu_copy_bus != 0u &&
+        g_v3d_qpu_copy_arm != 0UL){
+        return 0;
+    }
+
+    if ((g_v3d_status.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        int rc = v3d_probe(&st);
+        if (rc != 0){
+            return rc;
+        }
+    }
+
+    if (mailbox_set_qpu_enabled(1u) != 0){
+        return QOS_V3D_ERR_QPU_MEMORY;
+    }
+
+    if (mailbox_alloc_vc_memory(V3D_QPU_COPY_MEM_SIZE,
+                                V3D_QPU_PROBE_MEM_ALIGN,
+                                V3D_QPU_MEM_FLAGS,
+                                &handle) != 0){
+        return QOS_V3D_ERR_QPU_MEMORY;
+    }
+
+    if (mailbox_lock_vc_memory(handle, &bus) != 0){
+        (void)mailbox_release_vc_memory(handle);
+        return QOS_V3D_ERR_QPU_MEMORY;
+    }
+
+    arm = v3d_arm_address_from_vc_bus(bus);
+    if (!v3d_vc_memory_arm_accessible(arm, V3D_QPU_COPY_MEM_SIZE)){
+        (void)mailbox_unlock_vc_memory(handle);
+        (void)mailbox_release_vc_memory(handle);
+        return QOS_V3D_ERR_QPU_WRITE;
+    }
+
+    volatile unsigned int* words = (volatile unsigned int*)arm;
+    unsigned int code_words =
+        (unsigned int)(sizeof(g_v3d_qpu_dma_copy_code) /
+                       sizeof(g_v3d_qpu_dma_copy_code[0]));
+    unsigned int code_base = V3D_QPU_COPY_CODE_OFFSET / sizeof(unsigned int);
+    unsigned int fill_base = V3D_QPU_COPY_FILL_OFFSET / sizeof(unsigned int);
+
+    for (unsigned int i = 0u; i < V3D_QPU_COPY_MEM_SIZE / sizeof(unsigned int); i++){
+        words[i] = 0u;
+    }
+    for (unsigned int i = 0u; i < code_words; i++){
+        words[code_base + i] = g_v3d_qpu_dma_copy_code[i];
+    }
+    for (unsigned int i = 0u; i < V3D_QPU_COPY_ROW_WORDS; i++){
+        words[fill_base + i] = 0u;
+    }
+    asm volatile("dsb sy" ::: "memory");
+    clean_data_cache_range(arm, V3D_QPU_COPY_MEM_SIZE);
+
+    g_v3d_qpu_copy_handle = handle;
+    g_v3d_qpu_copy_bus = bus;
+    g_v3d_qpu_copy_arm = arm;
+
+    (void)v3d_get_status(&st);
+    st.flags |= QOS_V3D_FLAG_QPU_OK |
+                QOS_V3D_FLAG_QPU_MEM_OK |
+                QOS_V3D_FLAG_QPU_WRITE_OK |
+                QOS_V3D_FLAG_QPU_EXEC_OK;
+    st.last_qpu_handle = handle;
+    st.last_qpu_bus = bus;
+    st.last_qpu_arm = (unsigned int)arm;
+    st.last_qpu_size = V3D_QPU_COPY_MEM_SIZE;
+    st.last_qpu_rc = 0;
+    st.last_qpu_exec_rc = 0;
+    v3d_store_status(&st);
+    return 0;
+}
+
+static int v3d_qpu_run_copy64_batch_locked(unsigned int src_bus,
+                                           unsigned int src_pitch,
+                                           unsigned int dst_bus,
+                                           unsigned int dst_pitch,
+                                           unsigned int rows){
+    if (rows == 0u || rows > V3D_QPU_COPY_BATCH_ROWS){
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    int rc = v3d_qpu_copy_engine_init_locked();
+    if (rc != 0){
+        return rc;
+    }
+
+    volatile unsigned int* words = (volatile unsigned int*)g_v3d_qpu_copy_arm;
+    unsigned int uniform_base = V3D_QPU_COPY_UNIFORM_OFFSET / sizeof(unsigned int);
+    unsigned int old_vpmbase = v3d_read(V3D_VPMBASE);
+    unsigned int srqcs = 0u;
+
+    for (unsigned int row = 0u; row < rows; row++){
+        unsigned int row_src_bus = src_bus + (row * src_pitch);
+        unsigned int row_dst_bus = dst_bus + (row * dst_pitch);
+        words[uniform_base + (row * 2u) + 0u] = row_src_bus;
+        words[uniform_base + (row * 2u) + 1u] = row_dst_bus;
+        clean_data_cache_range((unsigned long)(row_src_bus & 0x3FFFFFFFu),
+                               V3D_QPU_COPY_ROW_BYTES);
+        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & 0x3FFFFFFFu),
+                                          V3D_QPU_COPY_ROW_BYTES);
+    }
+    asm volatile("dsb sy" ::: "memory");
+    clean_data_cache_range(g_v3d_qpu_copy_arm + V3D_QPU_COPY_UNIFORM_OFFSET,
+                           (unsigned long)rows * 2UL * sizeof(unsigned int));
+
+    (void)v3d_wait_thread_stopped(V3D_CT0CS);
+    (void)v3d_wait_thread_stopped(V3D_CT1CS);
+
+    v3d_write(V3D_VPMBASE, V3D_QPU_EXEC_VPM_4KB);
+    v3d_write(V3D_L2CACTL, 4u);
+    v3d_write(V3D_SLCACTL, 0xFFFFFFFFu);
+    v3d_write(V3D_INTCTL, V3D_INTCTL_QPU_DONE);
+    v3d_write(V3D_SRQCS, V3D_SRQCS_RESET);
+    v3d_barrier();
+
+    v3d_write(V3D_SRQUL, 2u);
+    v3d_write(V3D_SRQUA, g_v3d_qpu_copy_bus + V3D_QPU_COPY_UNIFORM_OFFSET);
+    v3d_barrier();
+    for (unsigned int row = 0u; row < rows; row++){
+        v3d_write(V3D_SRQPC, g_v3d_qpu_copy_bus + V3D_QPU_COPY_CODE_OFFSET);
+        v3d_barrier();
+    }
+
+    rc = QOS_V3D_ERR_TIMEOUT;
+    for (unsigned int i = 0u; i < V3D_QPU_COPY_TIMEOUT; i++){
+        srqcs = v3d_read(V3D_SRQCS);
+        if (((srqcs >> 16) & 0xFFu) >= rows){
+            rc = 0;
+            break;
+        }
+        if ((i & 0x3FFu) == 0u){
+            asm volatile("yield" ::: "memory");
+        }
+    }
+
+    v3d_write(V3D_INTCTL, V3D_INTCTL_QPU_DONE);
+    v3d_write(V3D_VPMBASE, old_vpmbase);
+    v3d_barrier();
+
+    for (unsigned int row = 0u; row < rows; row++){
+        unsigned int row_dst_bus = dst_bus + (row * dst_pitch);
+        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & 0x3FFFFFFFu),
+                                          V3D_QPU_COPY_ROW_BYTES);
+    }
+
+    if (rc != 0){
+        qos_v3d_status_t st;
+        (void)v3d_get_status(&st);
+        st.last_qpu_exec_status = srqcs;
+        st.last_qpu_exec_rc = rc;
+        st.last_qpu_rc = rc;
+        st.last_error = rc;
+        st.fail_count = ++g_v3d_fail_count;
+        v3d_store_status(&st);
+    }
+    return rc;
+}
+
+static int v3d_qpu_copy64_rows_locked(unsigned int src_bus,
+                                      unsigned int src_pitch,
+                                      unsigned int dst_bus,
+                                      unsigned int dst_pitch,
+                                      unsigned int rows){
+    if (src_bus == 0u || dst_bus == 0u || rows == 0u){
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    unsigned int done = 0u;
+    while (done < rows){
+        unsigned int chunk = rows - done;
+        if (chunk > V3D_QPU_COPY_BATCH_ROWS){
+            chunk = V3D_QPU_COPY_BATCH_ROWS;
+        }
+        int rc = v3d_qpu_run_copy64_batch_locked(src_bus + (done * src_pitch),
+                                                 src_pitch,
+                                                 dst_bus + (done * dst_pitch),
+                                                 dst_pitch,
+                                                 chunk);
+        if (rc != 0){
+            return rc;
+        }
+        done += chunk;
+    }
+    return 0;
+}
+
+int v3d_qpu_copy64_rows(unsigned int src_bus,
+                        unsigned int src_pitch,
+                        unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows){
+    if (rows == 0u || rows > 4096u){
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+    int rc = v3d_qpu_copy64_rows_locked(src_bus,
+                                        src_pitch,
+                                        dst_bus,
+                                        dst_pitch,
+                                        rows);
+    spin_unlock(&g_v3d_lock);
+    return rc;
+}
+
+int v3d_qpu_fill64_rows(unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows,
+                        unsigned int color){
+    if (dst_bus == 0u || rows == 0u || rows > 4096u){
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+    int rc = v3d_qpu_copy_engine_init_locked();
+    if (rc == 0){
+        volatile unsigned int* words = (volatile unsigned int*)g_v3d_qpu_copy_arm;
+        unsigned int fill_base = V3D_QPU_COPY_FILL_OFFSET / sizeof(unsigned int);
+        for (unsigned int i = 0u; i < V3D_QPU_COPY_ROW_WORDS; i++){
+            words[fill_base + i] = color;
+        }
+        asm volatile("dsb sy" ::: "memory");
+        clean_data_cache_range(g_v3d_qpu_copy_arm + V3D_QPU_COPY_FILL_OFFSET,
+                               V3D_QPU_COPY_ROW_BYTES);
+        rc = v3d_qpu_copy64_rows_locked(g_v3d_qpu_copy_bus + V3D_QPU_COPY_FILL_OFFSET,
+                                        0u,
+                                        dst_bus,
+                                        dst_pitch,
+                                        rows);
+    }
+    spin_unlock(&g_v3d_lock);
     return rc;
 }
 

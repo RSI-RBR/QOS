@@ -497,7 +497,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" vsync on|off|status\n");
-    qos_puts(" gpu2d status\n");
+    qos_puts(" gpu2d status|qpu on|qpu off\n");
     qos_puts(" v3d probe|status|noop [0|1]|qpu|qpuwrite|qpuexec|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
@@ -927,8 +927,18 @@ static void cmd_vsync(const char* mode){
 
 static void cmd_gpu2d(const char* mode){
     unsigned int st;
-    if (mode && *mode && !str_eq(mode, "status")){
-        qos_puts("Usage: gpu2d status\n");
+    if (mode && str_eq(mode, "qpu on")){
+        (void)qos_gpu2d_qpu_set_enabled(1);
+        qos_puts("gpu2d qpu path enabled; unsupported quads still fall back to CPU.\n");
+        return;
+    }
+    if (mode && str_eq(mode, "qpu off")){
+        (void)qos_gpu2d_qpu_set_enabled(0);
+        qos_puts("gpu2d qpu path disabled.\n");
+        return;
+    }
+    if (mode && *mode && !str_eq(mode, "status") && !str_eq(mode, "qpu")){
+        qos_puts("Usage: gpu2d status|qpu on|qpu off\n");
         return;
     }
 
@@ -953,6 +963,9 @@ static void cmd_gpu2d(const char* mode){
     if (st & QOS_GPU2D_CAP_ACCEL_FILL_TILE) qos_puts("filltile ");
     if (st & QOS_GPU2D_CAP_TEXTURE_OBJECTS) qos_puts("textures ");
     if (st & QOS_GPU2D_CAP_QUAD_BATCH) qos_puts("quadbatch ");
+    if (st & QOS_GPU2D_CAP_QPU_QUAD) qos_puts("qpuquad ");
+    qos_puts("qpu=");
+    qos_puts(qos_gpu2d_qpu_status() ? "on " : "off ");
     qos_puts("blits=");
     print_uint(qos_gpu2d_blit_count());
     qos_puts(" clears=");
@@ -963,6 +976,10 @@ static void cmd_gpu2d(const char* mode){
     print_uint(qos_gpu2d_quad_count());
     qos_puts(" qbatch=");
     print_uint(qos_gpu2d_quad_batch_count());
+    qos_puts(" qpuq=");
+    print_uint(qos_gpu2d_qpu_quad_count());
+    qos_puts(" qpufail=");
+    print_uint(qos_gpu2d_qpu_fail_count());
     qos_puts(" tex=");
     print_uint(qos_gpu2d_texture_count());
     qos_puts(" up=");
