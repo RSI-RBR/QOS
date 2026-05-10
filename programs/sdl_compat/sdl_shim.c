@@ -62,6 +62,19 @@ typedef struct sdl_qos_profile {
     Uint64 texture_us;
     Uint64 rendercopy_calls;
     Uint64 rendercopy_us;
+    Uint64 rendercopy_direct_calls;
+    Uint64 rendercopy_blitbuf_calls;
+    Uint64 rendercopy_row_calls;
+    Uint64 rendercopy_fill_calls;
+    Uint64 rendercopy_pixels;
+    Uint64 fill_calls;
+    Uint64 fill_flushes;
+    Uint64 fill_pixels;
+    Uint64 fill_us;
+    Uint64 clear_calls;
+    Uint64 clear_us;
+    Uint64 poll_calls;
+    Uint64 poll_us;
     Uint64 present_calls;
     Uint64 present_us;
 } sdl_qos_profile_t;
@@ -116,6 +129,19 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.texture_us = 0ull;
     g_sdl_profile.rendercopy_calls = 0ull;
     g_sdl_profile.rendercopy_us = 0ull;
+    g_sdl_profile.rendercopy_direct_calls = 0ull;
+    g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
+    g_sdl_profile.rendercopy_row_calls = 0ull;
+    g_sdl_profile.rendercopy_fill_calls = 0ull;
+    g_sdl_profile.rendercopy_pixels = 0ull;
+    g_sdl_profile.fill_calls = 0ull;
+    g_sdl_profile.fill_flushes = 0ull;
+    g_sdl_profile.fill_pixels = 0ull;
+    g_sdl_profile.fill_us = 0ull;
+    g_sdl_profile.clear_calls = 0ull;
+    g_sdl_profile.clear_us = 0ull;
+    g_sdl_profile.poll_calls = 0ull;
+    g_sdl_profile.poll_us = 0ull;
     g_sdl_profile.present_calls = 0ull;
     g_sdl_profile.present_us = 0ull;
     qos_file_profile_reset();
@@ -154,6 +180,38 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_calls);
     qos_puts(" total=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_us);
+    qos_puts(" pixels=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_pixels);
+    qos_puts("\n");
+
+    qos_puts("SDL render paths: direct=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_direct_calls);
+    qos_puts(" blitbuf=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_blitbuf_calls);
+    qos_puts(" row=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_row_calls);
+    qos_puts(" fill=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_fill_calls);
+    qos_puts("\n");
+
+    qos_puts("SDL profile us: clear calls=");
+    sdl_profile_put_u64(g_sdl_profile.clear_calls);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.clear_us);
+    qos_puts(" fill calls=");
+    sdl_profile_put_u64(g_sdl_profile.fill_calls);
+    qos_puts(" flushes=");
+    sdl_profile_put_u64(g_sdl_profile.fill_flushes);
+    qos_puts(" pixels=");
+    sdl_profile_put_u64(g_sdl_profile.fill_pixels);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.fill_us);
+    qos_puts("\n");
+
+    qos_puts("SDL profile us: poll calls=");
+    sdl_profile_put_u64(g_sdl_profile.poll_calls);
+    qos_puts(" total=");
+    sdl_profile_put_u64(g_sdl_profile.poll_us);
     qos_puts(" present calls=");
     sdl_profile_put_u64(g_sdl_profile.present_calls);
     qos_puts(" total=");
@@ -231,11 +289,15 @@ static void sdl_flush_pending_fill(void){
     if (!g_pending_fill_valid){
         return;
     }
+    Uint64 t0 = qos_get_time_us();
     qos_fb_rect(g_pending_fill_x,
                 g_pending_fill_y,
                 g_pending_fill_w,
                 g_pending_fill_h,
                 g_pending_fill_color);
+    g_sdl_profile.fill_flushes++;
+    g_sdl_profile.fill_pixels += (Uint64)g_pending_fill_w * (Uint64)g_pending_fill_h;
+    g_sdl_profile.fill_us += qos_get_time_us() - t0;
     g_pending_fill_valid = 0;
 }
 
@@ -247,6 +309,7 @@ static int sdl_queue_fill_rect(unsigned int x,
     if (w == 0u || h == 0u){
         return 0;
     }
+    g_sdl_profile.fill_calls++;
     if (g_pending_fill_valid &&
         g_pending_fill_y == y &&
         g_pending_fill_h == h &&
@@ -1063,6 +1126,7 @@ int SDL_GetRenderDrawBlendMode(SDL_Renderer* renderer, SDL_BlendMode* blend_mode
 }
 
 int SDL_RenderClear(SDL_Renderer* renderer){
+    Uint64 t0 = qos_get_time_us();
     if (!renderer || !renderer->alive || !renderer->window){
         set_error("renderer/window not alive");
         return -1;
@@ -1075,6 +1139,8 @@ int SDL_RenderClear(SDL_Renderer* renderer){
      * the slow full-screen copy path. Clear the whole graphics session instead.
      */
     qos_fb_clear(renderer->draw_color);
+    g_sdl_profile.clear_calls++;
+    g_sdl_profile.clear_us += qos_get_time_us() - t0;
     return 0;
 }
 
@@ -1168,6 +1234,11 @@ void SDL_RenderPresent(SDL_Renderer* renderer){
     }
     g_sdl_profile.present_calls++;
     g_sdl_profile.present_us += qos_get_time_us() - t0;
+#ifdef QOS_PROFILE_SDL_AUTO
+    if ((g_sdl_profile.present_calls % 300ull) == 0ull){
+        SDL_QOS_ProfileDump();
+    }
+#endif
 }
 
 int SDL_RenderSetIntegerScale(SDL_Renderer* renderer, int enabled){
@@ -1185,6 +1256,8 @@ void SDL_RenderSetViewport(SDL_Renderer* renderer, const SDL_Rect* rect){
 }
 
 int SDL_PollEvent(SDL_Event* event){
+    Uint64 t0 = qos_get_time_us();
+    int ret = 0;
     qos_event_t qos_ev;
     if (!event){
         return 0;
@@ -1192,21 +1265,29 @@ int SDL_PollEvent(SDL_Event* event){
     sdl_event_clear(event);
 
     if (sdl_event_pop(event)){
-        return 1;
+        ret = 1;
+        goto done;
     }
 
     if (qos_poll_event(&qos_ev) <= 0){
-        return sdl_poll_repeat_event(event);
+        ret = sdl_poll_repeat_event(event);
+        goto done;
     }
 
     if (sdl_translate_qos_event(&qos_ev, event)){
         sdl_queue_text_input_if_printable(&qos_ev);
-        return 1;
+        ret = 1;
+        goto done;
     }
-    return sdl_poll_repeat_event(event);
+    ret = sdl_poll_repeat_event(event);
+done:
+    g_sdl_profile.poll_calls++;
+    g_sdl_profile.poll_us += qos_get_time_us() - t0;
+    return ret;
 }
 
 void SDL_PumpEvents(void){
+    Uint64 t0 = qos_get_time_us();
     qos_event_t qos_ev;
     SDL_Event event;
     int guard = 0;
@@ -1218,6 +1299,8 @@ void SDL_PumpEvents(void){
             sdl_queue_text_input_if_printable(&qos_ev);
         }
     }
+    g_sdl_profile.poll_calls++;
+    g_sdl_profile.poll_us += qos_get_time_us() - t0;
 }
 
 const Uint8* SDL_GetKeyboardState(int* numkeys){
@@ -2097,6 +2180,8 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
     if (visible_x1 <= visible_x0 || visible_y1 <= visible_y0){
         return 0;
     }
+    g_sdl_profile.rendercopy_pixels +=
+        (Uint64)(visible_x1 - visible_x0) * (Uint64)(visible_y1 - visible_y0);
 
     if (texture->render_hint == SDL_SHIM_RENDER_HINT_TILE_FILL &&
         texture->opaque &&
@@ -2106,6 +2191,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
         texture->color_b == 255u &&
         sx == 0 && sy == 0 && sw == texture->w && sh == texture->h &&
         dw <= 64 && dh <= 64){
+        g_sdl_profile.rendercopy_fill_calls++;
         return sdl_queue_fill_rect((unsigned int)(dx + visible_x0),
                                    (unsigned int)(dy + visible_y0),
                                    (unsigned int)(visible_x1 - visible_x0),
@@ -2132,6 +2218,7 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
             set_error("fb blit failed");
             return -1;
         }
+        g_sdl_profile.rendercopy_direct_calls++;
         return 0;
     }
 
@@ -2171,11 +2258,13 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
                 set_error("fb blit failed");
                 return -1;
             }
+            g_sdl_profile.rendercopy_blitbuf_calls++;
             return 0;
         }
     }
 
     sdl_flush_pending_fill();
+    g_sdl_profile.rendercopy_row_calls++;
     for (int oy = 0; oy < dh; oy++){
         int py = dy + oy;
         int tx_y;

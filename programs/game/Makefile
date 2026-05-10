@@ -20,6 +20,7 @@ SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
 QOS_PROFILE_ASSETS ?= 0
+QOS_PROFILE_SDL_AUTO ?= 0
 
 COMMON_CFLAGS = -ffreestanding -nostdlib -O2 -g -fno-omit-frame-pointer -pie -fno-plt -fvisibility=hidden -fno-builtin -DQOS_USERSPACE -DQF_QOS_BUILD -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include -I$(GAME_SRC_DIR)
 GAME_CFLAGS = $(COMMON_CFLAGS) -include qos_stdio.h
@@ -28,6 +29,9 @@ QOS_LIB_CFLAGS = $(COMMON_CFLAGS) -DQOS_STDIO_NO_MACROS
 
 ifeq ($(QOS_PROFILE_ASSETS),1)
 GAME_CFLAGS += -DQOS_PROFILE_ASSETS=1
+endif
+ifeq ($(QOS_PROFILE_SDL_AUTO),1)
+COMMON_CFLAGS += -DQOS_PROFILE_SDL_AUTO=1
 endif
 
 ifeq ($(strip $(GAME_AVAILABLE)),)

@@ -22,7 +22,7 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
-#define DISPLAY_HOTKEY_POLL_MS 64UL
+#define DISPLAY_HOTKEY_POLL_MS 250UL
 
 static int g_display_gpu_enabled = 0;
 static unsigned int g_display_gpu_flip_count = 0;
