@@ -136,6 +136,46 @@ static Uint64 sdl_profile_delta(Uint64 now, Uint64 last){
     return (now >= last) ? (now - last) : 0ull;
 }
 
+static void sdl_profile_copy(sdl_qos_profile_t* dst, const sdl_qos_profile_t* src){
+    if (!dst || !src){
+        return;
+    }
+    dst->bmp_calls = src->bmp_calls;
+    dst->bmp_ok = src->bmp_ok;
+    dst->bmp_fail = src->bmp_fail;
+    dst->bmp_bytes = src->bmp_bytes;
+    dst->bmp_read_us = src->bmp_read_us;
+    dst->bmp_decode_us = src->bmp_decode_us;
+    dst->bmp_total_us = src->bmp_total_us;
+    dst->bmp_max_us = src->bmp_max_us;
+    dst->texture_calls = src->texture_calls;
+    dst->texture_bytes = src->texture_bytes;
+    dst->texture_us = src->texture_us;
+    dst->rendercopy_calls = src->rendercopy_calls;
+    dst->rendercopy_us = src->rendercopy_us;
+    dst->rendercopy_direct_calls = src->rendercopy_direct_calls;
+    dst->rendercopy_gpu2d_calls = src->rendercopy_gpu2d_calls;
+    dst->rendercopy_gpu2d_miss = src->rendercopy_gpu2d_miss;
+    dst->rendercopy_blitbuf_calls = src->rendercopy_blitbuf_calls;
+    dst->rendercopy_row_calls = src->rendercopy_row_calls;
+    dst->rendercopy_fill_calls = src->rendercopy_fill_calls;
+    dst->rendercopy_soft_calls = src->rendercopy_soft_calls;
+    dst->rendercopy_pixels = src->rendercopy_pixels;
+    dst->fill_calls = src->fill_calls;
+    dst->fill_flushes = src->fill_flushes;
+    dst->fill_pixels = src->fill_pixels;
+    dst->fill_us = src->fill_us;
+    dst->clear_calls = src->clear_calls;
+    dst->clear_us = src->clear_us;
+    dst->poll_calls = src->poll_calls;
+    dst->poll_us = src->poll_us;
+    dst->present_calls = src->present_calls;
+    dst->present_us = src->present_us;
+    dst->present_flush_us = src->present_flush_us;
+    dst->present_upload_us = src->present_upload_us;
+    dst->present_kernel_us = src->present_kernel_us;
+}
+
 void SDL_QOS_ProfileReset(void){
     g_sdl_profile.bmp_calls = 0ull;
     g_sdl_profile.bmp_ok = 0ull;
@@ -171,7 +211,7 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.present_flush_us = 0ull;
     g_sdl_profile.present_upload_us = 0ull;
     g_sdl_profile.present_kernel_us = 0ull;
-    g_sdl_auto_last_profile = g_sdl_profile;
+    sdl_profile_copy(&g_sdl_auto_last_profile, &g_sdl_profile);
     g_sdl_auto_last_us = qos_get_time_us();
     qos_file_profile_reset();
 }
@@ -289,7 +329,7 @@ static void sdl_profile_auto_tick(void){
                        (now_us - g_sdl_auto_last_us) : 0ull;
     if (frames == 0ull){
         g_sdl_auto_last_us = now_us;
-        g_sdl_auto_last_profile = g_sdl_profile;
+        sdl_profile_copy(&g_sdl_auto_last_profile, &g_sdl_profile);
         return;
     }
 
@@ -381,7 +421,7 @@ static void sdl_profile_auto_tick(void){
     qos_puts("\n");
 
     g_sdl_auto_last_us = now_us;
-    g_sdl_auto_last_profile = g_sdl_profile;
+    sdl_profile_copy(&g_sdl_auto_last_profile, &g_sdl_profile);
 }
 #endif
 

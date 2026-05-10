@@ -5,7 +5,7 @@ OBJCOPY = $(CROSS)objcopy
 
 PROGRAM_MEMORY_BYTES ?= 4194304
 CFLAGS = -ffreestanding -nostdlib -O2 -pie -fno-builtin -mgeneral-regs-only -DQOS_USERSPACE -DQOS_PROGRAM_MEMORY_BYTES=$(PROGRAM_MEMORY_BYTES) -I../../include
-USER_LIB_OBJS = qos_user_heap.o
+USER_LIB_OBJS = qos_user_heap.o qos_mem.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
@@ -20,6 +20,9 @@ start.o: start.S
 
 qos_user_heap.o: ../lib/qos_user_heap.c
 	$(CC) $(CFLAGS) -c ../lib/qos_user_heap.c -o qos_user_heap.o
+
+qos_mem.o: ../lib/qos_mem.c
+	$(CC) $(CFLAGS) -c ../lib/qos_mem.c -o qos_mem.o
 
 shell.elf: main.o start.o $(USER_LIB_OBJS)
 	$(LD) -pie -T linker.ld start.o main.o $(USER_LIB_OBJS) -o shell.elf

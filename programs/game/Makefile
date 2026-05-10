@@ -14,7 +14,7 @@ GAME_SOURCES ?= $(filter-out $(GAME_EXCLUDE_PATHS),$(GAME_ALL_SOURCES))
 GAME_BUILD_OBJS = $(patsubst $(GAME_SRC_DIR)/%.c,game_%.o,$(GAME_SOURCES))
 GAME_ENTRY_OBJ = game_entry.o
 GAME_AVAILABLE = $(and $(wildcard $(GAME_ENTRY_SOURCE)),$(GAME_ALL_SOURCES))
-USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o qos_random.o
+USER_LIB_OBJS = qos_user_heap.o qos_stdio.o qos_math.o qos_random.o qos_mem.o
 SDL_OBJS = sdl_shim.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
@@ -59,6 +59,9 @@ qos_math.o: ../lib/qos_math.c
 
 qos_random.o: ../lib/qos_random.c
 	$(CC) $(COMMON_CFLAGS) -c ../lib/qos_random.c -o qos_random.o
+
+qos_mem.o: ../lib/qos_mem.c
+	$(CC) $(COMMON_CFLAGS) -c ../lib/qos_mem.c -o qos_mem.o
 
 sdl_shim.o: ../sdl_compat/sdl_shim.c
 	$(CC) $(COMMON_CFLAGS) -c ../sdl_compat/sdl_shim.c -o sdl_shim.o
