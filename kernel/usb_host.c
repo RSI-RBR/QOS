@@ -281,6 +281,7 @@ typedef struct {
     unsigned char in_toggle;
     unsigned char prev_report[USB_HID_REPORT_LEN];
     int have_prev_report;
+    unsigned char report_offset;
     unsigned long last_report_tick;
     unsigned char q[USB_HID_CHAR_QUEUE_LEN];
     unsigned int q_head;
@@ -348,6 +349,11 @@ static void usb_input_event_queue_reset(void);
 static int usb_input_event_push(const qos_event_t* ev);
 static int usb_input_event_pop(qos_event_t* out);
 static int usb_hid_key_present(const unsigned char* report, unsigned char key);
+static int usb_hid_report_has_key_or_mod(const unsigned char report[USB_HID_REPORT_LEN]);
+static void usb_hid_pack_last_raw(const unsigned char* report, unsigned int actual);
+static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
+                                             unsigned int actual,
+                                             unsigned char out[USB_HID_REPORT_LEN]);
 static unsigned char usb_hid_keycode_to_ascii(unsigned char key, int shift);
 static unsigned int usb_hid_modifiers(unsigned char mod_byte);
 static void usb_hid_push_key_event(unsigned int type,
@@ -435,12 +441,14 @@ static void usb_hid_queue_reset(void){
     g_kbd.q_head = 0;
     g_kbd.q_tail = 0;
     g_kbd.q_count = 0;
+    g_root_info.hid_char_queue_count = 0;
 }
 
 static void usb_input_event_queue_reset(void){
     g_input_event_head = 0;
     g_input_event_tail = 0;
     g_input_event_count = 0;
+    g_root_info.hid_event_queue_count = 0;
 }
 
 static int usb_hid_queue_push(unsigned char c){
@@ -453,6 +461,7 @@ static int usb_hid_queue_push(unsigned char c){
     g_kbd.q[g_kbd.q_tail] = c;
     g_kbd.q_tail = (g_kbd.q_tail + 1u) % USB_HID_CHAR_QUEUE_LEN;
     g_kbd.q_count++;
+    g_root_info.hid_char_queue_count = g_kbd.q_count;
     spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 0;
 }
@@ -467,6 +476,7 @@ static int usb_hid_queue_pop(char* out){
     *out = (char)g_kbd.q[g_kbd.q_head];
     g_kbd.q_head = (g_kbd.q_head + 1u) % USB_HID_CHAR_QUEUE_LEN;
     g_kbd.q_count--;
+    g_root_info.hid_char_queue_count = g_kbd.q_count;
     spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 1;
 }
@@ -497,6 +507,7 @@ static int usb_input_event_push(const qos_event_t* ev){
             prev->buttons = ev->buttons;
             prev->tick = ev->tick;
             prev->seq = ++g_input_event_seq;
+            g_root_info.hid_event_queue_count = g_input_event_count;
             spin_unlock_irqrestore(&g_usb_input_lock, irq);
             return 0;
         }
@@ -510,6 +521,7 @@ static int usb_input_event_push(const qos_event_t* ev){
     g_input_event_q[g_input_event_tail].seq = ++g_input_event_seq;
     g_input_event_tail = (g_input_event_tail + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
     g_input_event_count++;
+    g_root_info.hid_event_queue_count = g_input_event_count;
     spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 0;
 }
@@ -524,6 +536,7 @@ static int usb_input_event_pop(qos_event_t* out){
     *out = g_input_event_q[g_input_event_head];
     g_input_event_head = (g_input_event_head + 1u) % USB_INPUT_EVENT_QUEUE_LEN;
     g_input_event_count--;
+    g_root_info.hid_event_queue_count = g_input_event_count;
     spin_unlock_irqrestore(&g_usb_input_lock, irq);
     return 1;
 }
@@ -537,6 +550,107 @@ static int usb_hid_key_present(const unsigned char* report, unsigned char key){
             return 1;
         }
     }
+    return 0;
+}
+
+static int usb_hid_report_has_key_or_mod(const unsigned char report[USB_HID_REPORT_LEN]){
+    if (!report){
+        return 0;
+    }
+    if (report[0] != 0u){
+        return 1;
+    }
+    for (unsigned int i = 2; i < USB_HID_REPORT_LEN; i++){
+        if (report[i] != 0u && report[i] != 0x01u){
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void usb_hid_pack_last_raw(const unsigned char* report, unsigned int actual){
+    unsigned int raw0 = 0u;
+    unsigned int raw1 = 0u;
+    unsigned int n = (actual < 8u) ? actual : 8u;
+    for (unsigned int i = 0; i < n && i < 4u; i++){
+        raw0 |= ((unsigned int)report[i]) << (i * 8u);
+    }
+    for (unsigned int i = 4; i < n; i++){
+        raw1 |= ((unsigned int)report[i]) << ((i - 4u) * 8u);
+    }
+    g_root_info.hid_last_raw0 = raw0;
+    g_root_info.hid_last_raw1 = raw1;
+}
+
+static int usb_hid_normalize_keyboard_report(const unsigned char* raw,
+                                             unsigned int actual,
+                                             unsigned char out[USB_HID_REPORT_LEN]){
+    unsigned char boot[USB_HID_REPORT_LEN];
+    unsigned char shifted[USB_HID_REPORT_LEN];
+    int choose_shifted = 0;
+
+    if (!raw || !out || actual == 0u){
+        return -1;
+    }
+
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        boot[i] = 0;
+        shifted[i] = 0;
+        out[i] = 0;
+    }
+
+    unsigned int boot_n = (actual < USB_HID_REPORT_LEN) ? actual : USB_HID_REPORT_LEN;
+    for (unsigned int i = 0; i < boot_n; i++){
+        boot[i] = raw[i];
+    }
+
+    if (actual > 1u){
+        unsigned int shifted_n = ((actual - 1u) < USB_HID_REPORT_LEN) ?
+                                 (actual - 1u) :
+                                 USB_HID_REPORT_LEN;
+        for (unsigned int i = 0; i < shifted_n; i++){
+            shifted[i] = raw[i + 1u];
+        }
+    }
+
+    int boot_has = usb_hid_report_has_key_or_mod(boot);
+    int shifted_has = usb_hid_report_has_key_or_mod(shifted);
+    int ambiguous_release = (actual >= 4u &&
+                             raw[0] <= 8u &&
+                             raw[1] == 0u &&
+                             raw[2] == 0u &&
+                             !shifted_has) ? 1 : 0;
+
+    if (g_kbd.report_offset == 1u){
+        choose_shifted = 1;
+    } else if (g_kbd.report_offset == 0u){
+        choose_shifted = 0;
+    } else if (actual >= 4u &&
+               raw[0] <= 8u &&
+               raw[1] == 0u &&
+               raw[2] == 0u &&
+               shifted_has){
+        /*
+         * Several non-boot keyboards send [report_id, modifier, reserved, key...].
+         * With exactly 8 bytes that looks almost like a boot report, except the
+         * first byte becomes a fake Ctrl modifier and no text reaches the shell.
+         */
+        choose_shifted = 1;
+    } else if (actual >= 9u && raw[2] == 0u && shifted_has){
+        choose_shifted = 1;
+    } else if (shifted_has && !boot_has){
+        choose_shifted = 1;
+    }
+
+    const unsigned char* chosen = choose_shifted ? shifted : boot;
+    for (unsigned int i = 0; i < USB_HID_REPORT_LEN; i++){
+        out[i] = chosen[i];
+    }
+
+    if ((boot_has || shifted_has) && !ambiguous_release){
+        g_kbd.report_offset = choose_shifted ? 1u : 0u;
+    }
+    g_root_info.hid_report_offset = g_kbd.report_offset;
     return 0;
 }
 
@@ -642,6 +756,7 @@ static void usb_hid_push_key_event(unsigned int type,
     (void)usb_input_event_push(&ev);
 
     if (key_down && ev.ascii){
+        g_root_info.hid_last_ascii = ev.ascii;
         (void)usb_hid_queue_push((unsigned char)ev.ascii);
     }
 }
@@ -939,6 +1054,11 @@ static int usb_hid_keyboard_configure(unsigned char addr,
     g_kbd.use_split = use_split ? 1 : 0;
     g_kbd.low_speed = low_speed ? 1 : 0;
     g_kbd.boot_kbd = boot_mode ? 1 : 0;
+    g_kbd.report_offset = 0xFFu;
+    g_root_info.hid_report_offset = 0xFFu;
+    g_root_info.hid_last_ascii = 0u;
+    g_root_info.hid_last_raw0 = 0u;
+    g_root_info.hid_last_raw1 = 0u;
     g_kbd.in_toggle = 0;
     usb_hid_clear_prev_report();
     g_kbd.last_report_tick = system_ticks;
@@ -1210,25 +1330,10 @@ static int usb_hid_poll_once(void){
     }
     g_root_info.hid_report_count++;
     g_kbd_active_until_tick = system_ticks + USB_HID_ACTIVE_HOLD_MS;
-    if (actual >= 9u &&
-        report[2] == 0u &&
-        (report[1] != 0u ||
-         report[3] != 0u ||
-         report[4] != 0u ||
-         report[5] != 0u ||
-         report[6] != 0u ||
-         report[7] != 0u ||
-         report[8] != 0u)){
-        /*
-         * Report-ID prefixed packet:
-         *   [report_id, modifiers, reserved, key0, ...]
-         * Some keyboards use report_id=0, so do not require report[0] != 0.
-         * A real compact boot report with key0 populated has report[2] != 0,
-         * so the report[2] guard keeps normal packets from being shifted.
-         */
-        usb_hid_process_report(&report[1]);
-    } else{
-        usb_hid_process_report(report);
+    usb_hid_pack_last_raw(report, actual);
+    unsigned char normalized[USB_HID_REPORT_LEN];
+    if (usb_hid_normalize_keyboard_report(report, actual, normalized) == 0){
+        usb_hid_process_report(normalized);
     }
     return 0;
 }

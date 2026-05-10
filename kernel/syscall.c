@@ -331,14 +331,27 @@ static void syscall_dump_usb_info(void){
         uart_putdec(info.hid_error_count);
         syscall_write_puts(-1, " last=");
         uart_putdec(info.hid_last_actual);
+        syscall_write_puts(-1, " off=");
+        uart_puthex(info.hid_report_offset);
         syscall_write_puts(-1, " mod=");
         uart_puthex(info.hid_last_mod);
         syscall_write_puts(-1, " key=");
         uart_puthex(info.hid_last_key0);
+        syscall_write_puts(-1, " ascii=");
+        uart_puthex(info.hid_last_ascii);
+        syscall_write_puts(-1, " q=");
+        uart_putdec(info.hid_char_queue_count);
+        syscall_write_puts(-1, " evq=");
+        uart_putdec(info.hid_event_queue_count);
         syscall_write_puts(-1, " switches=");
         uart_putdec(info.hid_switch_count);
         syscall_write_puts(-1, " stale_clear=");
         uart_putdec(info.hid_stale_clear_count);
+        syscall_write_puts(-1, "\n");
+        syscall_write_puts(-1, "USB HID raw0=");
+        uart_puthex(info.hid_last_raw0);
+        syscall_write_puts(-1, " raw1=");
+        uart_puthex(info.hid_last_raw1);
         syscall_write_puts(-1, "\n");
     } else if (info.child_hid_kbd_address != 0u){
         syscall_write_puts(-1, "USB HID kbd candidate addr=");

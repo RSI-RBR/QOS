@@ -51,7 +51,9 @@ static spinlock_t g_process_lock;
 extern void restore_context_and_eret(void* frame_sp);
 extern volatile unsigned long system_ticks;
 
-#define IRQ_FRAME_WORDS 34
+// Keep this in sync with kernel/vectors.S. The first 34 words are the
+// integer/ELR/SPSR/SP_EL0 frame; the tail preserves FP/SIMD state.
+#define IRQ_FRAME_WORDS 100
 #define IRQ_FRAME_SIZE (IRQ_FRAME_WORDS * sizeof(unsigned long))
 #define IRQ_FRAME_ELR_IDX 31
 #define IRQ_FRAME_SPSR_IDX 32

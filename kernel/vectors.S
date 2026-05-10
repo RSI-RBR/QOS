@@ -46,9 +46,10 @@ vectors:
     b .
 
 irq_entry:
-    // Frame layout (272 bytes):
+    // Frame layout (800 bytes):
     // x0-x29 at 0..239, x30 at 240, ELR_EL1 at 248, SPSR_EL1 at 256, SP_EL0 at 264
-    sub sp, sp, #272
+    // q0-q31 at 272..783, FPCR at 784, FPSR at 792
+    sub sp, sp, #800
 
     stp x0, x1, [sp, #16 * 0]
     stp x2, x3, [sp, #16 * 1]
@@ -74,6 +75,27 @@ irq_entry:
     mrs x1, sp_el0
     str x1, [sp, #264]
 
+    stp q0, q1, [sp, #272]
+    stp q2, q3, [sp, #304]
+    stp q4, q5, [sp, #336]
+    stp q6, q7, [sp, #368]
+    stp q8, q9, [sp, #400]
+    stp q10, q11, [sp, #432]
+    stp q12, q13, [sp, #464]
+    stp q14, q15, [sp, #496]
+    stp q16, q17, [sp, #528]
+    stp q18, q19, [sp, #560]
+    stp q20, q21, [sp, #592]
+    stp q22, q23, [sp, #624]
+    stp q24, q25, [sp, #656]
+    stp q26, q27, [sp, #688]
+    stp q28, q29, [sp, #720]
+    stp q30, q31, [sp, #752]
+    mrs x1, fpcr
+    str x1, [sp, #784]
+    mrs x1, fpsr
+    str x1, [sp, #792]
+
     mov x0, sp
     bl irq_handler
     b restore_from_frame
@@ -89,6 +111,27 @@ restore_from_frame:
     msr spsr_el1, x1
     ldr x1, [sp, #264]
     msr sp_el0, x1
+
+    ldp q0, q1, [sp, #272]
+    ldp q2, q3, [sp, #304]
+    ldp q4, q5, [sp, #336]
+    ldp q6, q7, [sp, #368]
+    ldp q8, q9, [sp, #400]
+    ldp q10, q11, [sp, #432]
+    ldp q12, q13, [sp, #464]
+    ldp q14, q15, [sp, #496]
+    ldp q16, q17, [sp, #528]
+    ldp q18, q19, [sp, #560]
+    ldp q20, q21, [sp, #592]
+    ldp q22, q23, [sp, #624]
+    ldp q24, q25, [sp, #656]
+    ldp q26, q27, [sp, #688]
+    ldp q28, q29, [sp, #720]
+    ldp q30, q31, [sp, #752]
+    ldr x1, [sp, #784]
+    msr fpcr, x1
+    ldr x1, [sp, #792]
+    msr fpsr, x1
 
     ldp x0, x1, [sp, #16 * 0]
     ldp x2, x3, [sp, #16 * 1]
@@ -107,12 +150,12 @@ restore_from_frame:
     ldp x28, x29, [sp, #16 * 14]
     ldr x30, [sp, #240]
 
-    add sp, sp, #272
+    add sp, sp, #800
     eret
 
 sync_entry:
     // Use same frame layout as IRQ path so sync handler can recover by scheduling.
-    sub sp, sp, #272
+    sub sp, sp, #800
 
     stp x0, x1, [sp, #16 * 0]
     stp x2, x3, [sp, #16 * 1]
@@ -137,6 +180,27 @@ sync_entry:
     str x1, [sp, #256]
     mrs x1, sp_el0
     str x1, [sp, #264]
+
+    stp q0, q1, [sp, #272]
+    stp q2, q3, [sp, #304]
+    stp q4, q5, [sp, #336]
+    stp q6, q7, [sp, #368]
+    stp q8, q9, [sp, #400]
+    stp q10, q11, [sp, #432]
+    stp q12, q13, [sp, #464]
+    stp q14, q15, [sp, #496]
+    stp q16, q17, [sp, #528]
+    stp q18, q19, [sp, #560]
+    stp q20, q21, [sp, #592]
+    stp q22, q23, [sp, #624]
+    stp q24, q25, [sp, #656]
+    stp q26, q27, [sp, #688]
+    stp q28, q29, [sp, #720]
+    stp q30, q31, [sp, #752]
+    mrs x1, fpcr
+    str x1, [sp, #784]
+    mrs x1, fpsr
+    str x1, [sp, #792]
 
     mov x0, sp
     mrs x1, esr_el1
