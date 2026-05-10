@@ -1669,6 +1669,8 @@ int SDL_PollEvent(SDL_Event* event){
     Uint64 t0 = qos_get_time_us();
     int ret = 0;
     qos_event_t qos_ev;
+    SDL_Event translated;
+    int drained = 0;
     if (!event){
         return 0;
     }
@@ -1687,6 +1689,16 @@ int SDL_PollEvent(SDL_Event* event){
     if (sdl_translate_qos_event(&qos_ev, event)){
         sdl_queue_text_input_if_printable(&qos_ev);
         ret = 1;
+    }
+
+    while (drained < 8 && qos_poll_event(&qos_ev) > 0){
+        drained++;
+        if (sdl_translate_qos_event(&qos_ev, &translated)){
+            (void)sdl_event_push(&translated);
+            sdl_queue_text_input_if_printable(&qos_ev);
+        }
+    }
+    if (ret){
         goto done;
     }
     ret = sdl_poll_repeat_event(event);

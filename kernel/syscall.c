@@ -34,6 +34,7 @@
 #define USER_WIFI_SCAN_MAX 64u
 #define USER_BMP_FILE_MAX (4u * 1024u * 1024u)
 #define USER_BMP_PATH_MAX 96u
+#define GRAPHICS_USB_POLL_BURST_MAX 3u
 
 // Trap frame layout in vectors.S
 #define TF_X0   0
@@ -210,7 +211,12 @@ static void syscall_poll_background_io(void){
     // Poll HID globally so reserved display-switch shortcuts work even when
     // the visible graphics task is not actively reading keyboard input. Normal
     // characters still remain gated by console/terminal ownership.
-    usb_host_poll();
+    int active_display = display_get_active();
+    unsigned int burst = (active_display != DISPLAY_TEXT_SESSION_ID) ?
+                         GRAPHICS_USB_POLL_BURST_MAX : 1u;
+    for (unsigned int i = 0u; i < burst; i++){
+        usb_host_poll();
+    }
     terminal_poll_inputs();
 
     if ((long)(now - next_net_poll_tick) >= 0){
@@ -848,6 +854,8 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             qos_event_t ev;
             int pid = process_current_pid();
             static unsigned int input_poll_round_robin = 0u;
+            unsigned int poll_burst = (display_get_active() != DISPLAY_TEXT_SESSION_ID) ?
+                                      GRAPHICS_USB_POLL_BURST_MAX : 1u;
             if (!frame[TF_X0] || !display_is_active_graphics_pid(pid)){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
@@ -858,7 +866,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
              * Otherwise steady mouse motion can keep the queue non-empty and
              * starve reserved global shortcuts such as Alt+Left/Alt+Right.
              */
-            usb_host_poll();
+            for (unsigned int i = 0u; i < poll_burst; i++){
+                usb_host_poll();
+            }
             if (!display_is_active_graphics_pid(pid)){
                 frame[TF_X0] = 0;
                 return frame_sp;
@@ -873,7 +883,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
             int mouse_first = ((input_poll_round_robin++ & 1u) == 0u) ? 1 : 0;
             if (!mouse_first){
-                usb_host_poll();
+                for (unsigned int i = 0u; i < poll_burst; i++){
+                    usb_host_poll();
+                }
                 if (usb_host_poll_event(&ev)){
                     frame[TF_X0] = (process_copy_to_user((void*)frame[TF_X0],
                                                          &ev,
@@ -891,7 +903,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
 
             if (mouse_first){
-                usb_host_poll();
+                for (unsigned int i = 0u; i < poll_burst; i++){
+                    usb_host_poll();
+                }
             }
             if (!usb_host_poll_event(&ev)){
                 frame[TF_X0] = 0;
