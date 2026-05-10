@@ -5,6 +5,7 @@
 #include "memory.h"
 #include "program.h"
 #include "spinlock.h"
+#include "timer.h"
 #include "usb_host.h"
 
 static display_session_t g_display_sessions[DISPLAY_MAX_SESSIONS];
@@ -21,10 +22,12 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
+#define DISPLAY_HOTKEY_POLL_MS 16UL
 
 static int g_display_gpu_enabled = 0;
 static unsigned int g_display_gpu_flip_count = 0;
 static unsigned int g_display_gpu_failure_count = 0;
+static unsigned long g_display_next_hotkey_poll_tick = 0UL;
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
 static int g_cursor_x = 0;
@@ -50,6 +53,10 @@ typedef struct {
     unsigned long present_us;
     unsigned long present_max_us;
     unsigned long usb_poll_us;
+    unsigned long attach_us;
+    unsigned long copy_us;
+    unsigned long cursor_us;
+    unsigned long flip_us;
 } display_profile_t;
 
 static display_profile_t g_display_profile;
@@ -190,25 +197,59 @@ static void display_copy_surface(void* dst,
 
 static int display_pageflip_available(void){
     unsigned long page_bytes = display_fb_size();
-    unsigned long base0 = fb_get_page_base(0u);
-    unsigned long base1 = fb_get_page_base(DISPLAY_SCANOUT_PAGE);
     unsigned long pool_start = QOS_PROGRAM_POOL_START;
     unsigned long pool_end = QOS_PROGRAM_POOL_START + QOS_PROGRAM_POOL_SIZE;
+    unsigned int pages = fb_get_page_count();
 
-    if (fb_get_page_count() <= DISPLAY_SCANOUT_PAGE ||
-        page_bytes == 0UL ||
-        base0 == 0UL ||
-        base1 == 0UL){
+    if (pages <= DISPLAY_SCANOUT_PAGE || page_bytes == 0UL){
         return 0;
     }
 
-    if (base0 < pool_end && base0 + page_bytes > pool_start){
-        return 0;
-    }
-    if (base1 < pool_end && base1 + page_bytes > pool_start){
-        return 0;
+    for (unsigned int page = 0u; page < pages; page++){
+        unsigned long base = fb_get_page_base(page);
+        if (base == 0UL){
+            return 0;
+        }
+        if (base < pool_end && base + page_bytes > pool_start){
+            return 0;
+        }
     }
     return 1;
+}
+
+static unsigned int display_choose_scanout_page(unsigned int avoid_a,
+                                                unsigned int avoid_b,
+                                                int require_two_avoids){
+    unsigned int pages = fb_get_page_count();
+    unsigned int first_graphics_page = (pages >= 4u) ? 1u : 0u;
+    for (unsigned int page = first_graphics_page; page < pages; page++){
+        if (page == avoid_a || page == avoid_b){
+            continue;
+        }
+        if (fb_get_page_base(page) != 0UL){
+            return page;
+        }
+    }
+    if (require_two_avoids){
+        return pages;
+    }
+    for (unsigned int page = first_graphics_page; page < pages; page++){
+        if (page == avoid_a){
+            continue;
+        }
+        if (fb_get_page_base(page) != 0UL){
+            return page;
+        }
+    }
+    for (unsigned int page = 0u; page < pages; page++){
+        if (page == avoid_a || (require_two_avoids && page == avoid_b)){
+            continue;
+        }
+        if (fb_get_page_base(page) != 0UL){
+            return page;
+        }
+    }
+    return pages;
 }
 
 static void display_invalidate_cursor_locked(void){
@@ -618,23 +659,21 @@ static int display_attach_scanout_locked(display_session_t* s){
         return 0;
     }
 
-    void* scanout = (void*)fb_get_page_base(DISPLAY_SCANOUT_PAGE);
-    if (!scanout){
+    unsigned int visible_page = fb_get_display_page();
+    unsigned int scanout_page = display_choose_scanout_page(visible_page,
+                                                            visible_page,
+                                                            0);
+    if (scanout_page >= fb_get_page_count()){
         g_display_gpu_failure_count++;
         return -1;
     }
 
-    if (fb_get_display_page() == DISPLAY_SCANOUT_PAGE &&
-        fb_get_page_count() > 1u){
-        scanout = (void*)fb_get_page_base(0u);
-        if (!scanout){
-            g_display_gpu_failure_count++;
-            return -1;
-        }
-        s->scanout_page = 0u;
-    } else{
-        s->scanout_page = DISPLAY_SCANOUT_PAGE;
+    void* scanout = (void*)fb_get_page_base(scanout_page);
+    if (!scanout){
+        g_display_gpu_failure_count++;
+        return -1;
     }
+    s->scanout_page = scanout_page;
 
     display_copy_surface(scanout,
                          s->pitch,
@@ -1194,11 +1233,18 @@ int display_present_active_graphics(void){
 
     /*
      * Graphics apps may render continuously without polling SDL events every
-     * frame. Poll the keyboard here so global display hotkeys still work while
-     * a graphics session owns input.
+     * frame. Poll the keyboard here so global display hotkeys still work, but
+     * do not make every present pay for USB host traffic.
      */
-    usb_host_poll();
+    if (system_ticks >= g_display_next_hotkey_poll_tick){
+        usb_host_poll();
+        g_display_next_hotkey_poll_tick = system_ticks + DISPLAY_HOTKEY_POLL_MS;
+    }
     unsigned long poll_us = display_elapsed_us(poll_start, prof_hz);
+    unsigned long attach_us = 0UL;
+    unsigned long copy_us = 0UL;
+    unsigned long cursor_us = 0UL;
+    unsigned long flip_us = 0UL;
 
     unsigned int visible_page = fb_get_display_page();
     unsigned long dst_base = fb_get_page_base(visible_page);
@@ -1226,6 +1272,10 @@ int display_present_active_graphics(void){
         g_display_sessions[session_id].pitch == 0u){
         g_display_profile.present_calls++;
         g_display_profile.usb_poll_us += poll_us;
+        g_display_profile.attach_us += attach_us;
+        g_display_profile.copy_us += copy_us;
+        g_display_profile.cursor_us += cursor_us;
+        g_display_profile.flip_us += flip_us;
         g_display_profile.no_work_calls++;
         unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
         g_display_profile.present_us += total_us;
@@ -1238,11 +1288,13 @@ int display_present_active_graphics(void){
 
     display_session_t* s = &g_display_sessions[session_id];
     int pageflip_attached = 0;
+    unsigned long attach_start = display_read_cntpct();
     if (g_display_gpu_enabled &&
         display_attach_scanout_locked(s) == 0 &&
         s->scanout_attached){
         pageflip_attached = 1;
     }
+    attach_us = display_elapsed_us(attach_start, prof_hz);
 
     unsigned int copy_x0 = 0u;
     unsigned int copy_y0 = 0u;
@@ -1325,6 +1377,10 @@ int display_present_active_graphics(void){
     if (!have_dirty && !cursor_changed && !cursor_removed && !need_page_flip){
         g_display_profile.present_calls++;
         g_display_profile.usb_poll_us += poll_us;
+        g_display_profile.attach_us += attach_us;
+        g_display_profile.copy_us += copy_us;
+        g_display_profile.cursor_us += cursor_us;
+        g_display_profile.flip_us += flip_us;
         g_display_profile.no_work_calls++;
         unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
         g_display_profile.present_us += total_us;
@@ -1336,6 +1392,7 @@ int display_present_active_graphics(void){
     }
 
     if (have_dirty && !pageflip_present){
+        unsigned long copy_start = display_read_cntpct();
         (void)display_copy_rect_locked(s,
                                        dst_base,
                                        dst_pitch,
@@ -1345,12 +1402,14 @@ int display_present_active_graphics(void){
                                        copy_y0,
                                        copy_x1,
                                        copy_y1);
+        copy_us += display_elapsed_us(copy_start, prof_hz);
         g_display_profile.buffered_calls++;
         g_display_profile.copied_pixels +=
             (unsigned long)(copy_x1 - copy_x0) *
             (unsigned long)(copy_y1 - copy_y0);
     }
 
+    unsigned long cursor_start = display_read_cntpct();
     if (had_cursor && (cursor_changed || cursor_removed)){
         unsigned int ox0 = 0u, oy0 = 0u, ox1 = 0u, oy1 = 0u;
         if (display_cursor_rect(g_cursor_x,
@@ -1432,12 +1491,24 @@ int display_present_active_graphics(void){
                                             session_id);
         display_invalidate_cursor_locked();
     }
+    cursor_us = display_elapsed_us(cursor_start, prof_hz);
 
     if (pageflip_present && fb_get_display_page() != s->scanout_page){
+        unsigned int previous_visible_page = fb_get_display_page();
+        unsigned int presented_page = s->scanout_page;
+        unsigned long flip_start = display_read_cntpct();
         if (fb_set_display_page(s->scanout_page) == 0){
+            flip_us += display_elapsed_us(flip_start, prof_hz);
             g_display_gpu_flip_count++;
             g_display_profile.pageflip_calls++;
-            unsigned int next_page = (s->scanout_page == 0u) ? 1u : 0u;
+            unsigned int next_page = display_choose_scanout_page(presented_page,
+                                                                 previous_visible_page,
+                                                                 fb_get_page_count() > 2u);
+            if (next_page >= fb_get_page_count()){
+                next_page = display_choose_scanout_page(presented_page,
+                                                       presented_page,
+                                                       0);
+            }
             unsigned long next_base = fb_get_page_base(next_page);
             if (next_base){
                 s->framebuffer = (void*)next_base;
@@ -1447,6 +1518,7 @@ int display_present_active_graphics(void){
                 g_display_gpu_failure_count++;
             }
         } else{
+            flip_us += display_elapsed_us(flip_start, prof_hz);
             g_display_gpu_failure_count++;
         }
     }
@@ -1458,6 +1530,10 @@ int display_present_active_graphics(void){
     s->dirty_y1 = 0u;
     g_display_profile.present_calls++;
     g_display_profile.usb_poll_us += poll_us;
+    g_display_profile.attach_us += attach_us;
+    g_display_profile.copy_us += copy_us;
+    g_display_profile.cursor_us += cursor_us;
+    g_display_profile.flip_us += flip_us;
     if (!have_dirty && (cursor_changed || cursor_removed)){
         g_display_profile.cursor_only_calls++;
     }
@@ -1524,6 +1600,7 @@ unsigned int display_gpu_status(void){
         st |= 4u;
     }
     spin_unlock_irqrestore(&g_display_lock, irq);
+    st |= (fb_get_page_count() & 0xFFu) << 8;
     st |= (g_display_gpu_failure_count & 0xFFFFu) << 16;
     return st;
 }
@@ -1550,6 +1627,10 @@ void display_profile_reset(void){
     g_display_profile.present_us = 0UL;
     g_display_profile.present_max_us = 0UL;
     g_display_profile.usb_poll_us = 0UL;
+    g_display_profile.attach_us = 0UL;
+    g_display_profile.copy_us = 0UL;
+    g_display_profile.cursor_us = 0UL;
+    g_display_profile.flip_us = 0UL;
     spin_unlock_irqrestore(&g_display_lock, irq);
 }
 
@@ -1586,5 +1667,15 @@ void display_profile_dump(void){
     klog_putdec(snap.present_max_us);
     klog_puts(" usb_poll=");
     klog_putdec(snap.usb_poll_us);
+    klog_puts("\n");
+
+    klog_puts("DISPLAY us2: attach=");
+    klog_putdec(snap.attach_us);
+    klog_puts(" copy=");
+    klog_putdec(snap.copy_us);
+    klog_puts(" cursor=");
+    klog_putdec(snap.cursor_us);
+    klog_puts(" flip=");
+    klog_putdec(snap.flip_us);
     klog_puts("\n");
 }

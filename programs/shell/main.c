@@ -776,6 +776,8 @@ static void cmd_gpu(const char* mode){
         qos_puts((st & 2u) ? "yes" : "no");
         qos_puts(" scanout=");
         qos_puts((st & 4u) ? "direct" : "buffered");
+        qos_puts(" pages=");
+        print_uint((st >> 8) & 0xFFu);
         qos_puts(" failures=");
         print_uint((st >> 16) & 0xFFFFu);
         qos_puts(" flips=");

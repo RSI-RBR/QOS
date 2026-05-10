@@ -32,7 +32,7 @@ static spinlock_t g_fb_lock;
 void fb_init(){
     spinlock_init(&g_fb_lock);
     unsigned int requested_height = height;
-    unsigned int requested_virtual_height = requested_height * 2u;
+    unsigned int requested_virtual_height = requested_height * 4u;
 
     mbox[0] = 35 * 4;
     mbox[1] = 0;
@@ -95,11 +95,18 @@ void fb_init(){
                 height = MAX_HEIGHT;
             }
         }
-        if (height > 0u && virtual_height >= height * 2u &&
-            fb_size >= ((unsigned long)pitch * (unsigned long)height * 2ul)){
-            fb_page_count = 2u;
-        } else{
-            fb_page_count = 1u;
+        fb_page_count = 1u;
+        if (pitch > 0u && height > 0u && virtual_height >= height){
+            unsigned long page_bytes = (unsigned long)pitch * (unsigned long)height;
+            unsigned int pages_by_height = virtual_height / height;
+            unsigned int pages_by_size = (unsigned int)(fb_size / page_bytes);
+            unsigned int pages = pages_by_height < pages_by_size ? pages_by_height : pages_by_size;
+            if (pages > 4u){
+                pages = 4u;
+            }
+            if (pages > 0u){
+                fb_page_count = pages;
+            }
         }
         fb_display_page = 0u;
         uart_puts("FB active width=");
@@ -114,6 +121,10 @@ void fb_init(){
         uart_puthex((unsigned int)(unsigned long)fb);
         uart_puts(" page1=");
         uart_puthex((unsigned int)fb_get_page_base(1u));
+        uart_puts(" page2=");
+        uart_puthex((unsigned int)fb_get_page_base(2u));
+        uart_puts(" page3=");
+        uart_puthex((unsigned int)fb_get_page_base(3u));
         uart_puts("\n");
     }
 }
