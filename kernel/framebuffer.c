@@ -345,6 +345,22 @@ unsigned long fb_get_page_bus_base(unsigned int page){
     return fb_bus + ((unsigned long)page * (unsigned long)pitch * (unsigned long)height);
 }
 
+int fb_wait_vsync(void){
+    unsigned long irq = spin_lock_irqsave(&g_fb_lock);
+    mbox[0] = 8 * 4;
+    mbox[1] = 0;
+    mbox[2] = 0x0004800E; // wait for vertical sync
+    mbox[3] = 4;
+    mbox[4] = 4;
+    mbox[5] = 0;          // display 0
+    mbox[6] = 0;
+    mbox[7] = 0;
+
+    int ok = mailbox_call(8);
+    spin_unlock_irqrestore(&g_fb_lock, irq);
+    return ok ? 0 : -1;
+}
+
 int fb_set_display_page(unsigned int page){
     if (page >= fb_page_count || pitch == 0u || height == 0u){
         return -1;

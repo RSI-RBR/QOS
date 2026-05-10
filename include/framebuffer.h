@@ -27,6 +27,7 @@ unsigned int fb_get_page_count(void);
 unsigned int fb_get_display_page(void);
 unsigned long fb_get_page_base(unsigned int page);
 unsigned long fb_get_page_bus_base(unsigned int page);
+int fb_wait_vsync(void);
 int fb_set_display_page(unsigned int page);
 
 #endif
