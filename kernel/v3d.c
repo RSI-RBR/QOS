@@ -395,12 +395,11 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
         g_v3d_clear_cl[i] = 0u;
     }
 
-    v3d_emit_u8(&p, end, V3D_CL_RENDER_CONFIG);
-    v3d_emit_u32(&p, end, (unsigned int)fb_bus);
-    v3d_emit_u16(&p, end, width);
-    v3d_emit_u16(&p, end, height);
-    v3d_emit_u16(&p, end, V3D_RENDER_RGBA8888_LINEAR);
-
+    /*
+     * The VC4 docs describe clear-colors as optionally preceding the tile
+     * rendering configuration. Emitting it first ensures the tile buffer gets
+     * initialized with our requested color before the first tile is stored.
+     */
     v3d_emit_u8(&p, end, V3D_CL_CLEAR_COLORS);
     v3d_emit_u32(&p, end, rgba);
     v3d_emit_u32(&p, end, rgba);
@@ -408,16 +407,11 @@ int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out){
     v3d_emit_u8(&p, end, 0u);
     v3d_emit_u8(&p, end, 0u);
 
-    /*
-     * The tile buffer is cleared as part of the store/dump pipeline, so the
-     * very first visible store after mode setup can contain stale tile-buffer
-     * data. Prime it with one throwaway store to tile 0,0, then immediately
-     * write tile 0,0 again during the real loop below.
-     */
-    v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
-    v3d_emit_u8(&p, end, 0u);
-    v3d_emit_u8(&p, end, 0u);
-    v3d_emit_u8(&p, end, V3D_CL_STORE_RESOLVED);
+    v3d_emit_u8(&p, end, V3D_CL_RENDER_CONFIG);
+    v3d_emit_u32(&p, end, (unsigned int)fb_bus);
+    v3d_emit_u16(&p, end, width);
+    v3d_emit_u16(&p, end, height);
+    v3d_emit_u16(&p, end, V3D_RENDER_RGBA8888_LINEAR);
 
     for (unsigned int y = 0u; y < tiles_y; y++){
         for (unsigned int x = 0u; x < tiles_x; x++){
