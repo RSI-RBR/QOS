@@ -57,6 +57,8 @@ typedef struct {
     unsigned long copy_us;
     unsigned long cursor_us;
     unsigned long flip_us;
+    unsigned long flip_set_us;
+    unsigned long vsync_us;
 } display_profile_t;
 
 static display_profile_t g_display_profile;
@@ -1292,6 +1294,8 @@ int display_present_active_graphics(void){
     unsigned long copy_us = 0UL;
     unsigned long cursor_us = 0UL;
     unsigned long flip_us = 0UL;
+    unsigned long flip_set_us = 0UL;
+    unsigned long vsync_us = 0UL;
 
     unsigned int visible_page = fb_get_display_page();
     unsigned long dst_base = fb_get_page_base(visible_page);
@@ -1323,6 +1327,8 @@ int display_present_active_graphics(void){
         g_display_profile.copy_us += copy_us;
         g_display_profile.cursor_us += cursor_us;
         g_display_profile.flip_us += flip_us;
+        g_display_profile.flip_set_us += flip_set_us;
+        g_display_profile.vsync_us += vsync_us;
         g_display_profile.no_work_calls++;
         unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
         g_display_profile.present_us += total_us;
@@ -1428,6 +1434,8 @@ int display_present_active_graphics(void){
         g_display_profile.copy_us += copy_us;
         g_display_profile.cursor_us += cursor_us;
         g_display_profile.flip_us += flip_us;
+        g_display_profile.flip_set_us += flip_set_us;
+        g_display_profile.vsync_us += vsync_us;
         g_display_profile.no_work_calls++;
         unsigned long total_us = display_elapsed_us(prof_start, prof_hz);
         g_display_profile.present_us += total_us;
@@ -1545,13 +1553,20 @@ int display_present_active_graphics(void){
         unsigned int presented_page = s->scanout_page;
         unsigned long flip_start = display_read_cntpct();
         if (fb_set_display_page(s->scanout_page) == 0){
+            unsigned long after_flip_set = display_read_cntpct();
+            unsigned long set_us = display_cycles_to_us(after_flip_set - flip_start,
+                                                        prof_hz);
+            unsigned long vsync_start = display_read_cntpct();
             /*
              * Circle-style firmware double buffering: change the virtual
              * offset, then wait until the next vblank has accepted it before
              * giving the old visible page back to the renderer.
              */
             (void)fb_wait_vsync();
-            flip_us += display_elapsed_us(flip_start, prof_hz);
+            flip_set_us += set_us;
+            unsigned long wait_us = display_elapsed_us(vsync_start, prof_hz);
+            vsync_us += wait_us;
+            flip_us += set_us + wait_us;
             g_display_gpu_flip_count++;
             g_display_profile.pageflip_calls++;
             unsigned int next_page = display_choose_scanout_page(presented_page,
@@ -1571,7 +1586,9 @@ int display_present_active_graphics(void){
                 g_display_gpu_failure_count++;
             }
         } else{
-            flip_us += display_elapsed_us(flip_start, prof_hz);
+            unsigned long fail_us = display_elapsed_us(flip_start, prof_hz);
+            flip_set_us += fail_us;
+            flip_us += fail_us;
             g_display_gpu_failure_count++;
         }
     }
@@ -1587,6 +1604,8 @@ int display_present_active_graphics(void){
     g_display_profile.copy_us += copy_us;
     g_display_profile.cursor_us += cursor_us;
     g_display_profile.flip_us += flip_us;
+    g_display_profile.flip_set_us += flip_set_us;
+    g_display_profile.vsync_us += vsync_us;
     if (!have_dirty && (cursor_changed || cursor_removed)){
         g_display_profile.cursor_only_calls++;
     }
@@ -1684,6 +1703,8 @@ void display_profile_reset(void){
     g_display_profile.copy_us = 0UL;
     g_display_profile.cursor_us = 0UL;
     g_display_profile.flip_us = 0UL;
+    g_display_profile.flip_set_us = 0UL;
+    g_display_profile.vsync_us = 0UL;
     spin_unlock_irqrestore(&g_display_lock, irq);
 }
 
@@ -1730,5 +1751,11 @@ void display_profile_dump(void){
     klog_putdec(snap.cursor_us);
     klog_puts(" flip=");
     klog_putdec(snap.flip_us);
+    klog_puts("\n");
+
+    klog_puts("DISPLAY us3: flip_set=");
+    klog_putdec(snap.flip_set_us);
+    klog_puts(" vsync=");
+    klog_putdec(snap.vsync_us);
     klog_puts("\n");
 }

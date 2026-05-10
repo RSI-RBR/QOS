@@ -85,6 +85,9 @@ typedef struct sdl_qos_profile {
     Uint64 poll_us;
     Uint64 present_calls;
     Uint64 present_us;
+    Uint64 present_flush_us;
+    Uint64 present_upload_us;
+    Uint64 present_kernel_us;
 } sdl_qos_profile_t;
 
 static sdl_qos_profile_t g_sdl_profile;
@@ -159,6 +162,9 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.poll_us = 0ull;
     g_sdl_profile.present_calls = 0ull;
     g_sdl_profile.present_us = 0ull;
+    g_sdl_profile.present_flush_us = 0ull;
+    g_sdl_profile.present_upload_us = 0ull;
+    g_sdl_profile.present_kernel_us = 0ull;
     g_sdl_auto_last_profile = g_sdl_profile;
     g_sdl_auto_last_us = qos_get_time_us();
     qos_file_profile_reset();
@@ -237,6 +243,14 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.present_us);
     qos_puts("\n");
 
+    qos_puts("SDL profile us: present flush=");
+    sdl_profile_put_u64(g_sdl_profile.present_flush_us);
+    qos_puts(" upload=");
+    sdl_profile_put_u64(g_sdl_profile.present_upload_us);
+    qos_puts(" kernel=");
+    sdl_profile_put_u64(g_sdl_profile.present_kernel_us);
+    qos_puts("\n");
+
     qos_puts("SDL heap: used=");
     sdl_profile_put_u64((Uint64)qos_heap_used());
     qos_puts(" free=");
@@ -275,6 +289,12 @@ static void sdl_profile_auto_tick(void){
                                          g_sdl_auto_last_profile.rendercopy_us);
     Uint64 present_us = sdl_profile_delta(g_sdl_profile.present_us,
                                           g_sdl_auto_last_profile.present_us);
+    Uint64 present_flush_us = sdl_profile_delta(g_sdl_profile.present_flush_us,
+                                                g_sdl_auto_last_profile.present_flush_us);
+    Uint64 present_upload_us = sdl_profile_delta(g_sdl_profile.present_upload_us,
+                                                 g_sdl_auto_last_profile.present_upload_us);
+    Uint64 present_kernel_us = sdl_profile_delta(g_sdl_profile.present_kernel_us,
+                                                 g_sdl_auto_last_profile.present_kernel_us);
     Uint64 direct = sdl_profile_delta(g_sdl_profile.rendercopy_direct_calls,
                                       g_sdl_auto_last_profile.rendercopy_direct_calls);
     Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
@@ -298,6 +318,12 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(render_us / frames);
     qos_puts(" present=");
     sdl_profile_put_u64(present_us / frames);
+    qos_puts(" up=");
+    sdl_profile_put_u64(present_upload_us / frames);
+    qos_puts(" kern=");
+    sdl_profile_put_u64(present_kernel_us / frames);
+    qos_puts(" flush=");
+    sdl_profile_put_u64(present_flush_us / frames);
     qos_puts(" paths d/b/r/f/s=");
     sdl_profile_put_u64(direct);
     qos_putc('/');
@@ -1530,24 +1556,32 @@ int SDL_RenderDrawPoint(SDL_Renderer* renderer, int x, int y){
 
 void SDL_RenderPresent(SDL_Renderer* renderer){
     Uint64 t0 = qos_get_time_us();
+    Uint64 flush_start = t0;
     sdl_flush_pending_fill();
+    g_sdl_profile.present_flush_us += qos_get_time_us() - flush_start;
     int rc = 0;
     if (sdl_soft_backbuffer_valid(renderer)){
         if (g_soft_fb_dirty){
+            Uint64 upload_start = qos_get_time_us();
             rc = qos_fb_blit_native(0u,
                                     0u,
                                     (unsigned int)g_soft_fb_w,
                                     (unsigned int)g_soft_fb_h,
                                     (const unsigned int*)g_soft_fb);
+            g_sdl_profile.present_upload_us += qos_get_time_us() - upload_start;
             if (rc == 0){
                 g_soft_fb_dirty = 0;
             }
         }
         if (rc == 0){
+            Uint64 kernel_start = qos_get_time_us();
             rc = qos_fb_present();
+            g_sdl_profile.present_kernel_us += qos_get_time_us() - kernel_start;
         }
     } else{
+        Uint64 kernel_start = qos_get_time_us();
         rc = qos_fb_present();
+        g_sdl_profile.present_kernel_us += qos_get_time_us() - kernel_start;
     }
     if (rc != 0){
         static int warned_present_failure = 0;
