@@ -83,8 +83,11 @@ typedef struct sdl_quad_cmd {
     unsigned short pad1;
     int x;
     int y;
+    unsigned int w;
+    unsigned int h;
     Uint32 color;
     const Uint32* src;
+    unsigned int src_pitch;
 } sdl_quad_cmd_t;
 
 static sdl_quad_cmd_t g_quad_batch[SDL_SHIM_QUAD_BATCH_MAX];
@@ -99,12 +102,23 @@ static int sdl_soft_blit_32x32_native_fast(int x,
                                            const Uint32* src_pixels);
 static void sdl_flush_quad_batch(void);
 static int sdl_flush_quad_batch_gpu2d(void);
+static int sdl_queue_quad_fill(unsigned int x,
+                               unsigned int y,
+                               unsigned int w,
+                               unsigned int h,
+                               unsigned int color);
 static int sdl_queue_quad_fill32(unsigned int x,
                                  unsigned int y,
                                  unsigned int color);
 static int sdl_queue_quad_blit32(int x,
                                  int y,
                                  const Uint32* src_pixels);
+static int sdl_queue_quad_blit_native(int x,
+                                      int y,
+                                      unsigned int w,
+                                      unsigned int h,
+                                      const Uint32* src_pixels,
+                                      unsigned int src_pitch);
 
 typedef struct sdl_qos_profile {
     Uint64 bmp_calls;
@@ -897,8 +911,8 @@ static int sdl_queue_fill_rect(unsigned int x,
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
         return 0;
     }
-    if (w == 32u && h == 32u &&
-        sdl_queue_quad_fill32(x, y, color) == 0){
+    if (w <= 64u && h <= 64u &&
+        sdl_queue_quad_fill(x, y, w, h, color) == 0){
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
         return 0;
     }
@@ -1100,10 +1114,15 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
         dw <= texture->w && dh <= texture->h){
         const Uint32* cached_pixels = 0;
         if (sdl_texture_ensure_scaled_native(texture, dw, dh, &cached_pixels) == 0){
-            if (dw == 32 && dh == 32 &&
+            if (dw <= 64 && dh <= 64 &&
                 visible_x0 == 0 && visible_y0 == 0 &&
-                visible_x1 == 32 && visible_y1 == 32 &&
-                sdl_queue_quad_blit32(dx, dy, cached_pixels) == 0){
+                visible_x1 == dw && visible_y1 == dh &&
+                sdl_queue_quad_blit_native(dx,
+                                           dy,
+                                           (unsigned int)dw,
+                                           (unsigned int)dh,
+                                           cached_pixels,
+                                           (unsigned int)dw * 4u) == 0){
                 g_sdl_profile.rendercopy_native_cached_scale_calls++;
                 return 0;
             }
@@ -2180,20 +2199,34 @@ static void sdl_flush_quad_batch(void){
         const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
         if (cmd->type == SDL_SHIM_QUAD_FILL32){
             fill_cmds++;
-            fill_pixels += 32ull * 32ull;
-            if (sdl_soft_fill_rect_32_fast((unsigned int)cmd->x,
+            fill_pixels += (Uint64)cmd->w * (Uint64)cmd->h;
+            if (cmd->w == 32u && cmd->h == 32u &&
+                sdl_soft_fill_rect_32_fast((unsigned int)cmd->x,
                                            (unsigned int)cmd->y,
-                                           cmd->color) != 0){
-                sdl_soft_fill_rect((unsigned int)cmd->x,
-                                   (unsigned int)cmd->y,
-                                   32u,
-                                   32u,
-                                   cmd->color);
+                                           cmd->color) == 0){
+                continue;
             }
+            sdl_soft_fill_rect((unsigned int)cmd->x,
+                               (unsigned int)cmd->y,
+                               cmd->w,
+                               cmd->h,
+                               cmd->color);
         } else if (cmd->type == SDL_SHIM_QUAD_BLIT32){
-            (void)sdl_soft_blit_32x32_native_fast(cmd->x,
-                                                  cmd->y,
-                                                  cmd->src);
+            if (cmd->w == 32u && cmd->h == 32u && cmd->src_pitch == 32u * 4u){
+                (void)sdl_soft_blit_32x32_native_fast(cmd->x,
+                                                      cmd->y,
+                                                      cmd->src);
+            } else if (cmd->src){
+                for (unsigned int row = 0u; row < cmd->h; row++){
+                    Uint8* dst = g_soft_fb +
+                                 ((unsigned long)(cmd->y + (int)row) *
+                                  (unsigned long)g_soft_fb_pitch) +
+                                 ((unsigned long)cmd->x * 4ul);
+                    const Uint8* src = (const Uint8*)((const Uint8*)cmd->src +
+                                     ((unsigned long)row * cmd->src_pitch));
+                    sdl_copy_bytes(dst, src, cmd->w * 4u);
+                }
+            }
         }
     }
 
@@ -2233,20 +2266,23 @@ static int sdl_flush_quad_batch_gpu2d(void){
             const sdl_quad_cmd_t* src = &g_quad_batch[offset + i];
             qos_gpu2d_quad_t* dst = &g_gpu2d_quad_submit[i];
             if (src->type == SDL_SHIM_QUAD_FILL32){
-                dst->op = QOS_GPU2D_QUAD_FILL32;
-                dst->src = 0;
-                fill_cmds++;
-                fill_pixels += 32ull * 32ull;
-            } else if (src->type == SDL_SHIM_QUAD_BLIT32){
-                dst->op = QOS_GPU2D_QUAD_BLIT32;
-                dst->src = src->src;
+            dst->op = QOS_GPU2D_QUAD_FILL32;
+            dst->src = 0;
+            fill_cmds++;
+            fill_pixels += (Uint64)src->w * (Uint64)src->h;
+        } else if (src->type == SDL_SHIM_QUAD_BLIT32){
+            dst->op = QOS_GPU2D_QUAD_BLIT32;
+            dst->src = src->src;
             } else{
                 return -1;
-            }
-            dst->x = src->x;
-            dst->y = src->y;
-            dst->color = src->color;
         }
+        dst->x = src->x;
+        dst->y = src->y;
+        dst->w = src->w;
+        dst->h = src->h;
+        dst->color = src->color;
+        dst->src_pitch = src->src_pitch;
+    }
 
         if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, chunk) != 0){
             g_gpu2d_quad_batch_runtime = 0;
@@ -2269,9 +2305,20 @@ static int sdl_flush_quad_batch_gpu2d(void){
 static int sdl_queue_quad_fill32(unsigned int x,
                                  unsigned int y,
                                  unsigned int color){
-    if (!g_soft_fb || g_soft_fb_w < 32 || g_soft_fb_h < 32 ||
-        x > ((unsigned int)g_soft_fb_w - 32u) ||
-        y > ((unsigned int)g_soft_fb_h - 32u)){
+    return sdl_queue_quad_fill(x, y, 32u, 32u, color);
+}
+
+static int sdl_queue_quad_fill(unsigned int x,
+                               unsigned int y,
+                               unsigned int w,
+                               unsigned int h,
+                               unsigned int color){
+    if (!g_soft_fb || g_soft_fb_w <= 0 || g_soft_fb_h <= 0 ||
+        w == 0u || h == 0u ||
+        w > (unsigned int)g_soft_fb_w ||
+        h > (unsigned int)g_soft_fb_h ||
+        x > ((unsigned int)g_soft_fb_w - w) ||
+        y > ((unsigned int)g_soft_fb_h - h)){
         return -1;
     }
 
@@ -2295,8 +2342,11 @@ static int sdl_queue_quad_fill32(unsigned int x,
     cmd->pad1 = 0u;
     cmd->x = (int)x;
     cmd->y = (int)y;
+    cmd->w = w;
+    cmd->h = h;
     cmd->color = color;
     cmd->src = 0;
+    cmd->src_pitch = 0u;
     g_soft_fb_dirty = 1;
     return 0;
 }
@@ -2304,18 +2354,28 @@ static int sdl_queue_quad_fill32(unsigned int x,
 static int sdl_queue_quad_blit32(int x,
                                  int y,
                                  const Uint32* src_pixels){
+    return sdl_queue_quad_blit_native(x,
+                                      y,
+                                      32u,
+                                      32u,
+                                      src_pixels,
+                                      32u * 4u);
+}
+
+static int sdl_queue_quad_blit_native(int x,
+                                      int y,
+                                      unsigned int w,
+                                      unsigned int h,
+                                      const Uint32* src_pixels,
+                                      unsigned int src_pitch){
     if (!g_soft_fb || !src_pixels ||
         x < 0 || y < 0 ||
-        g_soft_fb_w < 32 || g_soft_fb_h < 32 ||
-        x > (g_soft_fb_w - 32) ||
-        y > (g_soft_fb_h - 32)){
-        return -1;
-    }
-
-    Uint8* dst0 = g_soft_fb +
-                  ((unsigned long)y * (unsigned long)g_soft_fb_pitch) +
-                  ((unsigned long)x * 4ul);
-    if ((((unsigned long)dst0 | (unsigned long)src_pixels) & 7ul) != 0ul){
+        w == 0u || h == 0u ||
+        w > (unsigned int)g_soft_fb_w ||
+        h > (unsigned int)g_soft_fb_h ||
+        src_pitch < w * 4u ||
+        x > (g_soft_fb_w - (int)w) ||
+        y > (g_soft_fb_h - (int)h)){
         return -1;
     }
 
@@ -2332,8 +2392,11 @@ static int sdl_queue_quad_blit32(int x,
     cmd->pad1 = 0u;
     cmd->x = x;
     cmd->y = y;
+    cmd->w = w;
+    cmd->h = h;
     cmd->color = 0u;
     cmd->src = src_pixels;
+    cmd->src_pitch = src_pitch;
     g_soft_fb_dirty = 1;
     return 0;
 }

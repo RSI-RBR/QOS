@@ -219,7 +219,17 @@ static int gpu2d_validate_quad_source(const qos_gpu2d_quad_t* quad){
     if (!quad || !quad->src){
         return -1;
     }
-    return process_user_range_readable(quad->src, 32u * 32u * sizeof(unsigned int)) ? 0 : -1;
+    if (quad->w == 0u || quad->h == 0u ||
+        quad->src_pitch < quad->w * sizeof(unsigned int)){
+        return -1;
+    }
+    unsigned long last = ((unsigned long)(quad->h - 1u) *
+                          (unsigned long)quad->src_pitch) +
+                         ((unsigned long)quad->w * sizeof(unsigned int));
+    if (last == 0UL || last > (4UL * 1024UL * 1024UL)){
+        return -1;
+    }
+    return process_user_range_readable(quad->src, last) ? 0 : -1;
 }
 
 int gpu2d_submit_quads_for_pid(int pid,
@@ -232,7 +242,9 @@ int gpu2d_submit_quads_for_pid(int pid,
     for (unsigned int i = 0u; i < count; i++){
         const qos_gpu2d_quad_t* q = &quads[i];
         if ((q->op != QOS_GPU2D_QUAD_FILL32 && q->op != QOS_GPU2D_QUAD_BLIT32) ||
-            q->x < 0 || q->y < 0){
+            q->x < 0 || q->y < 0 ||
+            q->w == 0u || q->h == 0u ||
+            q->w > 256u || q->h > 256u){
             return -1;
         }
         if (q->op == QOS_GPU2D_QUAD_BLIT32 &&
@@ -249,8 +261,8 @@ int gpu2d_submit_quads_for_pid(int pid,
             rc = display_rect_for_pid(pid,
                                       (unsigned int)q->x,
                                       (unsigned int)q->y,
-                                      32u,
-                                      32u,
+                                      q->w,
+                                      q->h,
                                       q->color);
             if (rc == 0){
                 g_gpu2d_fill_count++;
@@ -259,10 +271,10 @@ int gpu2d_submit_quads_for_pid(int pid,
             rc = display_blit_native32_for_pid(pid,
                                                (unsigned int)q->x,
                                                (unsigned int)q->y,
-                                               32u,
-                                               32u,
+                                               q->w,
+                                               q->h,
                                                q->src,
-                                               32u * sizeof(unsigned int));
+                                               q->src_pitch);
             if (rc == 0){
                 g_gpu2d_blit_count++;
             }

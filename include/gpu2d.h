@@ -57,8 +57,11 @@ typedef struct {
     unsigned int op;
     int x;
     int y;
+    unsigned int w;
+    unsigned int h;
     unsigned int color;
     const unsigned int* src;
+    unsigned int src_pitch;
 } qos_gpu2d_quad_t;
 
 unsigned int gpu2d_status(void);
