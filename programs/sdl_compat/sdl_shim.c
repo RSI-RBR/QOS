@@ -84,6 +84,7 @@ typedef struct sdl_qos_profile {
     Uint64 rendercopy_gpu2d_calls;
     Uint64 rendercopy_gpu2d_miss;
     Uint64 rendercopy_native_calls;
+    Uint64 rendercopy_native_intscale_calls;
     Uint64 rendercopy_blitbuf_calls;
     Uint64 rendercopy_row_calls;
     Uint64 rendercopy_fill_calls;
@@ -169,6 +170,7 @@ static void sdl_profile_copy(sdl_qos_profile_t* dst, const sdl_qos_profile_t* sr
     dst->rendercopy_gpu2d_calls = src->rendercopy_gpu2d_calls;
     dst->rendercopy_gpu2d_miss = src->rendercopy_gpu2d_miss;
     dst->rendercopy_native_calls = src->rendercopy_native_calls;
+    dst->rendercopy_native_intscale_calls = src->rendercopy_native_intscale_calls;
     dst->rendercopy_blitbuf_calls = src->rendercopy_blitbuf_calls;
     dst->rendercopy_row_calls = src->rendercopy_row_calls;
     dst->rendercopy_fill_calls = src->rendercopy_fill_calls;
@@ -209,6 +211,7 @@ void SDL_QOS_ProfileReset(void){
     g_sdl_profile.rendercopy_gpu2d_calls = 0ull;
     g_sdl_profile.rendercopy_gpu2d_miss = 0ull;
     g_sdl_profile.rendercopy_native_calls = 0ull;
+    g_sdl_profile.rendercopy_native_intscale_calls = 0ull;
     g_sdl_profile.rendercopy_blitbuf_calls = 0ull;
     g_sdl_profile.rendercopy_row_calls = 0ull;
     g_sdl_profile.rendercopy_fill_calls = 0ull;
@@ -279,6 +282,8 @@ void SDL_QOS_ProfileDump(void){
     sdl_profile_put_u64(g_sdl_profile.rendercopy_gpu2d_miss);
     qos_puts(" native=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_native_calls);
+    qos_puts(" intscale=");
+    sdl_profile_put_u64(g_sdl_profile.rendercopy_native_intscale_calls);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(g_sdl_profile.rendercopy_blitbuf_calls);
     qos_puts(" row=");
@@ -387,6 +392,8 @@ static void sdl_profile_auto_tick(void){
                                      g_sdl_auto_last_profile.rendercopy_gpu2d_calls);
     Uint64 native = sdl_profile_delta(g_sdl_profile.rendercopy_native_calls,
                                       g_sdl_auto_last_profile.rendercopy_native_calls);
+    Uint64 intscale = sdl_profile_delta(g_sdl_profile.rendercopy_native_intscale_calls,
+                                        g_sdl_auto_last_profile.rendercopy_native_intscale_calls);
     Uint64 blitbuf = sdl_profile_delta(g_sdl_profile.rendercopy_blitbuf_calls,
                                        g_sdl_auto_last_profile.rendercopy_blitbuf_calls);
     Uint64 row = sdl_profile_delta(g_sdl_profile.rendercopy_row_calls,
@@ -444,6 +451,8 @@ static void sdl_profile_auto_tick(void){
     sdl_profile_put_u64(gpu2d);
     qos_puts(" native=");
     sdl_profile_put_u64(native);
+    qos_puts(" intscale=");
+    sdl_profile_put_u64(intscale);
     qos_puts(" blitbuf=");
     sdl_profile_put_u64(blitbuf);
     qos_puts(" row=");
@@ -669,6 +678,72 @@ static void sdl_soft_fill_rect(unsigned int x,
     g_soft_fb_dirty = 1;
 }
 
+static int sdl_gpu2d_try_large_fill_direct(unsigned int x,
+                                           unsigned int y,
+                                           unsigned int w,
+                                           unsigned int h,
+                                           unsigned int color){
+    if (!g_soft_fb_direct || g_soft_fb_direct_inactive || !g_soft_fb ||
+        g_soft_fb_w <= 0 || g_soft_fb_h <= 0 ||
+        w == 0u || h == 0u){
+        return -1;
+    }
+
+    if (x == 0u && y == 0u &&
+        w >= (unsigned int)g_soft_fb_w &&
+        h >= (unsigned int)g_soft_fb_h &&
+        qos_gpu2d_clear(color) == 0){
+        g_soft_fb_dirty = 1;
+        return 0;
+    }
+
+    unsigned int x1 = x + w;
+    unsigned int y1 = y + h;
+    if (x1 < x || y1 < y ||
+        x >= (unsigned int)g_soft_fb_w ||
+        y >= (unsigned int)g_soft_fb_h){
+        return -1;
+    }
+    if (x1 > (unsigned int)g_soft_fb_w){
+        x1 = (unsigned int)g_soft_fb_w;
+    }
+    if (y1 > (unsigned int)g_soft_fb_h){
+        y1 = (unsigned int)g_soft_fb_h;
+    }
+
+    unsigned int ax0 = (x + 63u) & ~63u;
+    unsigned int ay0 = (y + 63u) & ~63u;
+    unsigned int ax1 = x1 & ~63u;
+    unsigned int ay1 = y1 & ~63u;
+    if (ax0 >= ax1 || ay0 >= ay1){
+        return -1;
+    }
+
+    unsigned int inner_w = ax1 - ax0;
+    unsigned int inner_h = ay1 - ay0;
+    if (((unsigned long)inner_w * (unsigned long)inner_h) < (128ul * 128ul)){
+        return -1;
+    }
+    if (qos_gpu2d_fill_rect(ax0, ay0, inner_w, inner_h, color) != 0){
+        return -1;
+    }
+
+    if (ay0 > y){
+        sdl_soft_fill_rect(x, y, x1 - x, ay0 - y, color);
+    }
+    if (y1 > ay1){
+        sdl_soft_fill_rect(x, ay1, x1 - x, y1 - ay1, color);
+    }
+    if (ax0 > x){
+        sdl_soft_fill_rect(x, ay0, ax0 - x, ay1 - ay0, color);
+    }
+    if (x1 > ax1){
+        sdl_soft_fill_rect(ax1, ay0, x1 - ax1, ay1 - ay0, color);
+    }
+    g_soft_fb_dirty = 1;
+    return 0;
+}
+
 static void surface_set_format(SDL_Surface* surface, Uint32 format){
     if (!surface){
         return;
@@ -736,7 +811,14 @@ static int sdl_queue_fill_rect(unsigned int x,
     }
     g_sdl_profile.fill_calls++;
     Uint64 t0 = qos_get_time_us();
+    if (sdl_gpu2d_try_large_fill_direct(x, y, w, h, color) == 0){
+        g_sdl_profile.fill_flushes++;
+        g_sdl_profile.fill_pixels += (Uint64)w * (Uint64)h;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+        return 0;
+    }
     if (g_soft_fb_direct &&
+        !g_soft_fb_direct_inactive &&
         (x & 63u) == 0u &&
         (y & 63u) == 0u &&
         (w & 63u) == 0u &&
@@ -930,6 +1012,47 @@ static int sdl_soft_blit_native_texture(SDL_Texture* texture,
                                               ((unsigned long)y * (unsigned long)texture->w));
             sdl_copy_bytes(dst, src, (Uint32)dw * 4u);
         }
+        return 0;
+    }
+
+    /*
+     * Quantum Front's common path is 256x256 BMP terrain/text glyph textures
+     * scaled down to tile-sized rectangles (for example 256 -> 32). The
+     * generic scaler below uses 32.32 fixed-point math per pixel, which is
+     * flexible but unnecessarily expensive for exact integer downscales.
+     */
+    if (flip == SDL_FLIP_NONE &&
+        sw >= dw && sh >= dh &&
+        dw > 0 && dh > 0 &&
+        (sw % dw) == 0 && (sh % dh) == 0){
+        int x_step_i = sw / dw;
+        int y_step_i = sh / dh;
+        for (int oy = visible_y0; oy < visible_y1; oy++){
+            int py = dy + oy;
+            if (py < 0 || py >= g_soft_fb_h){
+                continue;
+            }
+
+            int tx_y = sy + (oy * y_step_i);
+            if (tx_y < sy){
+                tx_y = sy;
+            } else if (tx_y >= sy + sh){
+                tx_y = sy + sh - 1;
+            }
+
+            const Uint32* src = texture->native_pixels +
+                                ((Uint32)tx_y * (Uint32)texture->w) +
+                                (Uint32)(sx + (visible_x0 * x_step_i));
+            Uint32* dst = (Uint32*)(g_soft_fb +
+                                    ((unsigned long)py * (unsigned long)g_soft_fb_pitch) +
+                                    ((unsigned long)(dx + visible_x0) * 4ul));
+
+            for (int ox = visible_x0; ox < visible_x1; ox++){
+                *dst++ = *src;
+                src += x_step_i;
+            }
+        }
+        g_sdl_profile.rendercopy_native_intscale_calls++;
         return 0;
     }
 
