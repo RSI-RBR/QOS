@@ -59,6 +59,8 @@ typedef struct {
     unsigned long flip_set_us;
     unsigned long vsync_us;
     unsigned long clean_us;
+    unsigned long profile_start_cycles;
+    unsigned long profile_hz;
 } display_profile_t;
 
 static display_profile_t g_display_profile;
@@ -751,6 +753,8 @@ void display_init(void){
     for (int i = 0; i < DISPLAY_MAX_SESSIONS; i++){
         display_clear_session_locked(i);
     }
+    g_display_profile.profile_start_cycles = display_read_cntpct();
+    g_display_profile.profile_hz = display_read_cntfrq();
     g_display_pending_switch_pid = -1;
     display_init_text_locked();
     g_display_ready = 1;
@@ -2035,15 +2039,42 @@ void display_profile_reset(void){
     g_display_profile.flip_set_us = 0UL;
     g_display_profile.vsync_us = 0UL;
     g_display_profile.clean_us = 0UL;
+    g_display_profile.profile_start_cycles = display_read_cntpct();
+    g_display_profile.profile_hz = display_read_cntfrq();
     spin_unlock_irqrestore(&g_display_lock, irq);
 }
 
 void display_profile_dump(void){
     display_profile_t snap;
+    unsigned long now_cycles = 0UL;
+    unsigned long elapsed_us = 0UL;
+    unsigned long elapsed_ms = 0UL;
+    unsigned long fps_x10 = 0UL;
+    unsigned long avg_present_us = 0UL;
     display_init();
+    now_cycles = display_read_cntpct();
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
+    if (g_display_profile.profile_start_cycles == 0UL){
+        g_display_profile.profile_start_cycles = now_cycles;
+        g_display_profile.profile_hz = display_read_cntfrq();
+    }
     snap = g_display_profile;
     spin_unlock_irqrestore(&g_display_lock, irq);
+
+    if (snap.profile_hz != 0UL && now_cycles >= snap.profile_start_cycles){
+        elapsed_us = display_cycles_to_us(now_cycles - snap.profile_start_cycles,
+                                          snap.profile_hz);
+    }
+    elapsed_ms = elapsed_us / 1000UL;
+    if (elapsed_us > 0UL){
+        fps_x10 = (unsigned long)(((unsigned long long)snap.present_calls *
+                                   10000000ULL +
+                                   ((unsigned long long)elapsed_us / 2ULL)) /
+                                  (unsigned long long)elapsed_us);
+    }
+    if (snap.present_calls > 0UL){
+        avg_present_us = snap.present_us / snap.present_calls;
+    }
 
     klog_puts("DISPLAY profile: present=");
     klog_putdec(snap.present_calls);
@@ -2055,6 +2086,16 @@ void display_profile_dump(void){
     klog_putdec(snap.cursor_only_calls);
     klog_puts(" nowork=");
     klog_putdec(snap.no_work_calls);
+    klog_puts("\n");
+
+    klog_puts("DISPLAY fps: elapsed_ms=");
+    klog_putdec(elapsed_ms);
+    klog_puts(" fps=");
+    klog_putdec(fps_x10 / 10UL);
+    klog_puts(".");
+    klog_putdec(fps_x10 % 10UL);
+    klog_puts(" avg_present_us=");
+    klog_putdec(avg_present_us);
     klog_puts("\n");
 
     klog_puts("DISPLAY dirty: full=");

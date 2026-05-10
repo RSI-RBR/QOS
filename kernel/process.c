@@ -933,6 +933,7 @@ void process_exit_current(void){
     unsigned int core = scheduler_core_id();
     int next_pid = -1;
     int next_user_mode = 0;
+    int next_is_idle = 0;
     unsigned long irq = spin_lock_irqsave(&g_process_lock);
     int pid = current_pid[core];
     if (pid < 0 || pid >= MAX_PROCESSES){
@@ -950,14 +951,31 @@ void process_exit_current(void){
     if (next){
         next_pid = current_pid[core];
         next_user_mode = next->user_mode;
+    } else{
+        /*
+         * The exiting task may be the only runnable process on this core
+         * (common for background graphics tabs). Move the core to its idle
+         * context so the old process stack can be securely reaped on the
+         * next scheduler pass instead of leaving PID stuck in REAPING.
+         */
+        current_pid[core] = -1;
+        next_sp = build_idle_context(core);
+        next_is_idle = 1;
     }
-    spin_unlock_irqrestore(&g_process_lock, irq);
+    /*
+     * Keep local IRQs masked until restore_context_and_eret() installs the
+     * next frame. In the idle case current_pid is already -1 while this C
+     * frame is still running on the exiting process stack; a timer IRQ in
+     * that tiny window could otherwise reap the stack under us.
+     */
+    spin_unlock(&g_process_lock);
     if (next_sp){
-        mmu_switch_to_pid(next_user_mode ? next_pid : -1);
+        mmu_switch_to_pid((next_user_mode && !next_is_idle) ? next_pid : -1);
         restore_context_and_eret(next_sp);
     }
 
-    // No runnable task right now; park this core in recoverable idle.
+    // Unreachable unless the context restore unexpectedly returns.
+    asm volatile("msr daif, %0" : : "r"(irq) : "memory");
     process_enter_idle_loop();
 }
 
