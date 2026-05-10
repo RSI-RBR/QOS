@@ -783,15 +783,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             if (!user_info || page_count < 2u || !base || !map_base ||
                 pitch == 0u || width == 0u || height == 0u || size == 0UL ||
                 (map_base & 0xFFFUL) != 0UL || map_size < size){
-                frame[TF_X0] = (unsigned long)-1;
+                frame[TF_X0] = (unsigned long)-2;
                 return frame_sp;
             }
             if (!process_user_range_writable(user_info, sizeof(*user_info))){
-                frame[TF_X0] = (unsigned long)-1;
+                frame[TF_X0] = (unsigned long)-3;
                 return frame_sp;
             }
             if (mmu_process_map_framebuffer(pid, map_base, map_size) != 0){
-                frame[TF_X0] = (unsigned long)-1;
+                frame[TF_X0] = (unsigned long)-4;
                 return frame_sp;
             }
 
@@ -802,7 +802,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
 
             if (display_attach_direct_framebuffer_for_pid(pid, page, page_b) != 0){
-                frame[TF_X0] = (unsigned long)-1;
+                frame[TF_X0] = (unsigned long)-5;
                 return frame_sp;
             }
 

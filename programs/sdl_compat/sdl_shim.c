@@ -432,7 +432,8 @@ static int sdl_soft_backbuffer_init(int w, int h){
     sdl_soft_backbuffer_destroy();
 
     qos_fb_direct_info_t direct;
-    if (qos_fb_direct_acquire(&direct) == 0 &&
+    int direct_rc = qos_fb_direct_acquire(&direct);
+    if (direct_rc == 0 &&
         direct.pixels &&
         direct.width == (unsigned int)w &&
         direct.height == (unsigned int)h &&
@@ -446,6 +447,11 @@ static int sdl_soft_backbuffer_init(int w, int h){
         g_soft_fb_attached = 1;
         g_soft_fb_direct = 1;
         return 0;
+    }
+    if (direct_rc < 0){
+        qos_puts("SDL direct framebuffer unavailable rc=");
+        sdl_profile_put_u64((Uint64)(unsigned int)(-direct_rc));
+        qos_puts("; using buffered framebuffer\n");
     }
 
     bytes = (unsigned long)w * (unsigned long)h * 4ul;
