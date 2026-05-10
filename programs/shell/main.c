@@ -952,12 +952,17 @@ static void cmd_gpu2d(const char* mode){
     if (st & QOS_GPU2D_CAP_ACCEL_CLEAR) qos_puts("clear ");
     if (st & QOS_GPU2D_CAP_ACCEL_FILL_TILE) qos_puts("filltile ");
     if (st & QOS_GPU2D_CAP_TEXTURE_OBJECTS) qos_puts("textures ");
+    if (st & QOS_GPU2D_CAP_QUAD_BATCH) qos_puts("quadbatch ");
     qos_puts("blits=");
     print_uint(qos_gpu2d_blit_count());
     qos_puts(" clears=");
     print_uint(qos_gpu2d_clear_count());
     qos_puts(" fills=");
     print_uint(qos_gpu2d_fill_count());
+    qos_puts(" quads=");
+    print_uint(qos_gpu2d_quad_count());
+    qos_puts(" qbatch=");
+    print_uint(qos_gpu2d_quad_batch_count());
     qos_puts(" tex=");
     print_uint(qos_gpu2d_texture_count());
     qos_puts(" up=");

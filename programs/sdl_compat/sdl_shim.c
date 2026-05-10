@@ -26,6 +26,9 @@
 #ifndef SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
 #define SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD 1
 #endif
+#ifndef SDL_SHIM_ENABLE_GPU2D_QUAD_BATCH
+#define SDL_SHIM_ENABLE_GPU2D_QUAD_BATCH 1
+#endif
 
 static SDL_Window g_window;
 static SDL_Renderer g_renderer;
@@ -72,6 +75,7 @@ static int g_soft_fb_direct = 0;
 static int g_soft_fb_direct_inactive = 0;
 static int g_soft_fb_direct_checked = 0;
 static Uint32 g_native_scaled_cache_clock = 1u;
+static int g_gpu2d_quad_batch_runtime = -1;
 
 typedef struct sdl_quad_cmd {
     Uint8 type;
@@ -84,6 +88,7 @@ typedef struct sdl_quad_cmd {
 } sdl_quad_cmd_t;
 
 static sdl_quad_cmd_t g_quad_batch[SDL_SHIM_QUAD_BATCH_MAX];
+static qos_gpu2d_quad_t g_gpu2d_quad_submit[QOS_GPU2D_QUAD_BATCH_MAX];
 static unsigned int g_quad_batch_count = 0u;
 
 static int sdl_soft_fill_rect_32_fast(unsigned int x,
@@ -93,6 +98,7 @@ static int sdl_soft_blit_32x32_native_fast(int x,
                                            int y,
                                            const Uint32* src_pixels);
 static void sdl_flush_quad_batch(void);
+static int sdl_flush_quad_batch_gpu2d(void);
 static int sdl_queue_quad_fill32(unsigned int x,
                                  unsigned int y,
                                  unsigned int color);
@@ -544,6 +550,7 @@ static void sdl_soft_backbuffer_destroy(void){
         free(g_soft_fb);
     }
     g_quad_batch_count = 0u;
+    g_gpu2d_quad_batch_runtime = -1;
     g_soft_fb = 0;
     g_soft_fb_w = 0;
     g_soft_fb_h = 0;
@@ -561,6 +568,7 @@ static int sdl_direct_drop_frame(void){
         return -1;
     }
     g_quad_batch_count = 0u;
+    g_gpu2d_quad_batch_runtime = -1;
     g_pending_fill_valid = 0;
     g_soft_fb = 0;
     g_soft_fb_pitch = 0;
@@ -2160,6 +2168,11 @@ static void sdl_flush_quad_batch(void){
         return;
     }
 
+    if (sdl_flush_quad_batch_gpu2d() == 0){
+        g_quad_batch_count = 0u;
+        return;
+    }
+
     Uint64 t0 = qos_get_time_us();
     Uint64 fill_cmds = 0ull;
     Uint64 fill_pixels = 0ull;
@@ -2190,6 +2203,67 @@ static void sdl_flush_quad_batch(void){
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
     }
     g_quad_batch_count = 0u;
+}
+
+static int sdl_flush_quad_batch_gpu2d(void){
+#if SDL_SHIM_ENABLE_GPU2D_QUAD_BATCH
+    if (g_quad_batch_count == 0u){
+        return 0;
+    }
+    if (g_gpu2d_quad_batch_runtime < 0){
+        g_gpu2d_quad_batch_runtime =
+            ((qos_gpu_status() & 1u) != 0u &&
+             (sdl_gpu2d_status_cached() & QOS_GPU2D_CAP_QUAD_BATCH) != 0u) ? 1 : 0;
+    }
+    if (!g_gpu2d_quad_batch_runtime){
+        return -1;
+    }
+
+    Uint64 t0 = qos_get_time_us();
+    Uint64 fill_cmds = 0ull;
+    Uint64 fill_pixels = 0ull;
+    unsigned int offset = 0u;
+    while (offset < g_quad_batch_count){
+        unsigned int chunk = g_quad_batch_count - offset;
+        if (chunk > QOS_GPU2D_QUAD_BATCH_MAX){
+            chunk = QOS_GPU2D_QUAD_BATCH_MAX;
+        }
+
+        for (unsigned int i = 0u; i < chunk; i++){
+            const sdl_quad_cmd_t* src = &g_quad_batch[offset + i];
+            qos_gpu2d_quad_t* dst = &g_gpu2d_quad_submit[i];
+            if (src->type == SDL_SHIM_QUAD_FILL32){
+                dst->op = QOS_GPU2D_QUAD_FILL32;
+                dst->src = 0;
+                fill_cmds++;
+                fill_pixels += 32ull * 32ull;
+            } else if (src->type == SDL_SHIM_QUAD_BLIT32){
+                dst->op = QOS_GPU2D_QUAD_BLIT32;
+                dst->src = src->src;
+            } else{
+                return -1;
+            }
+            dst->x = src->x;
+            dst->y = src->y;
+            dst->color = src->color;
+        }
+
+        if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, chunk) != 0){
+            g_gpu2d_quad_batch_runtime = 0;
+            return -1;
+        }
+        offset += chunk;
+    }
+
+    if (fill_cmds > 0ull){
+        g_sdl_profile.fill_flushes += fill_cmds;
+        g_sdl_profile.fill_pixels += fill_pixels;
+        g_sdl_profile.fill_us += qos_get_time_us() - t0;
+    }
+    return 0;
+#else
+    return -1;
+#endif
 }
 
 static int sdl_queue_quad_fill32(unsigned int x,
@@ -2782,6 +2856,7 @@ int SDL_Init(Uint32 flags){
     SDL_QOS_ProfileReset();
     sdl_event_queue_reset();
     g_quad_batch_count = 0u;
+    g_gpu2d_quad_batch_runtime = -1;
     g_pending_fill_valid = 0;
     for (int i = 0; i < SDL_NUM_SCANCODES; i++){
         g_keyboard_state[i] = 0u;
@@ -2856,6 +2931,7 @@ int SDL_InitSubSystem(Uint32 flags){
 
 void SDL_Quit(void){
     g_quad_batch_count = 0u;
+    g_gpu2d_quad_batch_runtime = -1;
     g_pending_fill_valid = 0;
     for (int i = 0; i < SDL_SHIM_MAX_TEXTURES; i++){
         if (g_textures[i].alive && g_textures[i].owns_pixels){

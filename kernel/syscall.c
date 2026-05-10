@@ -452,6 +452,9 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU2D_CLEAR_COUNT:
         case SYS_GPU2D_FILL_RECT:
         case SYS_GPU2D_FILL_COUNT:
+        case SYS_GPU2D_QUAD_BATCH:
+        case SYS_GPU2D_QUAD_COUNT:
+        case SYS_GPU2D_QUAD_BATCH_COUNT:
         case SYS_GPU2D_TEXTURE_UPLOAD:
         case SYS_GPU2D_TEXTURE_FREE:
         case SYS_GPU2D_TEXTURE_COUNT:
@@ -1001,6 +1004,38 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_GPU2D_FILL_COUNT:
             frame[TF_X0] = (unsigned long)gpu2d_fill_count();
+            return frame_sp;
+
+        case SYS_GPU2D_QUAD_BATCH: {
+            const qos_gpu2d_quad_t* user_quads = (const qos_gpu2d_quad_t*)frame[TF_X0];
+            unsigned int count = (unsigned int)frame[TF_X1];
+            if (!user_quads || count == 0u || count > QOS_GPU2D_QUAD_BATCH_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            unsigned long bytes = (unsigned long)count * sizeof(qos_gpu2d_quad_t);
+            qos_gpu2d_quad_t* quads = (qos_gpu2d_quad_t*)kmalloc(bytes);
+            if (!quads){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_copy_from_user(quads, user_quads, bytes) != 0){
+                kfree_secure(quads, bytes);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            int rc = gpu2d_submit_quads_for_pid(process_current_pid(), quads, count);
+            kfree_secure(quads, bytes);
+            frame[TF_X0] = (unsigned long)rc;
+            return frame_sp;
+        }
+
+        case SYS_GPU2D_QUAD_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_quad_count();
+            return frame_sp;
+
+        case SYS_GPU2D_QUAD_BATCH_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_quad_batch_count();
             return frame_sp;
 
         case SYS_GPU2D_TEXTURE_UPLOAD: {

@@ -9,10 +9,15 @@
 #define QOS_GPU2D_CAP_ACCEL_CLEAR       0x00000020u
 #define QOS_GPU2D_CAP_ACCEL_FILL_TILE   0x00000040u
 #define QOS_GPU2D_CAP_TEXTURE_OBJECTS   0x00000080u
+#define QOS_GPU2D_CAP_QUAD_BATCH        0x00000100u
 
 #define QOS_GPU2D_STATUS_READY          0x00010000u
 #define QOS_GPU2D_STATUS_BACKEND_SOFT   0x00020000u
 #define QOS_GPU2D_STATUS_BACKEND_HW     0x00040000u
+
+#define QOS_GPU2D_QUAD_BATCH_MAX        256u
+#define QOS_GPU2D_QUAD_FILL32           1u
+#define QOS_GPU2D_QUAD_BLIT32           2u
 
 #define QOS_GPU2D_BLIT_ALLOW_SOFTWARE   0x00000001u
 #define QOS_GPU2D_BLIT_OPAQUE           0x00000002u
@@ -48,12 +53,22 @@ typedef struct {
     unsigned int texture_id;
 } qos_gpu2d_texture_upload_t;
 
+typedef struct {
+    unsigned int op;
+    int x;
+    int y;
+    unsigned int color;
+    const unsigned int* src;
+} qos_gpu2d_quad_t;
+
 unsigned int gpu2d_status(void);
 unsigned int gpu2d_blit_count(void);
 unsigned int gpu2d_fallback_count(void);
 unsigned int gpu2d_unsupported_count(void);
 unsigned int gpu2d_clear_count(void);
 unsigned int gpu2d_fill_count(void);
+unsigned int gpu2d_quad_count(void);
+unsigned int gpu2d_quad_batch_count(void);
 unsigned int gpu2d_texture_count(void);
 unsigned int gpu2d_texture_upload_count(void);
 unsigned int gpu2d_texture_free_count(void);
@@ -66,6 +81,9 @@ int gpu2d_fill_rect_for_pid(int pid,
                             unsigned int w,
                             unsigned int h,
                             unsigned int color);
+int gpu2d_submit_quads_for_pid(int pid,
+                               const qos_gpu2d_quad_t* quads,
+                               unsigned int count);
 int gpu2d_texture_upload_for_pid(int pid, qos_gpu2d_texture_upload_t* req);
 int gpu2d_texture_free_for_pid(int pid, unsigned int texture_id);
 void gpu2d_release_for_pid(int pid);

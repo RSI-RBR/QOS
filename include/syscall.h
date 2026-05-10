@@ -154,7 +154,10 @@ enum {
     SYS_DISPLAY_VSYNC_GET = 128,
     SYS_V3D_QPU_PROBE = 129,
     SYS_V3D_QPU_WRITE_PROBE = 130,
-    SYS_V3D_QPU_EXEC_PROBE = 131
+    SYS_V3D_QPU_EXEC_PROBE = 131,
+    SYS_GPU2D_QUAD_BATCH = 132,
+    SYS_GPU2D_QUAD_COUNT = 133,
+    SYS_GPU2D_QUAD_BATCH_COUNT = 134
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -559,6 +562,20 @@ static inline unsigned int qos_gpu2d_clear_count(void){
 
 static inline unsigned int qos_gpu2d_fill_count(void){
     return (unsigned int)qos_syscall0(SYS_GPU2D_FILL_COUNT);
+}
+
+static inline int qos_gpu2d_quad_batch(const qos_gpu2d_quad_t* quads, unsigned int count){
+    return (int)qos_syscall2(SYS_GPU2D_QUAD_BATCH,
+                             (unsigned long)quads,
+                             (unsigned long)count);
+}
+
+static inline unsigned int qos_gpu2d_quad_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_QUAD_COUNT);
+}
+
+static inline unsigned int qos_gpu2d_quad_batch_count(void){
+    return (unsigned int)qos_syscall0(SYS_GPU2D_QUAD_BATCH_COUNT);
 }
 
 static inline int qos_gpu2d_texture_upload(qos_gpu2d_texture_upload_t* req){
