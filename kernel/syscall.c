@@ -576,7 +576,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
 
             unsigned long row_bytes = (unsigned long)w * 4ul;
-            if (row_bytes == 0ul || row_bytes > (unsigned long)USER_IO_MAX){
+            if (row_bytes == 0ul){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (row_bytes > 0xFFFFFFFFul){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
@@ -584,28 +588,19 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-
-            unsigned char* row = (unsigned char*)kmalloc(row_bytes);
-            if (!row){
+            unsigned long total_bytes = row_bytes * (unsigned long)h;
+            if (!process_user_range_readable(user_src, total_bytes)){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
 
-            int rc = 0;
-            for (unsigned int py = 0u; py < h; py++){
-                const unsigned char* user_row = user_src + ((unsigned long)py * row_bytes);
-                if (process_copy_from_user(row, user_row, row_bytes) != 0){
-                    rc = -1;
-                    break;
-                }
-                if (display_blit_rgba32_for_pid(pid, x, y + py, w, 1u, row, (unsigned int)row_bytes) != 0){
-                    rc = -1;
-                    break;
-                }
-            }
-
-            kfree_secure(row, row_bytes);
-            frame[TF_X0] = (unsigned long)rc;
+            frame[TF_X0] = (unsigned long)display_blit_rgba32_for_pid(pid,
+                                                                      x,
+                                                                      y,
+                                                                      w,
+                                                                      h,
+                                                                      user_src,
+                                                                      (unsigned int)row_bytes);
             return frame_sp;
         }
 

@@ -714,12 +714,12 @@ static void cmd_dma(const char* mode){
     }
     if (str_eq(mode, "on")){
         (void)qos_dma_set_enabled(1);
-        qos_puts("dma enabled for framebuffer console tests.\n");
+        qos_puts("dma enabled for large framebuffer presents.\n");
         return;
     }
     if (str_eq(mode, "off")){
         (void)qos_dma_set_enabled(0);
-        qos_puts("dma disabled; framebuffer console uses CPU copy.\n");
+        qos_puts("dma disabled; framebuffer presents use CPU copy.\n");
         return;
     }
     qos_puts("Usage: dma on|off|status\n");

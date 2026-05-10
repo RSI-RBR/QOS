@@ -6,7 +6,7 @@
 #define SDL_SHIM_MAX_TEXTURES 128
 #define SDL_SHIM_MAX_SURFACES 32
 #define SDL_SHIM_ROWBUF_PIXELS 2048
-#define SDL_SHIM_BLITBUF_BYTES (64u * 1024u)
+#define SDL_SHIM_BLITBUF_BYTES (512u * 1024u)
 #define SDL_SHIM_BMP_FILE_MAX (1024u * 1024u)
 #define SDL_SHIM_EVENT_QUEUE_SIZE 64
 #define SDL_SHIM_REPEAT_DELAY_MS 400u
@@ -2049,6 +2049,28 @@ static int sdl_render_copy_internal(SDL_Renderer* renderer, SDL_Texture* texture
                                    (unsigned int)(visible_x1 - visible_x0),
                                    (unsigned int)(visible_y1 - visible_y0),
                                    texture->average_color);
+    }
+
+    if (flip == SDL_FLIP_NONE &&
+        visible_x0 == 0 && visible_y0 == 0 &&
+        visible_x1 == dw && visible_y1 == dh &&
+        sx == 0 && sy == 0 &&
+        sw == texture->w && sh == texture->h &&
+        dw == texture->w && dh == texture->h &&
+        texture->alpha_mod == 255u &&
+        texture->color_r == 255u &&
+        texture->color_g == 255u &&
+        (texture->opaque || texture->blend_mode != SDL_BLENDMODE_NONE)){
+        sdl_flush_pending_fill();
+        if (qos_fb_blit_rgba((unsigned int)dx,
+                             (unsigned int)dy,
+                             (unsigned int)dw,
+                             (unsigned int)dh,
+                             texture->pixels) != 0){
+            set_error("fb blit failed");
+            return -1;
+        }
+        return 0;
     }
 
     {

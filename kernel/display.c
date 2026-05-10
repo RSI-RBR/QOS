@@ -1,4 +1,5 @@
 #include "display.h"
+#include "dma.h"
 #include "framebuffer.h"
 #include "memory.h"
 #include "spinlock.h"
@@ -12,6 +13,7 @@ static int g_display_pending_switch_pid = -1;
 
 #define DISPLAY_CURSOR_RADIUS 7
 #define DISPLAY_CURSOR_PAD 2
+#define DISPLAY_DMA_MIN_BYTES (256u * 1024u)
 
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
@@ -155,10 +157,37 @@ static int display_copy_rect_locked(const display_session_t* s,
     unsigned int copy_height = y1 - y0;
     unsigned int row_bytes = copy_width * sizeof(unsigned int);
     unsigned int row_offset = x0 * sizeof(unsigned int);
+    unsigned long copy_bytes = (unsigned long)row_bytes * (unsigned long)copy_height;
+    unsigned long fb_bus = fb_get_bus_base();
     if (dst_pitch < row_offset || s->pitch < row_offset ||
         dst_pitch - row_offset < row_bytes ||
         s->pitch - row_offset < row_bytes){
         return -1;
+    }
+
+    if (fb_bus != 0u &&
+        copy_bytes >= DISPLAY_DMA_MIN_BYTES &&
+        copy_bytes <= 0xFFFFFFFFUL){
+        unsigned int src_stride = s->pitch - row_bytes;
+        unsigned int dst_stride = dst_pitch - row_bytes;
+        const void* src0 = (const void*)((const unsigned char*)s->framebuffer +
+                                         ((unsigned long)y0 * s->pitch) +
+                                         row_offset);
+        unsigned int dst_bus = (unsigned int)(fb_bus +
+                                              ((unsigned long)y0 * dst_pitch) +
+                                              row_offset);
+        if (src_stride == 0u && dst_stride == 0u){
+            if (dma_memcpy_to_bus(dst_bus, src0, (unsigned int)copy_bytes) == 0){
+                return 0;
+            }
+        } else if (dma_memcpy_2d_to_bus(dst_bus,
+                                        dst_stride,
+                                        src0,
+                                        src_stride,
+                                        row_bytes,
+                                        copy_height) == 0){
+            return 0;
+        }
     }
 
     for (unsigned int y = 0; y < copy_height; y++){
