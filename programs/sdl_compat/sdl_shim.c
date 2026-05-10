@@ -2190,6 +2190,7 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
                                             const Uint32** out_pixels){
     Uint32 bytes;
     int slot;
+    int rebuilt = 0;
 
     if (out_pixels){
         *out_pixels = 0;
@@ -2261,12 +2262,15 @@ static int sdl_texture_ensure_scaled_native(SDL_Texture* texture,
         texture->native_scaled_w[slot] = (Uint32)out_w;
         texture->native_scaled_h[slot] = (Uint32)out_h;
         texture->native_scaled_valid[slot] = 1;
+        rebuilt = 1;
     }
 
-    if (++g_native_scaled_cache_clock == 0u){
-        g_native_scaled_cache_clock = 1u;
+    if (rebuilt){
+        if (++g_native_scaled_cache_clock == 0u){
+            g_native_scaled_cache_clock = 1u;
+        }
+        texture->native_scaled_stamp[slot] = g_native_scaled_cache_clock;
     }
-    texture->native_scaled_stamp[slot] = g_native_scaled_cache_clock;
     *out_pixels = texture->native_scaled_pixels[slot];
     return 0;
 }
