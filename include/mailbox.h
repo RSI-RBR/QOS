@@ -1,7 +1,13 @@
 #ifndef MAILBOX_H
 #define MAILBOX_H
 
-extern volatile unsigned int mbox[36];
+/*
+ * Firmware property mailbox buffer.
+ *
+ * Keep this cache-line isolated: mailbox.c performs cache maintenance over
+ * the whole buffer before/after GPU firmware calls.
+ */
+extern volatile unsigned int mbox[64];
 
 int mailbox_call(unsigned char ch);
 void mailbox_lock(void);

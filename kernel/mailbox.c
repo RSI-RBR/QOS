@@ -13,9 +13,15 @@
 #define MBOX_FULL  0x80000000
 
 #define MAILBOX_CHANNEL_PROP 8
+#define MBOX_WAIT_MAX 100000000u
 
-volatile unsigned int mbox[36] __attribute__((aligned(16)));
-static spinlock_t g_mailbox_lock = {0};
+/*
+ * The firmware mailbox buffer is cache-maintained as a whole.  Keep it aligned
+ * and sized to full cache lines so the clean/invalidate range cannot spill into
+ * adjacent globals such as the mailbox spinlock.
+ */
+volatile unsigned int mbox[64] __attribute__((aligned(64)));
+static spinlock_t g_mailbox_lock __attribute__((aligned(64))) = {0};
 
 static unsigned long cache_line_size(void){
     unsigned long ctr;
@@ -47,22 +53,33 @@ int mailbox_call_locked(unsigned char ch){
     unsigned int r = ((unsigned int)((unsigned long)&mbox) & ~0xF) | (ch & 0xF);
     unsigned long mbox_addr = (unsigned long)&mbox[0];
     unsigned long mbox_size = sizeof(mbox);
+    unsigned int wait;
+    unsigned int resp;
 
     // Make request visible to GPU before ringing mailbox doorbell.
     clean_invalidate_dcache_range(mbox_addr, mbox_size);
 
-    while (MBOX_STATUS & MBOX_FULL);
+    wait = MBOX_WAIT_MAX;
+    while (MBOX_STATUS & MBOX_FULL){
+        if (--wait == 0u){
+            return 0;
+        }
+    }
     MBOX_WRITE = r;
 
-    while (1){
-        while (MBOX_STATUS & MBOX_EMPTY);
-
-        if (MBOX_READ == r){
+    wait = MBOX_WAIT_MAX;
+    while (wait-- != 0u){
+        if (MBOX_STATUS & MBOX_EMPTY){
+            continue;
+        }
+        resp = MBOX_READ;
+        if (resp == r){
             // Refresh CPU view of response written by GPU.
             clean_invalidate_dcache_range(mbox_addr, mbox_size);
             return mbox[1] == 0x80000000;
         }
     }
+    return 0;
 }
 
 int mailbox_call(unsigned char ch){
