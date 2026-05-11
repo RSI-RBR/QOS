@@ -102,6 +102,7 @@ static int sdl_soft_blit_32x32_native_fast(int x,
                                            const Uint32* src_pixels);
 static void sdl_flush_quad_batch(void);
 static int sdl_flush_quad_batch_gpu2d(void);
+static int sdl_quad_batch_qpu_eligible(void);
 static int sdl_queue_quad_fill(unsigned int x,
                                unsigned int y,
                                unsigned int w,
@@ -2244,11 +2245,21 @@ static int sdl_flush_quad_batch_gpu2d(void){
         return 0;
     }
     if (g_gpu2d_quad_batch_runtime < 0){
+        unsigned int st = sdl_gpu2d_status_cached();
         g_gpu2d_quad_batch_runtime =
             ((qos_gpu_status() & 1u) != 0u &&
-             (sdl_gpu2d_status_cached() & QOS_GPU2D_CAP_QUAD_BATCH) != 0u) ? 1 : 0;
+             qos_gpu2d_qpu_status() != 0u &&
+             (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
+             (st & QOS_GPU2D_CAP_QPU_QUAD) != 0u) ? 1 : 0;
     }
-    if (!g_gpu2d_quad_batch_runtime){
+    /*
+     * The current QPU copy kernel operates on 64-pixel-wide rows.  Quantum
+     * Front's common path is 32x32 quads, so sending those through the kernel
+     * only falls back to CPU there and is slower than the direct userspace
+     * framebuffer copy path.  Keep them local until we add a real 32-wide QPU
+     * kernel or atlas-aware 64-wide coalescing.
+     */
+    if (!g_gpu2d_quad_batch_runtime || sdl_quad_batch_qpu_eligible() != 0){
         return -1;
     }
 
@@ -2300,6 +2311,23 @@ static int sdl_flush_quad_batch_gpu2d(void){
 #else
     return -1;
 #endif
+}
+
+static int sdl_quad_batch_qpu_eligible(void){
+    for (unsigned int i = 0u; i < g_quad_batch_count; i++){
+        const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
+        if ((cmd->w & 63u) != 0u){
+            return -1;
+        }
+        if (cmd->type == SDL_SHIM_QUAD_BLIT32){
+            if (!cmd->src || (cmd->src_pitch & 3u) != 0u){
+                return -1;
+            }
+        } else if (cmd->type != SDL_SHIM_QUAD_FILL32){
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int sdl_queue_quad_fill32(unsigned int x,
