@@ -34,6 +34,8 @@ typedef struct {
     unsigned int direct_page;
     unsigned int direct_page_a;
     unsigned int direct_page_b;
+    unsigned int direct_unsafe_page;
+    unsigned long direct_unsafe_since_cycles;
     int scanout_attached;
     unsigned int scanout_page;
 } display_session_t;

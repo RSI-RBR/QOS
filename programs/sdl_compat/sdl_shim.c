@@ -26,6 +26,9 @@
 #ifndef SDL_SHIM_ENABLE_GPU2D_LARGE_FILL
 #define SDL_SHIM_ENABLE_GPU2D_LARGE_FILL 0
 #endif
+#ifndef SDL_SHIM_ENABLE_GPU2D_DIRECT_OPS
+#define SDL_SHIM_ENABLE_GPU2D_DIRECT_OPS 0
+#endif
 #ifndef SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD
 #define SDL_SHIM_ENABLE_GPU2D_TEXTURE_UPLOAD 1
 #endif
@@ -937,7 +940,8 @@ static int sdl_queue_fill_rect(unsigned int x,
         g_sdl_profile.fill_us += qos_get_time_us() - t0;
         return 0;
     }
-    if (g_soft_fb_direct &&
+    if (SDL_SHIM_ENABLE_GPU2D_DIRECT_OPS &&
+        g_soft_fb_direct &&
         !g_soft_fb_direct_inactive &&
         (x & 63u) == 0u &&
         (y & 63u) == 0u &&
@@ -3918,7 +3922,8 @@ int SDL_RenderClear(SDL_Renderer* renderer){
      * frames as partial updates, which disables page flipping and drops back to
      * the slow full-screen copy path. Clear the whole graphics session instead.
      */
-    if (g_soft_fb_direct && !g_soft_fb_direct_inactive &&
+    if (SDL_SHIM_ENABLE_GPU2D_DIRECT_OPS &&
+        g_soft_fb_direct && !g_soft_fb_direct_inactive &&
         qos_gpu2d_clear(renderer->draw_color) == 0){
         g_sdl_profile.clear_calls++;
         g_sdl_profile.clear_us += qos_get_time_us() - t0;

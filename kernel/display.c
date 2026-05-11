@@ -23,19 +23,12 @@ static int g_display_pending_switch_pid = -1;
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_NUM 1u
 #define DISPLAY_DMA_FULL_FRAME_THRESHOLD_DEN 2u
 #define DISPLAY_FRAMEBUFFER_ALIGN 64UL
-/*
- * Avoid the classic double-pacing trap:
- * app sleeps/caps near 60 Hz, then present() waits a second vblank and turns
- * that into ~30 FPS.  If the previous flip is already old enough, present()
- * returns immediately; if the app is racing, we still wait for vblank.
- */
-#define DISPLAY_VSYNC_MIN_FRAME_US 12000UL
-
+#define DISPLAY_DIRECT_UNSAFE_PAGE_NONE 0xFFFFFFFFu
+#define DISPLAY_DIRECT_PAGE_SAFE_US 20000UL
 static int g_display_gpu_enabled = 0;
 static int g_display_vsync_enabled = 1;
 static unsigned int g_display_gpu_flip_count = 0;
 static unsigned int g_display_gpu_failure_count = 0;
-static unsigned long g_display_last_flip_cycles = 0UL;
 static int g_cursor_drawn = 0;
 static int g_cursor_session_id = -1;
 static int g_cursor_x = 0;
@@ -98,22 +91,21 @@ static unsigned long display_elapsed_us(unsigned long start, unsigned long hz){
     return display_cycles_to_us(display_read_cntpct() - start, hz);
 }
 
-static int display_should_wait_vsync_locked(unsigned long now_cycles,
-                                            unsigned long hz){
-    if (!g_display_vsync_enabled){
+static int display_direct_page_needs_wait_locked(const display_session_t* s,
+                                                 unsigned int page,
+                                                 unsigned long now_cycles,
+                                                 unsigned long hz){
+    if (!s || !g_display_vsync_enabled ||
+        s->direct_unsafe_page == DISPLAY_DIRECT_UNSAFE_PAGE_NONE ||
+        s->direct_unsafe_page != page){
         return 0;
     }
-    if (hz == 0UL || g_display_last_flip_cycles == 0UL ||
-        now_cycles < g_display_last_flip_cycles){
+    if (hz == 0UL || s->direct_unsafe_since_cycles == 0UL ||
+        now_cycles < s->direct_unsafe_since_cycles){
         return 1;
     }
-    unsigned long since_last_us =
-        display_cycles_to_us(now_cycles - g_display_last_flip_cycles, hz);
-    return since_last_us < DISPLAY_VSYNC_MIN_FRAME_US;
-}
-
-static void display_note_flip_locked(void){
-    g_display_last_flip_cycles = display_read_cntpct();
+    return display_cycles_to_us(now_cycles - s->direct_unsafe_since_cycles, hz) <
+           DISPLAY_DIRECT_PAGE_SAFE_US;
 }
 
 static int display_valid_id(int session_id){
@@ -599,6 +591,8 @@ static void display_clear_session_locked(int session_id){
     g_display_sessions[session_id].direct_page = 0u;
     g_display_sessions[session_id].direct_page_a = 0u;
     g_display_sessions[session_id].direct_page_b = 0u;
+    g_display_sessions[session_id].direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    g_display_sessions[session_id].direct_unsafe_since_cycles = 0UL;
     g_display_sessions[session_id].scanout_attached = 0;
     g_display_sessions[session_id].scanout_page = 0u;
 }
@@ -748,6 +742,8 @@ static void display_init_text_locked(void){
     s->direct_page = 0u;
     s->direct_page_a = 0u;
     s->direct_page_b = 0u;
+    s->direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    s->direct_unsafe_since_cycles = 0UL;
     display_mark_full_dirty_locked(s);
     g_display_active = DISPLAY_TEXT_SESSION_ID;
 }
@@ -872,6 +868,8 @@ int display_create_graphics_session(int owner_pid){
     g_display_sessions[slot].direct_page = 0u;
     g_display_sessions[slot].direct_page_a = 0u;
     g_display_sessions[slot].direct_page_b = 0u;
+    g_display_sessions[slot].direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    g_display_sessions[slot].direct_unsafe_since_cycles = 0UL;
     g_display_sessions[slot].scanout_attached = 0;
     g_display_sessions[slot].scanout_page = 0u;
     display_mark_full_dirty_locked(&g_display_sessions[slot]);
@@ -1144,6 +1142,8 @@ int display_attach_external_framebuffer_for_pid(int owner_pid,
     s->direct_page = 0u;
     s->direct_page_a = 0u;
     s->direct_page_b = 0u;
+    s->direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    s->direct_unsafe_since_cycles = 0UL;
     display_mark_full_dirty_locked(s);
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (old_allocation && old_allocation_size > 0UL){
@@ -1193,6 +1193,8 @@ int display_attach_direct_framebuffer_for_pid(int owner_pid,
     s->direct_page = page_a;
     s->direct_page_a = page_a;
     s->direct_page_b = page_b;
+    s->direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    s->direct_unsafe_since_cycles = 0UL;
     display_mark_full_dirty_locked(s);
     spin_unlock_irqrestore(&g_display_lock, irq);
     if (old_allocation && old_allocation_size > 0UL){
@@ -1209,6 +1211,7 @@ int display_direct_get_draw_for_pid(int owner_pid, unsigned int* out_page){
 
     display_init();
 
+    unsigned long hz = display_read_cntfrq();
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     display_session_t* s = &g_display_sessions[session_id];
     if (s->type != DISPLAY_GRAPHICS || !s->direct_framebuffer ||
@@ -1221,6 +1224,14 @@ int display_direct_get_draw_for_pid(int owner_pid, unsigned int* out_page){
         spin_unlock_irqrestore(&g_display_lock, irq);
         return -2;
     }
+    if (display_direct_page_needs_wait_locked(s,
+                                              s->direct_page,
+                                              display_read_cntpct(),
+                                              hz)){
+        (void)fb_wait_vsync();
+    }
+    s->direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+    s->direct_unsafe_since_cycles = 0UL;
     *out_page = s->direct_page;
     spin_unlock_irqrestore(&g_display_lock, irq);
     return 0;
@@ -1277,6 +1288,7 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
     unsigned int draw_page = s->direct_page;
     unsigned int previous_page = fb_get_display_page();
     unsigned long draw_base = fb_get_page_base(draw_page);
+    unsigned long flip_note_cycles = 0UL;
     if (draw_base && s->pitch > 0u && s->height > 0u){
         if (mouse.present){
             unsigned long cursor_start = display_read_cntpct();
@@ -1307,23 +1319,10 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
         unsigned long after_set = display_read_cntpct();
         unsigned long set_us = display_cycles_to_us(after_set - flip_start,
                                                     prof_hz);
-        unsigned long vsync_start = display_read_cntpct();
         unsigned long wait_us = 0UL;
-        if (g_display_vsync_enabled &&
-            s->direct_page_a != s->direct_page_b &&
-            display_should_wait_vsync_locked(vsync_start, prof_hz)){
-            /*
-             * With double-buffered direct pages, the old visible page is the
-             * next draw page. Wait for vblank before giving it back to
-             * userspace so the app does not draw into a page the display is
-             * still scanning out.
-             */
-            (void)fb_wait_vsync();
-            wait_us = display_elapsed_us(vsync_start, prof_hz);
-        }
+        flip_note_cycles = after_set;
         flip_set_us += set_us;
         flip_us += set_us + wait_us;
-        display_note_flip_locked();
         g_display_gpu_flip_count++;
         g_display_profile.pageflip_calls++;
     } else{
@@ -1341,6 +1340,17 @@ int display_direct_present_for_pid(int owner_pid, unsigned int* out_next_page){
             (previous_page == s->direct_page_a || previous_page == s->direct_page_b)){
             next_page = previous_page;
         }
+    }
+    if (g_display_vsync_enabled &&
+        s->direct_page_a != s->direct_page_b &&
+        next_page == previous_page &&
+        previous_page != draw_page &&
+        flip_note_cycles != 0UL){
+        s->direct_unsafe_page = next_page;
+        s->direct_unsafe_since_cycles = flip_note_cycles;
+    } else{
+        s->direct_unsafe_page = DISPLAY_DIRECT_UNSAFE_PAGE_NONE;
+        s->direct_unsafe_since_cycles = 0UL;
     }
     s->direct_page = next_page;
     s->framebuffer = (void*)fb_get_page_base(next_page);
@@ -1927,7 +1937,7 @@ int display_present_active_graphics(void){
              * offset, then wait until the next vblank has accepted it before
              * giving the old visible page back to the renderer.
              */
-            if (display_should_wait_vsync_locked(vsync_start, prof_hz)){
+            if (g_display_vsync_enabled){
                 (void)fb_wait_vsync();
             }
             flip_set_us += set_us;
@@ -1936,7 +1946,6 @@ int display_present_active_graphics(void){
                                     0UL;
             vsync_us += wait_us;
             flip_us += set_us + wait_us;
-            display_note_flip_locked();
             g_display_gpu_flip_count++;
             g_display_profile.pageflip_calls++;
             unsigned int next_page = display_choose_scanout_page(presented_page,
@@ -2004,7 +2013,6 @@ int display_gpu_set_enabled(int enabled){
 
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     g_display_gpu_enabled = enabled ? 1 : 0;
-    g_display_last_flip_cycles = 0UL;
     if (!g_display_gpu_enabled){
         for (int i = 1; i < DISPLAY_MAX_SESSIONS; i++){
             if (g_display_sessions[i].type == DISPLAY_GRAPHICS){
@@ -2060,7 +2068,6 @@ int display_vsync_set_enabled(int enabled){
     display_init();
     unsigned long irq = spin_lock_irqsave(&g_display_lock);
     g_display_vsync_enabled = enabled ? 1 : 0;
-    g_display_last_flip_cycles = 0UL;
     spin_unlock_irqrestore(&g_display_lock, irq);
     return 0;
 }
@@ -2096,7 +2103,6 @@ void display_profile_reset(void){
     g_display_profile.clean_us = 0UL;
     g_display_profile.profile_start_cycles = display_read_cntpct();
     g_display_profile.profile_hz = display_read_cntfrq();
-    g_display_last_flip_cycles = 0UL;
     spin_unlock_irqrestore(&g_display_lock, irq);
 }
 
