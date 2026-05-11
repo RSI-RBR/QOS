@@ -1,12 +1,13 @@
 #include "sdio_bus.h"
 #include "gpio.h"
 #include "mailbox.h"
+#include "platform/mmio.h"
 #include "timer.h"
 #include "uart.h"
 #include "debug.h"
 #include "clock.h"
 
-#define EMMC_BASE 0x3F300000UL
+#define EMMC_BASE QOS_EMMC_BASE
 
 #define EMMC_BLKSIZECNT  (*(volatile unsigned int*)(EMMC_BASE + 0x04))
 #define EMMC_ARG1        (*(volatile unsigned int*)(EMMC_BASE + 0x08))

@@ -1,7 +1,8 @@
 #include "clock.h"
+#include "platform/mmio.h"
 #include "uart.h"
 
-#define CM_BASE 0x3f101000
+#define CM_BASE QOS_CLOCK_BASE
 
 #define CM_EMMCCTL (*(volatile unsigned int*)(CM_BASE + 0x1C))
 #define CM_EMMCDIV (*(volatile unsigned int*)(CM_BASE + 0x20))
@@ -18,7 +19,7 @@
 
 void clock_debug_write(void)
 {
-    volatile unsigned int *test = (volatile unsigned int*)0x3F101000;
+    volatile unsigned int *test = (volatile unsigned int*)QOS_CLOCK_BASE;
 
     uart_puts("BEFORE: ");
     uart_puthex(*test);

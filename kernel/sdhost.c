@@ -1,8 +1,9 @@
 #include "sdhost.h"
 #include "interrupt.h"
+#include "platform/mmio.h"
 #include "timer.h"
 
-#define SDHOST_BASE 0x3F202000
+#define SDHOST_BASE QOS_SDHOST_BASE
 
 #define SDCMD   (*(volatile unsigned int*)(SDHOST_BASE + 0x00))
 #define SDARG   (*(volatile unsigned int*)(SDHOST_BASE + 0x04))
@@ -59,7 +60,7 @@ static int sd_is_sdhc = 0;
 static volatile unsigned int sdhost_irq_latched = 0;
 static unsigned char sd_verify_buf[512] __attribute__((aligned(16)));
 
-#define IRQ_BASE 0x3F00B000UL
+#define IRQ_BASE QOS_IRQ_BASE
 #define ENABLE_IRQS_2 (*(volatile unsigned int*)(IRQ_BASE + 0x214))
 #define SDHOST_IRQ_EN_BIT (1u << 30) // IRQ 62 (SDHOST)
 

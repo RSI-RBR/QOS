@@ -1,6 +1,7 @@
 #include "smp.h"
+#include "platform/mmio.h"
 
-#define LOCAL_BASE 0x40000000UL
+#define LOCAL_BASE QOS_ARM_LOCAL_BASE
 #define CORE1_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0x9C))
 #define CORE2_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0xAC))
 #define CORE3_MBOX3_SET (*(volatile unsigned int*)(LOCAL_BASE + 0xBC))

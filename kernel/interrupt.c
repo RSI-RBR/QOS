@@ -6,17 +6,18 @@
 #include "net.h"
 #include "arp.h"
 #include "mmu.h"
+#include "platform/mmio.h"
 #include "cpu.h"
 #include "smp.h"
 
 extern void vectors(void);
 
-#define LOCAL_BASE 0x40000000UL
+#define LOCAL_BASE QOS_ARM_LOCAL_BASE
 #define CORE_IRQ_SOURCE(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x60 + ((core) * 4u)))
 #define CORE_CNTPNSIRQ_PENDING (1u << 1)
 #define CORE_MAILBOX0_PENDING (1u << 4)
 
-#define IRQ_BASE 0x3F00B000UL
+#define IRQ_BASE QOS_IRQ_BASE
 #define IRQ_PENDING_2 (*(volatile unsigned int*)(IRQ_BASE + 0x204))
 #define IRQ_SDHOST_PENDING_BIT (1u << 30) // IRQ 62 -> bank2 bit 30
 

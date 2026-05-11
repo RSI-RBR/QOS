@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SD_MOUNT="${SD_MOUNT:-/media/sd}"
+BOARD="${BOARD:-pi3}"
 ADMIN_KEY="${ADMIN_KEY:-keys/admin_ed25519.pem}"
 DEV_KEY="${DEV_KEY:-keys/dev_ed25519.pem}"
 OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
@@ -133,9 +134,9 @@ if [[ -n "$DEV_PQ_PUB" ]]; then DEV_PQ_PUB_ABS="$(realpath "$DEV_PQ_PUB")"; fi
 if [[ -n "$AUTH_SIGN_KEY" ]]; then AUTH_SIGN_KEY_ABS="$(realpath "$AUTH_SIGN_KEY")"; fi
 if [[ -n "$AUTH_PQ_SIGN_KEY" ]]; then AUTH_PQ_SIGN_KEY_ABS="$(realpath "$AUTH_PQ_SIGN_KEY")"; fi
 
-echo "[1/5] Building signed kernel..."
-make clean
-make OPENSSL_BIN="$OPENSSL_BIN" \
+echo "[1/5] Building signed kernel for BOARD=$BOARD..."
+make BOARD="$BOARD" clean
+make BOARD="$BOARD" OPENSSL_BIN="$OPENSSL_BIN" \
   ADMIN_SIGN_KEY="$ADMIN_KEY_ABS" DEV_SIGN_KEY="$DEV_KEY_ABS" \
   ADMIN_PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS" DEV_PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS" \
   ADMIN_PQ_PUB="$ADMIN_PQ_PUB_ABS" DEV_PQ_PUB="$DEV_PQ_PUB_ABS"

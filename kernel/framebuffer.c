@@ -1,5 +1,6 @@
 #include "framebuffer.h"
 #include "mailbox.h"
+#include "platform/mmio.h"
 #include "uart.h"
 #include "spinlock.h"
 
@@ -87,7 +88,7 @@ void fb_init(){
         // The firmware returns a GPU/DMA bus address. Keep it raw for DMA
         // destinations; only mask to an ARM physical address for CPU access.
         fb_bus = (unsigned long)mbox[23];
-        fb = (unsigned int*)((unsigned long)(fb_bus & 0x3FFFFFFF));
+        fb = (unsigned int*)((unsigned long)(fb_bus & QOS_VC_BUS_ARM_MASK));
         pitch = mbox[19];
         fb_size = (unsigned long)mbox[24];
         // Use actual dimensions returned by firmware, not only requested values.

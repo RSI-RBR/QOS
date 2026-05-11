@@ -1,7 +1,9 @@
 #include "uart.h"
 #include "sd.h"
 
-#define SDHOST_BASE 0x3F202000
+#include "platform/mmio.h"
+
+#define SDHOST_BASE QOS_SDHOST_BASE
 
 #define SDHOST_CMD     (*(volatile unsigned int*)(SDHOST_BASE + 0x00))
 #define SDHOST_ARG     (*(volatile unsigned int*)(SDHOST_BASE + 0x04))

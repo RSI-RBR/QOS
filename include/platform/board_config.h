@@ -1,0 +1,29 @@
+#ifndef QOS_PLATFORM_BOARD_CONFIG_H
+#define QOS_PLATFORM_BOARD_CONFIG_H
+
+#if defined(QOS_BOARD_PI3)
+#define QOS_BOARD_NAME "pi3"
+#define QOS_BOARD_HAS_ONBOARD_WIFI 0
+#define QOS_BOARD_HAS_USB_ETHERNET 1
+#define QOS_BOARD_HAS_DWC2_USB 1
+#define QOS_BOARD_HAS_V3D 1
+#define QOS_BOARD_HAS_QPU 1
+#elif defined(QOS_BOARD_PI_ZERO2W)
+#define QOS_BOARD_NAME "pi_zero2w"
+#define QOS_BOARD_HAS_ONBOARD_WIFI 1
+#define QOS_BOARD_HAS_USB_ETHERNET 0
+#define QOS_BOARD_HAS_DWC2_USB 1
+#define QOS_BOARD_HAS_V3D 1
+#define QOS_BOARD_HAS_QPU 1
+#elif defined(QOS_BOARD_PI5)
+#define QOS_BOARD_NAME "pi5"
+#define QOS_BOARD_HAS_ONBOARD_WIFI 1
+#define QOS_BOARD_HAS_USB_ETHERNET 1
+#define QOS_BOARD_HAS_DWC2_USB 0
+#define QOS_BOARD_HAS_V3D 1
+#define QOS_BOARD_HAS_QPU 0
+#else
+#error "No QOS board selected. Build with BOARD=pi3, BOARD=pi_zero2w, or BOARD=pi5."
+#endif
+
+#endif

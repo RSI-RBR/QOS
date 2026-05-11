@@ -2,9 +2,10 @@
 #include "process.h"
 #include "cpu.h"
 #include "crypto.h"
+#include "platform/mmio.h"
 
 #define TIMER_INTERVAL 200000
-#define LOCAL_BASE 0x40000000UL
+#define LOCAL_BASE QOS_ARM_LOCAL_BASE
 #define CORE_TIMER_IRQCNTL(core) (*(volatile unsigned int*)(LOCAL_BASE + 0x40 + ((core) * 4u)))
 #define CORE_CNTPNSIRQ (1u << 1)
 

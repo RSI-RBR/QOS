@@ -1,8 +1,9 @@
 #include "gpio.h"
+#include "platform/mmio.h"
 #include "uart.h"
 #include "mailbox.h"
 
-#define GPIO_BASE 0x3F200000
+#define GPIO_BASE QOS_GPIO_BASE
 
 #define GPFSEL4 ((volatile unsigned int*)(GPIO_BASE + 0x10))
 #define GPFSEL5 ((volatile unsigned int*)(GPIO_BASE + 0x14))

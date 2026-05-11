@@ -1,5 +1,6 @@
-#define UART0_BASE 0x3F201000
-#define MMIO_BASE 0x3F000000
+#include "platform/mmio.h"
+
+#define UART0_BASE QOS_UART0_BASE
 
 #define UART0_DR (UART0_BASE + 0x00)
 #define UART0_RSR_ECR (UART0_BASE + 0x04)
@@ -9,9 +10,9 @@
 #define UART0_LCRH (UART0_BASE + 0x2C)
 #define UART0_CR (UART0_BASE + 0x30)
 
-#define GPFSEL1 (MMIO_BASE + 0x200004)
-#define GPPUD (MMIO_BASE + 0x200094)
-#define GPPUDCLK0 (MMIO_BASE + 0x200098)
+#define GPFSEL1 (QOS_GPIO_BASE + 0x04)
+#define GPPUD (QOS_GPIO_BASE + 0x94)
+#define GPPUDCLK0 (QOS_GPIO_BASE + 0x98)
 
 #define GPIO14_TXD0 (1u << 14)
 #define GPIO15_RXD0 (1u << 15)

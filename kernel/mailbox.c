@@ -1,9 +1,9 @@
 #include "mailbox.h"
+#include "platform/mmio.h"
 #include "spinlock.h"
 #include "uart.h"
 
-#define MMIO_BASE 0x3F000000
-#define MBOX_BASE (MMIO_BASE + 0xB880)
+#define MBOX_BASE QOS_MAILBOX_BASE
 
 #define MBOX_READ   (*(volatile unsigned int*)(MBOX_BASE + 0x0))
 #define MBOX_STATUS (*(volatile unsigned int*)(MBOX_BASE + 0x18))

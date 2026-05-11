@@ -9,6 +9,35 @@ foundation: preemptive SMP scheduling, per-process MMU isolation, signed user
 program loading, local and remote login, basic graphics/session management,
 Ethernet, experimental Wi-Fi, and a growing TCP/HTTPS stack.
 
+## Board Targets
+
+QOS now has a board-target layer so Raspberry Pi variants can diverge without
+forking the kernel. Raspberry Pi 3 remains the default target.
+
+Current target files:
+
+- `configs/boards/pi3.mk`: current tested Raspberry Pi 3 target.
+- `configs/boards/pi_zero2w.mk`: BCM2837-based Pi Zero 2 W scaffold.
+- `configs/boards/pi5.mk`: placeholder for the future BCM2712/RP1 Pi 5 port.
+
+Build examples:
+
+```bash
+make BOARD=pi3
+make BOARD=pi_zero2w
+```
+
+The normal SD helper also accepts `BOARD`:
+
+```bash
+BOARD=pi3 bash tools/build_and_copy_sd.sh
+BOARD=pi_zero2w bash tools/build_and_copy_sd.sh
+```
+
+Pi 3 and Pi Zero 2 W currently share the BCM2837 MMIO map through
+`include/platform/mmio.h`. Pi 5 is intentionally blocked until its separate
+BCM2712/RP1 platform code is implemented.
+
 ## Current Capabilities
 
 Kernel and process model:

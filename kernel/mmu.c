@@ -1,5 +1,6 @@
 #include "mmu.h"
 #include "cpu.h"
+#include "platform/mmio.h"
 #include "smp.h"
 #include "spinlock.h"
 #include "uart.h"
@@ -26,8 +27,8 @@
 #define ATTRIDX_NORMAL      0UL
 #define ATTRIDX_DEVICE      1UL
 
-#define DEVICE_BASE         0x3F000000UL
-#define DEVICE_END          0x40200000UL
+#define DEVICE_BASE         QOS_MMIO_BASE
+#define DEVICE_END          QOS_MMIO_END
 
 #define AP_SHIFT            6
 #define AP_EL1_RW_EL0_NONE  (0UL << AP_SHIFT)

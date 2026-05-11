@@ -1,8 +1,9 @@
 #include "dma.h"
 #include "cache.h"
+#include "platform/mmio.h"
 #include "spinlock.h"
 
-#define DMA_BASE              0x3F007000UL
+#define DMA_BASE              QOS_DMA_BASE
 #define DMA_ENABLE_REG        (*(volatile unsigned int*)(DMA_BASE + 0xFF0))
 
 // Keep one full DMA channel for kernel-owned memory copies. USB uses DWC2
@@ -34,7 +35,7 @@
 #define DMA_TI_SRC_WIDTH      (1u << 9)
 #define DMA_TI_BURST_LENGTH_SHIFT 12
 
-#define DMA_BUS_UNCACHED_BASE 0xC0000000UL
+#define DMA_BUS_UNCACHED_BASE QOS_VC_BUS_UNCACHED_BASE
 #define DMA_TIMEOUT_BASE_LOOPS     2000000u
 #define DMA_TIMEOUT_LOOPS_PER_BYTE 8u
 #define DMA_TIMEOUT_MAX_LOOPS      120000000u
@@ -95,7 +96,7 @@ static unsigned int dma_elapsed_us(unsigned long start_cycles){
 
 static unsigned int dma_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
-    return (unsigned int)((addr & 0x3FFFFFFFUL) | DMA_BUS_UNCACHED_BASE);
+    return (unsigned int)((addr & QOS_VC_BUS_ARM_MASK) | DMA_BUS_UNCACHED_BASE);
 }
 
 static void dma_clear_channel_status(void){

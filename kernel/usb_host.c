@@ -4,6 +4,7 @@
 #include "framebuffer.h"
 #include "spinlock.h"
 #include "interrupt.h"
+#include "platform/mmio.h"
 
 #define USBHOST_VERBOSE 0
 #if USBHOST_VERBOSE == 0
@@ -13,7 +14,7 @@
 #endif
 
 // Raspberry Pi USB OTG (DWC2) base on Pi 2/3 peripheral map.
-#define USB_DWC2_BASE 0x3F980000UL
+#define USB_DWC2_BASE QOS_USB_DWC2_BASE
 
 #define GOTGCTL   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x000))
 #define GAHBCFG   (*(volatile unsigned int*)(USB_DWC2_BASE + 0x008))
@@ -147,7 +148,7 @@
 #define USB_ENDPOINT_XFER_INTERRUPT 0x03u
 #define USB_DMA_BUFFER_SIZE 2048u
 #define USB_DWC2_CHANNELS 8u
-#define GPU_UNCACHED_BASE 0xC0000000UL
+#define GPU_UNCACHED_BASE QOS_VC_BUS_UNCACHED_BASE
 
 #define HC_EPTYPE_CONTROL 0u
 #define HC_EPTYPE_BULK    2u
@@ -2314,7 +2315,7 @@ static void usb_dcache_invalidate_range(unsigned long start, unsigned long size)
 
 static unsigned int usb_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
-    return (unsigned int)((addr & ~0xC0000000UL) | GPU_UNCACHED_BASE);
+    return (unsigned int)((addr & QOS_VC_BUS_ARM_MASK) | GPU_UNCACHED_BASE);
 }
 
 static void usb_copy_to_dma(const unsigned char* src, unsigned int len){

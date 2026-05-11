@@ -2,9 +2,10 @@
 #include "cache.h"
 #include "framebuffer.h"
 #include "mailbox.h"
+#include "platform/mmio.h"
 #include "spinlock.h"
 
-#define V3D_MMIO_BASE        0x3FC00000UL
+#define V3D_MMIO_BASE        QOS_V3D_MMIO_BASE
 #define V3D_CLOCK_ID         5u
 #define V3D_CLOCK_TARGET_HZ  250000000u
 
@@ -35,7 +36,7 @@
 
 #define V3D_EXPECTED_IDENT0  ((2u << 24) | ('D' << 16) | ('3' << 8) | 'V')
 #define V3D_SCRATCH_TEST     0x51563344u
-#define V3D_BUS_UNCACHED_BASE 0xC0000000UL
+#define V3D_BUS_UNCACHED_BASE QOS_VC_BUS_UNCACHED_BASE
 #define V3D_NOOP_CL_SIZE      64u
 #define V3D_NOOP_TIMEOUT      1000000u
 #define V3D_CLEAR_CL_SIZE     16384u
@@ -142,11 +143,11 @@ static void v3d_lock_init_once(void){
 
 static unsigned int v3d_bus_address(const void* p){
     unsigned long addr = (unsigned long)p;
-    return (unsigned int)((addr & 0x3FFFFFFFUL) | V3D_BUS_UNCACHED_BASE);
+    return (unsigned int)((addr & QOS_VC_BUS_ARM_MASK) | V3D_BUS_UNCACHED_BASE);
 }
 
 static unsigned long v3d_arm_address_from_vc_bus(unsigned int bus){
-    return (unsigned long)(bus & 0x3FFFFFFFu);
+    return (unsigned long)(bus & QOS_VC_BUS_ARM_MASK);
 }
 
 static int v3d_vc_memory_arm_accessible(unsigned long arm, unsigned int size){
@@ -163,7 +164,7 @@ static int v3d_vc_memory_arm_accessible(unsigned long arm, unsigned int size){
      * Pi 3 GPU memory lives in the same low SDRAM window when locked through
      * the firmware. Keep this conservative so we never probe MMIO by mistake.
      */
-    if (arm + (unsigned long)size > 0x3F000000UL){
+    if (arm + (unsigned long)size > QOS_LOW_PERIPHERAL_LIMIT){
         return 0;
     }
     return 1;
@@ -1042,9 +1043,9 @@ static int v3d_qpu_run_copy64_batch_locked(unsigned int src_bus,
         unsigned int row_dst_bus = dst_bus + (row * dst_pitch);
         words[uniform_base + (row * 2u) + 0u] = row_src_bus;
         words[uniform_base + (row * 2u) + 1u] = row_dst_bus;
-        clean_data_cache_range((unsigned long)(row_src_bus & 0x3FFFFFFFu),
+        clean_data_cache_range((unsigned long)(row_src_bus & QOS_VC_BUS_ARM_MASK),
                                V3D_QPU_COPY_ROW_BYTES);
-        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & 0x3FFFFFFFu),
+        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & QOS_VC_BUS_ARM_MASK),
                                           V3D_QPU_COPY_ROW_BYTES);
     }
     asm volatile("dsb sy" ::: "memory");
@@ -1087,7 +1088,7 @@ static int v3d_qpu_run_copy64_batch_locked(unsigned int src_bus,
 
     for (unsigned int row = 0u; row < rows; row++){
         unsigned int row_dst_bus = dst_bus + (row * dst_pitch);
-        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & 0x3FFFFFFFu),
+        clean_invalidate_data_cache_range((unsigned long)(row_dst_bus & QOS_VC_BUS_ARM_MASK),
                                           V3D_QPU_COPY_ROW_BYTES);
     }
 

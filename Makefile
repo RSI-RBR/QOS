@@ -3,7 +3,14 @@ CC = $(CROSS)gcc
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-BUILD = build
+BOARD ?= pi3
+BOARD_CONFIG = configs/boards/$(BOARD).mk
+ifeq ($(wildcard $(BOARD_CONFIG)),)
+$(error Unknown BOARD '$(BOARD)'. Expected one of: pi3 pi_zero2w pi5)
+endif
+
+BUILD_ROOT ?= build
+BUILD ?= $(BUILD_ROOT)/$(BOARD)
 OPENSSL_BIN ?= openssl
 ADMIN_SIGN_KEY ?=
 DEV_SIGN_KEY ?=
@@ -28,7 +35,10 @@ DEV_PQ_SIGN_KEY := $(DEV_LAMPORT_SIGN_KEY)
 endif
 
 CFLAGS = -ffreestanding -nostdlib -Wall -O2 -nostartfiles -fno-builtin -fstack-protector-strong -mgeneral-regs-only -DARGON2_NO_THREADS -Iinclude -Ithird_party/ed25519/src -Ithird_party/pqclean/common -Ithird_party/pqclean/crypto_sign/ml-dsa-65/clean -Ithird_party/pqclean/crypto_kem/ml-kem-768/clean -Ithird_party/pqclean/crypto_kem/kyber768/clean -Ithird_party/argon2_ref/include -Ithird_party/argon2_ref/src -Ithird_party/argon2_ref/src/blake2
-LDFLAGS = -T linker.ld
+
+include $(BOARD_CONFIG)
+
+LDFLAGS = -T $(LINKER)
 
 # ---------------------------
 # KERNEL SOURCES ONLY
@@ -172,25 +182,25 @@ trust-keys-header:
 	python3 tools/gen_trust_keys_header.py include/trust_keys_autogen.h "$(ADMIN_SIGN_KEY)" "$(DEV_SIGN_KEY)" "$(OPENSSL_BIN)" "$(ADMIN_PQ_PUB)" "$(DEV_PQ_PUB)"
 
 # Generate kernel manifest header from current build.
-manifest-header: kernel8.img
-	python3 tools/gen_kernel_manifest.py $(BUILD)/kernel8.elf kernel8.img include/kernel_manifest_autogen.h $(CROSS)nm 0x1 "$(ADMIN_SIGN_KEY)" "$(OPENSSL_BIN)" "$(ADMIN_PQ_SIGN_KEY)" kernel8.pqs
+manifest-header: $(KERNEL_IMAGE)
+	python3 tools/gen_kernel_manifest.py $(KERNEL_ELF) $(KERNEL_IMAGE) include/kernel_manifest_autogen.h $(CROSS)nm 0x1 "$(ADMIN_SIGN_KEY)" "$(OPENSSL_BIN)" "$(ADMIN_PQ_SIGN_KEY)" $(KERNEL_PQS)
 
 # Two-pass build:
 # 1) build kernel image
 # 2) generate manifest header from image
 # 3) rebuild so embedded manifest matches generated values
-provisioned-kernel: check-signing-inputs trust-keys-header kernel8.img
-	$(MAKE) manifest-header
-	rm -f $(BUILD)/kernel/kernel_verify.o $(BUILD)/kernel8.elf kernel8.img
-	$(MAKE) kernel8.img
+provisioned-kernel: check-signing-inputs trust-keys-header $(KERNEL_IMAGE)
+	$(MAKE) BOARD=$(BOARD) manifest-header
+	rm -f $(BUILD)/kernel/kernel_verify.o $(KERNEL_ELF) $(KERNEL_IMAGE)
+	$(MAKE) BOARD=$(BOARD) $(KERNEL_IMAGE)
 
 # ---------------------------
 # LINK STEP
 # ---------------------------
-kernel8.img: $(OBJS)
+$(KERNEL_IMAGE): $(OBJS)
 	mkdir -p $(BUILD)
-	$(LD) $(LDFLAGS) -o $(BUILD)/kernel8.elf $(OBJS)
-	$(OBJCOPY) $(BUILD)/kernel8.elf -O binary kernel8.img
+	$(LD) $(LDFLAGS) -o $(KERNEL_ELF) $(OBJS)
+	$(OBJCOPY) $(KERNEL_ELF) -O binary $(KERNEL_IMAGE)
 
 # ---------------------------
 # GENERIC COMPILE RULES
@@ -207,4 +217,4 @@ $(BUILD)/%.o: %.S
 # CLEAN
 # ---------------------------
 clean:
-	rm -rf $(BUILD) kernel8.img kernel8.pqs
+	rm -rf $(BUILD) $(KERNEL_IMAGE) $(KERNEL_PQS)

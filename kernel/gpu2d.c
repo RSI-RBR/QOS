@@ -3,6 +3,7 @@
 #include "cache.h"
 #include "framebuffer.h"
 #include "memory.h"
+#include "platform/mmio.h"
 #include "process.h"
 #include "spinlock.h"
 #include "v3d.h"
@@ -256,10 +257,10 @@ static int gpu2d_validate_quad_source(const qos_gpu2d_quad_t* quad){
 
 static unsigned int gpu2d_bus_from_low_arm(const void* p){
     unsigned long addr = (unsigned long)p;
-    if (addr == 0UL || addr >= 0x3F000000UL || (addr & 3UL) != 0UL){
+    if (addr == 0UL || addr >= QOS_LOW_PERIPHERAL_LIMIT || (addr & 3UL) != 0UL){
         return 0u;
     }
-    return (unsigned int)((addr & 0x3FFFFFFFUL) | 0xC0000000UL);
+    return (unsigned int)((addr & QOS_VC_BUS_ARM_MASK) | QOS_VC_BUS_UNCACHED_BASE);
 }
 
 static int gpu2d_try_qpu_quads_for_pid(int pid,
