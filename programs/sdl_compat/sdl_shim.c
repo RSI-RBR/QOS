@@ -2253,18 +2253,22 @@ static int sdl_flush_quad_batch_gpu2d(void){
     if (g_gpu2d_quad_batch_runtime == 0){
         return -1;
     }
+    int v3d_candidate = (sdl_quad_batch_v3d_fill_eligible() == 0);
+    int qpu_candidate = (sdl_quad_batch_qpu_eligible() == 0);
+    if (!v3d_candidate && !qpu_candidate){
+        return -1;
+    }
+
     unsigned int st = sdl_gpu2d_status_cached();
     int gpu_on = ((qos_gpu_status() & 1u) != 0u);
-    int v3d_fill_ok = gpu_on &&
-                      qos_gpu2d_v3d_status() != 0u &&
+    unsigned int v3d_enabled = (gpu_on && v3d_candidate) ? qos_gpu2d_v3d_status() : 0u;
+    unsigned int qpu_enabled = (gpu_on && qpu_candidate) ? qos_gpu2d_qpu_status() : 0u;
+    int v3d_fill_ok = v3d_enabled != 0u &&
                       (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
-                      (st & QOS_GPU2D_CAP_V3D_FILL_BATCH) != 0u &&
-                      sdl_quad_batch_v3d_fill_eligible() == 0;
-    int qpu_ok = gpu_on &&
-                 qos_gpu2d_qpu_status() != 0u &&
+                      (st & QOS_GPU2D_CAP_V3D_FILL_BATCH) != 0u;
+    int qpu_ok = qpu_enabled != 0u &&
                  (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
-                 (st & QOS_GPU2D_CAP_QPU_QUAD) != 0u &&
-                 sdl_quad_batch_qpu_eligible() == 0;
+                 (st & QOS_GPU2D_CAP_QPU_QUAD) != 0u;
 
     /*
      * V3D fill batches are true command-list batches, but only exact for
@@ -2272,6 +2276,9 @@ static int sdl_flush_quad_batch_gpu2d(void){
      * experimental path when explicitly enabled.
      */
     if (!v3d_fill_ok && !qpu_ok){
+        if (v3d_enabled == 0u && qpu_enabled == 0u){
+            g_gpu2d_quad_batch_runtime = 0;
+        }
         return -1;
     }
     g_gpu2d_quad_batch_runtime = 1;
