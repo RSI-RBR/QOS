@@ -290,7 +290,7 @@ static int gpu2d_try_qpu_quads_for_pid(int pid,
         const qos_gpu2d_quad_t* q = &quads[i];
         if (q->x < 0 || q->y < 0 ||
             q->w == 0u || q->h == 0u ||
-            (q->w & 63u) != 0u ||
+            (q->w & 31u) != 0u ||
             (unsigned int)q->x >= info.width ||
             (unsigned int)q->y >= info.height ||
             (unsigned int)q->x + q->w < (unsigned int)q->x ||
@@ -314,13 +314,29 @@ static int gpu2d_try_qpu_quads_for_pid(int pid,
             ((unsigned long)(unsigned int)q->y * (unsigned long)info.pitch) +
             ((unsigned long)(unsigned int)q->x * sizeof(unsigned int)));
 
-        for (unsigned int xoff = 0u; xoff < q->w; xoff += 64u){
+        for (unsigned int xoff = 0u; xoff < q->w; ){
+            unsigned int chunk_w = q->w - xoff;
+            if (chunk_w >= 64u){
+                chunk_w = 64u;
+            } else if (chunk_w == 32u){
+                chunk_w = 32u;
+            } else{
+                return 1;
+            }
+
             int rc;
             if (q->op == QOS_GPU2D_QUAD_FILL32){
-                rc = v3d_qpu_fill64_rows(dst_bus + (xoff * sizeof(unsigned int)),
-                                         info.pitch,
-                                         q->h,
-                                         q->color);
+                if (chunk_w == 64u){
+                    rc = v3d_qpu_fill64_rows(dst_bus + (xoff * sizeof(unsigned int)),
+                                             info.pitch,
+                                             q->h,
+                                             q->color);
+                } else{
+                    rc = v3d_qpu_fill32_rows(dst_bus + (xoff * sizeof(unsigned int)),
+                                             info.pitch,
+                                             q->h,
+                                             q->color);
+                }
             } else{
                 const unsigned int* src =
                     (const unsigned int*)((const unsigned char*)q->src +
@@ -329,16 +345,25 @@ static int gpu2d_try_qpu_quads_for_pid(int pid,
                 if (src_bus == 0u){
                     return 1;
                 }
-                rc = v3d_qpu_copy64_rows(src_bus,
-                                         q->src_pitch,
-                                         dst_bus + (xoff * sizeof(unsigned int)),
-                                         info.pitch,
-                                         q->h);
+                if (chunk_w == 64u){
+                    rc = v3d_qpu_copy64_rows(src_bus,
+                                             q->src_pitch,
+                                             dst_bus + (xoff * sizeof(unsigned int)),
+                                             info.pitch,
+                                             q->h);
+                } else{
+                    rc = v3d_qpu_copy32_rows(src_bus,
+                                             q->src_pitch,
+                                             dst_bus + (xoff * sizeof(unsigned int)),
+                                             info.pitch,
+                                             q->h);
+                }
             }
             if (rc != 0){
                 g_gpu2d_qpu_fail_count++;
                 return -1;
             }
+            xoff += chunk_w;
         }
         accelerated++;
     }

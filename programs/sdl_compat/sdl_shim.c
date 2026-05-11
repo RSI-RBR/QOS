@@ -2228,7 +2228,7 @@ static int sdl_flush_quad_batch_gpu2d(void){
         return -1;
     }
     /*
-     * The current QPU copy kernel operates on 64-pixel-wide rows.  If any
+     * The QPU copy kernels operate on 32- or 64-pixel-wide rows. If any
      * command in the batch is not QPU-safe, keep the whole batch on the
      * userspace fast path.  Mixing routes was measurable overhead for
      * QuantumFront2D when qpuq stayed at zero.
@@ -2290,7 +2290,7 @@ static int sdl_flush_quad_batch_gpu2d(void){
 static int sdl_quad_batch_qpu_eligible(void){
     for (unsigned int i = 0u; i < g_quad_batch_count; i++){
         const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
-        if ((cmd->w & 63u) != 0u){
+        if ((cmd->w & 31u) != 0u){
             return -1;
         }
         if (cmd->type == SDL_SHIM_QUAD_BLIT32){

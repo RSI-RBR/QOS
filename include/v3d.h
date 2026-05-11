@@ -81,7 +81,16 @@ int v3d_qpu_copy64_rows(unsigned int src_bus,
                         unsigned int dst_bus,
                         unsigned int dst_pitch,
                         unsigned int rows);
+int v3d_qpu_copy32_rows(unsigned int src_bus,
+                        unsigned int src_pitch,
+                        unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows);
 int v3d_qpu_fill64_rows(unsigned int dst_bus,
+                        unsigned int dst_pitch,
+                        unsigned int rows,
+                        unsigned int color);
+int v3d_qpu_fill32_rows(unsigned int dst_bus,
                         unsigned int dst_pitch,
                         unsigned int rows,
                         unsigned int color);
