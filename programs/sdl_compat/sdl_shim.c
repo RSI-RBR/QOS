@@ -102,7 +102,7 @@ static int sdl_soft_blit_32x32_native_fast(int x,
                                            const Uint32* src_pixels);
 static void sdl_flush_quad_batch(void);
 static int sdl_flush_quad_batch_gpu2d(void);
-static int sdl_quad_cmd_qpu_eligible(const sdl_quad_cmd_t* cmd);
+static int sdl_quad_batch_qpu_eligible(void);
 static void sdl_draw_quad_cmd_cpu(const sdl_quad_cmd_t* cmd,
                                   Uint64* fill_cmds,
                                   Uint64* fill_pixels);
@@ -2227,59 +2227,53 @@ static int sdl_flush_quad_batch_gpu2d(void){
     if (!g_gpu2d_quad_batch_runtime){
         return -1;
     }
+    /*
+     * The current QPU copy kernel operates on 64-pixel-wide rows.  If any
+     * command in the batch is not QPU-safe, keep the whole batch on the
+     * userspace fast path.  Mixing routes was measurable overhead for
+     * QuantumFront2D when qpuq stayed at zero.
+     */
+    if (sdl_quad_batch_qpu_eligible() != 0){
+        return -1;
+    }
 
     Uint64 t0 = qos_get_time_us();
     Uint64 fill_cmds = 0ull;
     Uint64 fill_pixels = 0ull;
-    unsigned int submit_count = 0u;
-
-    for (unsigned int offset = 0u; offset < g_quad_batch_count; offset++){
-        const sdl_quad_cmd_t* src = &g_quad_batch[offset];
-        if (sdl_quad_cmd_qpu_eligible(src) != 0){
-            if (submit_count > 0u){
-                if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, submit_count) != 0){
-                    g_gpu2d_quad_batch_runtime = 0;
-                    return -1;
-                }
-                submit_count = 0u;
-            }
-            sdl_draw_quad_cmd_cpu(src, &fill_cmds, &fill_pixels);
-            continue;
+    unsigned int offset = 0u;
+    while (offset < g_quad_batch_count){
+        unsigned int chunk = g_quad_batch_count - offset;
+        if (chunk > QOS_GPU2D_QUAD_BATCH_MAX){
+            chunk = QOS_GPU2D_QUAD_BATCH_MAX;
         }
 
-        qos_gpu2d_quad_t* dst = &g_gpu2d_quad_submit[submit_count++];
-        if (src->type == SDL_SHIM_QUAD_FILL32){
-            dst->op = QOS_GPU2D_QUAD_FILL32;
-            dst->src = 0;
-            fill_cmds++;
-            fill_pixels += (Uint64)src->w * (Uint64)src->h;
-        } else if (src->type == SDL_SHIM_QUAD_BLIT32){
-            dst->op = QOS_GPU2D_QUAD_BLIT32;
-            dst->src = src->src;
-        } else{
-            return -1;
-        }
-        dst->x = src->x;
-        dst->y = src->y;
-        dst->w = src->w;
-        dst->h = src->h;
-        dst->color = src->color;
-        dst->src_pitch = src->src_pitch;
-
-        if (submit_count >= QOS_GPU2D_QUAD_BATCH_MAX){
-            if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, submit_count) != 0){
-                g_gpu2d_quad_batch_runtime = 0;
+        for (unsigned int i = 0u; i < chunk; i++){
+            const sdl_quad_cmd_t* src = &g_quad_batch[offset + i];
+            qos_gpu2d_quad_t* dst = &g_gpu2d_quad_submit[i];
+            if (src->type == SDL_SHIM_QUAD_FILL32){
+                dst->op = QOS_GPU2D_QUAD_FILL32;
+                dst->src = 0;
+                fill_cmds++;
+                fill_pixels += (Uint64)src->w * (Uint64)src->h;
+            } else if (src->type == SDL_SHIM_QUAD_BLIT32){
+                dst->op = QOS_GPU2D_QUAD_BLIT32;
+                dst->src = src->src;
+            } else{
                 return -1;
             }
-            submit_count = 0u;
+            dst->x = src->x;
+            dst->y = src->y;
+            dst->w = src->w;
+            dst->h = src->h;
+            dst->color = src->color;
+            dst->src_pitch = src->src_pitch;
         }
-    }
 
-    if (submit_count > 0u){
-        if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, submit_count) != 0){
+        if (qos_gpu2d_quad_batch(g_gpu2d_quad_submit, chunk) != 0){
             g_gpu2d_quad_batch_runtime = 0;
             return -1;
         }
+        offset += chunk;
     }
 
     if (fill_cmds > 0ull){
@@ -2293,16 +2287,19 @@ static int sdl_flush_quad_batch_gpu2d(void){
 #endif
 }
 
-static int sdl_quad_cmd_qpu_eligible(const sdl_quad_cmd_t* cmd){
-    if (!cmd || (cmd->w & 63u) != 0u){
-        return -1;
-    }
-    if (cmd->type == SDL_SHIM_QUAD_BLIT32){
-        if (!cmd->src || (cmd->src_pitch & 3u) != 0u){
+static int sdl_quad_batch_qpu_eligible(void){
+    for (unsigned int i = 0u; i < g_quad_batch_count; i++){
+        const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
+        if ((cmd->w & 63u) != 0u){
             return -1;
         }
-    } else if (cmd->type != SDL_SHIM_QUAD_FILL32){
-        return -1;
+        if (cmd->type == SDL_SHIM_QUAD_BLIT32){
+            if (!cmd->src || (cmd->src_pitch & 3u) != 0u){
+                return -1;
+            }
+        } else if (cmd->type != SDL_SHIM_QUAD_FILL32){
+            return -1;
+        }
     }
     return 0;
 }
@@ -2390,25 +2387,6 @@ static int sdl_queue_quad_fill(unsigned int x,
     }
     if (g_quad_batch_count >= SDL_SHIM_QUAD_BATCH_MAX){
         sdl_flush_quad_batch();
-    }
-
-    /*
-     * The current QPU row helper accelerates 64-pixel-wide rows.  Pair
-     * neighboring 32x32 solid fills so gpu2d can route them to QPU, while the
-     * CPU fallback still splits them back into fast 32x32 stores.
-     */
-    if (w == 32u && h == 32u && g_quad_batch_count > 0u){
-        sdl_quad_cmd_t* prev = &g_quad_batch[g_quad_batch_count - 1u];
-        if (prev->type == SDL_SHIM_QUAD_FILL32 &&
-            prev->w == 32u &&
-            prev->h == 32u &&
-            prev->y == (int)y &&
-            prev->x + (int)prev->w == (int)x &&
-            prev->color == color){
-            prev->w = 64u;
-            g_soft_fb_dirty = 1;
-            return 0;
-        }
     }
 
     sdl_quad_cmd_t* cmd = &g_quad_batch[g_quad_batch_count++];
