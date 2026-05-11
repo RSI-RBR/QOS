@@ -13,7 +13,7 @@
 #define MBOX_FULL  0x80000000
 
 #define MAILBOX_CHANNEL_PROP 8
-#define MBOX_WAIT_MAX 100000000u
+#define MBOX_WAIT_MAX 10000000u
 
 /*
  * The firmware mailbox buffer is cache-maintained as a whole.  Keep it aligned
@@ -22,6 +22,7 @@
  */
 volatile unsigned int mbox[64] __attribute__((aligned(64)));
 static spinlock_t g_mailbox_lock __attribute__((aligned(64))) = {0};
+static volatile unsigned int g_mailbox_runtime_safety_enabled = 0;
 
 static unsigned long cache_line_size(void){
     unsigned long ctr;
@@ -42,11 +43,24 @@ static void clean_invalidate_dcache_range(unsigned long start, unsigned long siz
 }
 
 void mailbox_lock(void){
+    if (!g_mailbox_runtime_safety_enabled){
+        return;
+    }
     spin_lock(&g_mailbox_lock);
 }
 
 void mailbox_unlock(void){
+    if (!g_mailbox_runtime_safety_enabled){
+        return;
+    }
     spin_unlock(&g_mailbox_lock);
+}
+
+void mailbox_enable_runtime_safety(void){
+    spinlock_init(&g_mailbox_lock);
+    asm volatile("dmb ish" : : : "memory");
+    g_mailbox_runtime_safety_enabled = 1u;
+    asm volatile("dmb ishst" : : : "memory");
 }
 
 int mailbox_call_locked(unsigned char ch){
@@ -56,12 +70,19 @@ int mailbox_call_locked(unsigned char ch){
     unsigned int wait;
     unsigned int resp;
 
-    // Make request visible to GPU before ringing mailbox doorbell.
-    clean_invalidate_dcache_range(mbox_addr, mbox_size);
+    /*
+     * Before the MMU/cache path is enabled, the property buffer is uncached and
+     * we intentionally avoid cache-maintenance instructions.  This keeps very
+     * early firmware calls, such as USB power-on, simple and recoverable.
+     */
+    if (g_mailbox_runtime_safety_enabled){
+        clean_invalidate_dcache_range(mbox_addr, mbox_size);
+    }
 
     wait = MBOX_WAIT_MAX;
     while (MBOX_STATUS & MBOX_FULL){
         if (--wait == 0u){
+            uart_puts("MAILBOX: write wait timeout\n");
             return 0;
         }
     }
@@ -75,10 +96,13 @@ int mailbox_call_locked(unsigned char ch){
         resp = MBOX_READ;
         if (resp == r){
             // Refresh CPU view of response written by GPU.
-            clean_invalidate_dcache_range(mbox_addr, mbox_size);
+            if (g_mailbox_runtime_safety_enabled){
+                clean_invalidate_dcache_range(mbox_addr, mbox_size);
+            }
             return mbox[1] == 0x80000000;
         }
     }
+    uart_puts("MAILBOX: response wait timeout\n");
     return 0;
 }
 

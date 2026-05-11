@@ -12,6 +12,7 @@ extern volatile unsigned int mbox[64];
 int mailbox_call(unsigned char ch);
 void mailbox_lock(void);
 void mailbox_unlock(void);
+void mailbox_enable_runtime_safety(void);
 int mailbox_call_locked(unsigned char ch);
 
 int mailbox_set_emmc_clock(unsigned int hz);

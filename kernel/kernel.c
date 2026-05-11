@@ -139,6 +139,7 @@ void kernel_main(void){
     (void)mailbox_power_on_usb();
 
     mmu_init();
+    mailbox_enable_runtime_safety();
     uart_puts("MMU (phase 1 identity map) enabled.\n");
     loader_mmu_init_pool();
 
