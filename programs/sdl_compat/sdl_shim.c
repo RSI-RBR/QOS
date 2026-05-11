@@ -2228,10 +2228,9 @@ static int sdl_flush_quad_batch_gpu2d(void){
         return -1;
     }
     /*
-     * The QPU copy kernels operate on 32- or 64-pixel-wide rows. If any
-     * command in the batch is not QPU-safe, keep the whole batch on the
-     * userspace fast path.  Mixing routes was measurable overhead for
-     * QuantumFront2D when qpuq stayed at zero.
+     * Keep SDL sprite batches on the proven 64px QPU path only. The kernel
+     * has an experimental 32px copy helper, but routing QuantumFront2D's
+     * 32px tiles through it currently costs more than the CPU fast path.
      */
     if (sdl_quad_batch_qpu_eligible() != 0){
         return -1;
@@ -2290,7 +2289,7 @@ static int sdl_flush_quad_batch_gpu2d(void){
 static int sdl_quad_batch_qpu_eligible(void){
     for (unsigned int i = 0u; i < g_quad_batch_count; i++){
         const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
-        if ((cmd->w & 31u) != 0u){
+        if ((cmd->w & 63u) != 0u){
             return -1;
         }
         if (cmd->type == SDL_SHIM_QUAD_BLIT32){
