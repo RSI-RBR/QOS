@@ -497,7 +497,7 @@ static void cmd_help(void){
     qos_puts(" dma on|off|status\n");
     qos_puts(" gpu on|off|status\n");
     qos_puts(" vsync on|off|status\n");
-    qos_puts(" gpu2d status|qpu on|qpu off\n");
+    qos_puts(" gpu2d status|qpu on|qpu off|v3d on|v3d off\n");
     qos_puts(" v3d probe|status|noop [0|1]|qpu|qpuwrite|qpuexec|clear <rgba32hex>\n");
     qos_puts(" gfxstat [reset]\n");
     qos_puts(" sysstat\n");
@@ -937,8 +937,18 @@ static void cmd_gpu2d(const char* mode){
         qos_puts("gpu2d qpu path disabled.\n");
         return;
     }
-    if (mode && *mode && !str_eq(mode, "status") && !str_eq(mode, "qpu")){
-        qos_puts("Usage: gpu2d status|qpu on|qpu off\n");
+    if (mode && str_eq(mode, "v3d on")){
+        (void)qos_gpu2d_v3d_set_enabled(1);
+        qos_puts("gpu2d v3d fill-batch path enabled for 64px-aligned solid quads.\n");
+        return;
+    }
+    if (mode && str_eq(mode, "v3d off")){
+        (void)qos_gpu2d_v3d_set_enabled(0);
+        qos_puts("gpu2d v3d fill-batch path disabled.\n");
+        return;
+    }
+    if (mode && *mode && !str_eq(mode, "status") && !str_eq(mode, "qpu") && !str_eq(mode, "v3d")){
+        qos_puts("Usage: gpu2d status|qpu on|qpu off|v3d on|v3d off\n");
         return;
     }
 
@@ -964,8 +974,11 @@ static void cmd_gpu2d(const char* mode){
     if (st & QOS_GPU2D_CAP_TEXTURE_OBJECTS) qos_puts("textures ");
     if (st & QOS_GPU2D_CAP_QUAD_BATCH) qos_puts("quadbatch ");
     if (st & QOS_GPU2D_CAP_QPU_QUAD) qos_puts("qpuquad ");
+    if (st & QOS_GPU2D_CAP_V3D_FILL_BATCH) qos_puts("v3dfillbatch ");
     qos_puts("qpu=");
     qos_puts(qos_gpu2d_qpu_status() ? "on " : "off ");
+    qos_puts("v3d=");
+    qos_puts(qos_gpu2d_v3d_status() ? "on " : "off ");
     qos_puts("blits=");
     print_uint(qos_gpu2d_blit_count());
     qos_puts(" clears=");
@@ -980,6 +993,12 @@ static void cmd_gpu2d(const char* mode){
     print_uint(qos_gpu2d_qpu_quad_count());
     qos_puts(" qpufail=");
     print_uint(qos_gpu2d_qpu_fail_count());
+    qos_puts(" v3dq=");
+    print_uint(qos_gpu2d_v3d_quad_count());
+    qos_puts(" v3db=");
+    print_uint(qos_gpu2d_v3d_batch_count());
+    qos_puts(" v3dfail=");
+    print_uint(qos_gpu2d_v3d_fail_count());
     qos_puts(" tex=");
     print_uint(qos_gpu2d_texture_count());
     qos_puts(" up=");

@@ -40,6 +40,8 @@
 #define V3D_NOOP_CL_SIZE      64u
 #define V3D_NOOP_TIMEOUT      1000000u
 #define V3D_CLEAR_CL_SIZE     16384u
+#define V3D_FILL_BATCH_CL_SIZE 65536u
+#define V3D_FILL_BATCH_MAX_TILES 4096u
 #define V3D_TILE_SIZE         64u
 #define V3D_QPU_PROBE_MEM_SIZE 4096u
 #define V3D_QPU_PROBE_MEM_ALIGN 4096u
@@ -142,6 +144,7 @@ static unsigned int g_v3d_qpu_write_count = 0u;
 static unsigned int g_v3d_qpu_exec_count = 0u;
 static unsigned char g_v3d_noop_cl[V3D_NOOP_CL_SIZE] __attribute__((aligned(64)));
 static unsigned char g_v3d_clear_cl[V3D_CLEAR_CL_SIZE] __attribute__((aligned(64)));
+static unsigned char g_v3d_fill_batch_cl[V3D_FILL_BATCH_CL_SIZE] __attribute__((aligned(64)));
 static spinlock_t g_v3d_lock;
 static int g_v3d_lock_ready = 0;
 static unsigned int g_v3d_qpu_copy_handle = 0u;
@@ -1430,6 +1433,210 @@ int v3d_clear_page_tiles(unsigned int page,
     st.last_clear_color = rgba;
     st.last_clear_page = page;
     st.last_clear_tiles = tile_w * tile_h;
+    if (rc == 0){
+        st.clear_count = ++g_v3d_clear_count;
+    } else{
+        v3d_write(V3D_CT1CS, V3D_CTRSTA);
+        v3d_barrier();
+        v3d_read_register_snapshot(&st);
+        st.clear_count = g_v3d_clear_count;
+        st.last_error = rc;
+        st.fail_count = ++g_v3d_fail_count;
+    }
+    v3d_store_status(&st);
+    spin_unlock(&g_v3d_lock);
+
+    if (out){
+        *out = st;
+    }
+    return rc;
+}
+
+int v3d_fill_page_rects(unsigned int page,
+                        const qos_v3d_fill_rect_t* rects,
+                        unsigned int count,
+                        qos_v3d_status_t* out){
+    qos_v3d_status_t st;
+    unsigned int width = fb_get_width();
+    unsigned int height = fb_get_height();
+    unsigned int pitch = fb_get_pitch();
+    unsigned long fb_base = fb_get_page_base(page);
+    unsigned long fb_bus = fb_get_page_bus_base(page);
+    unsigned int tiles_x;
+    unsigned int tiles_y;
+    unsigned int total_tiles = 0u;
+    unsigned int min_tile_x = 0xFFFFFFFFu;
+    unsigned int min_tile_y = 0xFFFFFFFFu;
+    unsigned int max_tile_x = 0u;
+    unsigned int max_tile_y = 0u;
+    unsigned char* p = g_v3d_fill_batch_cl;
+    unsigned char* end = g_v3d_fill_batch_cl + V3D_FILL_BATCH_CL_SIZE;
+    unsigned int start_bus;
+    unsigned int end_bus;
+    int rc = 0;
+
+    if (!rects || count == 0u ||
+        width == 0u || height == 0u || pitch == 0u ||
+        fb_base == 0u || fb_bus == 0u){
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    if ((g_v3d_status.flags & QOS_V3D_FLAG_SCRATCH_OK) == 0u){
+        rc = v3d_probe(&st);
+        if (rc != 0){
+            if (out){ *out = st; }
+            return rc;
+        }
+    }
+
+    tiles_x = (width + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    tiles_y = (height + V3D_TILE_SIZE - 1u) / V3D_TILE_SIZE;
+    if (tiles_x == 0u || tiles_y == 0u || tiles_x > 255u || tiles_y > 255u){
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    for (unsigned int i = 0u; i < count; i++){
+        const qos_v3d_fill_rect_t* r = &rects[i];
+        if (r->w == 0u || r->h == 0u ||
+            (r->x & (V3D_TILE_SIZE - 1u)) != 0u ||
+            (r->y & (V3D_TILE_SIZE - 1u)) != 0u ||
+            (r->w & (V3D_TILE_SIZE - 1u)) != 0u ||
+            (r->h & (V3D_TILE_SIZE - 1u)) != 0u ||
+            r->x + r->w < r->x ||
+            r->y + r->h < r->y ||
+            r->x + r->w > width ||
+            r->y + r->h > height){
+            (void)v3d_get_status(&st);
+            st.last_error = QOS_V3D_ERR_CONTROL;
+            if (out){ *out = st; }
+            return QOS_V3D_ERR_CONTROL;
+        }
+        unsigned int tw = r->w / V3D_TILE_SIZE;
+        unsigned int th = r->h / V3D_TILE_SIZE;
+        unsigned int tx = r->x / V3D_TILE_SIZE;
+        unsigned int ty = r->y / V3D_TILE_SIZE;
+        if (tw == 0u || th == 0u ||
+            total_tiles > V3D_FILL_BATCH_MAX_TILES - (tw * th)){
+            (void)v3d_get_status(&st);
+            st.last_error = QOS_V3D_ERR_CONTROL;
+            if (out){ *out = st; }
+            return QOS_V3D_ERR_CONTROL;
+        }
+        if (tx < min_tile_x){ min_tile_x = tx; }
+        if (ty < min_tile_y){ min_tile_y = ty; }
+        if (tx + tw > max_tile_x){ max_tile_x = tx + tw; }
+        if (ty + th > max_tile_y){ max_tile_y = ty + th; }
+        total_tiles += tw * th;
+    }
+
+    v3d_lock_init_once();
+    spin_lock(&g_v3d_lock);
+
+    for (unsigned int i = 0u; i < V3D_FILL_BATCH_CL_SIZE; i++){
+        g_v3d_fill_batch_cl[i] = 0u;
+    }
+
+    v3d_emit_u8(&p, end, V3D_CL_CLEAR_COLORS);
+    v3d_emit_u32(&p, end, rects[0].rgba);
+    v3d_emit_u32(&p, end, rects[0].rgba);
+    v3d_emit_u24(&p, end, 0u);
+    v3d_emit_u8(&p, end, 0u);
+    v3d_emit_u8(&p, end, 0u);
+
+    v3d_emit_u8(&p, end, V3D_CL_RENDER_CONFIG);
+    v3d_emit_u32(&p, end, (unsigned int)fb_bus);
+    v3d_emit_u16(&p, end, width);
+    v3d_emit_u16(&p, end, height);
+    v3d_emit_u16(&p, end, V3D_RENDER_RGBA8888_LINEAR);
+
+    /*
+     * This is the first real V3D batch path: many tile-aligned solid quads in
+     * one control list. It intentionally avoids QPU setup cost and is a stable
+     * stepping stone before textured shader quads.
+     */
+    for (unsigned int pass = 0u; pass < 2u; pass++){
+        for (unsigned int i = 0u; i < count; i++){
+            const qos_v3d_fill_rect_t* r = &rects[i];
+            unsigned int tx0 = r->x / V3D_TILE_SIZE;
+            unsigned int ty0 = r->y / V3D_TILE_SIZE;
+            unsigned int tw = r->w / V3D_TILE_SIZE;
+            unsigned int th = r->h / V3D_TILE_SIZE;
+
+            v3d_emit_u8(&p, end, V3D_CL_CLEAR_COLORS);
+            v3d_emit_u32(&p, end, r->rgba);
+            v3d_emit_u32(&p, end, r->rgba);
+            v3d_emit_u24(&p, end, 0u);
+            v3d_emit_u8(&p, end, 0u);
+            v3d_emit_u8(&p, end, 0u);
+
+            for (unsigned int y = ty0; y < ty0 + th; y++){
+                for (unsigned int x = tx0; x < tx0 + tw; x++){
+                    int last = (pass == 1u &&
+                                i + 1u == count &&
+                                x + 1u == tx0 + tw &&
+                                y + 1u == ty0 + th);
+                    v3d_emit_u8(&p, end, V3D_CL_TILE_COORDS);
+                    v3d_emit_u8(&p, end, x);
+                    v3d_emit_u8(&p, end, y);
+                    v3d_emit_u8(&p, end, last ? V3D_CL_STORE_EOF : V3D_CL_STORE_RESOLVED);
+                }
+            }
+        }
+    }
+    v3d_emit_u8(&p, end, V3D_CL_HALT);
+
+    if (p >= end){
+        spin_unlock(&g_v3d_lock);
+        (void)v3d_get_status(&st);
+        st.last_error = QOS_V3D_ERR_CONTROL;
+        if (out){ *out = st; }
+        return QOS_V3D_ERR_CONTROL;
+    }
+
+    clean_data_cache_range((unsigned long)g_v3d_fill_batch_cl,
+                           (unsigned long)(p - g_v3d_fill_batch_cl));
+    v3d_clean_invalidate_frame_tiles(fb_base,
+                                     pitch,
+                                     min_tile_x,
+                                     min_tile_y,
+                                     max_tile_x - min_tile_x,
+                                     max_tile_y - min_tile_y,
+                                     width,
+                                     height);
+    start_bus = v3d_bus_address(g_v3d_fill_batch_cl);
+    end_bus = start_bus + (unsigned int)(p - g_v3d_fill_batch_cl);
+
+    v3d_write(V3D_CT1CS, V3D_CTRSTA);
+    v3d_barrier();
+    (void)v3d_wait_thread_stopped(V3D_CT1CS);
+    v3d_write(V3D_CT1CA, start_bus);
+    v3d_barrier();
+    v3d_write(V3D_CT1EA, end_bus);
+    v3d_barrier();
+
+    rc = v3d_wait_thread_stopped(V3D_CT1CS);
+    v3d_clean_invalidate_frame_tiles(fb_base,
+                                     pitch,
+                                     min_tile_x,
+                                     min_tile_y,
+                                     max_tile_x - min_tile_x,
+                                     max_tile_y - min_tile_y,
+                                     width,
+                                     height);
+
+    (void)v3d_get_status(&st);
+    st.last_job_thread = 1u;
+    st.last_job_start_bus = start_bus;
+    st.last_job_end_bus = end_bus;
+    st.last_clear_color = rects[count - 1u].rgba;
+    st.last_clear_page = page;
+    st.last_clear_tiles = total_tiles;
     if (rc == 0){
         st.clear_count = ++g_v3d_clear_count;
     } else{

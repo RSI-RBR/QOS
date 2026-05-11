@@ -458,6 +458,10 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_GPU2D_QPU_STATUS:
         case SYS_GPU2D_QPU_QUAD_COUNT:
         case SYS_GPU2D_QPU_FAIL_COUNT:
+        case SYS_GPU2D_V3D_STATUS:
+        case SYS_GPU2D_V3D_QUAD_COUNT:
+        case SYS_GPU2D_V3D_BATCH_COUNT:
+        case SYS_GPU2D_V3D_FAIL_COUNT:
         case SYS_GPU2D_TEXTURE_UPLOAD:
         case SYS_GPU2D_TEXTURE_FREE:
         case SYS_GPU2D_TEXTURE_COUNT:
@@ -551,6 +555,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_V3D_QPU_WRITE_PROBE:
         case SYS_V3D_QPU_EXEC_PROBE:
         case SYS_GPU2D_QPU_SET_ENABLED:
+        case SYS_GPU2D_V3D_SET_ENABLED:
         case SYS_DISPLAY_PROFILE_RESET:
         case SYS_DISPLAY_PROFILE_DUMP:
         case SYS_DISPLAY_VSYNC_SET:
@@ -1056,6 +1061,26 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_GPU2D_QPU_FAIL_COUNT:
             frame[TF_X0] = (unsigned long)gpu2d_qpu_fail_count();
+            return frame_sp;
+
+        case SYS_GPU2D_V3D_SET_ENABLED:
+            frame[TF_X0] = (unsigned long)gpu2d_v3d_set_enabled(frame[TF_X0] ? 1 : 0);
+            return frame_sp;
+
+        case SYS_GPU2D_V3D_STATUS:
+            frame[TF_X0] = (unsigned long)gpu2d_v3d_is_enabled();
+            return frame_sp;
+
+        case SYS_GPU2D_V3D_QUAD_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_v3d_quad_count();
+            return frame_sp;
+
+        case SYS_GPU2D_V3D_BATCH_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_v3d_batch_count();
+            return frame_sp;
+
+        case SYS_GPU2D_V3D_FAIL_COUNT:
+            frame[TF_X0] = (unsigned long)gpu2d_v3d_fail_count();
             return frame_sp;
 
         case SYS_GPU2D_TEXTURE_UPLOAD: {

@@ -11,12 +11,13 @@
 #define QOS_GPU2D_CAP_TEXTURE_OBJECTS   0x00000080u
 #define QOS_GPU2D_CAP_QUAD_BATCH        0x00000100u
 #define QOS_GPU2D_CAP_QPU_QUAD          0x00000200u
+#define QOS_GPU2D_CAP_V3D_FILL_BATCH    0x00000400u
 
 #define QOS_GPU2D_STATUS_READY          0x00010000u
 #define QOS_GPU2D_STATUS_BACKEND_SOFT   0x00020000u
 #define QOS_GPU2D_STATUS_BACKEND_HW     0x00040000u
 
-#define QOS_GPU2D_QUAD_BATCH_MAX        256u
+#define QOS_GPU2D_QUAD_BATCH_MAX        1024u
 #define QOS_GPU2D_QUAD_FILL32           1u
 #define QOS_GPU2D_QUAD_BLIT32           2u
 
@@ -77,6 +78,11 @@ unsigned int gpu2d_qpu_quad_count(void);
 unsigned int gpu2d_qpu_fail_count(void);
 unsigned int gpu2d_qpu_is_enabled(void);
 int gpu2d_qpu_set_enabled(int enabled);
+unsigned int gpu2d_v3d_quad_count(void);
+unsigned int gpu2d_v3d_batch_count(void);
+unsigned int gpu2d_v3d_fail_count(void);
+unsigned int gpu2d_v3d_is_enabled(void);
+int gpu2d_v3d_set_enabled(int enabled);
 unsigned int gpu2d_texture_count(void);
 unsigned int gpu2d_texture_upload_count(void);
 unsigned int gpu2d_texture_free_count(void);

@@ -32,6 +32,10 @@ static unsigned int g_gpu2d_quad_batch_count = 0u;
 static unsigned int g_gpu2d_qpu_enabled = 0u;
 static unsigned int g_gpu2d_qpu_quad_count = 0u;
 static unsigned int g_gpu2d_qpu_fail_count = 0u;
+static unsigned int g_gpu2d_v3d_batch_enabled = 0u;
+static unsigned int g_gpu2d_v3d_quad_count = 0u;
+static unsigned int g_gpu2d_v3d_batch_count = 0u;
+static unsigned int g_gpu2d_v3d_fail_count = 0u;
 static unsigned int g_gpu2d_fallback_count = 0u;
 static unsigned int g_gpu2d_unsupported_count = 0u;
 static unsigned int g_gpu2d_texture_upload_count = 0u;
@@ -71,7 +75,8 @@ unsigned int gpu2d_status(void){
                   QOS_GPU2D_CAP_ACCEL_CLEAR |
                   QOS_GPU2D_CAP_ACCEL_FILL_TILE |
                   QOS_GPU2D_CAP_TEXTURE_OBJECTS |
-                  QOS_GPU2D_CAP_QPU_QUAD;
+                  QOS_GPU2D_CAP_QPU_QUAD |
+                  QOS_GPU2D_CAP_V3D_FILL_BATCH;
     }
     return status;
 }
@@ -110,6 +115,27 @@ unsigned int gpu2d_qpu_is_enabled(void){
 
 int gpu2d_qpu_set_enabled(int enabled){
     g_gpu2d_qpu_enabled = enabled ? 1u : 0u;
+    return 0;
+}
+
+unsigned int gpu2d_v3d_quad_count(void){
+    return g_gpu2d_v3d_quad_count;
+}
+
+unsigned int gpu2d_v3d_batch_count(void){
+    return g_gpu2d_v3d_batch_count;
+}
+
+unsigned int gpu2d_v3d_fail_count(void){
+    return g_gpu2d_v3d_fail_count;
+}
+
+unsigned int gpu2d_v3d_is_enabled(void){
+    return g_gpu2d_v3d_batch_enabled;
+}
+
+int gpu2d_v3d_set_enabled(int enabled){
+    g_gpu2d_v3d_batch_enabled = enabled ? 1u : 0u;
     return 0;
 }
 
@@ -378,6 +404,69 @@ static int gpu2d_try_qpu_quads_for_pid(int pid,
     return 1;
 }
 
+static int gpu2d_try_v3d_fill_batch_for_pid(int pid,
+                                            const qos_gpu2d_quad_t* quads,
+                                            unsigned int count){
+    if (!g_gpu2d_v3d_batch_enabled){
+        return 1;
+    }
+
+    int session_id = display_get_for_pid(pid);
+    display_session_t info;
+    if (session_id < 0 || display_get_info(session_id, &info) != 0){
+        return 1;
+    }
+    if (info.type != DISPLAY_GRAPHICS || !info.direct_framebuffer ||
+        info.direct_page >= fb_get_page_count() ||
+        info.pitch == 0u || info.width == 0u || info.height == 0u){
+        return 1;
+    }
+
+    for (unsigned int i = 0u; i < count; i++){
+        const qos_gpu2d_quad_t* q = &quads[i];
+        if (q->op != QOS_GPU2D_QUAD_FILL32 ||
+            q->x < 0 || q->y < 0 ||
+            q->w == 0u || q->h == 0u ||
+            (((unsigned int)q->x | (unsigned int)q->y | q->w | q->h) & 63u) != 0u ||
+            (unsigned int)q->x >= info.width ||
+            (unsigned int)q->y >= info.height ||
+            (unsigned int)q->x + q->w < (unsigned int)q->x ||
+            (unsigned int)q->y + q->h < (unsigned int)q->y ||
+            (unsigned int)q->x + q->w > info.width ||
+            (unsigned int)q->y + q->h > info.height){
+            return 1;
+        }
+    }
+
+    unsigned long bytes = (unsigned long)count * sizeof(qos_v3d_fill_rect_t);
+    qos_v3d_fill_rect_t* rects = (qos_v3d_fill_rect_t*)kmalloc(bytes);
+    if (!rects){
+        return 1;
+    }
+    for (unsigned int i = 0u; i < count; i++){
+        const qos_gpu2d_quad_t* q = &quads[i];
+        rects[i].x = (unsigned int)q->x;
+        rects[i].y = (unsigned int)q->y;
+        rects[i].w = q->w;
+        rects[i].h = q->h;
+        rects[i].rgba = q->color;
+    }
+
+    int rc = v3d_fill_page_rects(info.direct_page, rects, count, 0);
+    kfree_secure(rects, bytes);
+    if (rc == 0){
+        (void)display_mark_dirty_for_pid(pid);
+        g_gpu2d_v3d_quad_count += count;
+        g_gpu2d_v3d_batch_count++;
+        g_gpu2d_quad_count += count;
+        g_gpu2d_quad_batch_count++;
+        g_gpu2d_fill_count += count;
+        return 0;
+    }
+    g_gpu2d_v3d_fail_count++;
+    return -1;
+}
+
 int gpu2d_submit_quads_for_pid(int pid,
                                const qos_gpu2d_quad_t* quads,
                                unsigned int count){
@@ -397,6 +486,11 @@ int gpu2d_submit_quads_for_pid(int pid,
             gpu2d_validate_quad_source(q) != 0){
             return -1;
         }
+    }
+
+    int v3d_rc = gpu2d_try_v3d_fill_batch_for_pid(pid, quads, count);
+    if (v3d_rc == 0){
+        return 0;
     }
 
     int qpu_rc = gpu2d_try_qpu_quads_for_pid(pid, quads, count);

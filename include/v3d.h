@@ -70,6 +70,14 @@ typedef struct {
     int last_error;
 } qos_v3d_status_t;
 
+typedef struct {
+    unsigned int x;
+    unsigned int y;
+    unsigned int w;
+    unsigned int h;
+    unsigned int rgba;
+} qos_v3d_fill_rect_t;
+
 int v3d_probe(qos_v3d_status_t* out);
 int v3d_get_status(qos_v3d_status_t* out);
 int v3d_submit_noop(unsigned int thread, qos_v3d_status_t* out);
@@ -101,6 +109,10 @@ int v3d_clear_page_tiles(unsigned int page,
                          unsigned int tile_w,
                          unsigned int tile_h,
                          qos_v3d_status_t* out);
+int v3d_fill_page_rects(unsigned int page,
+                        const qos_v3d_fill_rect_t* rects,
+                        unsigned int count,
+                        qos_v3d_status_t* out);
 int v3d_clear_page(unsigned int page, unsigned int rgba, qos_v3d_status_t* out);
 int v3d_clear_visible(unsigned int rgba, qos_v3d_status_t* out);
 

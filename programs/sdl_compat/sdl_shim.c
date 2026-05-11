@@ -136,6 +136,7 @@ static int sdl_soft_blit_32x32_native_fast(int x,
 static void sdl_flush_quad_batch(void);
 static int sdl_flush_quad_batch_gpu2d(void);
 static int sdl_quad_batch_qpu_eligible(void);
+static int sdl_quad_batch_v3d_fill_eligible(void);
 static void sdl_draw_quad_cmd_cpu(const sdl_quad_cmd_t* cmd,
                                   Uint64* fill_cmds,
                                   Uint64* fill_pixels);
@@ -2249,25 +2250,31 @@ static int sdl_flush_quad_batch_gpu2d(void){
     if (g_quad_batch_count == 0u){
         return 0;
     }
-    if (g_gpu2d_quad_batch_runtime < 0){
-        unsigned int st = sdl_gpu2d_status_cached();
-        g_gpu2d_quad_batch_runtime =
-            ((qos_gpu_status() & 1u) != 0u &&
-             qos_gpu2d_qpu_status() != 0u &&
-             (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
-             (st & QOS_GPU2D_CAP_QPU_QUAD) != 0u) ? 1 : 0;
-    }
-    if (!g_gpu2d_quad_batch_runtime){
+    if (g_gpu2d_quad_batch_runtime == 0){
         return -1;
     }
+    unsigned int st = sdl_gpu2d_status_cached();
+    int gpu_on = ((qos_gpu_status() & 1u) != 0u);
+    int v3d_fill_ok = gpu_on &&
+                      qos_gpu2d_v3d_status() != 0u &&
+                      (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
+                      (st & QOS_GPU2D_CAP_V3D_FILL_BATCH) != 0u &&
+                      sdl_quad_batch_v3d_fill_eligible() == 0;
+    int qpu_ok = gpu_on &&
+                 qos_gpu2d_qpu_status() != 0u &&
+                 (st & QOS_GPU2D_CAP_QUAD_BATCH) != 0u &&
+                 (st & QOS_GPU2D_CAP_QPU_QUAD) != 0u &&
+                 sdl_quad_batch_qpu_eligible() == 0;
+
     /*
-     * Keep SDL sprite batches on the proven 64px QPU path only. The kernel
-     * has an experimental 32px copy helper, but routing QuantumFront2D's
-     * 32px tiles through it currently costs more than the CPU fast path.
+     * V3D fill batches are true command-list batches, but only exact for
+     * 64px tile-aligned solid quads. QPU batches remain available for the old
+     * experimental path when explicitly enabled.
      */
-    if (sdl_quad_batch_qpu_eligible() != 0){
+    if (!v3d_fill_ok && !qpu_ok){
         return -1;
     }
+    g_gpu2d_quad_batch_runtime = 1;
 
     Uint64 t0 = qos_get_time_us();
     Uint64 fill_cmds = 0ull;
@@ -2317,6 +2324,19 @@ static int sdl_flush_quad_batch_gpu2d(void){
 #else
     return -1;
 #endif
+}
+
+static int sdl_quad_batch_v3d_fill_eligible(void){
+    for (unsigned int i = 0u; i < g_quad_batch_count; i++){
+        const sdl_quad_cmd_t* cmd = &g_quad_batch[i];
+        if (cmd->type != SDL_SHIM_QUAD_FILL32 ||
+            cmd->x < 0 || cmd->y < 0 ||
+            (((unsigned int)cmd->x | (unsigned int)cmd->y |
+              cmd->w | cmd->h) & 63u) != 0u){
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int sdl_quad_batch_qpu_eligible(void){

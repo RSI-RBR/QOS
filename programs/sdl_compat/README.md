@@ -34,6 +34,7 @@ Notes:
 - Key repeat is available but disabled by default; call `SDL_EnableKeyRepeat(SDL_DEFAULT_REPEAT_DELAY, SDL_DEFAULT_REPEAT_INTERVAL)` or `SDL_QOS_SetKeyRepeat(1, delay_ms, interval_ms)` if text-entry style repeat is desired.
 - `SDL_PollEvent` clears the output event to type `0` when no event is available, which is slightly more forgiving than desktop SDL for early QOS ports.
 - Mouse motion events include button state for drag handling. `SDL_GetRelativeMouseState` returns accumulated movement since the last call, and `SDL_QOS_GetMouseWheel` returns accumulated wheel movement since the last call.
+- `gpu2d v3d on` enables the experimental true V3D command-list batch path for 64px-aligned solid fill quads. It does not accelerate arbitrary 32px/textured sprites yet.
 
 QOS Static Terrain Chunk Cache:
 - `SDL_QOS_CreateWorldChunkLayer(...)` creates an opt-in cache for static tile terrain.
