@@ -120,6 +120,27 @@ typedef struct SDL_Rect {
     int h;
 } SDL_Rect;
 
+typedef struct SDL_QOS_WorldChunkLayer SDL_QOS_WorldChunkLayer;
+
+typedef int (*SDL_QOS_WorldTileCallback)(void* userdata,
+                                         int tile_x,
+                                         int tile_y,
+                                         SDL_Texture** out_texture,
+                                         SDL_Rect* out_src_rect);
+
+typedef struct SDL_QOS_WorldChunkStats {
+    Uint32 max_chunks;
+    Uint32 live_chunks;
+    Uint32 dirty_chunks;
+    Uint32 chunk_tiles;
+    Uint32 tile_px;
+    Uint64 hits;
+    Uint64 misses;
+    Uint64 rebuilds;
+    Uint64 evictions;
+    Uint64 draws;
+} SDL_QOS_WorldChunkStats;
+
 typedef struct SDL_Point {
     int x;
     int y;
@@ -382,6 +403,25 @@ Uint32 SDL_GetGlobalMouseState(int* x, int* y);
 int SDL_QOS_GetMouseWheel(int* x, int* y);
 void SDL_QOS_ProfileReset(void);
 void SDL_QOS_ProfileDump(void);
+SDL_QOS_WorldChunkLayer* SDL_QOS_CreateWorldChunkLayer(SDL_Renderer* renderer,
+                                                       int world_tiles_w,
+                                                       int world_tiles_h,
+                                                       int preferred_chunk_tiles,
+                                                       int max_cached_chunks,
+                                                       SDL_QOS_WorldTileCallback tile_callback,
+                                                       void* userdata);
+void SDL_QOS_DestroyWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer);
+void SDL_QOS_InvalidateWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer);
+void SDL_QOS_InvalidateWorldTile(SDL_QOS_WorldChunkLayer* layer, int tile_x, int tile_y);
+void SDL_QOS_InvalidateWorldChunk(SDL_QOS_WorldChunkLayer* layer, int chunk_x, int chunk_y);
+int SDL_QOS_RenderWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer,
+                                  int camera_x_px,
+                                  int camera_y_px,
+                                  int viewport_w,
+                                  int viewport_h,
+                                  int tile_px);
+int SDL_QOS_GetWorldChunkStats(SDL_QOS_WorldChunkLayer* layer,
+                               SDL_QOS_WorldChunkStats* out_stats);
 
 SDL_Texture* SDL_CreateTexture(SDL_Renderer* renderer, Uint32 format, int access, int w, int h);
 SDL_Texture* SDL_CreateTextureFromSurface(SDL_Renderer* renderer, SDL_Surface* surface);

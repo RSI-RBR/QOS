@@ -17,6 +17,9 @@
 #define SDL_SHIM_QUAD_FILL32 1u
 #define SDL_SHIM_QUAD_BLIT32 2u
 #define SDL_SHIM_SPAN_MAX_RUNS_PER_TEXTURE 16384u
+#define SDL_SHIM_WORLD_CHUNK_MAX_PIXEL_SIZE 512
+#define SDL_SHIM_WORLD_CHUNK_DEFAULT_MAX 12
+#define SDL_SHIM_WORLD_CHUNK_HARD_MAX 64
 #define SDL_SHIM_SOFT_BACKBUFFER 1
 #define SDL_SHIM_ENABLE_TILE_FILL_FASTPATH 1
 #define SDL_SHIM_ENABLE_NATIVE_SCALED_FASTPATH 1
@@ -89,6 +92,36 @@ typedef struct sdl_quad_cmd {
     const Uint32* src;
     unsigned int src_pitch;
 } sdl_quad_cmd_t;
+
+typedef struct sdl_world_chunk {
+    int live;
+    int dirty;
+    int chunk_x;
+    int chunk_y;
+    int chunk_tiles;
+    int tile_px;
+    Uint32 stamp;
+    SDL_Texture* texture;
+} sdl_world_chunk_t;
+
+struct SDL_QOS_WorldChunkLayer {
+    SDL_Renderer* renderer;
+    int world_tiles_w;
+    int world_tiles_h;
+    int preferred_chunk_tiles;
+    int max_chunks;
+    int last_chunk_tiles;
+    int last_tile_px;
+    SDL_QOS_WorldTileCallback tile_callback;
+    void* userdata;
+    Uint32 stamp_clock;
+    Uint64 hits;
+    Uint64 misses;
+    Uint64 rebuilds;
+    Uint64 evictions;
+    Uint64 draws;
+    sdl_world_chunk_t* chunks;
+};
 
 static sdl_quad_cmd_t g_quad_batch[SDL_SHIM_QUAD_BATCH_MAX];
 static qos_gpu2d_quad_t g_gpu2d_quad_submit[QOS_GPU2D_QUAD_BATCH_MAX];
@@ -2964,6 +2997,608 @@ static int clamp_src_rect(const SDL_Texture* t, int* sx, int* sy, int* sw, int* 
         *sh = t->h - *sy;
     }
     return (*sw > 0 && *sh > 0) ? 0 : -1;
+}
+
+static int sdl_floor_div_int(int value, int divisor){
+    if (divisor <= 0){
+        return 0;
+    }
+    if (value >= 0){
+        return value / divisor;
+    }
+    return -(((-value) + divisor - 1) / divisor);
+}
+
+static int sdl_world_effective_chunk_tiles(const SDL_QOS_WorldChunkLayer* layer,
+                                           int tile_px){
+    int chunk_tiles;
+    if (!layer || tile_px <= 0){
+        return 0;
+    }
+    chunk_tiles = layer->preferred_chunk_tiles;
+    if (chunk_tiles <= 0){
+        chunk_tiles = 8;
+    }
+    while (chunk_tiles > 1 &&
+           chunk_tiles * tile_px > SDL_SHIM_WORLD_CHUNK_MAX_PIXEL_SIZE){
+        chunk_tiles = (chunk_tiles + 1) / 2;
+    }
+    if (chunk_tiles < 1){
+        chunk_tiles = 1;
+    }
+    return chunk_tiles;
+}
+
+static void sdl_world_texture_pixels_changed(SDL_Texture* texture){
+    if (!texture){
+        return;
+    }
+    texture->native_valid = 0;
+    sdl_texture_free_scaled_native(texture);
+    sdl_texture_invalidate_spans(texture);
+    sdl_texture_invalidate_gpu(texture);
+}
+
+static void sdl_world_clear_texture(SDL_Texture* texture){
+    if (!texture || !texture->pixels || texture->pitch <= 0){
+        return;
+    }
+    for (int y = 0; y < texture->h; y++){
+        Uint8* row = texture->pixels + ((Uint32)y * (Uint32)texture->pitch);
+        for (int x = 0; x < texture->w; x++){
+            Uint8* p = row + ((Uint32)x * 4u);
+            p[0] = 0u;
+            p[1] = 0u;
+            p[2] = 0u;
+            p[3] = 255u;
+        }
+    }
+    texture->opaque = 1;
+    texture->average_color = 0u;
+    texture->blend_mode = SDL_BLENDMODE_NONE;
+    texture->alpha_mod = 255u;
+    texture->color_r = 255u;
+    texture->color_g = 255u;
+    texture->color_b = 255u;
+    sdl_world_texture_pixels_changed(texture);
+}
+
+static void sdl_world_blend_rgba(Uint8* dst,
+                                 Uint32 sr,
+                                 Uint32 sg,
+                                 Uint32 sb,
+                                 Uint32 sa){
+    if (sa == 0u){
+        return;
+    }
+    if (sa >= 255u){
+        dst[0] = (Uint8)sr;
+        dst[1] = (Uint8)sg;
+        dst[2] = (Uint8)sb;
+        dst[3] = 255u;
+        return;
+    }
+
+    Uint32 ia = 255u - sa;
+    dst[0] = (Uint8)sdl_div255_u32((sr * sa) + ((Uint32)dst[0] * ia));
+    dst[1] = (Uint8)sdl_div255_u32((sg * sa) + ((Uint32)dst[1] * ia));
+    dst[2] = (Uint8)sdl_div255_u32((sb * sa) + ((Uint32)dst[2] * ia));
+    dst[3] = 255u;
+}
+
+static int sdl_world_blit_tile_to_chunk(SDL_Texture* chunk,
+                                        SDL_Texture* tile,
+                                        const SDL_Rect* src_rect,
+                                        int dst_x,
+                                        int dst_y,
+                                        int dst_w,
+                                        int dst_h){
+    int sx;
+    int sy;
+    int sw;
+    int sh;
+
+    if (!chunk || !chunk->pixels || !tile || !tile->alive || !tile->pixels ||
+        dst_w <= 0 || dst_h <= 0 ||
+        dst_x >= chunk->w || dst_y >= chunk->h ||
+        dst_x + dst_w <= 0 || dst_y + dst_h <= 0){
+        return -1;
+    }
+
+    sx = src_rect ? src_rect->x : 0;
+    sy = src_rect ? src_rect->y : 0;
+    sw = src_rect ? src_rect->w : tile->w;
+    sh = src_rect ? src_rect->h : tile->h;
+    if (clamp_src_rect(tile, &sx, &sy, &sw, &sh) != 0){
+        return -1;
+    }
+
+    int clip_x0 = 0;
+    int clip_y0 = 0;
+    int clip_x1 = dst_w;
+    int clip_y1 = dst_h;
+    if (dst_x < 0){
+        clip_x0 = -dst_x;
+    }
+    if (dst_y < 0){
+        clip_y0 = -dst_y;
+    }
+    if (dst_x + clip_x1 > chunk->w){
+        clip_x1 = chunk->w - dst_x;
+    }
+    if (dst_y + clip_y1 > chunk->h){
+        clip_y1 = chunk->h - dst_y;
+    }
+    if (clip_x1 <= clip_x0 || clip_y1 <= clip_y0){
+        return 0;
+    }
+
+    unsigned long long x_step =
+        ((unsigned long long)(unsigned int)sw << 32) / (unsigned int)dst_w;
+    unsigned long long y_step =
+        ((unsigned long long)(unsigned int)sh << 32) / (unsigned int)dst_h;
+    unsigned long long y_acc = (unsigned long long)(unsigned int)clip_y0 * y_step;
+    int blend = tile->blend_mode != SDL_BLENDMODE_NONE;
+    int color_identity = tile->color_r == 255u &&
+                         tile->color_g == 255u &&
+                         tile->color_b == 255u;
+    int alpha_identity = tile->alpha_mod == 255u;
+
+    for (int oy = clip_y0; oy < clip_y1; oy++){
+        int src_y = sy + (int)(y_acc >> 32);
+        if (src_y < sy){
+            src_y = sy;
+        } else if (src_y >= sy + sh){
+            src_y = sy + sh - 1;
+        }
+        Uint8* dst_row = chunk->pixels +
+                         ((Uint32)(dst_y + oy) * (Uint32)chunk->pitch) +
+                         ((Uint32)(dst_x + clip_x0) * 4u);
+        unsigned long long x_acc =
+            (unsigned long long)(unsigned int)clip_x0 * x_step;
+        for (int ox = clip_x0; ox < clip_x1; ox++){
+            int src_x = sx + (int)(x_acc >> 32);
+            if (src_x < sx){
+                src_x = sx;
+            } else if (src_x >= sx + sw){
+                src_x = sx + sw - 1;
+            }
+
+            const Uint8* sp = tile->pixels +
+                              ((Uint32)src_y * (Uint32)tile->pitch) +
+                              ((Uint32)src_x * 4u);
+            Uint32 sr = sp[0];
+            Uint32 sg = sp[1];
+            Uint32 sb = sp[2];
+            Uint32 sa = blend ? sp[3] : 255u;
+            if (!color_identity){
+                sr = sdl_div255_u32(sr * (Uint32)tile->color_r);
+                sg = sdl_div255_u32(sg * (Uint32)tile->color_g);
+                sb = sdl_div255_u32(sb * (Uint32)tile->color_b);
+            }
+            if (!alpha_identity && blend){
+                sa = sdl_div255_u32(sa * (Uint32)tile->alpha_mod);
+            }
+            sdl_world_blend_rgba(dst_row, sr, sg, sb, sa);
+            dst_row += 4u;
+            x_acc += x_step;
+        }
+        y_acc += y_step;
+    }
+    return 0;
+}
+
+static int sdl_world_chunk_resize_texture(SDL_QOS_WorldChunkLayer* layer,
+                                          sdl_world_chunk_t* chunk,
+                                          int chunk_px){
+    if (!layer || !chunk || chunk_px <= 0){
+        return -1;
+    }
+    if (chunk->texture &&
+        chunk->texture->alive &&
+        chunk->texture->w == chunk_px &&
+        chunk->texture->h == chunk_px){
+        return 0;
+    }
+    if (chunk->texture){
+        SDL_DestroyTexture(chunk->texture);
+        chunk->texture = 0;
+    }
+    chunk->texture = SDL_CreateTexture(layer->renderer,
+                                       SDL_PIXELFORMAT_RGBA8888,
+                                       SDL_TEXTUREACCESS_STATIC,
+                                       chunk_px,
+                                       chunk_px);
+    if (!chunk->texture){
+        return -1;
+    }
+    chunk->texture->blend_mode = SDL_BLENDMODE_NONE;
+    chunk->texture->opaque = 1;
+    return 0;
+}
+
+static int sdl_world_rebuild_chunk(SDL_QOS_WorldChunkLayer* layer,
+                                   sdl_world_chunk_t* chunk,
+                                   int chunk_tiles,
+                                   int tile_px){
+    int chunk_px;
+    if (!layer || !chunk || !layer->tile_callback ||
+        chunk_tiles <= 0 || tile_px <= 0){
+        return -1;
+    }
+    if (chunk_tiles > 0x3FFFFFFF / tile_px){
+        return -1;
+    }
+    chunk_px = chunk_tiles * tile_px;
+    if (chunk_px <= 0 || chunk_px > SDL_SHIM_WORLD_CHUNK_MAX_PIXEL_SIZE){
+        return -1;
+    }
+    if (sdl_world_chunk_resize_texture(layer, chunk, chunk_px) != 0){
+        return -1;
+    }
+
+    sdl_world_clear_texture(chunk->texture);
+    for (int ty = 0; ty < chunk_tiles; ty++){
+        int world_y = (chunk->chunk_y * chunk_tiles) + ty;
+        if (world_y < 0 || world_y >= layer->world_tiles_h){
+            continue;
+        }
+        for (int tx = 0; tx < chunk_tiles; tx++){
+            int world_x = (chunk->chunk_x * chunk_tiles) + tx;
+            SDL_Texture* tile = 0;
+            SDL_Rect src;
+            src.x = 0;
+            src.y = 0;
+            src.w = 0;
+            src.h = 0;
+            if (world_x < 0 || world_x >= layer->world_tiles_w){
+                continue;
+            }
+            if (layer->tile_callback(layer->userdata, world_x, world_y, &tile, &src) != 0 ||
+                !tile || !tile->alive){
+                continue;
+            }
+            if (src.w <= 0 || src.h <= 0){
+                src.x = 0;
+                src.y = 0;
+                src.w = tile->w;
+                src.h = tile->h;
+            }
+            (void)sdl_world_blit_tile_to_chunk(chunk->texture,
+                                               tile,
+                                               &src,
+                                               tx * tile_px,
+                                               ty * tile_px,
+                                               tile_px,
+                                               tile_px);
+        }
+    }
+    sdl_world_texture_pixels_changed(chunk->texture);
+    (void)sdl_texture_ensure_native(chunk->texture);
+    chunk->dirty = 0;
+    layer->rebuilds++;
+    return 0;
+}
+
+static sdl_world_chunk_t* sdl_world_find_chunk(SDL_QOS_WorldChunkLayer* layer,
+                                               int chunk_x,
+                                               int chunk_y,
+                                               int chunk_tiles,
+                                               int tile_px){
+    if (!layer || !layer->chunks){
+        return 0;
+    }
+    for (int i = 0; i < layer->max_chunks; i++){
+        sdl_world_chunk_t* chunk = &layer->chunks[i];
+        if (chunk->live &&
+            chunk->chunk_x == chunk_x &&
+            chunk->chunk_y == chunk_y &&
+            chunk->chunk_tiles == chunk_tiles &&
+            chunk->tile_px == tile_px){
+            layer->hits++;
+            return chunk;
+        }
+    }
+    layer->misses++;
+    return 0;
+}
+
+static sdl_world_chunk_t* sdl_world_alloc_chunk(SDL_QOS_WorldChunkLayer* layer){
+    int oldest = 0;
+    Uint32 oldest_stamp = 0xFFFFFFFFu;
+    if (!layer || !layer->chunks || layer->max_chunks <= 0){
+        return 0;
+    }
+    for (int i = 0; i < layer->max_chunks; i++){
+        if (!layer->chunks[i].live){
+            return &layer->chunks[i];
+        }
+        if (layer->chunks[i].stamp < oldest_stamp){
+            oldest_stamp = layer->chunks[i].stamp;
+            oldest = i;
+        }
+    }
+    if (layer->chunks[oldest].texture){
+        SDL_DestroyTexture(layer->chunks[oldest].texture);
+        layer->chunks[oldest].texture = 0;
+    }
+    layer->evictions++;
+    return &layer->chunks[oldest];
+}
+
+static sdl_world_chunk_t* sdl_world_get_chunk(SDL_QOS_WorldChunkLayer* layer,
+                                              int chunk_x,
+                                              int chunk_y,
+                                              int chunk_tiles,
+                                              int tile_px){
+    sdl_world_chunk_t* chunk = sdl_world_find_chunk(layer,
+                                                    chunk_x,
+                                                    chunk_y,
+                                                    chunk_tiles,
+                                                    tile_px);
+    if (!chunk){
+        chunk = sdl_world_alloc_chunk(layer);
+        if (!chunk){
+            return 0;
+        }
+        chunk->live = 1;
+        chunk->dirty = 1;
+        chunk->chunk_x = chunk_x;
+        chunk->chunk_y = chunk_y;
+        chunk->chunk_tiles = chunk_tiles;
+        chunk->tile_px = tile_px;
+    }
+    if (++layer->stamp_clock == 0u){
+        layer->stamp_clock = 1u;
+    }
+    chunk->stamp = layer->stamp_clock;
+    if (chunk->dirty || !chunk->texture ||
+        chunk->chunk_tiles != chunk_tiles ||
+        chunk->tile_px != tile_px){
+        chunk->chunk_tiles = chunk_tiles;
+        chunk->tile_px = tile_px;
+        if (sdl_world_rebuild_chunk(layer, chunk, chunk_tiles, tile_px) != 0){
+            chunk->dirty = 1;
+            return 0;
+        }
+    }
+    return chunk;
+}
+
+SDL_QOS_WorldChunkLayer* SDL_QOS_CreateWorldChunkLayer(SDL_Renderer* renderer,
+                                                       int world_tiles_w,
+                                                       int world_tiles_h,
+                                                       int preferred_chunk_tiles,
+                                                       int max_cached_chunks,
+                                                       SDL_QOS_WorldTileCallback tile_callback,
+                                                       void* userdata){
+    SDL_QOS_WorldChunkLayer* layer;
+    if (!renderer || !renderer->alive || !tile_callback ||
+        world_tiles_w <= 0 || world_tiles_h <= 0){
+        set_error("bad world chunk layer");
+        return 0;
+    }
+    if (preferred_chunk_tiles <= 0){
+        preferred_chunk_tiles = 8;
+    }
+    if (max_cached_chunks <= 0){
+        max_cached_chunks = SDL_SHIM_WORLD_CHUNK_DEFAULT_MAX;
+    }
+    if (max_cached_chunks > SDL_SHIM_WORLD_CHUNK_HARD_MAX){
+        max_cached_chunks = SDL_SHIM_WORLD_CHUNK_HARD_MAX;
+    }
+    layer = (SDL_QOS_WorldChunkLayer*)malloc(sizeof(SDL_QOS_WorldChunkLayer));
+    if (!layer){
+        set_error("world chunk layer heap exhausted");
+        return 0;
+    }
+    sdl_zero_bytes((Uint8*)layer, (Uint32)sizeof(SDL_QOS_WorldChunkLayer));
+    layer->chunks = (sdl_world_chunk_t*)malloc((unsigned long)max_cached_chunks *
+                                               sizeof(sdl_world_chunk_t));
+    if (!layer->chunks){
+        free(layer);
+        set_error("world chunk heap exhausted");
+        return 0;
+    }
+    sdl_zero_bytes((Uint8*)layer->chunks,
+                   (Uint32)((unsigned long)max_cached_chunks *
+                            sizeof(sdl_world_chunk_t)));
+    layer->renderer = renderer;
+    layer->world_tiles_w = world_tiles_w;
+    layer->world_tiles_h = world_tiles_h;
+    layer->preferred_chunk_tiles = preferred_chunk_tiles;
+    layer->max_chunks = max_cached_chunks;
+    layer->tile_callback = tile_callback;
+    layer->userdata = userdata;
+    layer->stamp_clock = 1u;
+    return layer;
+}
+
+void SDL_QOS_DestroyWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer){
+    if (!layer){
+        return;
+    }
+    if (layer->chunks){
+        for (int i = 0; i < layer->max_chunks; i++){
+            if (layer->chunks[i].texture){
+                SDL_DestroyTexture(layer->chunks[i].texture);
+                layer->chunks[i].texture = 0;
+            }
+        }
+        free(layer->chunks);
+    }
+    free(layer);
+}
+
+void SDL_QOS_InvalidateWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer){
+    if (!layer || !layer->chunks){
+        return;
+    }
+    for (int i = 0; i < layer->max_chunks; i++){
+        if (layer->chunks[i].live){
+            layer->chunks[i].dirty = 1;
+        }
+    }
+}
+
+void SDL_QOS_InvalidateWorldTile(SDL_QOS_WorldChunkLayer* layer, int tile_x, int tile_y){
+    if (!layer || !layer->chunks ||
+        tile_x < 0 || tile_y < 0 ||
+        tile_x >= layer->world_tiles_w ||
+        tile_y >= layer->world_tiles_h){
+        return;
+    }
+    for (int i = 0; i < layer->max_chunks; i++){
+        sdl_world_chunk_t* chunk = &layer->chunks[i];
+        int x0;
+        int y0;
+        int x1;
+        int y1;
+        if (!chunk->live || chunk->chunk_tiles <= 0){
+            continue;
+        }
+        x0 = chunk->chunk_x * chunk->chunk_tiles;
+        y0 = chunk->chunk_y * chunk->chunk_tiles;
+        x1 = x0 + chunk->chunk_tiles;
+        y1 = y0 + chunk->chunk_tiles;
+        if (tile_x >= x0 && tile_x < x1 &&
+            tile_y >= y0 && tile_y < y1){
+            chunk->dirty = 1;
+        }
+    }
+}
+
+void SDL_QOS_InvalidateWorldChunk(SDL_QOS_WorldChunkLayer* layer, int chunk_x, int chunk_y){
+    if (!layer || !layer->chunks){
+        return;
+    }
+    for (int i = 0; i < layer->max_chunks; i++){
+        sdl_world_chunk_t* chunk = &layer->chunks[i];
+        if (chunk->live &&
+            chunk->chunk_x == chunk_x &&
+            chunk->chunk_y == chunk_y){
+            chunk->dirty = 1;
+        }
+    }
+}
+
+int SDL_QOS_RenderWorldChunkLayer(SDL_QOS_WorldChunkLayer* layer,
+                                  int camera_x_px,
+                                  int camera_y_px,
+                                  int viewport_w,
+                                  int viewport_h,
+                                  int tile_px){
+    int chunk_tiles;
+    int chunk_px;
+    int chunk_count_x;
+    int chunk_count_y;
+    int first_x;
+    int first_y;
+    int last_x;
+    int last_y;
+
+    if (!layer || !layer->renderer || !layer->renderer->alive ||
+        !layer->renderer->window || tile_px <= 0){
+        set_error("bad world render");
+        return -1;
+    }
+    if (viewport_w <= 0){
+        viewport_w = layer->renderer->window->w;
+    }
+    if (viewport_h <= 0){
+        viewport_h = layer->renderer->window->h;
+    }
+    if (viewport_w <= 0 || viewport_h <= 0){
+        return 0;
+    }
+
+    chunk_tiles = sdl_world_effective_chunk_tiles(layer, tile_px);
+    if (chunk_tiles <= 0 || chunk_tiles > 0x3FFFFFFF / tile_px){
+        set_error("bad world chunk size");
+        return -1;
+    }
+    chunk_px = chunk_tiles * tile_px;
+    chunk_count_x = (layer->world_tiles_w + chunk_tiles - 1) / chunk_tiles;
+    chunk_count_y = (layer->world_tiles_h + chunk_tiles - 1) / chunk_tiles;
+    if (chunk_count_x <= 0 || chunk_count_y <= 0){
+        return 0;
+    }
+    layer->last_chunk_tiles = chunk_tiles;
+    layer->last_tile_px = tile_px;
+
+    first_x = sdl_floor_div_int(camera_x_px, chunk_px);
+    first_y = sdl_floor_div_int(camera_y_px, chunk_px);
+    last_x = sdl_floor_div_int(camera_x_px + viewport_w - 1, chunk_px);
+    last_y = sdl_floor_div_int(camera_y_px + viewport_h - 1, chunk_px);
+    if (first_x < 0){
+        first_x = 0;
+    }
+    if (first_y < 0){
+        first_y = 0;
+    }
+    if (last_x >= chunk_count_x){
+        last_x = chunk_count_x - 1;
+    }
+    if (last_y >= chunk_count_y){
+        last_y = chunk_count_y - 1;
+    }
+    if (last_x < first_x || last_y < first_y){
+        return 0;
+    }
+
+    for (int cy = first_y; cy <= last_y; cy++){
+        for (int cx = first_x; cx <= last_x; cx++){
+            sdl_world_chunk_t* chunk =
+                sdl_world_get_chunk(layer, cx, cy, chunk_tiles, tile_px);
+            if (!chunk || !chunk->texture){
+                continue;
+            }
+            SDL_Rect dst;
+            dst.x = (cx * chunk_px) - camera_x_px;
+            dst.y = (cy * chunk_px) - camera_y_px;
+            dst.w = chunk_px;
+            dst.h = chunk_px;
+            if (SDL_RenderCopy(layer->renderer, chunk->texture, 0, &dst) == 0){
+                layer->draws++;
+            }
+        }
+    }
+    return 0;
+}
+
+int SDL_QOS_GetWorldChunkStats(SDL_QOS_WorldChunkLayer* layer,
+                               SDL_QOS_WorldChunkStats* out_stats){
+    Uint32 live = 0u;
+    Uint32 dirty = 0u;
+    if (!layer || !out_stats){
+        return -1;
+    }
+    sdl_zero_bytes((Uint8*)out_stats, (Uint32)sizeof(SDL_QOS_WorldChunkStats));
+    if (layer->chunks){
+        for (int i = 0; i < layer->max_chunks; i++){
+            if (layer->chunks[i].live){
+                live++;
+                if (layer->chunks[i].dirty){
+                    dirty++;
+                }
+            }
+        }
+    }
+    out_stats->max_chunks = (Uint32)layer->max_chunks;
+    out_stats->live_chunks = live;
+    out_stats->dirty_chunks = dirty;
+    out_stats->chunk_tiles = (Uint32)((layer->last_chunk_tiles > 0) ?
+                                      layer->last_chunk_tiles :
+                                      layer->preferred_chunk_tiles);
+    out_stats->tile_px = (Uint32)((layer->last_tile_px > 0) ?
+                                  layer->last_tile_px :
+                                  0);
+    out_stats->hits = layer->hits;
+    out_stats->misses = layer->misses;
+    out_stats->rebuilds = layer->rebuilds;
+    out_stats->evictions = layer->evictions;
+    out_stats->draws = layer->draws;
+    return 0;
 }
 
 int SDL_Init(Uint32 flags){

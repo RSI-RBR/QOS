@@ -34,3 +34,12 @@ Notes:
 - Key repeat is available but disabled by default; call `SDL_EnableKeyRepeat(SDL_DEFAULT_REPEAT_DELAY, SDL_DEFAULT_REPEAT_INTERVAL)` or `SDL_QOS_SetKeyRepeat(1, delay_ms, interval_ms)` if text-entry style repeat is desired.
 - `SDL_PollEvent` clears the output event to type `0` when no event is available, which is slightly more forgiving than desktop SDL for early QOS ports.
 - Mouse motion events include button state for drag handling. `SDL_GetRelativeMouseState` returns accumulated movement since the last call, and `SDL_QOS_GetMouseWheel` returns accumulated wheel movement since the last call.
+
+QOS Static Terrain Chunk Cache:
+- `SDL_QOS_CreateWorldChunkLayer(...)` creates an opt-in cache for static tile terrain.
+- The game provides a `SDL_QOS_WorldTileCallback` that maps `(tile_x, tile_y)` to a terrain `SDL_Texture*` and optional source rect.
+- `SDL_QOS_RenderWorldChunkLayer(layer, camera_x_px, camera_y_px, viewport_w, viewport_h, tile_px)` rebuilds only dirty/missing terrain chunks, then draws visible chunks to the renderer.
+- `SDL_QOS_InvalidateWorldTile(...)`, `SDL_QOS_InvalidateWorldChunk(...)`, and `SDL_QOS_InvalidateWorldChunkLayer(...)` mark cached terrain dirty after map edits.
+- Chunk pixel size is capped internally, so large zoom levels automatically use fewer tiles per chunk instead of allocating huge textures.
+- Cached chunks are normal SDL textures and consume program heap/texture slots. Start with `max_cached_chunks` around 12 for a 1080p viewport, then tune after checking FPS and heap pressure.
+- This is meant for opaque/static terrain. Dynamic units, selection highlights, fog, UI, and mouse cursors should still draw normally after the terrain layer.
