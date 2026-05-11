@@ -38,6 +38,8 @@
 #include "klog.h"
 #include "display.h"
 #include "program.h"
+#include "platform/board.h"
+#include "platform/soc.h"
 
 static int kernel_ranges_overlap(unsigned long a, unsigned long a_size,
                                  unsigned long b, unsigned long b_size){
@@ -135,8 +137,13 @@ void kernel_main(void){
     uart_init();
     qos_stack_canary_init();
     uart_puts("Uart initialized!\n");
+    uart_puts("Board: ");
+    uart_puts(board_name());
+    uart_puts(" SoC: ");
+    uart_puts(soc_name());
+    uart_puts("\n");
 
-    (void)mailbox_power_on_usb();
+    (void)board_power_on_usb();
 
     mmu_init();
     mailbox_enable_runtime_safety();
@@ -202,12 +209,16 @@ void kernel_main(void){
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");
 
-    if (usb_host_init() != 0){
-        uart_puts("USB host init failed (network over onboard ETH unavailable).\n");
-    } else{
-        if (usb_host_enumerate_root_device() != 0){
-            uart_puts("USB: root enumeration failed.\n");
+    if (board_has_dwc2_usb()){
+        if (usb_host_init() != 0){
+            uart_puts("USB host init failed.\n");
+        } else{
+            if (usb_host_enumerate_root_device() != 0){
+                uart_puts("USB: root enumeration failed.\n");
+            }
         }
+    } else{
+        uart_puts("USB DWC2 host not present on this board target.\n");
     }
 
     if (net_init() != 0){

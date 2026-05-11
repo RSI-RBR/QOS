@@ -10,3 +10,5 @@ KERNEL_ELF ?= $(BUILD)/kernel_2712.elf
 KERNEL_PQS ?= kernel_2712.pqs
 
 CFLAGS += -DQOS_BOARD_PI5=1 -DQOS_SOC_BCM2712=1
+SOC_C_SOURCES += soc/bcm2712/soc.c
+BOARD_C_SOURCES += boards/pi5/board.c

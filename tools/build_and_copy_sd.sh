@@ -25,6 +25,26 @@ GAME_IMG_DIR="${GAME_IMG_DIR:-}"
 GAME_BUILD_SRC_DIR=""
 GAME_ENTRY_NAME="${GAME_ENTRY:-gui_main.c}"
 
+case "$BOARD" in
+  pi3|pi_zero2w)
+    KERNEL_IMAGE_NAME="kernel8.img"
+    KERNEL_PQS_NAME="kernel8.pqs"
+    KERNEL_SD_IMAGE_NAME="KERNEL8.IMG"
+    KERNEL_SD_PQS_NAME="KERNEL8.PQS"
+    KERNEL_FILE_SIG_LABEL="KERNEL8_IMG"
+    ;;
+  pi5)
+    echo "BOARD=pi5 is scaffold-only right now."
+    echo "BCM2712/RP1 MMIO, boot image naming, and kernel-file verification are not ported yet."
+    echo "Use BOARD=pi3 or BOARD=pi_zero2w until the Pi 5 platform layer is implemented."
+    exit 1
+    ;;
+  *)
+    echo "Unknown BOARD '$BOARD'. Expected one of: pi3 pi_zero2w pi5"
+    exit 1
+    ;;
+esac
+
 TMP_CA_DIR=""
 cleanup_tmp_ca() {
   if [[ -n "$TMP_CA_DIR" && -d "$TMP_CA_DIR" ]]; then
@@ -170,12 +190,12 @@ fi
 
 echo "[3/5] Signing data artifacts..."
 mkdir -p build
-KERNEL_FILE_SIG="build/kernel8.file.sig"
-KERNEL_FILE_PQS="build/kernel8.file.pqs"
+KERNEL_FILE_SIG="build/${KERNEL_IMAGE_NAME}.file.sig"
+KERNEL_FILE_PQS="build/${KERNEL_IMAGE_NAME}.file.pqs"
 python3 tools/sign_detached_artifact.py \
-  kernel8.img "$KERNEL_FILE_SIG" \
+  "$KERNEL_IMAGE_NAME" "$KERNEL_FILE_SIG" \
   "$KERNEL_FILE_SIGNER_KEY_ID" "$ADMIN_KEY_ABS" "$OPENSSL_BIN" \
-  "$ADMIN_PQ_SIGN_KEY_ABS" "$KERNEL_FILE_PQS" "KERNEL8_IMG"
+  "$ADMIN_PQ_SIGN_KEY_ABS" "$KERNEL_FILE_PQS" "$KERNEL_FILE_SIG_LABEL"
 
 AUTH_SIG=""
 AUTH_PQS=""
@@ -219,8 +239,8 @@ fi
 
 echo "[4/5] Copying artifacts to $SD_MOUNT ..."
 if [[ -f boot/config.txt ]]; then cp -f boot/config.txt "$SD_MOUNT/config.txt"; fi
-cp -f kernel8.img "$SD_MOUNT/KERNEL8.IMG"
-if [[ -f kernel8.pqs ]]; then cp -f kernel8.pqs "$SD_MOUNT/KERNEL8.PQS"; fi
+cp -f "$KERNEL_IMAGE_NAME" "$SD_MOUNT/$KERNEL_SD_IMAGE_NAME"
+if [[ -f "$KERNEL_PQS_NAME" ]]; then cp -f "$KERNEL_PQS_NAME" "$SD_MOUNT/$KERNEL_SD_PQS_NAME"; fi
 cp -f "$KERNEL_FILE_SIG" "$SD_MOUNT/KERNFILE.SIG"
 cp -f "$KERNEL_FILE_PQS" "$SD_MOUNT/KERNFILE.PQS"
 cp -f programs/shell/shell.bin "$SD_MOUNT/SHELL.BIN"
@@ -266,8 +286,8 @@ sync
 echo "Done."
 echo "Copied:"
 if [[ -f "$SD_MOUNT/config.txt" ]]; then echo "  $SD_MOUNT/config.txt"; fi
-echo "  $SD_MOUNT/KERNEL8.IMG"
-if [[ -f "$SD_MOUNT/KERNEL8.PQS" ]]; then echo "  $SD_MOUNT/KERNEL8.PQS"; fi
+echo "  $SD_MOUNT/$KERNEL_SD_IMAGE_NAME"
+if [[ -f "$SD_MOUNT/$KERNEL_SD_PQS_NAME" ]]; then echo "  $SD_MOUNT/$KERNEL_SD_PQS_NAME"; fi
 if [[ -f "$SD_MOUNT/KERNFILE.SIG" ]]; then echo "  $SD_MOUNT/KERNFILE.SIG"; fi
 if [[ -f "$SD_MOUNT/KERNFILE.PQS" ]]; then echo "  $SD_MOUNT/KERNFILE.PQS"; fi
 echo "  $SD_MOUNT/SHELL.BIN"

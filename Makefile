@@ -44,6 +44,8 @@ LDFLAGS = -T $(LINKER)
 # KERNEL SOURCES ONLY
 # ---------------------------
 C_SOURCES = \
+$(SOC_C_SOURCES) \
+$(BOARD_C_SOURCES) \
 kernel/kernel.c \
 kernel/uart.c \
 kernel/klog.c \
@@ -147,6 +149,8 @@ endif
 
 
 ASM_SOURCES = \
+$(SOC_ASM_SOURCES) \
+$(BOARD_ASM_SOURCES) \
 boot/boot.S \
 kernel/context.S \
 kernel/vectors.S

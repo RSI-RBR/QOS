@@ -10,3 +10,5 @@ KERNEL_ELF ?= $(BUILD)/kernel8.elf
 KERNEL_PQS ?= kernel8.pqs
 
 CFLAGS += -DQOS_BOARD_PI_ZERO2W=1 -DQOS_SOC_BCM2837=1 -DQOS_HAS_CYW43=1
+SOC_C_SOURCES += soc/bcm2837/soc.c
+BOARD_C_SOURCES += boards/pi_zero2w/board.c

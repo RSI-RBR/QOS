@@ -1,4 +1,5 @@
 #include "nic.h"
+#include "platform/board_config.h"
 
 #define STUB_Q_LEN 16
 #define STUB_MAX_FRAME 1536
@@ -77,9 +78,17 @@ const nic_driver_t* nic_probe_stub(void){
 }
 
 const nic_driver_t* nic_probe_default(void){
+#if QOS_BOARD_HAS_USB_ETHERNET
     const nic_driver_t* smsc = nic_probe_smsc95xx();
     if (smsc){
         return smsc;
     }
+#endif
+#if QOS_BOARD_HAS_ONBOARD_WIFI
+    const nic_driver_t* wifi = nic_probe_cyw43();
+    if (wifi){
+        return wifi;
+    }
+#endif
     return nic_probe_stub();
 }
