@@ -59,7 +59,12 @@
 #define V3D_QPU_COPY_FILL_OFFSET 0xC00u
 #define V3D_QPU_COPY_ROW_WORDS 64u
 #define V3D_QPU_COPY_ROW_BYTES (V3D_QPU_COPY_ROW_WORDS * sizeof(unsigned int))
-#define V3D_QPU_COPY_BATCH_ROWS 8u
+/*
+ * Uniform storage allows far more than this, but keep the queue modest on VC4:
+ * enough to halve launch overhead versus the original 8-row chunks without
+ * flooding the small QPU scheduler queue.
+ */
+#define V3D_QPU_COPY_BATCH_ROWS 16u
 #define V3D_QPU_COPY_TIMEOUT 5000000u
 #define V3D_MEM_FLAG_DIRECT   (1u << 2)
 #define V3D_MEM_FLAG_ZERO     (1u << 4)
