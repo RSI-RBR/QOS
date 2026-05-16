@@ -696,6 +696,7 @@ static int cyw43_scan_socram(void){
 
 static int cyw43_enable_ht_clock(void){
     unsigned char csr = 0;
+    unsigned char force_csr = 0;
 
     (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
     uart_puts("CYW43: HT pre csr=");
@@ -731,6 +732,42 @@ static int cyw43_enable_ht_clock(void){
         cyw43_delay(250000u);
     }
     uart_puts("CYW43: HT clock timeout csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+
+    /*
+     * Some BCM43430/2 firmwares do not raise HT_AVAIL from REQ_HT alone after
+     * the ARM core is released. Circle-style bring-up tolerates this by forcing
+     * HT, then polling until the chip reports the clock as available.
+     */
+    force_csr = CYW43_CLK_NO_HW_REQ | CYW43_CLK_REQ_HT | CYW43_CLK_FORCE_HT;
+    uart_puts("CYW43: forcing HT clock\n");
+    for (unsigned int i = 0; i < 60u; i++){
+        if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, force_csr) != 0){
+            return -1;
+        }
+        cyw43_delay(100000u);
+        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) != 0){
+            return -1;
+        }
+        if (i == 0u || i == 10u || i == 20u || i == 40u){
+            uart_puts("CYW43: HT force poll csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+        }
+        if (csr & CYW43_CLK_HT_AVAIL){
+            if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG,
+                                     CYW43_CLK_NO_HW_REQ | CYW43_CLK_FORCE_HT) != 0){
+                return -1;
+            }
+            (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
+            uart_puts("CYW43: HT forced csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+            return 0;
+        }
+    }
+    uart_puts("CYW43: HT force timeout csr=");
     uart_puthex(csr);
     uart_puts("\n");
     return -1;
