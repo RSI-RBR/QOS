@@ -1177,6 +1177,11 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
         uart_puts("CYW43: firmware/NVRAM file read failed\n");
         goto out;
     }
+    uart_puts("CYW43: firmware file bytes=");
+    uart_putdec((unsigned int)fw_len);
+    uart_puts(" nvram bytes=");
+    uart_putdec((unsigned int)nv_len);
+    uart_puts("\n");
 
     // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
     // SDIO before touching the CYW43 backplane.
@@ -2187,7 +2192,7 @@ int cyw43_get_firmware_version(char* out, unsigned int out_cap){
 int cyw43_ioctl_up(void){
     if (!g_cyw43.enabled){
         if (cyw43_init() != 0){
-            return -1;
+            return -2;
         }
     }
     if (!g_cyw43.fw_loaded){
@@ -2197,18 +2202,18 @@ int cyw43_ioctl_up(void){
     if (g_cyw43.fw_running){
         if (!g_cyw43.func2_ready && cyw43_attach_running_firmware() != 0){
             uart_puts("CYW43: firmware reattach failed\n");
-            return -1;
+            return -3;
         }
     } else{
         if (cyw43_start_firmware() != 0){
             uart_puts("CYW43: firmware start failed\n");
-            return -1;
+            return -4;
         }
     }
     if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){
             uart_puts("CYW43: WiFi configure-on failed\n");
-            return -1;
+            return -5;
         }
         g_cyw43.wifi_configured = 1;
     }

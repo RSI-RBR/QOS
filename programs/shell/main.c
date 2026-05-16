@@ -1554,7 +1554,9 @@ static void cmd_wifiup(void){
     if (rc == 0){
         qos_puts("WiFi UP OK\n");
     } else{
-        qos_puts("WiFi UP failed\n");
+        qos_puts("WiFi UP failed rc=");
+        print_int(rc);
+        qos_puts("\n");
     }
 }
 
