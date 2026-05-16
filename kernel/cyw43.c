@@ -1713,7 +1713,6 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
 static int cyw43_wl_escan_submit(const char* ssid){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
     unsigned int ssid_len = 0;
-    unsigned int ssid_off = 0;
     /*
      * Keep bring-up scans to 2.4 GHz channels 1..11. The Pi Zero 2 W firmware
      * is more sensitive to regulatory/NVRAM mismatches than the Pi 3 path, and
@@ -1722,21 +1721,29 @@ static int cyw43_wl_escan_submit(const char* ssid){
      */
     static const unsigned char chanspecs[11u * 2u] = {
         0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
-        0x05u, 0x2Eu, 0x06u, 0x2Eu, 0x07u, 0x2Eu,
+        0x05u, 0x2Bu, 0x06u, 0x2Bu, 0x07u, 0x2Bu,
         0x08u, 0x2Bu, 0x09u, 0x2Bu, 0x0Au, 0x2Bu, 0x0Bu, 0x2Bu,
     };
 
     mem_zero_local(params, sizeof(params));
     /*
-     * Match Circle's ether4330 wlscanstart() layout:
-     * version/action/sync_id + wildcard wl_scan_params + 14 chanspecs +
-     * one empty SSID slot. The CYW4343x firmware is picky here; the shorter
-     * generic 76-byte form can leave the SET_VAR("escan") command unanswered.
+     * Match the common bare-metal ether4330/Zerowi layout:
+     * version/action/sync_id + wl_scan_params. A directed SSID goes in the
+     * fixed ssidlen/ssid field at the start of wl_scan_params; the appended
+     * nssids list is left empty because this firmware rejects that variant.
+     * The CYW4343x firmware is picky here; malformed params return BCME_BADARG.
      */
     put_le32(params + 0u, CYW43_ESCAN_REQ_VERSION);
     put_le16(params + 4u, CYW43_ESCAN_ACTION_START);
     put_le16(params + 6u, CYW43_ESCAN_SYNC_ID);
 
+    if (ssid && *ssid){
+        ssid_len = strn_len_local(ssid, CYW43_WL_MAX_SSID_LEN);
+        put_le32(params + 8u, ssid_len);
+        for (unsigned int i = 0; i < ssid_len; i++){
+            params[12u + i] = (unsigned char)ssid[i];
+        }
+    }
     for (unsigned int i = 44u; i < 50u; i++){
         params[i] = 0xFFu;
     }
@@ -1747,16 +1754,8 @@ static int cyw43_wl_escan_submit(const char* ssid){
     put_le32(params + 60u, 0xFFFFFFFFu);
     put_le32(params + 64u, 0xFFFFFFFFu);
     put_le16(params + 68u, 11u);
-    put_le16(params + 70u, 1u);
+    put_le16(params + 70u, 0u);
     mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
-    if (ssid && *ssid){
-        ssid_len = strn_len_local(ssid, CYW43_WL_MAX_SSID_LEN);
-        ssid_off = 72u + sizeof(chanspecs);
-        put_le32(params + ssid_off, ssid_len);
-        for (unsigned int i = 0; i < ssid_len; i++){
-            params[ssid_off + 4u + i] = (unsigned char)ssid[i];
-        }
-    }
 
     (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
     return cyw43_wl_set_var("escan", params, sizeof(params));
