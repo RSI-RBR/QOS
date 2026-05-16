@@ -535,7 +535,7 @@ static void cmd_help(void){
     qos_puts(" wifiscanx [passes]\n");
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
-    qos_puts(" wifiraw on|off|stat|read\n");
+    qos_puts(" wifiraw on|off|stat|read|drain [ms]\n");
     qos_puts(" wifimon on [channel]|off|status\n");
 }
 
@@ -1847,7 +1847,81 @@ static void cmd_wifiraw(const char* mode){
         return;
     }
 
-    qos_puts("Usage: wifiraw on|off|stat|read\n");
+    if (str_starts_with(mode, "drain")){
+        unsigned char buf[256];
+        const char* p = mode + 5;
+        unsigned int ms = 1000u;
+        unsigned int frames = 0u;
+        unsigned int bytes = 0u;
+        unsigned int max_len = 0u;
+        unsigned long long start = 0;
+        unsigned long long deadline = 0;
+        cyw43_raw_capture_status_t st;
+
+        while (*p == ' '){
+            p++;
+        }
+        if (*p && parse_uint(p, &ms) != 0){
+            qos_puts("Usage: wifiraw drain [ms]\n");
+            return;
+        }
+        if (ms == 0u){
+            ms = 1000u;
+        }
+        if (ms > 10000u){
+            ms = 10000u;
+        }
+
+        start = qos_get_time_us();
+        deadline = start + ((unsigned long long)ms * 1000ull);
+        while ((long long)(qos_get_time_us() - deadline) < 0){
+            int n = qos_wifi_raw_recv(buf, sizeof(buf));
+            if (n < 0){
+                qos_puts("WiFi raw drain failed\n");
+                return;
+            }
+            if (n > 0){
+                frames++;
+                bytes += (unsigned int)n;
+                if ((unsigned int)n > max_len){
+                    max_len = (unsigned int)n;
+                }
+                continue;
+            }
+            qos_sleep(1);
+        }
+
+        if (qos_wifi_raw_status(&st) != 0){
+            qos_puts("WiFi raw status failed\n");
+            return;
+        }
+        qos_puts("WiFi raw drain ms=");
+        print_uint(ms);
+        qos_puts(" frames=");
+        print_uint(frames);
+        qos_puts(" bytes=");
+        print_uint(bytes);
+        qos_puts(" max=");
+        print_uint(max_len);
+        qos_puts(" queued=");
+        print_uint(st.queued);
+        qos_puts(" rx=");
+        print_uint(st.rx_frames);
+        qos_puts(" drop=");
+        print_uint(st.dropped);
+        qos_puts(" rt=");
+        print_uint(st.radiotap_frames);
+        qos_puts(" dot11=");
+        print_uint(st.dot11_frames);
+        qos_puts(" eth=");
+        print_uint(st.ethernet_frames);
+        qos_puts(" unk=");
+        print_uint(st.unknown_frames);
+        qos_puts("\n");
+        return;
+    }
+
+    qos_puts("Usage: wifiraw on|off|stat|read|drain [ms]\n");
 }
 
 static void cmd_wifimon(const char* mode){
