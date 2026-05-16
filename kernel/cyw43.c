@@ -8,6 +8,8 @@
 #include "net_proto.h"
 #include "arp.h"
 
+extern volatile unsigned long system_ticks;
+
 #define CYW43_FW_MAX_BYTES      (768u * 1024u)
 #define CYW43_NVRAM_MAX_BYTES   (16u * 1024u)
 #define CYW43_NVRAM_PACKED_MAX  (20u * 1024u)
@@ -25,6 +27,9 @@
 #define CYW43_CLK_ALP_AVAIL     0x40u
 #define CYW43_CLK_HT_AVAIL      0x80u
 #define CYW43_CLK_NO_HW_REQ     0x20u
+// BCM43430/2 Zero-class firmware bring-up commonly writes this exact value.
+// It is FORCE_HT | NO_HW_REQ plus the already-present ALP/HT status bits.
+#define CYW43_CLK_ZERO_HT_FORCE  0xD2u
 #define CYW43_ENUM_BASE         0x18000000u
 #define CYW43_WATERMARK_REG     0x10008u
 #define CYW43_FRAMECTL_REG      0x1000Du
@@ -466,6 +471,30 @@ static void cyw43_delay(unsigned int n){
     }
 }
 
+static void cyw43_delay_ms(unsigned int ms){
+    unsigned long start = system_ticks;
+    unsigned long guard = (unsigned long)ms * 2000000u;
+    if (ms == 0u){
+        return;
+    }
+    /*
+     * Wi-Fi commands run after the kernel timer is active. If this path is ever
+     * called earlier, fall back to a conservative spin instead of hanging.
+     */
+    if (start != 0u || system_ticks != 0u){
+        while ((unsigned long)(system_ticks - start) < (unsigned long)ms){
+            asm volatile("nop");
+            if (guard-- == 0u){
+                break;
+            }
+        }
+        return;
+    }
+    while (ms--){
+        cyw43_delay(250000u);
+    }
+}
+
 static int cyw43_request_alp_clock(void){
     unsigned char csr = 0;
     if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_NO_HW_REQ | CYW43_CLK_REQ_ALP) != 0){
@@ -809,6 +838,63 @@ static int cyw43_enable_ht_clock(void){
     return -1;
 }
 
+static int cyw43_enable_ht_clock_bcm43430(void){
+    unsigned char csr = 0;
+
+    /*
+     * BCM43430/2 on Pi Zero-class boards is touchier than the Pi3 path. The
+     * known bare-metal flow gives the released ARM core a short settle window,
+     * then writes the exact 0xD2 clock CSR value before enabling Function 2.
+     */
+    cyw43_delay_ms(50u);
+    (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
+    uart_puts("CYW43: BCM43430 HT pre csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+
+    if (csr & CYW43_CLK_HT_AVAIL){
+        if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_ZERO_HT_FORCE) != 0){
+            return -1;
+        }
+        (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
+        uart_puts("CYW43: BCM43430 HT already ready csr=");
+        uart_puthex(csr);
+        uart_puts("\n");
+        return 0;
+    }
+
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_ZERO_HT_FORCE) != 0){
+        return -1;
+    }
+    for (unsigned int i = 0; i < 200u; i++){
+        cyw43_delay_ms(2u);
+        if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) != 0){
+            return -1;
+        }
+        if (i == 0u || i == 10u || i == 50u || i == 100u || i == 150u){
+            uart_puts("CYW43: BCM43430 HT poll csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+        }
+        if (csr & CYW43_CLK_HT_AVAIL){
+            uart_puts("CYW43: BCM43430 HT ready csr=");
+            uart_puthex(csr);
+            uart_puts("\n");
+            return 0;
+        }
+    }
+
+    /*
+     * Do not continue from the familiar stuck 0x72 state. We tried that and
+     * the firmware never posted its mailbox; failing here tells us the clock
+     * transition itself is still not matching the working BCM43430 sequence.
+     */
+    uart_puts("CYW43: BCM43430 HT clock failed csr=");
+    uart_puthex(csr);
+    uart_puts("\n");
+    return -1;
+}
+
 static int cyw43_enable_function2(void){
     uart_puts("CYW43: enabling function 2\n");
     if (sdio_bus_enable_func(2) != 0 ||
@@ -936,16 +1022,25 @@ static int cyw43_start_firmware(void){
     uart_puts(" clk=");
     uart_puthex(clkcsr);
     uart_puts("\n");
-    if (cyw43_enable_ht_clock() != 0){
+    if ((g_cyw43.chip_id == 43430u) ?
+        (cyw43_enable_ht_clock_bcm43430() != 0) :
+        (cyw43_enable_ht_clock() != 0)){
         return -1;
     }
-    uart_puts("CYW43: programming SDIO mailbox/intmask\n");
+    uart_puts("CYW43: programming SDIO boot mailbox\n");
     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, 0xFFFFFFFFu);
     if (cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX_DATA, 4u << 16) != 0){
         uart_puts("CYW43: SDIO interrupt setup failed\n");
         return -1;
     }
     uart_puts("CYW43: SDIO mailbox OK\n");
+
+    /*
+     * Match the working BCM43430 flow: after the boot mailbox write, enable
+     * Function 2 and wait for IORX to report 0x06 before expecting firmware
+     * control traffic. Waiting for the firmware mailbox first can leave Pi0
+     * boards stuck with mbox=0 forever.
+     */
     uart_puts("CYW43: requesting function 2\n");
     if (sdio_bus_enable_func(2) != 0){
         uart_puts("CYW43: function 2 enable request failed\n");
@@ -958,11 +1053,8 @@ static int cyw43_start_firmware(void){
         return -1;
     }
     uart_puts("CYW43: SDIO intmask OK\n");
-    if (cyw43_wait_firmware_ready() != 0){
-        return -1;
-    }
     if (sdio_bus_wait_func_ready(2, 2500) != 0){
-        uart_puts("CYW43: function 2 not ready after firmware mailbox\n");
+        uart_puts("CYW43: function 2 not ready after boot mailbox\n");
         return -1;
     }
     uart_puts("CYW43: function 2 ready\n");
@@ -972,6 +1064,9 @@ static int cyw43_start_firmware(void){
     }
     uart_puts("CYW43: host interrupts enabled\n");
     g_cyw43.func2_ready = 1;
+    if (cyw43_wait_firmware_ready() != 0){
+        return -1;
+    }
     if (cyw43_sdio_keep_awake() != 0){
         uart_puts("CYW43: SDIO wake warning; continuing\n");
     }
