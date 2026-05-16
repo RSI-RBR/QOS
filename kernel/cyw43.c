@@ -2342,6 +2342,28 @@ static void cyw43_log_radio_status(const char* tag){
     uart_puts("\n");
 }
 
+static void cyw43_clear_radio_disable_flags(void){
+    unsigned int radio = 0;
+
+    if (cyw43_wl_get_int(CYW43_WLC_GET_RADIO, &radio) != 0){
+        return;
+    }
+    if (radio == 0u){
+        return;
+    }
+
+    /*
+     * Not every firmware accepts WLC_SET_RADIO, but if GET_RADIO reports
+     * disable flags, attempt to clear them. A failure here is diagnostic only;
+     * the later GET_RADIO line is authoritative.
+     */
+    if (cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u) != 0){
+        uart_puts("CYW43: radio disable flags remain=");
+        uart_puthex(radio);
+        uart_puts("\n");
+    }
+}
+
 static int cyw43_wait_assoc(unsigned int timeout_ms){
     unsigned char bssid[8];
     unsigned int actual = 0;
@@ -2795,13 +2817,7 @@ int cyw43_ioctl_up(void){
         }
         g_cyw43.wifi_configured = 1;
     }
-    /*
-     * Force RF out of software-disable before WLC_UP. If radio remains off,
-     * firmware can accept scan requests but return an empty scan table.
-     */
-    if (cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u) != 0){
-        uart_puts("CYW43: radio enable command failed; continuing\n");
-    }
+    cyw43_clear_radio_disable_flags();
     if (cyw43_refresh_cur_etheraddr() != 0){
         uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
     }
@@ -2815,6 +2831,16 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
+    /*
+     * Some 43430/43436 firmware applies regulatory/scan knobs only after
+     * WLC_UP. Re-apply them here while keeping failures non-fatal.
+     */
+    (void)cyw43_wl_set_country();
+    (void)cyw43_wl_set_event_msgs();
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_CHANNEL_TIME, 0x28u);
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_UNASSOC_TIME, 0x28u);
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_PASSIVE_TIME, 0x82u);
+    cyw43_clear_radio_disable_flags();
     cyw43_log_radio_status("after-up");
     // Latency-oriented defaults for bring-up: keep radio awake and disable
     // minimum power consumption mode while we prioritize responsiveness.
