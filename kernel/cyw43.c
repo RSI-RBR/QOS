@@ -71,7 +71,7 @@ extern volatile unsigned long system_ticks;
 #define CYW43_SDPCM_FIRSTREAD   64u
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  4096u
-#define CYW43_RAW_CAPTURE_DEPTH 16u
+#define CYW43_RAW_CAPTURE_DEPTH 64u
 #define CYW43_RAW_CAPTURE_MAX_BYTES 2304u
 #define CYW43_PACKET_ADDR       0u
 #define CYW43_DATA_PAD_LEN      2u
@@ -189,6 +189,11 @@ static unsigned int g_cyw43_raw_rx_frames;
 static unsigned int g_cyw43_raw_dropped;
 static unsigned int g_cyw43_raw_truncated;
 static unsigned int g_cyw43_raw_last_len;
+static unsigned int g_cyw43_raw_last_kind;
+static unsigned int g_cyw43_raw_radiotap_frames;
+static unsigned int g_cyw43_raw_dot11_frames;
+static unsigned int g_cyw43_raw_ethernet_frames;
+static unsigned int g_cyw43_raw_unknown_frames;
 static unsigned int g_cyw43_monitor_mode;
 static unsigned int g_cyw43_monitor_channel;
 static int g_cyw43_monitor_last_rc;
@@ -2181,10 +2186,53 @@ static void cyw43_raw_capture_reset_locked(void){
     g_cyw43_raw_dropped = 0;
     g_cyw43_raw_truncated = 0;
     g_cyw43_raw_last_len = 0;
+    g_cyw43_raw_last_kind = 0;
+    g_cyw43_raw_radiotap_frames = 0;
+    g_cyw43_raw_dot11_frames = 0;
+    g_cyw43_raw_ethernet_frames = 0;
+    g_cyw43_raw_unknown_frames = 0;
+}
+
+static unsigned int cyw43_raw_classify(const unsigned char* frame, unsigned int len){
+    unsigned int rt_len = 0;
+    unsigned int fc = 0;
+    unsigned int eth_type = 0;
+
+    if (!frame || len < 2u){
+        return 0u;
+    }
+
+    // Radiotap starts with version=0, pad=0, little-endian header length.
+    if (len >= 8u && frame[0] == 0u && frame[1] == 0u){
+        rt_len = get_le16(frame + 2u);
+        if (rt_len >= 8u && rt_len <= len){
+            return 1u;
+        }
+    }
+
+    if (len >= 14u){
+        eth_type = ((unsigned int)frame[12] << 8) | (unsigned int)frame[13];
+        if (eth_type >= 0x0600u && !g_cyw43_monitor_mode){
+            return 3u;
+        }
+    }
+
+    // 802.11 frame-control version bits should be zero, type is 0..3.
+    fc = get_le16(frame);
+    if ((fc & 0x0003u) == 0u && ((fc >> 2) & 0x3u) <= 3u){
+        return 2u;
+    }
+
+    if (eth_type >= 0x0600u){
+        return 3u;
+    }
+
+    return 0u;
 }
 
 static void cyw43_raw_capture_push(const unsigned char* frame, unsigned int len){
     unsigned int copy_len = len;
+    unsigned int kind = 0;
     unsigned long irq = 0;
 
     if (!frame || len == 0u || !g_cyw43_raw_enabled){
@@ -2193,6 +2241,7 @@ static void cyw43_raw_capture_push(const unsigned char* frame, unsigned int len)
     if (copy_len > CYW43_RAW_CAPTURE_MAX_BYTES){
         copy_len = CYW43_RAW_CAPTURE_MAX_BYTES;
     }
+    kind = cyw43_raw_classify(frame, len);
 
     irq = spin_lock_irqsave(&g_cyw43_raw_lock);
     if (!g_cyw43_raw_enabled){
@@ -2210,6 +2259,16 @@ static void cyw43_raw_capture_push(const unsigned char* frame, unsigned int len)
     g_cyw43_raw_count++;
     g_cyw43_raw_rx_frames++;
     g_cyw43_raw_last_len = len;
+    g_cyw43_raw_last_kind = kind;
+    if (kind == 1u){
+        g_cyw43_raw_radiotap_frames++;
+    } else if (kind == 2u){
+        g_cyw43_raw_dot11_frames++;
+    } else if (kind == 3u){
+        g_cyw43_raw_ethernet_frames++;
+    } else{
+        g_cyw43_raw_unknown_frames++;
+    }
     if (copy_len != len){
         g_cyw43_raw_truncated++;
     }
@@ -2262,6 +2321,11 @@ int cyw43_raw_capture_get_status(cyw43_raw_capture_status_t* out){
     out->dropped = g_cyw43_raw_dropped;
     out->truncated = g_cyw43_raw_truncated;
     out->last_len = g_cyw43_raw_last_len;
+    out->last_kind = g_cyw43_raw_last_kind;
+    out->radiotap_frames = g_cyw43_raw_radiotap_frames;
+    out->dot11_frames = g_cyw43_raw_dot11_frames;
+    out->ethernet_frames = g_cyw43_raw_ethernet_frames;
+    out->unknown_frames = g_cyw43_raw_unknown_frames;
     spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
     return 0;
 }
@@ -3317,6 +3381,12 @@ static int cyw43_net_deliver_data(const unsigned char* packet, unsigned int pack
     bdc = packet + doffset;
     bdc_ver = (unsigned int)((bdc[0] >> CYW43_BDC_VER_SHIFT) & 0x0Fu);
     if (bdc_ver != CYW43_BDC_PROTO_VER){
+        /*
+         * Nexmon monitor firmware can deliver radiotap/802.11 payloads that do
+         * not use the normal Broadcom BDC Ethernet header. Keep those visible
+         * to the raw capture queue, but do not pass them to the Ethernet stack.
+         */
+        cyw43_raw_capture_push(packet + doffset, packet_len - doffset);
         return -1;
     }
 

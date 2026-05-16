@@ -1787,6 +1787,16 @@ static void cmd_wifiraw(const char* mode){
         print_uint(st.truncated);
         qos_puts(" last_len=");
         print_uint(st.last_len);
+        qos_puts(" kind=");
+        print_uint(st.last_kind);
+        qos_puts(" rt=");
+        print_uint(st.radiotap_frames);
+        qos_puts(" dot11=");
+        print_uint(st.dot11_frames);
+        qos_puts(" eth=");
+        print_uint(st.ethernet_frames);
+        qos_puts(" unk=");
+        print_uint(st.unknown_frames);
         qos_puts("\n");
         return;
     }

@@ -2504,6 +2504,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         {
             cyw43_raw_capture_status_t* user_out = (cyw43_raw_capture_status_t*)frame[TF_X0];
             cyw43_raw_capture_status_t kout;
+            (void)cyw43_raw_capture_poll();
             if (!user_out || cyw43_raw_capture_get_status(&kout) != 0 ||
                 process_copy_to_user(user_out, &kout, sizeof(kout)) != 0){
                 frame[TF_X0] = (unsigned long)-1;

@@ -51,6 +51,11 @@ typedef struct {
     unsigned int dropped;
     unsigned int truncated;
     unsigned int last_len;
+    unsigned int last_kind;
+    unsigned int radiotap_frames;
+    unsigned int dot11_frames;
+    unsigned int ethernet_frames;
+    unsigned int unknown_frames;
 } cyw43_raw_capture_status_t;
 
 typedef struct {
