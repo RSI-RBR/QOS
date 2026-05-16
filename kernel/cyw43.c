@@ -27,9 +27,6 @@ extern volatile unsigned long system_ticks;
 #define CYW43_CLK_ALP_AVAIL     0x40u
 #define CYW43_CLK_HT_AVAIL      0x80u
 #define CYW43_CLK_NO_HW_REQ     0x20u
-// BCM43430/2 Zero-class firmware bring-up commonly writes this exact value.
-// It is FORCE_HT | NO_HW_REQ plus the already-present ALP/HT status bits.
-#define CYW43_CLK_ZERO_HT_FORCE  0xD2u
 #define CYW43_ENUM_BASE         0x18000000u
 #define CYW43_WATERMARK_REG     0x10008u
 #define CYW43_FRAMECTL_REG      0x1000Du
@@ -842,53 +839,48 @@ static int cyw43_enable_ht_clock_bcm43430(void){
     unsigned char csr = 0;
 
     /*
-     * BCM43430/2 on Pi Zero-class boards is touchier than the Pi3 path. The
-     * known bare-metal flow gives the released ARM core a short settle window,
-     * then writes the exact 0xD2 clock CSR value before enabling Function 2.
+     * Match Circle's ether4330 sbenable() sequence for BCM43430-family chips:
+     * clear CLKCSR, wait, request HT without NO_HW_REQ, wait up to ~5 seconds,
+     * then keep HT forced. The earlier 0xD2 shortcut matches some notes but
+     * leaves this Pi Zero 2 W stuck before firmware can post its mailbox.
      */
-    cyw43_delay_ms(50u);
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, 0u) != 0){
+        return -1;
+    }
+    cyw43_delay_ms(1u);
+    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_REQ_HT) != 0){
+        return -1;
+    }
+
     (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
-    uart_puts("CYW43: BCM43430 HT pre csr=");
+    uart_puts("CYW43: BCM43430 HT req csr=");
     uart_puthex(csr);
     uart_puts("\n");
 
-    if (csr & CYW43_CLK_HT_AVAIL){
-        if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_ZERO_HT_FORCE) != 0){
-            return -1;
-        }
-        (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
-        uart_puts("CYW43: BCM43430 HT already ready csr=");
-        uart_puthex(csr);
-        uart_puts("\n");
-        return 0;
-    }
-
-    if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG, CYW43_CLK_ZERO_HT_FORCE) != 0){
-        return -1;
-    }
-    for (unsigned int i = 0; i < 200u; i++){
-        cyw43_delay_ms(2u);
+    for (unsigned int i = 0; i < 50u; i++){
         if (sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr) != 0){
             return -1;
         }
-        if (i == 0u || i == 10u || i == 50u || i == 100u || i == 150u){
+        if (i == 0u || i == 5u || i == 10u || i == 25u || i == 49u){
             uart_puts("CYW43: BCM43430 HT poll csr=");
             uart_puthex(csr);
             uart_puts("\n");
         }
         if (csr & CYW43_CLK_HT_AVAIL){
+            if (sdio_bus_cmd52_write(1, CYW43_CLKCSR_REG,
+                                     (unsigned char)(csr | CYW43_CLK_FORCE_HT)) != 0){
+                return -1;
+            }
+            cyw43_delay_ms(10u);
+            (void)sdio_bus_cmd52_read(1, CYW43_CLKCSR_REG, &csr);
             uart_puts("CYW43: BCM43430 HT ready csr=");
             uart_puthex(csr);
             uart_puts("\n");
             return 0;
         }
+        cyw43_delay_ms(100u);
     }
 
-    /*
-     * Do not continue from the familiar stuck 0x72 state. We tried that and
-     * the firmware never posted its mailbox; failing here tells us the clock
-     * transition itself is still not matching the working BCM43430 sequence.
-     */
     uart_puts("CYW43: BCM43430 HT clock failed csr=");
     uart_puthex(csr);
     uart_puts("\n");
