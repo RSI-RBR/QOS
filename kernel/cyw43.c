@@ -2634,8 +2634,11 @@ static int cyw43_ioctl_scan_common(const char* ssid,
 
         *out_count = count;
         g_cyw43.last_scan_count = count;
-        if (done || count > 0u){
+        if (count > 0u){
             return 0;
+        }
+        if (done){
+            uart_puts("CYW43: escan completed with zero APs; trying fallback\n");
         }
 
         if (attempt == 0u){
