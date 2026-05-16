@@ -1146,6 +1146,7 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     unsigned int nvram_token = 0;
     unsigned char token_buf[4];
     unsigned char zero_buf[4] = {0, 0, 0, 0};
+    unsigned char fw_tail_marker = 1u;
 
     if (!fw_bin || fw_len == 0u || !nvram_txt || nvram_len == 0u){
         return -1;
@@ -1196,6 +1197,16 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
 
     if (cyw43_backplane_write(CYW43_RAM_BASE, fw_bin, fw_len) != 0){
         uart_puts("CYW43: firmware upload failed\n");
+        return -1;
+    }
+    /*
+     * The known-good Zero W firmware loader writes one trailing byte after the
+     * final partial firmware block. Without this marker, BCM43430/2 firmware
+     * can be uploaded correctly but never reach the SDIO ready mailbox.
+     */
+    if ((fw_len + 1u) < (g_cyw43.ram_size - 4u) &&
+        cyw43_backplane_write(CYW43_RAM_BASE + fw_len, &fw_tail_marker, 1u) != 0){
+        uart_puts("CYW43: firmware tail marker write failed\n");
         return -1;
     }
 
