@@ -1582,8 +1582,8 @@ static void cmd_wifiver(void){
 }
 
 static void cmd_wifiscan(void){
-    cyw43_scan_result_t results[8];
-    int n = qos_wifi_scan(results, 8u);
+    cyw43_scan_result_t results[16];
+    int n = qos_wifi_scan(results, 16u);
     if (n < 0){
         qos_puts("WiFi scan failed\n");
         return;
@@ -1640,8 +1640,8 @@ static void cmd_wifiscanx(unsigned int passes){
     }
 
     for (unsigned int p = 0; p < passes; p++){
-        cyw43_scan_result_t batch[8];
-        int n = qos_wifi_scan(batch, 8u);
+        cyw43_scan_result_t batch[16];
+        int n = qos_wifi_scan(batch, 16u);
         if (n < 0){
             fail_passes++;
             continue;

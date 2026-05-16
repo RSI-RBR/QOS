@@ -457,6 +457,21 @@ The CYW43438 path expects 8.3-compatible firmware/NVRAM names on the SD card:
 - `4343WIFI.BIN`
 - `4343NVRM.TXT`
 
+For Pi Zero 2 W testing, keep the filenames short but use the Pi Zero 2 W
+firmware/NVRAM contents. Example SD names:
+
+- `P0WIFI36.BIN`
+- `P0WIFI36.TXT`
+
+Load that pair with raw FAT 8.3 names:
+
+```text
+wifiload P0WIFI36BIN P0WIFI36TXT
+```
+
+If scan/join is unreliable, try the alternate Pi Zero 2 W firmware variant
+with another short pair such as `P0WIFI3S.BIN` / `P0WIFI3S.TXT`.
+
 Typical sequence:
 
 ```text

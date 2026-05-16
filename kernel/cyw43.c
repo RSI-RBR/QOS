@@ -1712,11 +1712,16 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
 
 static int cyw43_wl_escan_submit(void){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
-    static const unsigned char chanspecs[14u * 2u] = {
+    /*
+     * Keep bring-up scans to 2.4 GHz channels 1..11. The Pi Zero 2 W firmware
+     * is more sensitive to regulatory/NVRAM mismatches than the Pi 3 path, and
+     * submitting channels 12..14 before country setup is fully proven can make
+     * the escan command flaky. We can make this country-aware later.
+     */
+    static const unsigned char chanspecs[11u * 2u] = {
         0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
         0x05u, 0x2Eu, 0x06u, 0x2Eu, 0x07u, 0x2Eu,
         0x08u, 0x2Bu, 0x09u, 0x2Bu, 0x0Au, 0x2Bu, 0x0Bu, 0x2Bu,
-        0x0Cu, 0x2Bu, 0x0Du, 0x2Bu, 0x0Eu, 0x2Bu,
     };
 
     mem_zero_local(params, sizeof(params));
@@ -1739,7 +1744,7 @@ static int cyw43_wl_escan_submit(void){
     put_le32(params + 56u, 0xFFFFFFFFu);
     put_le32(params + 60u, 0xFFFFFFFFu);
     put_le32(params + 64u, 0xFFFFFFFFu);
-    put_le16(params + 68u, 14u);
+    put_le16(params + 68u, 11u);
     put_le16(params + 70u, 1u);
     mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
 
@@ -2249,37 +2254,61 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
         return -1;
     }
 
-    if (cyw43_wl_escan_submit() != 0){
-        uart_puts("CYW43: escan submit failed\n");
-        return -1;
-    }
+    for (unsigned int attempt = 0; attempt < 2u; attempt++){
+        count = 0;
+        done = 0;
+        ctrl_frames = 0;
+        event_frames = 0;
+        data_frames = 0;
+        other_frames = 0;
 
-    for (unsigned int wait = 0; wait < 32u && !done; wait++){
-        unsigned int rx_len = 0;
-        unsigned int channel = 0;
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 900u, 0) != 0){
-            continue;
+        if (attempt != 0u){
+            cyw43_drain_pending_packets(16u);
+            (void)cyw43_wl_set_event_msgs();
+            (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
+            cyw43_delay(80000u);
         }
-        if (rx_len >= CYW43_SDPCM_HDR_LEN){
-            channel = rx[5] & 0x0Fu;
-            if (channel == CYW43_SDPCM_CH_CONTROL){
-                ctrl_frames++;
-            } else if (channel == CYW43_SDPCM_CH_EVENT){
-                event_frames++;
-            } else if (channel == CYW43_SDPCM_CH_DATA){
-                data_frames++;
-            } else{
-                other_frames++;
+
+        if (cyw43_wl_escan_submit() != 0){
+            if (attempt == 0u){
+                uart_puts("CYW43: escan submit retry\n");
+                continue;
             }
+            uart_puts("CYW43: escan submit failed\n");
+            return -1;
         }
-        cyw43_log_control_status(rx, rx_len);
-        (void)cyw43_handle_escan_frame(rx, rx_len, out, cap, &count, &done);
-    }
 
-    *out_count = count;
-    g_cyw43.last_scan_count = count;
-    if (done || count > 0u){
-        return 0;
+        for (unsigned int wait = 0; wait < 32u && !done; wait++){
+            unsigned int rx_len = 0;
+            unsigned int channel = 0;
+            if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 900u, 0) != 0){
+                continue;
+            }
+            if (rx_len >= CYW43_SDPCM_HDR_LEN){
+                channel = rx[5] & 0x0Fu;
+                if (channel == CYW43_SDPCM_CH_CONTROL){
+                    ctrl_frames++;
+                } else if (channel == CYW43_SDPCM_CH_EVENT){
+                    event_frames++;
+                } else if (channel == CYW43_SDPCM_CH_DATA){
+                    data_frames++;
+                } else{
+                    other_frames++;
+                }
+            }
+            cyw43_log_control_status(rx, rx_len);
+            (void)cyw43_handle_escan_frame(rx, rx_len, out, cap, &count, &done);
+        }
+
+        *out_count = count;
+        g_cyw43.last_scan_count = count;
+        if (done || count > 0u){
+            return 0;
+        }
+
+        if (attempt == 0u){
+            uart_puts("CYW43: escan retry after timeout\n");
+        }
     }
 
     uart_puts("CYW43: escan timed out ctrl=");
