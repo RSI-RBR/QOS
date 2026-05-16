@@ -111,6 +111,7 @@
 // by scanning cores; this bootstrap path uses the known Pi 3/Zero 2W value.
 #define CYW43_RAM_BASE          0x00000000u
 #define CYW43_RAM_SIZE          0x000C8000u
+#define CYW43_RAM_SIZE_43430    0x00080000u
 
 typedef struct {
     unsigned char enabled;
@@ -694,6 +695,28 @@ static int cyw43_scan_socram(void){
     return 0;
 }
 
+static void cyw43_select_firmware_ram_top(unsigned int fw_len){
+    /*
+     * The BCM43430/2 path used by Pi Zero-class boards expects the firmware
+     * NVRAM token near the 512 KiB top of RAM. Some core scans report larger
+     * SOCRAM layouts shared with later 4343x parts; placing the token at that
+     * larger top lets writes succeed but firmware never reaches the mailbox.
+     *
+     * The known Zero W bare-metal flow writes NVRAM at 0x80000 - len - 4.
+     * Keep larger RAM for non-43430 parts and for any future oversized image.
+     */
+    if (g_cyw43.chip_id == 43430u &&
+        fw_len < CYW43_RAM_SIZE_43430 &&
+        g_cyw43.ram_size > CYW43_RAM_SIZE_43430){
+        uart_puts("CYW43: BCM43430 RAM top override ");
+        uart_puthex(g_cyw43.ram_size);
+        uart_puts(" -> ");
+        uart_puthex(CYW43_RAM_SIZE_43430);
+        uart_puts("\n");
+        g_cyw43.ram_size = CYW43_RAM_SIZE_43430;
+    }
+}
+
 static int cyw43_enable_ht_clock(void){
     unsigned char csr = 0;
     unsigned char force_csr = 0;
@@ -1157,6 +1180,7 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     if (cyw43_scan_socram() != 0){
         return -1;
     }
+    cyw43_select_firmware_ram_top(fw_len);
 
     uart_puts("CYW43: uploading firmware bytes=");
     uart_putdec(fw_len);
