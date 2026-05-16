@@ -13,6 +13,7 @@ extern volatile unsigned long system_ticks;
 #define CYW43_FW_MAX_BYTES      (768u * 1024u)
 #define CYW43_NVRAM_MAX_BYTES   (16u * 1024u)
 #define CYW43_NVRAM_PACKED_MAX  (20u * 1024u)
+#define CYW43_CLM_MAX_BYTES     (96u * 1024u)
 #define CYW43_SDIO_XFER_CHUNK   64u
 
 // Circle/ether4330 backplane access constants.
@@ -98,7 +99,7 @@ extern volatile unsigned long system_ticks;
 #define CYW43_ESCAN_ACTION_START 1u
 #define CYW43_ESCAN_SYNC_ID     0x1234u
 
-#define CYW43_WL_IOVAR_BUF_LEN  256u
+#define CYW43_WL_IOVAR_BUF_LEN  1536u
 #define CYW43_WL_ESCAN_PARAMS_LEN 136u
 #define CYW43_WL_MAX_SSID_LEN   32u
 #define CYW43_DOT11_BSSTYPE_ANY 2u
@@ -151,6 +152,9 @@ typedef struct {
 
 static cyw43_state_t g_cyw43;
 static cyw43_rx_handler_t g_cyw43_rx_handler = 0;
+static unsigned char* g_cyw43_clm_blob;
+static unsigned int g_cyw43_clm_len;
+static unsigned char g_cyw43_clm_uploaded;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -1326,13 +1330,18 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
     return 0;
 }
 
-int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_83){
+int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
+                                   const char* nvram_txt_83,
+                                   const char* clm_blob_83){
     const char* fw_name = fw_bin_83 ? fw_bin_83 : "4343WIFIBIN";
     const char* nv_name = nvram_txt_83 ? nvram_txt_83 : "4343NVRMTXT";
+    const char* clm_name = (clm_blob_83 && *clm_blob_83) ? clm_blob_83 : 0;
     unsigned char* fw_buf = 0;
     unsigned char* nv_buf = 0;
+    unsigned char* clm_buf = 0;
     int fw_len = -1;
     int nv_len = -1;
+    int clm_len = -1;
     int rc = -1;
 
     fw_buf = (unsigned char*)kmalloc(CYW43_FW_MAX_BYTES);
@@ -1368,6 +1377,38 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
     uart_putdec((unsigned int)nv_len);
     uart_puts("\n");
 
+    if (clm_name){
+        clm_buf = (unsigned char*)kmalloc(CYW43_CLM_MAX_BYTES);
+        if (!clm_buf){
+            uart_puts("CYW43: no memory for CLM buffer\n");
+            goto out;
+        }
+        clm_len = fat32_read_file(clm_name, clm_buf, (int)CYW43_CLM_MAX_BYTES);
+        if (clm_len <= 0){
+            uart_puts("CYW43: CLM file read failed\n");
+            goto out;
+        }
+        if (g_cyw43_clm_blob){
+            kfree_secure(g_cyw43_clm_blob, CYW43_CLM_MAX_BYTES);
+            g_cyw43_clm_blob = 0;
+            g_cyw43_clm_len = 0;
+        }
+        g_cyw43_clm_blob = clm_buf;
+        g_cyw43_clm_len = (unsigned int)clm_len;
+        g_cyw43_clm_uploaded = 0;
+        clm_buf = 0;
+        uart_puts("CYW43: CLM staged bytes=");
+        uart_putdec(g_cyw43_clm_len);
+        uart_puts("\n");
+    } else{
+        if (g_cyw43_clm_blob){
+            kfree_secure(g_cyw43_clm_blob, CYW43_CLM_MAX_BYTES);
+            g_cyw43_clm_blob = 0;
+        }
+        g_cyw43_clm_len = 0;
+        g_cyw43_clm_uploaded = 0;
+    }
+
     // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
     // SDIO before touching the CYW43 backplane.
     cyw43_drop_sdio_state();
@@ -1380,6 +1421,9 @@ out:
     }
     if (nv_buf){
         kfree_secure(nv_buf, CYW43_NVRAM_MAX_BYTES);
+    }
+    if (clm_buf){
+        kfree_secure(clm_buf, CYW43_CLM_MAX_BYTES);
     }
     return rc;
 }
@@ -1820,7 +1864,7 @@ static int cyw43_wl_get_var(const char* name, unsigned char* out,
 
 static int cyw43_wl_set_var(const char* name, const unsigned char* data,
                             unsigned int data_len){
-    unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
+    static unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
     unsigned int name_len = 0;
     unsigned int total_len = 0;
 
@@ -1868,6 +1912,65 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_upload_clm_blob(void){
+    enum {
+        CLM_HDR_LEN = 12,
+        CLM_CHUNK = 1400,
+        CLM_TYPE = 2,
+        CLM_FLAG_CLM = 1 << 12,
+        CLM_FLAG_FIRST = 1 << 1,
+        CLM_FLAG_LAST = 1 << 2
+    };
+    static unsigned char packet[CLM_HDR_LEN + CLM_CHUNK + 8];
+    unsigned int off = 0;
+    unsigned int flag = CLM_FLAG_CLM | CLM_FLAG_FIRST;
+
+    if (!g_cyw43_clm_blob || g_cyw43_clm_len == 0u || g_cyw43_clm_uploaded){
+        return 0;
+    }
+
+    uart_puts("CYW43: loading CLM bytes=");
+    uart_putdec(g_cyw43_clm_len);
+    uart_puts("\n");
+
+    while (off < g_cyw43_clm_len){
+        unsigned int n = g_cyw43_clm_len - off;
+        if (n > CLM_CHUNK){
+            n = CLM_CHUNK;
+        } else{
+            flag |= CLM_FLAG_LAST;
+        }
+
+        mem_zero_local(packet, sizeof(packet));
+        put_le16(packet + 0u, flag);
+        put_le16(packet + 2u, CLM_TYPE);
+        put_le32(packet + 4u, n);
+        put_le32(packet + 8u, 0u);
+        mem_copy_local(packet + CLM_HDR_LEN, g_cyw43_clm_blob + off, n);
+        while (n & 7u){
+            packet[CLM_HDR_LEN + n] = 0u;
+            n++;
+        }
+
+        if (cyw43_wl_set_var("clmload", packet, CLM_HDR_LEN + n) != 0){
+            uart_puts("CYW43: CLM upload failed off=");
+            uart_putdec(off);
+            uart_puts("\n");
+            return -1;
+        }
+
+        off += (g_cyw43_clm_len - off > CLM_CHUNK) ? CLM_CHUNK : (g_cyw43_clm_len - off);
+        flag &= ~CLM_FLAG_FIRST;
+    }
+
+    g_cyw43_clm_uploaded = 1;
+    uart_puts("CYW43: CLM loaded\n");
+    kfree_secure(g_cyw43_clm_blob, CYW43_CLM_MAX_BYTES);
+    g_cyw43_clm_blob = 0;
+    g_cyw43_clm_len = 0;
+    return 0;
+}
+
 static int cyw43_refresh_cur_etheraddr(void){
     unsigned char mac[8];
     unsigned int actual = 0;
@@ -1900,19 +2003,24 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_escan_submit(const char* ssid){
+static int cyw43_wl_escan_submit_variant(const char* ssid, unsigned int circle_format){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
     unsigned int ssid_len = 0;
-    /*
-     * Keep bring-up scans to 2.4 GHz channels 1..11. The Pi Zero 2 W firmware
-     * is more sensitive to regulatory/NVRAM mismatches than the Pi 3 path, and
-     * submitting channels 12..14 before country setup is fully proven can make
-     * the escan command flaky. We can make this country-aware later.
-     */
     static const unsigned char chanspecs[11u * 2u] = {
         0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
         0x05u, 0x2Bu, 0x06u, 0x2Bu, 0x07u, 0x2Bu,
         0x08u, 0x2Bu, 0x09u, 0x2Bu, 0x0Au, 0x2Bu, 0x0Bu, 0x2Bu,
+    };
+    /*
+     * Circle's ether4330 request includes channels 1..14 and nssids=1 with a
+     * trailing SSID slot. The BCM43430 rev-2 / 43436 firmware used by some
+     * Zero 2 W boards appears to need this exact shape to see nearby APs.
+     */
+    static const unsigned char circle_chanspecs[14u * 2u] = {
+        0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
+        0x05u, 0x2Eu, 0x06u, 0x2Eu, 0x07u, 0x2Eu,
+        0x08u, 0x2Bu, 0x09u, 0x2Bu, 0x0Au, 0x2Bu, 0x0Bu, 0x2Bu,
+        0x0Cu, 0x2Bu, 0x0Du, 0x2Bu, 0x0Eu, 0x2Bu,
     };
 
     mem_zero_local(params, sizeof(params));
@@ -1943,12 +2051,31 @@ static int cyw43_wl_escan_submit(const char* ssid){
     put_le32(params + 56u, 0xFFFFFFFFu);
     put_le32(params + 60u, 0xFFFFFFFFu);
     put_le32(params + 64u, 0xFFFFFFFFu);
-    put_le16(params + 68u, 11u);
-    put_le16(params + 70u, 0u);
-    mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
+    if (circle_format){
+        put_le16(params + 68u, 14u);
+        put_le16(params + 70u, 1u);
+        mem_copy_local(params + 72u, circle_chanspecs, sizeof(circle_chanspecs));
+        if (ssid && *ssid){
+            for (unsigned int i = 0; i < ssid_len; i++){
+                params[100u + i] = (unsigned char)ssid[i];
+            }
+        }
+    } else{
+        put_le16(params + 68u, 11u);
+        put_le16(params + 70u, 0u);
+        mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
+    }
 
     (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
     return cyw43_wl_set_var("escan", params, sizeof(params));
+}
+
+static int cyw43_wl_escan_submit(const char* ssid, unsigned int attempt){
+    unsigned int prefer_circle = (g_cyw43.chip_id == 43430u && g_cyw43.chip_rev >= 2u);
+    if ((prefer_circle && attempt == 0u) || (!prefer_circle && attempt != 0u)){
+        return cyw43_wl_escan_submit_variant(ssid, 1u);
+    }
+    return cyw43_wl_escan_submit_variant(ssid, 0u);
 }
 
 static int cyw43_wl_set_pmk(const char* password){
@@ -2395,6 +2522,9 @@ int cyw43_ioctl_up(void){
             return -4;
         }
     }
+    if (cyw43_upload_clm_blob() != 0){
+        uart_puts("CYW43: CLM load warning; continuing\n");
+    }
     if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){
             uart_puts("CYW43: WiFi configure-on failed\n");
@@ -2471,7 +2601,7 @@ static int cyw43_ioctl_scan_common(const char* ssid,
             cyw43_delay(80000u);
         }
 
-        if (cyw43_wl_escan_submit(ssid) != 0){
+        if (cyw43_wl_escan_submit(ssid, attempt) != 0){
             if (attempt == 0u){
                 uart_puts("CYW43: escan submit retry\n");
                 continue;

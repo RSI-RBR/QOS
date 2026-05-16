@@ -1012,8 +1012,13 @@ static inline int qos_wifi_init(void){
     return (int)qos_syscall0(SYS_WIFI_INIT);
 }
 
-static inline int qos_wifi_load_fw(const char* fw_bin_83, const char* nvram_txt_83){
-    return (int)qos_syscall2(SYS_WIFI_LOAD_FW, (unsigned long)fw_bin_83, (unsigned long)nvram_txt_83);
+static inline int qos_wifi_load_fw(const char* fw_bin_83,
+                                   const char* nvram_txt_83,
+                                   const char* clm_blob_83){
+    return (int)qos_syscall3(SYS_WIFI_LOAD_FW,
+                             (unsigned long)fw_bin_83,
+                             (unsigned long)nvram_txt_83,
+                             (unsigned long)clm_blob_83);
 }
 
 static inline int qos_wifi_up(void){

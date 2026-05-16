@@ -51,7 +51,9 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
                                        unsigned int fw_len,
                                        const char* nvram_txt,
                                        unsigned int nvram_len);
-int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_83);
+int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
+                                   const char* nvram_txt_83,
+                                   const char* clm_blob_83);
 
 int cyw43_ioctl_up(void);
 int cyw43_ioctl_down(void);

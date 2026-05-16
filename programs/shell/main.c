@@ -449,6 +449,7 @@ static int parse_ip4(const char* s, unsigned char out[4]){
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 static const char g_wifi_fw_83[] = "4343WIFIBIN";
 static const char g_wifi_nv_83[] = "4343NVRMTXT";
+static const char g_wifi_clm_83[] = "";
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
     int rc = qos_dns_resolve_a_secure_socket(host, out_ip, 4500u);
@@ -518,7 +519,7 @@ static void cmd_help(void){
     qos_puts(" httpget <host> [path]\n");
     qos_puts(" tlstest\n");
     qos_puts(" wifiinit        - SDIO bus probe only; reboot before wifiload\n");
-    qos_puts(" wifiload [fw83 nv83] - read firmware first, then init WiFi\n");
+    qos_puts(" wifiload [fw83 nv83 [clm83]] - read firmware first, then init WiFi\n");
     qos_puts(" wifiup          - release WiFi firmware and enable data path\n");
     qos_puts(" wifidown\n");
     qos_puts(" wifistat\n");
@@ -1538,10 +1539,11 @@ static void cmd_wifiinit(void){
     }
 }
 
-static void cmd_wifiload(const char* fw83, const char* nv83){
+static void cmd_wifiload(const char* fw83, const char* nv83, const char* clm83){
     const char* fw = (fw83 && *fw83) ? fw83 : g_wifi_fw_83;
     const char* nv = (nv83 && *nv83) ? nv83 : g_wifi_nv_83;
-    int rc = qos_wifi_load_fw(fw, nv);
+    const char* clm = (clm83 && *clm83) ? clm83 : g_wifi_clm_83;
+    int rc = qos_wifi_load_fw(fw, nv, (clm && *clm) ? clm : 0);
     if (rc == 0){
         qos_puts("WiFi firmware staged\n");
     } else{
@@ -1955,6 +1957,7 @@ static void execute_line(void){
         char* p = g_buf + 9;
         char* fw = 0;
         char* nv = 0;
+        char* clm = 0;
         while (*p == ' '){
             p++;
         }
@@ -1970,12 +1973,24 @@ static void execute_line(void){
                 }
                 if (*p){
                     nv = p;
+                    while (*p && *p != ' '){
+                        p++;
+                    }
+                    if (*p){
+                        *p++ = 0;
+                        while (*p == ' '){
+                            p++;
+                        }
+                        if (*p){
+                            clm = p;
+                        }
+                    }
                 }
             }
         }
-        cmd_wifiload(fw, nv);
+        cmd_wifiload(fw, nv, clm);
     } else if (str_eq(g_buf, "wifiload")){
-        cmd_wifiload(0, 0);
+        cmd_wifiload(0, 0, 0);
     } else if (str_eq(g_buf, "wifiup")){
         cmd_wifiup();
     } else if (str_eq(g_buf, "wifidown")){

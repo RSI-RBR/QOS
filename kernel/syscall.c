@@ -2347,8 +2347,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         {
             char fw_name[32];
             char nv_name[32];
+            char clm_name[32];
             const char* fw_arg = 0;
             const char* nv_arg = 0;
+            const char* clm_arg = 0;
 
             if ((const void*)frame[TF_X0]){
                 if (copy_cstr_from_user_bound(fw_name, sizeof(fw_name), (const char*)frame[TF_X0]) != 0){
@@ -2364,8 +2366,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 }
                 nv_arg = nv_name;
             }
+            if ((const void*)frame[TF_X2]){
+                if (copy_cstr_from_user_bound(clm_name, sizeof(clm_name), (const char*)frame[TF_X2]) != 0){
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+                clm_arg = clm_name;
+            }
             kernel_preempt_enter();
-            frame[TF_X0] = (unsigned long)cyw43_upload_firmware_from_fat(fw_arg, nv_arg);
+            frame[TF_X0] = (unsigned long)cyw43_upload_firmware_from_fat(fw_arg, nv_arg, clm_arg);
             kernel_preempt_exit();
             return frame_sp;
         }
