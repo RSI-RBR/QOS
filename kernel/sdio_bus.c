@@ -507,29 +507,94 @@ int sdio_bus_cmd53_write_fixed(unsigned int fn, unsigned int addr, const unsigne
 int sdio_bus_enable_func(unsigned int fn){
     unsigned char ioex = 0;
     unsigned char wanted = 0;
+    int rc = 0;
     if (fn == 0 || fn > 7){
         return -1;
     }
     if (sdio_bus_cmd52_read(0, SDIO_CCCR_IOEX, &ioex) != 0){
+        uart_puts("SDIO: IOEX read failed fn=");
+        uart_putdec(fn);
+        uart_puts(" status=");
+        uart_puthex(EMMC_STATUS);
+        uart_puts(" irpt=");
+        uart_puthex(EMMC_INTERRUPT);
+        uart_puts("\n");
         return -1;
     }
     wanted = (unsigned char)(ioex | (1u << fn));
-    return sdio_bus_cmd52_write(0, SDIO_CCCR_IOEX, wanted);
+    uart_puts("SDIO: enable fn=");
+    uart_putdec(fn);
+    uart_puts(" ioex=");
+    uart_puthex(ioex);
+    uart_puts(" -> ");
+    uart_puthex(wanted);
+    uart_puts("\n");
+    rc = sdio_bus_cmd52_write(0, SDIO_CCCR_IOEX, wanted);
+    if (rc != 0){
+        uart_puts("SDIO: IOEX write failed fn=");
+        uart_putdec(fn);
+        uart_puts(" status=");
+        uart_puthex(EMMC_STATUS);
+        uart_puts(" irpt=");
+        uart_puthex(EMMC_INTERRUPT);
+        uart_puts("\n");
+    }
+    return rc;
 }
 
 int sdio_bus_wait_func_ready(unsigned int fn, unsigned int timeout_ms){
     unsigned long start = system_ticks;
-    unsigned int spin = 50000000u;
+    unsigned int polls = (timeout_ms / 10u) + 1u;
     unsigned char iorx = 0;
+    unsigned char last_iorx = 0;
     if (fn == 0 || fn > 7){
         return -1;
     }
-    while ((system_ticks - start) <= timeout_ms && spin-- > 0u){
+    if (polls > 200u){
+        polls = 200u;
+    }
+    for (unsigned int i = 0; i < polls; i++){
         if (sdio_bus_cmd52_read(0, SDIO_CCCR_IORX, &iorx) == 0){
+            last_iorx = iorx;
             if (iorx & (1u << fn)){
+                uart_puts("SDIO: fn ready fn=");
+                uart_putdec(fn);
+                uart_puts(" iorx=");
+                uart_puthex(iorx);
+                uart_puts("\n");
                 return 0;
             }
+        } else if (i == 0u || i == 10u || i == 50u){
+            uart_puts("SDIO: IORX read fail fn=");
+            uart_putdec(fn);
+            uart_puts(" i=");
+            uart_putdec(i);
+            uart_puts(" status=");
+            uart_puthex(EMMC_STATUS);
+            uart_puts(" irpt=");
+            uart_puthex(EMMC_INTERRUPT);
+            uart_puts("\n");
         }
+        if ((i == 0u || i == 10u || i == 50u || i + 1u == polls) && last_iorx){
+            uart_puts("SDIO: wait fn=");
+            uart_putdec(fn);
+            uart_puts(" iorx=");
+            uart_puthex(last_iorx);
+            uart_puts("\n");
+        }
+        if ((system_ticks - start) > timeout_ms){
+            break;
+        }
+        sdio_short_delay(50000u);
     }
+    uart_puts("SDIO: fn ready timeout fn=");
+    uart_putdec(fn);
+    uart_puts(" iorx=");
+    uart_puthex(last_iorx);
+    uart_puts(" status=");
+    uart_puthex(EMMC_STATUS);
+    uart_puts(" irpt=");
+    uart_puthex(EMMC_INTERRUPT);
+    uart_puts("\n");
     return -1;
 }
