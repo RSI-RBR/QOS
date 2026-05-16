@@ -576,6 +576,9 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_WIFI_SCAN:
         case SYS_WIFI_SCAN_SSID:
         case SYS_WIFI_JOIN:
+        case SYS_WIFI_RAW_SET_ENABLED:
+        case SYS_WIFI_RAW_RECV:
+        case SYS_WIFI_RAW_STATUS:
         case SYS_WIFI_DUMP_STATUS:
         case SYS_WIFI_GET_VERSION:
         case SYS_USB_DUMP_INFO:
@@ -2459,6 +2462,52 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
             kfree_secure(kout, (unsigned long)sizeof(cyw43_scan_result_t) * cap);
             frame[TF_X0] = (rc == 0) ? (unsigned long)count : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_WIFI_RAW_SET_ENABLED:
+            frame[TF_X0] = (unsigned long)cyw43_raw_capture_set_enabled((unsigned int)frame[TF_X0]);
+            return frame_sp;
+
+        case SYS_WIFI_RAW_RECV:
+        {
+            unsigned char* user_out = (unsigned char*)frame[TF_X0];
+            unsigned int cap = clamp_u32((unsigned int)frame[TF_X1], 2304u);
+            unsigned char* kbuf = 0;
+            int n = 0;
+            if (!user_out || cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            (void)cyw43_raw_capture_poll();
+            kbuf = (unsigned char*)kmalloc(cap);
+            if (!kbuf){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            n = cyw43_raw_capture_recv(kbuf, cap);
+            if (n > 0){
+                if (process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                    kfree_secure(kbuf, cap);
+                    frame[TF_X0] = (unsigned long)-1;
+                    return frame_sp;
+                }
+            }
+            kfree_secure(kbuf, cap);
+            frame[TF_X0] = (unsigned long)n;
+            return frame_sp;
+        }
+
+        case SYS_WIFI_RAW_STATUS:
+        {
+            cyw43_raw_capture_status_t* user_out = (cyw43_raw_capture_status_t*)frame[TF_X0];
+            cyw43_raw_capture_status_t kout;
+            if (!user_out || cyw43_raw_capture_get_status(&kout) != 0 ||
+                process_copy_to_user(user_out, &kout, sizeof(kout)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = 0;
             return frame_sp;
         }
 

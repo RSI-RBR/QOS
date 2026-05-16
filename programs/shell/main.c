@@ -384,6 +384,12 @@ static void print_hex32(unsigned int v){
     }
 }
 
+static void print_hex8(unsigned int v){
+    static const char hexdigits[] = "0123456789ABCDEF";
+    qos_putc(hexdigits[(v >> 4u) & 0xFu]);
+    qos_putc(hexdigits[v & 0xFu]);
+}
+
 static void print_3digits(unsigned int v){
     v %= 1000u;
     qos_putc((char)('0' + (v / 100u)));
@@ -529,6 +535,7 @@ static void cmd_help(void){
     qos_puts(" wifiscanx [passes]\n");
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
+    qos_puts(" wifiraw on|off|stat|read\n");
 }
 
 static void cmd_run(void){
@@ -1760,6 +1767,78 @@ static void cmd_wifijoin(const char* ssid, const char* password){
     }
 }
 
+static void cmd_wifiraw(const char* mode){
+    if (!mode || !*mode || str_eq(mode, "stat")){
+        cyw43_raw_capture_status_t st;
+        if (qos_wifi_raw_status(&st) != 0){
+            qos_puts("WiFi raw status failed\n");
+            return;
+        }
+        qos_puts("wifiraw=");
+        qos_puts(st.enabled ? "on" : "off");
+        qos_puts(" queued=");
+        print_uint(st.queued);
+        qos_puts(" rx=");
+        print_uint(st.rx_frames);
+        qos_puts(" drop=");
+        print_uint(st.dropped);
+        qos_puts(" trunc=");
+        print_uint(st.truncated);
+        qos_puts(" last_len=");
+        print_uint(st.last_len);
+        qos_puts("\n");
+        return;
+    }
+
+    if (str_eq(mode, "on")){
+        if (qos_wifi_raw_set_enabled(1u) == 0){
+            qos_puts("WiFi raw capture enabled.\n");
+        } else{
+            qos_puts("WiFi raw capture enable failed.\n");
+        }
+        return;
+    }
+
+    if (str_eq(mode, "off")){
+        if (qos_wifi_raw_set_enabled(0u) == 0){
+            qos_puts("WiFi raw capture disabled.\n");
+        } else{
+            qos_puts("WiFi raw capture disable failed.\n");
+        }
+        return;
+    }
+
+    if (str_eq(mode, "read")){
+        unsigned char buf[256];
+        int n = qos_wifi_raw_recv(buf, sizeof(buf));
+        if (n < 0){
+            qos_puts("WiFi raw read failed\n");
+            return;
+        }
+        if (n == 0){
+            qos_puts("WiFi raw queue empty\n");
+            return;
+        }
+        qos_puts("WiFi raw len=");
+        print_uint((unsigned int)n);
+        qos_puts(" data=");
+        unsigned int show = (n > 64) ? 64u : (unsigned int)n;
+        for (unsigned int i = 0; i < show; i++){
+            if (i){
+                qos_putc(' ');
+            }
+            print_hex8(buf[i]);
+        }
+        if ((unsigned int)n > show){
+            qos_puts(" ...");
+        }
+        qos_puts("\n");
+        return;
+    }
+
+    qos_puts("Usage: wifiraw on|off|stat|read\n");
+}
+
 static void execute_line(void){
     unsigned int line_len = str_len(g_buf);
     if (line_len == 0u){
@@ -2055,6 +2134,14 @@ static void execute_line(void){
     } else if (str_eq(g_buf, "wifijoinhidden")){
         qos_puts("Usage: wifijoinhidden <ssid> <password>\n");
         qos_puts("   or: wifijoinhidden \"ssid with spaces\" \"password with spaces\"\n");
+    } else if (str_starts_with(g_buf, "wifiraw ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_wifiraw(p);
+    } else if (str_eq(g_buf, "wifiraw")){
+        cmd_wifiraw("stat");
     } else{
         qos_puts("Unknown command.\n");
     }

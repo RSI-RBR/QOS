@@ -167,7 +167,10 @@ enum {
     SYS_GPU2D_V3D_QUAD_COUNT = 141,
     SYS_GPU2D_V3D_BATCH_COUNT = 142,
     SYS_GPU2D_V3D_FAIL_COUNT = 143,
-    SYS_WIFI_SCAN_SSID = 144
+    SYS_WIFI_SCAN_SSID = 144,
+    SYS_WIFI_RAW_SET_ENABLED = 145,
+    SYS_WIFI_RAW_RECV = 146,
+    SYS_WIFI_RAW_STATUS = 147
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1038,6 +1041,18 @@ static inline int qos_wifi_scan_ssid(const char* ssid, cyw43_scan_result_t* out,
                              (unsigned long)ssid,
                              (unsigned long)out,
                              (unsigned long)cap);
+}
+
+static inline int qos_wifi_raw_set_enabled(unsigned int enabled){
+    return (int)qos_syscall1(SYS_WIFI_RAW_SET_ENABLED, (unsigned long)enabled);
+}
+
+static inline int qos_wifi_raw_recv(unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall2(SYS_WIFI_RAW_RECV, (unsigned long)out, (unsigned long)out_cap);
+}
+
+static inline int qos_wifi_raw_status(cyw43_raw_capture_status_t* out){
+    return (int)qos_syscall1(SYS_WIFI_RAW_STATUS, (unsigned long)out);
 }
 
 static inline int qos_wifi_join(const char* ssid, const char* password){

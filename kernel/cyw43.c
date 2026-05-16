@@ -7,6 +7,7 @@
 #include "net.h"
 #include "net_proto.h"
 #include "arp.h"
+#include "spinlock.h"
 
 extern volatile unsigned long system_ticks;
 
@@ -70,6 +71,8 @@ extern volatile unsigned long system_ticks;
 #define CYW43_SDPCM_FIRSTREAD   64u
 #define CYW43_CDC_HDR_LEN       16u
 #define CYW43_PACKET_MAX_BYTES  4096u
+#define CYW43_RAW_CAPTURE_DEPTH 16u
+#define CYW43_RAW_CAPTURE_MAX_BYTES 2304u
 #define CYW43_PACKET_ADDR       0u
 #define CYW43_DATA_PAD_LEN      2u
 #define CYW43_BDC_HEADER_LEN    4u
@@ -163,6 +166,22 @@ static cyw43_rx_handler_t g_cyw43_rx_handler = 0;
 static unsigned char* g_cyw43_clm_blob;
 static unsigned int g_cyw43_clm_len;
 static unsigned char g_cyw43_clm_uploaded;
+
+typedef struct {
+    unsigned short len;
+    unsigned char data[CYW43_RAW_CAPTURE_MAX_BYTES];
+} cyw43_raw_frame_t;
+
+static spinlock_t g_cyw43_raw_lock;
+static cyw43_raw_frame_t g_cyw43_raw_ring[CYW43_RAW_CAPTURE_DEPTH];
+static unsigned int g_cyw43_raw_enabled;
+static unsigned int g_cyw43_raw_head;
+static unsigned int g_cyw43_raw_tail;
+static unsigned int g_cyw43_raw_count;
+static unsigned int g_cyw43_raw_rx_frames;
+static unsigned int g_cyw43_raw_dropped;
+static unsigned int g_cyw43_raw_truncated;
+static unsigned int g_cyw43_raw_last_len;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -2064,6 +2083,99 @@ static int cyw43_refresh_cur_etheraddr(void){
     return 0;
 }
 
+static void cyw43_raw_capture_reset_locked(void){
+    g_cyw43_raw_head = 0;
+    g_cyw43_raw_tail = 0;
+    g_cyw43_raw_count = 0;
+    g_cyw43_raw_rx_frames = 0;
+    g_cyw43_raw_dropped = 0;
+    g_cyw43_raw_truncated = 0;
+    g_cyw43_raw_last_len = 0;
+}
+
+static void cyw43_raw_capture_push(const unsigned char* frame, unsigned int len){
+    unsigned int copy_len = len;
+    unsigned long irq = 0;
+
+    if (!frame || len == 0u || !g_cyw43_raw_enabled){
+        return;
+    }
+    if (copy_len > CYW43_RAW_CAPTURE_MAX_BYTES){
+        copy_len = CYW43_RAW_CAPTURE_MAX_BYTES;
+    }
+
+    irq = spin_lock_irqsave(&g_cyw43_raw_lock);
+    if (!g_cyw43_raw_enabled){
+        spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+        return;
+    }
+    if (g_cyw43_raw_count >= CYW43_RAW_CAPTURE_DEPTH){
+        g_cyw43_raw_tail = (g_cyw43_raw_tail + 1u) % CYW43_RAW_CAPTURE_DEPTH;
+        g_cyw43_raw_count--;
+        g_cyw43_raw_dropped++;
+    }
+    g_cyw43_raw_ring[g_cyw43_raw_head].len = (unsigned short)copy_len;
+    mem_copy_local(g_cyw43_raw_ring[g_cyw43_raw_head].data, frame, copy_len);
+    g_cyw43_raw_head = (g_cyw43_raw_head + 1u) % CYW43_RAW_CAPTURE_DEPTH;
+    g_cyw43_raw_count++;
+    g_cyw43_raw_rx_frames++;
+    g_cyw43_raw_last_len = len;
+    if (copy_len != len){
+        g_cyw43_raw_truncated++;
+    }
+    spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+}
+
+int cyw43_raw_capture_set_enabled(unsigned int enabled){
+    unsigned long irq = spin_lock_irqsave(&g_cyw43_raw_lock);
+    g_cyw43_raw_enabled = enabled ? 1u : 0u;
+    cyw43_raw_capture_reset_locked();
+    spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+    return 0;
+}
+
+int cyw43_raw_capture_recv(unsigned char* out, unsigned int out_cap){
+    unsigned int n = 0;
+    unsigned long irq = 0;
+
+    if (!out || out_cap == 0u){
+        return -1;
+    }
+
+    irq = spin_lock_irqsave(&g_cyw43_raw_lock);
+    if (g_cyw43_raw_count == 0u){
+        spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+        return 0;
+    }
+
+    n = g_cyw43_raw_ring[g_cyw43_raw_tail].len;
+    if (n > out_cap){
+        n = out_cap;
+    }
+    mem_copy_local(out, g_cyw43_raw_ring[g_cyw43_raw_tail].data, n);
+    g_cyw43_raw_tail = (g_cyw43_raw_tail + 1u) % CYW43_RAW_CAPTURE_DEPTH;
+    g_cyw43_raw_count--;
+    spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+    return (int)n;
+}
+
+int cyw43_raw_capture_get_status(cyw43_raw_capture_status_t* out){
+    unsigned long irq = 0;
+
+    if (!out){
+        return -1;
+    }
+    irq = spin_lock_irqsave(&g_cyw43_raw_lock);
+    out->enabled = g_cyw43_raw_enabled;
+    out->queued = g_cyw43_raw_count;
+    out->rx_frames = g_cyw43_raw_rx_frames;
+    out->dropped = g_cyw43_raw_dropped;
+    out->truncated = g_cyw43_raw_truncated;
+    out->last_len = g_cyw43_raw_last_len;
+    spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+    return 0;
+}
+
 static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     unsigned char buf[36];
     unsigned int len = 0;
@@ -3122,6 +3234,13 @@ static int cyw43_net_deliver_data(const unsigned char* packet, unsigned int pack
         return -1;
     }
     eth_len = packet_len - eth_off;
+    /*
+     * This is intentionally below the Ethernet stack. With stock firmware it
+     * captures Ethernet payloads; with a Nexmon-style monitor firmware it can
+     * capture raw 802.11/radiotap-like payloads without needing to rewrite the
+     * normal IP path.
+     */
+    cyw43_raw_capture_push(packet + eth_off, eth_len);
     if (eth_len < 14u || eth_len > NET_MAX_FRAME_SIZE){
         return -1;
     }
@@ -3200,6 +3319,44 @@ int cyw43_net_poll(void){
     int delivered = 0;
 
     if (!cyw43_net_ready()){
+        return 0;
+    }
+
+    for (unsigned int i = 0; i < 16u; i++){
+        unsigned int rx_len = 0;
+        unsigned int channel = 0;
+
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 0u, 1) != 0){
+            break;
+        }
+        if (rx_len < CYW43_SDPCM_HDR_LEN){
+            continue;
+        }
+        channel = rx[5] & 0x0Fu;
+        if (channel == CYW43_SDPCM_CH_DATA){
+            g_cyw43.net_rx_data++;
+            if (cyw43_net_deliver_data(rx, rx_len) > 0){
+                delivered++;
+            }
+        } else if (channel == CYW43_SDPCM_CH_EVENT){
+            g_cyw43.net_rx_event++;
+        } else if (channel == CYW43_SDPCM_CH_CONTROL){
+            g_cyw43.net_rx_control++;
+        } else{
+            g_cyw43.net_rx_other++;
+        }
+    }
+    return delivered;
+}
+
+int cyw43_raw_capture_poll(void){
+    static unsigned char rx[CYW43_PACKET_MAX_BYTES];
+    int delivered = 0;
+
+    if (!g_cyw43_raw_enabled ||
+        !g_cyw43.fw_running ||
+        !g_cyw43.iface_up ||
+        !g_cyw43.func2_ready){
         return 0;
     }
 
