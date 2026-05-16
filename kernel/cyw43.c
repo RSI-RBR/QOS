@@ -2405,7 +2405,12 @@ static int cyw43_wifi_configure_on(void){
     if (cyw43_wl_set_var_u32("bus:txglom", 0u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("apsta", 1u) != 0){
+    /*
+     * Stay in plain station mode for now. APSTA enables concurrent AP+STA and
+     * can alter scan behavior on BCM43430/43436 firmware; QOS is not exposing
+     * SoftAP yet, and Pi Zero 2 W scans can complete empty with APSTA enabled.
+     */
+    if (cyw43_wl_set_var_u32("apsta", 0u) != 0){
         rc = -1;
     }
     if (cyw43_wl_set_var_u32("ampdu_ba_wsize", 8u) != 0){
