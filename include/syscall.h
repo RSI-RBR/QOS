@@ -166,7 +166,8 @@ enum {
     SYS_GPU2D_V3D_STATUS = 140,
     SYS_GPU2D_V3D_QUAD_COUNT = 141,
     SYS_GPU2D_V3D_BATCH_COUNT = 142,
-    SYS_GPU2D_V3D_FAIL_COUNT = 143
+    SYS_GPU2D_V3D_FAIL_COUNT = 143,
+    SYS_WIFI_SCAN_SSID = 144
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1025,6 +1026,13 @@ static inline int qos_wifi_down(void){
 
 static inline int qos_wifi_scan(cyw43_scan_result_t* out, unsigned int cap){
     return (int)qos_syscall2(SYS_WIFI_SCAN, (unsigned long)out, (unsigned long)cap);
+}
+
+static inline int qos_wifi_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned int cap){
+    return (int)qos_syscall3(SYS_WIFI_SCAN_SSID,
+                             (unsigned long)ssid,
+                             (unsigned long)out,
+                             (unsigned long)cap);
 }
 
 static inline int qos_wifi_join(const char* ssid, const char* password){

@@ -56,6 +56,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83, const char* nvram_txt_
 int cyw43_ioctl_up(void);
 int cyw43_ioctl_down(void);
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
+int cyw43_ioctl_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
 int cyw43_ioctl_join(const char* ssid, const char* password);
 int cyw43_get_firmware_version(char* out, unsigned int out_cap);
 

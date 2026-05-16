@@ -1710,8 +1710,10 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_escan_submit(void){
+static int cyw43_wl_escan_submit(const char* ssid){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
+    unsigned int ssid_len = 0;
+    unsigned int ssid_off = 0;
     /*
      * Keep bring-up scans to 2.4 GHz channels 1..11. The Pi Zero 2 W firmware
      * is more sensitive to regulatory/NVRAM mismatches than the Pi 3 path, and
@@ -1747,6 +1749,14 @@ static int cyw43_wl_escan_submit(void){
     put_le16(params + 68u, 11u);
     put_le16(params + 70u, 1u);
     mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
+    if (ssid && *ssid){
+        ssid_len = strn_len_local(ssid, CYW43_WL_MAX_SSID_LEN);
+        ssid_off = 72u + sizeof(chanspecs);
+        put_le32(params + ssid_off, ssid_len);
+        for (unsigned int i = 0; i < ssid_len; i++){
+            params[ssid_off + 4u + i] = (unsigned char)ssid[i];
+        }
+    }
 
     (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
     return cyw43_wl_set_var("escan", params, sizeof(params));
@@ -2237,7 +2247,10 @@ int cyw43_ioctl_down(void){
     return 0;
 }
 
-int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count){
+static int cyw43_ioctl_scan_common(const char* ssid,
+                                   cyw43_scan_result_t* out,
+                                   unsigned int cap,
+                                   unsigned int* out_count){
     static unsigned char rx[CYW43_PACKET_MAX_BYTES];
     unsigned int count = 0;
     unsigned int done = 0;
@@ -2269,7 +2282,7 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
             cyw43_delay(80000u);
         }
 
-        if (cyw43_wl_escan_submit() != 0){
+        if (cyw43_wl_escan_submit(ssid) != 0){
             if (attempt == 0u){
                 uart_puts("CYW43: escan submit retry\n");
                 continue;
@@ -2321,6 +2334,17 @@ int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* o
     uart_putdec(other_frames);
     uart_puts("\n");
     return -1;
+}
+
+int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count){
+    return cyw43_ioctl_scan_common(0, out, cap, out_count);
+}
+
+int cyw43_ioctl_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count){
+    if (!ssid || !*ssid){
+        return cyw43_ioctl_scan_common(0, out, cap, out_count);
+    }
+    return cyw43_ioctl_scan_common(ssid, out, cap, out_count);
 }
 
 int cyw43_ioctl_join(const char* ssid, const char* password){

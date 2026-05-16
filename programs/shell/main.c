@@ -524,6 +524,7 @@ static void cmd_help(void){
     qos_puts(" wifistat\n");
     qos_puts(" wifiver\n");
     qos_puts(" wifiscan\n");
+    qos_puts(" wifiscanfor <ssid>\n");
     qos_puts(" wifiscanx [passes]\n");
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
 }
@@ -1606,6 +1607,36 @@ static void cmd_wifiscan(void){
     }
 }
 
+static void cmd_wifiscanfor(const char* ssid){
+    cyw43_scan_result_t results[16];
+    int n;
+    if (!ssid || !*ssid){
+        qos_puts("Usage: wifiscanfor <ssid>\n");
+        return;
+    }
+    n = qos_wifi_scan_ssid(ssid, results, 16u);
+    if (n < 0){
+        qos_puts("WiFi directed scan failed\n");
+        return;
+    }
+    qos_puts("WiFi directed scan entries=");
+    print_uint((unsigned int)n);
+    qos_puts("\n");
+    for (int i = 0; i < n; i++){
+        qos_puts(" ");
+        print_uint((unsigned int)i);
+        qos_puts(": ");
+        qos_puts(results[i].ssid);
+        qos_puts(" ch=");
+        print_uint((unsigned int)results[i].channel);
+        qos_puts(" rssi=");
+        print_int(results[i].rssi_dbm);
+        qos_puts(" auth=");
+        print_uint((unsigned int)results[i].auth);
+        qos_puts("\n");
+    }
+}
+
 static void scan_result_copy(cyw43_scan_result_t* dst, const cyw43_scan_result_t* src){
     if (!dst || !src){
         return;
@@ -1953,6 +1984,18 @@ static void execute_line(void){
         cmd_wifiver();
     } else if (str_eq(g_buf, "wifiscan")){
         cmd_wifiscan();
+    } else if (str_starts_with(g_buf, "wifiscanfor ")){
+        char* p = g_buf + 12;
+        char* ssid = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: wifiscanfor <ssid>\n");
+            qos_puts("   or: wifiscanfor \"ssid with spaces\"\n");
+        } else{
+            cmd_wifiscanfor(ssid);
+        }
+    } else if (str_eq(g_buf, "wifiscanfor")){
+        qos_puts("Usage: wifiscanfor <ssid>\n");
     } else if (str_starts_with(g_buf, "wifiscanx ")){
         const char* p = g_buf + 10;
         unsigned int passes = 0;

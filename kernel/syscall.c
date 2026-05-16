@@ -574,6 +574,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_WIFI_UP:
         case SYS_WIFI_DOWN:
         case SYS_WIFI_SCAN:
+        case SYS_WIFI_SCAN_SSID:
         case SYS_WIFI_JOIN:
         case SYS_WIFI_DUMP_STATUS:
         case SYS_WIFI_GET_VERSION:
@@ -2406,6 +2407,46 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                                          (unsigned long)sizeof(cyw43_scan_result_t) * count) != 0){
                     rc = -1;
                 }
+            }
+            kfree_secure(kout, (unsigned long)sizeof(cyw43_scan_result_t) * cap);
+            frame[TF_X0] = (rc == 0) ? (unsigned long)count : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_WIFI_SCAN_SSID: {
+            char ssid[33];
+            cyw43_scan_result_t* user_out = (cyw43_scan_result_t*)frame[TF_X1];
+            unsigned int cap = clamp_u32((unsigned int)frame[TF_X2], USER_WIFI_SCAN_MAX);
+            cyw43_scan_result_t* kout = 0;
+            unsigned int count = 0;
+            int rc = -1;
+
+            if (copy_cstr_from_user_bound(ssid, sizeof(ssid), (const char*)frame[TF_X0]) != 0 ||
+                !user_out || cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kout = (cyw43_scan_result_t*)kmalloc((unsigned long)sizeof(cyw43_scan_result_t) * cap);
+            if (!kout){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            rc = cyw43_ioctl_scan_ssid(ssid, kout, cap, &count);
+            if (rc == 0){
+                if (count > cap){
+                    count = cap;
+                }
+                if (count > 0u &&
+                    process_copy_to_user(user_out,
+                                         kout,
+                                         (unsigned long)sizeof(cyw43_scan_result_t) * count) != 0){
+                    rc = -1;
+                }
+            }
+            for (unsigned int i = 0; i < sizeof(ssid); i++){
+                ssid[i] = 0;
             }
             kfree_secure(kout, (unsigned long)sizeof(cyw43_scan_result_t) * cap);
             frame[TF_X0] = (rc == 0) ? (unsigned long)count : (unsigned long)-1;

@@ -479,6 +479,7 @@ wifiload
 wifiup
 wifiver
 wifiscan
+wifiscanfor "SSID"
 wifijoin "SSID" "password"
 ping
 ```
