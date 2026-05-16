@@ -528,6 +528,7 @@ static void cmd_help(void){
     qos_puts(" wifiscanfor <ssid>\n");
     qos_puts(" wifiscanx [passes]\n");
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
+    qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
 }
 
 static void cmd_run(void){
@@ -2040,6 +2041,20 @@ static void execute_line(void){
     } else if (str_eq(g_buf, "wifijoin")){
         qos_puts("Usage: wifijoin <ssid> <password>\n");
         qos_puts("   or: wifijoin \"ssid with spaces\" \"password with spaces\"\n");
+    } else if (str_starts_with(g_buf, "wifijoinhidden ")){
+        char* p = g_buf + 15;
+        char* ssid = parse_arg_token(&p);
+        char* password = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: wifijoinhidden <ssid> <password>\n");
+            qos_puts("   or: wifijoinhidden \"ssid with spaces\" \"password with spaces\"\n");
+        } else{
+            cmd_wifijoin(ssid, password);
+        }
+    } else if (str_eq(g_buf, "wifijoinhidden")){
+        qos_puts("Usage: wifijoinhidden <ssid> <password>\n");
+        qos_puts("   or: wifijoinhidden \"ssid with spaces\" \"password with spaces\"\n");
     } else{
         qos_puts("Unknown command.\n");
     }

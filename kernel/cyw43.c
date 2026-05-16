@@ -313,7 +313,7 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
     unsigned char have_mac = 0;
     unsigned char have_country = 0;
     unsigned char have_regrev = 0;
-    unsigned int parsed_regrev = 0xFFFFFFFFu;
+    unsigned int parsed_regrev = 0u;
 
     if (!text || !packed || !packed_len || packed_cap < 4u){
         return -1;
@@ -422,7 +422,12 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
         g_cyw43.country[2] = 0;
         g_cyw43.country[3] = 0;
     }
-    g_cyw43.country_rev = have_regrev ? parsed_regrev : 0xFFFFFFFFu;
+    /*
+     * Broadcom firmware treats 0 as "use the firmware/CLM default regulatory
+     * revision". Passing UINT32_MAX here can leave some BCM43430 rev-2 Zero 2 W
+     * firmware builds with no usable scan plan even though radio=0/up=1.
+     */
+    g_cyw43.country_rev = have_regrev ? parsed_regrev : 0u;
 
     if (entries == 0u){
         return -1;
