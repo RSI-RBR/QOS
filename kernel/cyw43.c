@@ -2421,16 +2421,33 @@ static int cyw43_handle_escan_frame(const unsigned char* frame,
     }
 
     channel = frame[5] & 0x0Fu;
-    if (channel != CYW43_SDPCM_CH_EVENT){
-        return 0;
-    }
-
     doffset = frame[7];
-    if (doffset < CYW43_SDPCM_HDR_LEN || doffset + 4u > frame_len){
+    if (doffset < CYW43_SDPCM_HDR_LEN || doffset + CYW43_BDC_HEADER_LEN > frame_len){
         return 0;
     }
 
-    payload_off = doffset + 4u + ((unsigned int)frame[doffset + 3u] << 2);
+    if (channel == CYW43_SDPCM_CH_EVENT){
+        /*
+         * Some firmware uses the dedicated EVENT channel but still prefixes
+         * payload with the normal BDC header.
+         */
+        payload_off = doffset + CYW43_BDC_HEADER_LEN +
+                      ((unsigned int)frame[doffset + 3u] << 2);
+    } else if (channel == CYW43_SDPCM_CH_DATA){
+        unsigned int bdc_ver = (unsigned int)((frame[doffset] >> CYW43_BDC_VER_SHIFT) & 0x0Fu);
+        if (bdc_ver != CYW43_BDC_PROTO_VER){
+            return 0;
+        }
+        /*
+         * BCM43436 firmware commonly delivers async events as Ethernet-like
+         * packets on the DATA channel. Scan inside the Ethernet payload too.
+         */
+        payload_off = doffset + CYW43_BDC_HEADER_LEN +
+                      ((unsigned int)frame[doffset + 3u] << 2);
+    } else{
+        return 0;
+    }
+
     if (payload_off >= frame_len){
         return 0;
     }
@@ -2457,7 +2474,15 @@ static int cyw43_handle_escan_frame(const unsigned char* frame,
         if (data_len != 0u && data_len < remain){
             remain = data_len;
         }
-        (void)cyw43_add_scan_event_result(ev_scan, remain, out, cap, count);
+        if (cyw43_add_scan_event_result(ev_scan, remain, out, cap, count) != 0){
+            uart_puts("CYW43: escan partial parse miss len=");
+            uart_putdec(remain);
+            uart_puts(" data=");
+            uart_putdec(data_len);
+            uart_puts(" ch=");
+            uart_putdec(channel);
+            uart_puts("\n");
+        }
         return 1;
     }
 
