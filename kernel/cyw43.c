@@ -770,6 +770,19 @@ static int cyw43_enable_ht_clock(void){
     uart_puts("CYW43: HT force timeout csr=");
     uart_puthex(csr);
     uart_puts("\n");
+    if ((csr & CYW43_CLK_ALP_AVAIL) &&
+        (csr & CYW43_CLK_FORCE_HT) &&
+        (csr & CYW43_CLK_REQ_HT)){
+        /*
+         * BCM43430/2 on Pi Zero 2 W has been observed to stick at 0x72 here:
+         * ALP available plus FORCE_HT/REQ_HT latched, but HT_AVAIL not yet
+         * asserted. Do not fail before the firmware mailbox/F2 setup path has
+         * a chance to run; later control IOCTLs will tell us if the chip truly
+         * cannot enter HT.
+         */
+        uart_puts("CYW43: HT not reported; continuing with forced clock\n");
+        return 0;
+    }
     return -1;
 }
 
