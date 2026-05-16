@@ -923,7 +923,9 @@ static int cyw43_start_firmware(void){
         return -1;
     }
     uart_puts("CYW43: SDIO mailbox OK\n");
-    if (cyw43_enable_function2() != 0){
+    uart_puts("CYW43: requesting function 2\n");
+    if (sdio_bus_enable_func(2) != 0){
+        uart_puts("CYW43: function 2 enable request failed\n");
         return -1;
     }
     cyw43_program_f2_watermark();
@@ -936,6 +938,17 @@ static int cyw43_start_firmware(void){
     if (cyw43_wait_firmware_ready() != 0){
         return -1;
     }
+    if (sdio_bus_wait_func_ready(2, 2500) != 0){
+        uart_puts("CYW43: function 2 not ready after firmware mailbox\n");
+        return -1;
+    }
+    uart_puts("CYW43: function 2 ready\n");
+    if (sdio_bus_cmd52_write(0, 0x04u, (1u << 1) | (1u << 2) | 1u) != 0){
+        uart_puts("CYW43: host int enable failed\n");
+        return -1;
+    }
+    uart_puts("CYW43: host interrupts enabled\n");
+    g_cyw43.func2_ready = 1;
     if (cyw43_sdio_keep_awake() != 0){
         uart_puts("CYW43: SDIO wake warning; continuing\n");
     }
