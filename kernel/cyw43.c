@@ -83,9 +83,13 @@ extern volatile unsigned long system_ticks;
 #define CYW43_WLC_SET_PASSIVE_SCAN 49u
 #define CYW43_WLC_SCAN          50u
 #define CYW43_WLC_SCAN_RESULTS  51u
+#define CYW43_WLC_GET_RADIO     37u
+#define CYW43_WLC_SET_RADIO     38u
 #define CYW43_WLC_SET_ANTDIV    64u
+#define CYW43_WLC_SET_COUNTRY   84u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
+#define CYW43_WLC_GET_UP        162u
 #define CYW43_WLC_SET_SCAN_CHANNEL_TIME 185u
 #define CYW43_WLC_SET_SCAN_UNASSOC_TIME 187u
 #define CYW43_WLC_SET_SCAN_PASSIVE_TIME 258u
@@ -138,7 +142,7 @@ typedef struct {
     unsigned int sd_regs;
     unsigned int ram_size;
     unsigned char mac[6];
-    char country[3];
+    char country[4];
     unsigned int sdpcm_tx_seq;
     unsigned short reqid;
     unsigned char flow_mask;
@@ -365,17 +369,27 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
                    str_eq_literal(&text[s], eq - s, "country")){
             unsigned int vlen = e - (eq + 1u);
             /*
-             * Raspberry Pi firmware NVRAM commonly says ccode=ALL. That is a
-             * firmware-table selector, not the two-byte country code expected
-             * by the "country" iovar. Treating it as "AL" can leave BCM43430
-             * rev-2 firmware with an empty scan channel plan.
+             * Broadcom's wl_country uses four-byte strings, so preserve
+             * Raspberry Pi NVRAM values such as ccode=ALL. Truncating this to
+             * "AL" or replacing it with "WW" can leave BCM43430 rev-2 firmware
+             * with an empty scan channel plan.
              */
-            if (vlen == 2u &&
-                c_is_alnum(text[eq + 1u]) &&
-                c_is_alnum(text[eq + 2u])){
-                g_cyw43.country[0] = text[eq + 1u];
-                g_cyw43.country[1] = text[eq + 2u];
-                g_cyw43.country[2] = 0;
+            if (vlen >= 2u && vlen <= 3u){
+                unsigned int ok = 1u;
+                for (unsigned int j = 0; j < vlen; j++){
+                    if (!c_is_alnum(text[eq + 1u + j])){
+                        ok = 0u;
+                    }
+                }
+                if (!ok){
+                    continue;
+                }
+                for (unsigned int j = 0; j < sizeof(g_cyw43.country); j++){
+                    g_cyw43.country[j] = 0;
+                }
+                for (unsigned int j = 0; j < vlen; j++){
+                    g_cyw43.country[j] = text[eq + 1u + j];
+                }
                 have_country = 1;
             }
         } else if (str_eq_literal(&text[s], eq - s, "regrev")){
@@ -406,6 +420,7 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
         g_cyw43.country[0] = 'W';
         g_cyw43.country[1] = 'W';
         g_cyw43.country[2] = 0;
+        g_cyw43.country[3] = 0;
     }
     g_cyw43.country_rev = have_regrev ? parsed_regrev : 0xFFFFFFFFu;
 
@@ -1952,6 +1967,22 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
+    unsigned char buf[4];
+    unsigned int actual = 0;
+
+    if (!out){
+        return -1;
+    }
+    mem_zero_local(buf, sizeof(buf));
+    if (cyw43_wl_cmd(0, op, 0, 0, buf, sizeof(buf), &actual) != 0 ||
+        actual < sizeof(buf)){
+        return -1;
+    }
+    *out = get_le32(buf);
+    return 0;
+}
+
 static int cyw43_upload_clm_blob(void){
     enum {
         CLM_HDR_LEN = 12,
@@ -2231,25 +2262,31 @@ static void cyw43_event_mask_set(unsigned char* mask, unsigned int event_id){
 
 static int cyw43_wl_set_country(void){
     unsigned char country[12];
-    char cc_text[3];
     char cc0 = g_cyw43.country[0] ? g_cyw43.country[0] : 'W';
     char cc1 = g_cyw43.country[1] ? g_cyw43.country[1] : 'W';
+    char cc2 = g_cyw43.country[2];
+    int rc = 0;
 
     mem_zero_local(country, sizeof(country));
     country[0] = (unsigned char)cc0;
     country[1] = (unsigned char)cc1;
+    country[2] = (unsigned char)cc2;
     put_le32(country + 4u, g_cyw43.country_rev);
     country[8] = (unsigned char)cc0;
     country[9] = (unsigned char)cc1;
-    cc_text[0] = cc0;
-    cc_text[1] = cc1;
-    cc_text[2] = 0;
+    country[10] = (unsigned char)cc2;
     uart_puts("CYW43: country ");
-    uart_puts(cc_text);
+    uart_puts(g_cyw43.country[0] ? g_cyw43.country : "??");
     uart_puts(" rev=");
     uart_putdec(g_cyw43.country_rev);
     uart_puts("\n");
-    return cyw43_wl_set_var("country", country, sizeof(country));
+
+    rc = cyw43_wl_set_var("country", country, sizeof(country));
+    if (rc == 0){
+        return 0;
+    }
+    return cyw43_wl_cmd(1, CYW43_WLC_SET_COUNTRY,
+                        country, sizeof(country), 0, 0, 0);
 }
 
 static int cyw43_wl_set_event_msgs(void){
@@ -2277,6 +2314,27 @@ static int cyw43_wl_set_event_msgs(void){
         return 0;
     }
     return cyw43_wl_set_var("event_msgs", mask, sizeof(mask));
+}
+
+static void cyw43_log_radio_status(const char* tag){
+    unsigned int radio = 0;
+    unsigned int up = 0;
+
+    uart_puts("CYW43: radio status ");
+    uart_puts(tag ? tag : "");
+    uart_puts(" radio=");
+    if (cyw43_wl_get_int(CYW43_WLC_GET_RADIO, &radio) == 0){
+        uart_puthex(radio);
+    } else{
+        uart_puts("?");
+    }
+    uart_puts(" up=");
+    if (cyw43_wl_get_int(CYW43_WLC_GET_UP, &up) == 0){
+        uart_puthex(up);
+    } else{
+        uart_puts("?");
+    }
+    uart_puts("\n");
 }
 
 static int cyw43_wait_assoc(unsigned int timeout_ms){
@@ -2732,6 +2790,13 @@ int cyw43_ioctl_up(void){
         }
         g_cyw43.wifi_configured = 1;
     }
+    /*
+     * Force RF out of software-disable before WLC_UP. If radio remains off,
+     * firmware can accept scan requests but return an empty scan table.
+     */
+    if (cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u) != 0){
+        uart_puts("CYW43: radio enable command failed; continuing\n");
+    }
     if (cyw43_refresh_cur_etheraddr() != 0){
         uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
     }
@@ -2745,6 +2810,7 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
+    cyw43_log_radio_status("after-up");
     // Latency-oriented defaults for bring-up: keep radio awake and disable
     // minimum power consumption mode while we prioritize responsiveness.
     if (cyw43_wl_set_int(CYW43_WLC_SET_PM, 0u) != 0 ||
@@ -2785,6 +2851,7 @@ static int cyw43_ioctl_scan_common(const char* ssid,
     if (!g_cyw43.iface_up){
         return -1;
     }
+    cyw43_log_radio_status("pre-scan");
 
     for (unsigned int attempt = 0; attempt < 3u; attempt++){
         count = 0;
@@ -3147,7 +3214,8 @@ int cyw43_get_status(cyw43_status_t* out){
     out->mac[5] = g_cyw43.mac[5];
     out->country[0] = g_cyw43.country[0];
     out->country[1] = g_cyw43.country[1];
-    out->country[2] = 0;
+    out->country[2] = g_cyw43.country[2];
+    out->country[3] = 0;
     out->sdpcm_tx_seq = g_cyw43.sdpcm_tx_seq;
     out->last_scan_count = g_cyw43.last_scan_count;
     return 0;
@@ -3182,7 +3250,12 @@ void cyw43_dump_status(void){
     }
     uart_puts(" country=");
     uart_puts(g_cyw43.country[0] ? g_cyw43.country : "??");
+    uart_puts(" rev=");
+    uart_putdec(g_cyw43.country_rev);
     uart_puts("\n");
+    if (g_cyw43.fw_running && g_cyw43.func2_ready){
+        cyw43_log_radio_status("dump");
+    }
     uart_puts("CYW43 net tx_ok=");
     uart_putdec(g_cyw43.net_tx_ok);
     uart_puts(" tx_fail=");

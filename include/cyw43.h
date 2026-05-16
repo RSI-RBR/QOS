@@ -39,7 +39,7 @@ typedef struct {
     unsigned char iface_up;
     unsigned char joined;
     unsigned char mac[6];
-    char country[3];
+    char country[4];
     unsigned int sdpcm_tx_seq;
     unsigned int last_scan_count;
 } cyw43_status_t;
