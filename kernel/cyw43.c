@@ -81,6 +81,8 @@ extern volatile unsigned long system_ticks;
 #define CYW43_WLC_SET_AUTH      22u
 #define CYW43_WLC_SET_SSID      26u
 #define CYW43_WLC_SET_PASSIVE_SCAN 49u
+#define CYW43_WLC_SCAN          50u
+#define CYW43_WLC_SCAN_RESULTS  51u
 #define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
@@ -101,6 +103,7 @@ extern volatile unsigned long system_ticks;
 
 #define CYW43_WL_IOVAR_BUF_LEN  1536u
 #define CYW43_WL_ESCAN_PARAMS_LEN 136u
+#define CYW43_WL_SCAN_RESULTS_LEN 3840u
 #define CYW43_WL_MAX_SSID_LEN   32u
 #define CYW43_DOT11_BSSTYPE_ANY 2u
 #define CYW43_WSEC_AES          0x0004u
@@ -2140,6 +2143,34 @@ static int cyw43_wl_escan_submit(const char* ssid, unsigned int attempt){
     return cyw43_wl_escan_submit_variant(ssid, 2u);
 }
 
+static int cyw43_wl_legacy_scan_submit(const char* ssid){
+    unsigned char params[64];
+    unsigned int ssid_len = 0;
+
+    mem_zero_local(params, sizeof(params));
+    if (ssid && *ssid){
+        ssid_len = strn_len_local(ssid, CYW43_WL_MAX_SSID_LEN);
+        put_le32(params + 0u, ssid_len);
+        for (unsigned int i = 0; i < ssid_len; i++){
+            params[4u + i] = (unsigned char)ssid[i];
+        }
+    }
+
+    for (unsigned int i = 36u; i < 42u; i++){
+        params[i] = 0xFFu;
+    }
+    params[42u] = CYW43_DOT11_BSSTYPE_ANY;
+    params[43u] = 0u;
+    put_le32(params + 44u, 0xFFFFFFFFu);
+    put_le32(params + 48u, 0xFFFFFFFFu);
+    put_le32(params + 52u, 0xFFFFFFFFu);
+    put_le32(params + 56u, 0xFFFFFFFFu);
+    put_le32(params + 60u, 0u);
+
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
+    return cyw43_wl_cmd(1, CYW43_WLC_SCAN, params, sizeof(params), 0, 0, 0);
+}
+
 static int cyw43_wl_set_pmk(const char* password){
     unsigned char pmk[68];
     unsigned int len = 0;
@@ -2324,38 +2355,18 @@ static int cyw43_wifi_configure_on(void){
     return 0;
 }
 
-static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
-                                       unsigned int ev_scan_len,
-                                       cyw43_scan_result_t* out,
-                                       unsigned int cap,
-                                       unsigned int* count){
-    const unsigned char* bss = 0;
-    unsigned int bss_len = 0;
+static int cyw43_add_bss_info_result(const unsigned char* bss,
+                                     unsigned int bss_len,
+                                     cyw43_scan_result_t* out,
+                                     unsigned int cap,
+                                     unsigned int* count){
     unsigned int ssid_len = 0;
     unsigned int capability = 0;
     unsigned int chanspec = 0;
     int rssi_a = 0;
     int rssi_b = 0;
 
-    if (!ev_scan || !out || !count || *count >= cap || ev_scan_len < 84u){
-        return -1;
-    }
-
-    /*
-     * WLC_E_ESCAN_RESULT payload is wl_escan_result_t:
-     *   buflen/version/sync_id/bss_count + wl_bss_info
-     * Circle's parser reads SSID/chanspec/RSSI from wl_bss_info offsets.
-     */
-    if (ev_scan_len >= 12u && get_le16(ev_scan + 10u) >= 1u){
-        bss = ev_scan + 12u;
-        bss_len = ev_scan_len - 12u;
-    } else{
-        // Fallback for firmwares that may already point at wl_bss_info.
-        bss = ev_scan;
-        bss_len = ev_scan_len;
-    }
-
-    if (bss_len < 82u){
+    if (!bss || !out || !count || *count >= cap || bss_len < 82u){
         return -1;
     }
 
@@ -2414,6 +2425,92 @@ static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
 
     (*count)++;
     return 0;
+}
+
+static int cyw43_add_scan_event_result(const unsigned char* ev_scan,
+                                       unsigned int ev_scan_len,
+                                       cyw43_scan_result_t* out,
+                                       unsigned int cap,
+                                       unsigned int* count){
+    const unsigned char* bss = 0;
+    unsigned int bss_len = 0;
+
+    if (!ev_scan || !out || !count || *count >= cap || ev_scan_len < 84u){
+        return -1;
+    }
+
+    /*
+     * WLC_E_ESCAN_RESULT payload is wl_escan_result_t:
+     *   buflen/version/sync_id/bss_count + wl_bss_info
+     * Circle's parser reads SSID/chanspec/RSSI from wl_bss_info offsets.
+     */
+    if (ev_scan_len >= 12u && get_le16(ev_scan + 10u) >= 1u){
+        bss = ev_scan + 12u;
+        bss_len = ev_scan_len - 12u;
+    } else{
+        // Fallback for firmwares that may already point at wl_bss_info.
+        bss = ev_scan;
+        bss_len = ev_scan_len;
+    }
+
+    return cyw43_add_bss_info_result(bss, bss_len, out, cap, count);
+}
+
+static int cyw43_collect_scanresults(cyw43_scan_result_t* out,
+                                     unsigned int cap,
+                                     unsigned int* count){
+    static unsigned char results[CYW43_WL_SCAN_RESULTS_LEN];
+    unsigned int actual = 0;
+    unsigned int reported_count = 0;
+    unsigned int off = 12u;
+
+    if (!out || !count || cap == 0u){
+        return -1;
+    }
+
+    mem_zero_local(results, sizeof(results));
+    put_le32(results + 0u, sizeof(results));
+
+    if (cyw43_wl_cmd(0, CYW43_WLC_SCAN_RESULTS,
+                     results, 4u,
+                     results, sizeof(results),
+                     &actual) != 0){
+        return -1;
+    }
+
+    if (actual < 12u){
+        uart_puts("CYW43: scanresults short actual=");
+        uart_putdec(actual);
+        uart_puts("\n");
+        return -1;
+    }
+
+    reported_count = get_le32(results + 8u);
+    uart_puts("CYW43: scanresults count=");
+    uart_putdec(reported_count);
+    uart_puts(" actual=");
+    uart_putdec(actual);
+    uart_puts("\n");
+
+    for (unsigned int i = 0; i < reported_count && *count < cap; i++){
+        unsigned int bss_len = 0;
+        if (off + 8u > actual){
+            break;
+        }
+        bss_len = get_le32(results + off + 4u);
+        if (bss_len < 82u || off + bss_len > actual){
+            uart_puts("CYW43: scanresults bad bss len=");
+            uart_putdec(bss_len);
+            uart_puts(" off=");
+            uart_putdec(off);
+            uart_puts("\n");
+            break;
+        }
+        (void)cyw43_add_bss_info_result(results + off, bss_len, out, cap, count);
+        off += round4_u32(bss_len);
+    }
+
+    return (*count > 0u) ? 0 : -1;
 }
 
 static int cyw43_find_escan_event_msg(const unsigned char* packet,
@@ -2742,11 +2839,38 @@ static int cyw43_ioctl_scan_common(const char* ssid,
         }
         if (done){
             uart_puts("CYW43: escan completed with zero APs; trying fallback\n");
+            if (cyw43_collect_scanresults(out, cap, &count) == 0){
+                *out_count = count;
+                g_cyw43.last_scan_count = count;
+                return 0;
+            }
         }
 
         if (attempt == 0u){
             uart_puts("CYW43: escan retry after timeout\n");
         }
+    }
+
+    uart_puts("CYW43: trying legacy WLC_SCAN fallback\n");
+    count = 0;
+    if (cyw43_wl_legacy_scan_submit(ssid) == 0){
+        for (unsigned int wait = 0; wait < 8u; wait++){
+            unsigned int rx_len = 0;
+            if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 500u, 1) != 0){
+                continue;
+            }
+            if (rx_len == 0u){
+                continue;
+            }
+            cyw43_log_control_status(rx, rx_len);
+        }
+        if (cyw43_collect_scanresults(out, cap, &count) == 0){
+            *out_count = count;
+            g_cyw43.last_scan_count = count;
+            return 0;
+        }
+    } else{
+        uart_puts("CYW43: legacy WLC_SCAN submit failed\n");
     }
 
     uart_puts("CYW43: escan timed out ctrl=");
