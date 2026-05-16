@@ -147,6 +147,7 @@ typedef struct {
     unsigned int net_rx_control;
     unsigned int net_rx_other;
     unsigned int last_scan_count;
+    unsigned int country_rev;
     char joined_ssid[33];
 } cyw43_state_t;
 
@@ -235,6 +236,27 @@ static int c_hex(char c){
     return -1;
 }
 
+static int c_is_alnum(char c){
+    return ((c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z'));
+}
+
+static int parse_u32_text(const char* s, unsigned int n, unsigned int* out){
+    unsigned int v = 0;
+    if (!s || !out || n == 0u){
+        return -1;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        if (s[i] < '0' || s[i] > '9'){
+            return -1;
+        }
+        v = (v * 10u) + (unsigned int)(s[i] - '0');
+    }
+    *out = v;
+    return 0;
+}
+
 static unsigned int strn_len_local(const char* s, unsigned int cap){
     unsigned int n = 0;
     if (!s){
@@ -283,6 +305,8 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
     unsigned int entries = 0;
     unsigned char have_mac = 0;
     unsigned char have_country = 0;
+    unsigned char have_regrev = 0;
+    unsigned int parsed_regrev = 0xFFFFFFFFu;
 
     if (!text || !packed || !packed_len || packed_cap < 4u){
         return -1;
@@ -337,11 +361,23 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
         } else if (str_eq_literal(&text[s], eq - s, "ccode") ||
                    str_eq_literal(&text[s], eq - s, "country")){
             unsigned int vlen = e - (eq + 1u);
-            if (vlen >= 2u){
+            /*
+             * Raspberry Pi firmware NVRAM commonly says ccode=ALL. That is a
+             * firmware-table selector, not the two-byte country code expected
+             * by the "country" iovar. Treating it as "AL" can leave BCM43430
+             * rev-2 firmware with an empty scan channel plan.
+             */
+            if (vlen == 2u &&
+                c_is_alnum(text[eq + 1u]) &&
+                c_is_alnum(text[eq + 2u])){
                 g_cyw43.country[0] = text[eq + 1u];
                 g_cyw43.country[1] = text[eq + 2u];
                 g_cyw43.country[2] = 0;
                 have_country = 1;
+            }
+        } else if (str_eq_literal(&text[s], eq - s, "regrev")){
+            if (parse_u32_text(&text[eq + 1u], e - (eq + 1u), &parsed_regrev) == 0){
+                have_regrev = 1;
             }
         }
 
@@ -368,6 +404,7 @@ static int nvram_pack_and_parse(const char* text, unsigned int text_len,
         g_cyw43.country[1] = 'W';
         g_cyw43.country[2] = 0;
     }
+    g_cyw43.country_rev = have_regrev ? parsed_regrev : 0xFFFFFFFFu;
 
     if (entries == 0u){
         return -1;
@@ -2003,9 +2040,10 @@ static int cyw43_wl_set_ssid_cmd(unsigned int op, const char* ssid){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_escan_submit_variant(const char* ssid, unsigned int circle_format){
+static int cyw43_wl_escan_submit_variant(const char* ssid, unsigned int scan_format){
     unsigned char params[CYW43_WL_ESCAN_PARAMS_LEN];
     unsigned int ssid_len = 0;
+    unsigned int params_len = 72u;
     static const unsigned char chanspecs[11u * 2u] = {
         0x01u, 0x2Bu, 0x02u, 0x2Bu, 0x03u, 0x2Bu, 0x04u, 0x2Bu,
         0x05u, 0x2Bu, 0x06u, 0x2Bu, 0x07u, 0x2Bu,
@@ -2051,31 +2089,55 @@ static int cyw43_wl_escan_submit_variant(const char* ssid, unsigned int circle_f
     put_le32(params + 56u, 0xFFFFFFFFu);
     put_le32(params + 60u, 0xFFFFFFFFu);
     put_le32(params + 64u, 0xFFFFFFFFu);
-    if (circle_format){
+    if (scan_format == 0u){
+        /*
+         * Let the firmware/CLM regulatory table choose the channel list. This
+         * is the safest path on Zero 2 W BCM43430 rev-2 modules, where bad
+         * local chanspecs can produce a clean scan-complete event with no APs.
+         */
+        put_le16(params + 68u, 0u);
+        put_le16(params + 70u, 0u);
+        params_len = 72u;
+    } else if (scan_format == 2u){
         put_le16(params + 68u, 14u);
         put_le16(params + 70u, 1u);
         mem_copy_local(params + 72u, circle_chanspecs, sizeof(circle_chanspecs));
+        params_len = 72u + sizeof(circle_chanspecs) + 36u;
         if (ssid && *ssid){
+            put_le32(params + 100u, ssid_len);
             for (unsigned int i = 0; i < ssid_len; i++){
-                params[100u + i] = (unsigned char)ssid[i];
+                params[104u + i] = (unsigned char)ssid[i];
             }
         }
     } else{
         put_le16(params + 68u, 11u);
         put_le16(params + 70u, 0u);
         mem_copy_local(params + 72u, chanspecs, sizeof(chanspecs));
+        params_len = 72u + sizeof(chanspecs);
     }
 
     (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
-    return cyw43_wl_set_var("escan", params, sizeof(params));
+    return cyw43_wl_set_var("escan", params, params_len);
 }
 
 static int cyw43_wl_escan_submit(const char* ssid, unsigned int attempt){
     unsigned int prefer_circle = (g_cyw43.chip_id == 43430u && g_cyw43.chip_rev >= 2u);
-    if ((prefer_circle && attempt == 0u) || (!prefer_circle && attempt != 0u)){
+    if (prefer_circle){
+        if (attempt == 0u){
+            return cyw43_wl_escan_submit_variant(ssid, 0u);
+        }
+        if (attempt == 1u){
+            return cyw43_wl_escan_submit_variant(ssid, 2u);
+        }
         return cyw43_wl_escan_submit_variant(ssid, 1u);
     }
-    return cyw43_wl_escan_submit_variant(ssid, 0u);
+    if (attempt == 0u){
+        return cyw43_wl_escan_submit_variant(ssid, 1u);
+    }
+    if (attempt == 1u){
+        return cyw43_wl_escan_submit_variant(ssid, 0u);
+    }
+    return cyw43_wl_escan_submit_variant(ssid, 2u);
 }
 
 static int cyw43_wl_set_pmk(const char* password){
@@ -2138,15 +2200,24 @@ static void cyw43_event_mask_set(unsigned char* mask, unsigned int event_id){
 
 static int cyw43_wl_set_country(void){
     unsigned char country[12];
+    char cc_text[3];
     char cc0 = g_cyw43.country[0] ? g_cyw43.country[0] : 'W';
     char cc1 = g_cyw43.country[1] ? g_cyw43.country[1] : 'W';
 
     mem_zero_local(country, sizeof(country));
     country[0] = (unsigned char)cc0;
     country[1] = (unsigned char)cc1;
-    put_le32(country + 4u, 0xFFFFFFFFu);
+    put_le32(country + 4u, g_cyw43.country_rev);
     country[8] = (unsigned char)cc0;
     country[9] = (unsigned char)cc1;
+    cc_text[0] = cc0;
+    cc_text[1] = cc1;
+    cc_text[2] = 0;
+    uart_puts("CYW43: country ");
+    uart_puts(cc_text);
+    uart_puts(" rev=");
+    uart_putdec(g_cyw43.country_rev);
+    uart_puts("\n");
     return cyw43_wl_set_var("country", country, sizeof(country));
 }
 
@@ -2487,6 +2558,13 @@ static int cyw43_handle_escan_frame(const unsigned char* frame,
     }
 
     if (status == CYW43_STATUS_SUCCESS){
+        if (*count == 0u){
+            uart_puts("CYW43: escan success zero results data=");
+            uart_putdec(data_len);
+            uart_puts(" ch=");
+            uart_putdec(channel);
+            uart_puts("\n");
+        }
         *done = 1;
         return 1;
     }
@@ -2611,7 +2689,7 @@ static int cyw43_ioctl_scan_common(const char* ssid,
         return -1;
     }
 
-    for (unsigned int attempt = 0; attempt < 2u; attempt++){
+    for (unsigned int attempt = 0; attempt < 3u; attempt++){
         count = 0;
         done = 0;
         ctrl_frames = 0;
