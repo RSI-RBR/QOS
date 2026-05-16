@@ -10,6 +10,8 @@ keys/
 *.img
 *.dat
 
+rpi-fw/
+
 AUTH.BIN
 AUTH.SIG
 AUTH.PQS
