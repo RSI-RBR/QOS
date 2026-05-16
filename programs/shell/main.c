@@ -390,6 +390,10 @@ static void print_hex8(unsigned int v){
     qos_putc(hexdigits[v & 0xFu]);
 }
 
+static unsigned int read_le16_shell(const unsigned char* p){
+    return ((unsigned int)p[0]) | ((unsigned int)p[1] << 8);
+}
+
 static void print_3digits(unsigned int v){
     v %= 1000u;
     qos_putc((char)('0' + (v / 100u)));
@@ -535,7 +539,7 @@ static void cmd_help(void){
     qos_puts(" wifiscanx [passes]\n");
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
-    qos_puts(" wifiraw on|off|stat|read|drain [ms]\n");
+    qos_puts(" wifiraw on|off|stat|read|drain [ms]|scan [ms]\n");
     qos_puts(" wifimon on [channel]|off|status\n");
 }
 
@@ -1921,7 +1925,131 @@ static void cmd_wifiraw(const char* mode){
         return;
     }
 
-    qos_puts("Usage: wifiraw on|off|stat|read|drain [ms]\n");
+    if (str_starts_with(mode, "scan")){
+        unsigned char buf[512];
+        const char* p = mode + 4;
+        unsigned int ms = 1000u;
+        unsigned int frames = 0u;
+        unsigned int rt = 0u;
+        unsigned int dot11 = 0u;
+        unsigned int beacon = 0u;
+        unsigned int probe_req = 0u;
+        unsigned int probe_resp = 0u;
+        unsigned int data = 0u;
+        unsigned int eapol = 0u;
+        unsigned int malformed = 0u;
+        unsigned long long start = 0;
+        unsigned long long deadline = 0;
+
+        while (*p == ' '){
+            p++;
+        }
+        if (*p && parse_uint(p, &ms) != 0){
+            qos_puts("Usage: wifiraw scan [ms]\n");
+            return;
+        }
+        if (ms == 0u){
+            ms = 1000u;
+        }
+        if (ms > 10000u){
+            ms = 10000u;
+        }
+
+        start = qos_get_time_us();
+        deadline = start + ((unsigned long long)ms * 1000ull);
+        while ((long long)(qos_get_time_us() - deadline) < 0){
+            int n = qos_wifi_raw_recv(buf, sizeof(buf));
+            const unsigned char* dot = buf;
+            unsigned int dot_len = (n > 0) ? (unsigned int)n : 0u;
+            unsigned int fc = 0u;
+            unsigned int type = 0u;
+            unsigned int subtype = 0u;
+            unsigned int hdr_len = 24u;
+
+            if (n < 0){
+                qos_puts("WiFi raw scan failed\n");
+                return;
+            }
+            if (n == 0){
+                qos_sleep(1);
+                continue;
+            }
+            frames++;
+
+            if (dot_len >= 8u && buf[0] == 0u && buf[1] == 0u){
+                unsigned int rt_len = read_le16_shell(buf + 2u);
+                if (rt_len >= 8u && rt_len < dot_len){
+                    rt++;
+                    dot = buf + rt_len;
+                    dot_len -= rt_len;
+                }
+            }
+
+            if (dot_len < 24u){
+                malformed++;
+                continue;
+            }
+            fc = read_le16_shell(dot);
+            if ((fc & 0x0003u) != 0u){
+                malformed++;
+                continue;
+            }
+            type = (fc >> 2) & 0x3u;
+            subtype = (fc >> 4) & 0xFu;
+
+            if (type == 0u && subtype == 8u){
+                beacon++;
+            } else if (type == 0u && subtype == 4u){
+                probe_req++;
+            } else if (type == 0u && subtype == 5u){
+                probe_resp++;
+            } else if (type == 2u){
+                unsigned int qos = (subtype & 0x8u) ? 1u : 0u;
+                unsigned int to_ds = (fc >> 8) & 1u;
+                unsigned int from_ds = (fc >> 9) & 1u;
+                unsigned int llc = 0u;
+                data++;
+                if (to_ds && from_ds){
+                    hdr_len += 6u;
+                }
+                if (qos){
+                    hdr_len += 2u;
+                }
+                llc = hdr_len;
+                if (dot_len >= llc + 8u &&
+                    dot[llc + 0u] == 0xAAu &&
+                    dot[llc + 1u] == 0xAAu &&
+                    dot[llc + 2u] == 0x03u &&
+                    dot[llc + 6u] == 0x88u &&
+                    dot[llc + 7u] == 0x8Eu){
+                    eapol++;
+                }
+            }
+        }
+
+        qos_puts("WiFi raw scan ms=");
+        print_uint(ms);
+        qos_puts(" frames=");
+        print_uint(frames);
+        qos_puts(" rt=");
+        print_uint(rt);
+        qos_puts(" beacon=");
+        print_uint(beacon);
+        qos_puts(" probe_req=");
+        print_uint(probe_req);
+        qos_puts(" probe_resp=");
+        print_uint(probe_resp);
+        qos_puts(" data=");
+        print_uint(data);
+        qos_puts(" eapol=");
+        print_uint(eapol);
+        qos_puts(" bad=");
+        print_uint(malformed);
+        qos_puts("\n");
+        return;
+    }
+
+    qos_puts("Usage: wifiraw on|off|stat|read|drain [ms]|scan [ms]\n");
 }
 
 static void cmd_wifimon(const char* mode){
