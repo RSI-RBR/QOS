@@ -83,6 +83,7 @@ extern volatile unsigned long system_ticks;
 #define CYW43_WLC_SET_INFRA     20u
 #define CYW43_WLC_SET_AUTH      22u
 #define CYW43_WLC_SET_SSID      26u
+#define CYW43_WLC_SET_CHANNEL   30u
 #define CYW43_WLC_SET_PASSIVE_SCAN 49u
 #define CYW43_WLC_SCAN          50u
 #define CYW43_WLC_SCAN_RESULTS  51u
@@ -90,6 +91,12 @@ extern volatile unsigned long system_ticks;
 #define CYW43_WLC_SET_RADIO     38u
 #define CYW43_WLC_SET_ANTDIV    64u
 #define CYW43_WLC_SET_COUNTRY   84u
+#define CYW43_WLC_GET_PROMISC   9u
+#define CYW43_WLC_SET_PROMISC   10u
+#define CYW43_WLC_GET_MONITOR   107u
+#define CYW43_WLC_SET_MONITOR   108u
+#define CYW43_WLC_GET_SCANSUPPRESS 115u
+#define CYW43_WLC_SET_SCANSUPPRESS 116u
 #define CYW43_WLC_SET_WSEC      134u
 #define CYW43_WLC_SET_WPA_AUTH  165u
 #define CYW43_WLC_GET_UP        162u
@@ -182,6 +189,9 @@ static unsigned int g_cyw43_raw_rx_frames;
 static unsigned int g_cyw43_raw_dropped;
 static unsigned int g_cyw43_raw_truncated;
 static unsigned int g_cyw43_raw_last_len;
+static unsigned int g_cyw43_monitor_mode;
+static unsigned int g_cyw43_monitor_channel;
+static int g_cyw43_monitor_last_rc;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -2007,6 +2017,86 @@ static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
     return 0;
 }
 
+static int cyw43_control_ready(void){
+    return g_cyw43.fw_running && g_cyw43.iface_up && g_cyw43.func2_ready;
+}
+
+int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
+    int rc = 0;
+
+    /*
+     * Nexmon's common monitor path uses WLC_SET_MONITOR=108. Mode 2 is the
+     * practical "raw monitor/radiotap-ish" mode exposed by nexutil -m2.
+     */
+    if (!cyw43_control_ready()){
+        g_cyw43_monitor_last_rc = -1;
+        return -1;
+    }
+    if (mode > 3u || channel > 14u){
+        g_cyw43_monitor_last_rc = -2;
+        return -2;
+    }
+
+    if (mode == 0u){
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, 0u);
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        (void)cyw43_raw_capture_set_enabled(0u);
+        g_cyw43_monitor_mode = 0u;
+        g_cyw43_monitor_channel = 0u;
+        g_cyw43_monitor_last_rc = 0;
+        return 0;
+    }
+
+    if (channel != 0u){
+        rc = cyw43_wl_set_int(CYW43_WLC_SET_CHANNEL, channel);
+        if (rc != 0){
+            g_cyw43_monitor_last_rc = -3;
+            return -3;
+        }
+    }
+
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 1u);
+    rc = cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 1u);
+    if (rc != 0){
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        g_cyw43_monitor_last_rc = -4;
+        return -4;
+    }
+
+    rc = cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, mode);
+    if (rc != 0){
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        (void)cyw43_raw_capture_set_enabled(0u);
+        g_cyw43_monitor_mode = 0u;
+        g_cyw43_monitor_last_rc = -5;
+        return -5;
+    }
+
+    (void)cyw43_raw_capture_set_enabled(1u);
+    g_cyw43_monitor_mode = mode;
+    g_cyw43_monitor_channel = channel;
+    g_cyw43_monitor_last_rc = 0;
+    return 0;
+}
+
+int cyw43_ioctl_monitor_status(cyw43_monitor_status_t* out){
+    if (!out){
+        return -1;
+    }
+
+    out->enabled = g_cyw43_monitor_mode ? 1u : 0u;
+    out->requested_mode = g_cyw43_monitor_mode;
+    out->monitor = g_cyw43_monitor_mode;
+    out->promisc = g_cyw43_monitor_mode ? 1u : 0u;
+    out->scansuppress = g_cyw43_monitor_mode ? 1u : 0u;
+    out->channel = g_cyw43_monitor_channel;
+    out->raw_enabled = g_cyw43_raw_enabled ? 1u : 0u;
+    out->last_rc = g_cyw43_monitor_last_rc;
+    return 0;
+}
+
 static int cyw43_upload_clm_blob(void){
     enum {
         CLM_HDR_LEN = 12,
@@ -2971,6 +3061,7 @@ int cyw43_ioctl_up(void){
 
 int cyw43_ioctl_down(void){
     if (g_cyw43.fw_running && g_cyw43.iface_up){
+        (void)cyw43_ioctl_monitor(0u, 0u);
         (void)cyw43_wl_cmd(1, CYW43_WLC_DOWN, 0, 0, 0, 0, 0);
     }
     g_cyw43.iface_up = 0;

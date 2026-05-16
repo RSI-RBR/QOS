@@ -170,7 +170,9 @@ enum {
     SYS_WIFI_SCAN_SSID = 144,
     SYS_WIFI_RAW_SET_ENABLED = 145,
     SYS_WIFI_RAW_RECV = 146,
-    SYS_WIFI_RAW_STATUS = 147
+    SYS_WIFI_RAW_STATUS = 147,
+    SYS_WIFI_MONITOR_SET = 148,
+    SYS_WIFI_MONITOR_STATUS = 149
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1053,6 +1055,16 @@ static inline int qos_wifi_raw_recv(unsigned char* out, unsigned int out_cap){
 
 static inline int qos_wifi_raw_status(cyw43_raw_capture_status_t* out){
     return (int)qos_syscall1(SYS_WIFI_RAW_STATUS, (unsigned long)out);
+}
+
+static inline int qos_wifi_monitor_set(unsigned int mode, unsigned int channel){
+    return (int)qos_syscall2(SYS_WIFI_MONITOR_SET,
+                             (unsigned long)mode,
+                             (unsigned long)channel);
+}
+
+static inline int qos_wifi_monitor_status(cyw43_monitor_status_t* out){
+    return (int)qos_syscall1(SYS_WIFI_MONITOR_STATUS, (unsigned long)out);
 }
 
 static inline int qos_wifi_join(const char* ssid, const char* password){

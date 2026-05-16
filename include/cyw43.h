@@ -53,6 +53,17 @@ typedef struct {
     unsigned int last_len;
 } cyw43_raw_capture_status_t;
 
+typedef struct {
+    unsigned int enabled;
+    unsigned int requested_mode;
+    unsigned int monitor;
+    unsigned int promisc;
+    unsigned int scansuppress;
+    unsigned int channel;
+    unsigned int raw_enabled;
+    int last_rc;
+} cyw43_monitor_status_t;
+
 typedef void (*cyw43_rx_handler_t)(const unsigned char* frame, unsigned int len);
 
 int cyw43_init(void);
@@ -90,5 +101,7 @@ int cyw43_raw_capture_set_enabled(unsigned int enabled);
 int cyw43_raw_capture_poll(void);
 int cyw43_raw_capture_recv(unsigned char* out, unsigned int out_cap);
 int cyw43_raw_capture_get_status(cyw43_raw_capture_status_t* out);
+int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel);
+int cyw43_ioctl_monitor_status(cyw43_monitor_status_t* out);
 
 #endif

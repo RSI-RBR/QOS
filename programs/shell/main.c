@@ -536,6 +536,7 @@ static void cmd_help(void){
     qos_puts(" wifijoin <ssid> <password>   (quotes allowed)\n");
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
     qos_puts(" wifiraw on|off|stat|read\n");
+    qos_puts(" wifimon on [channel]|off|status\n");
 }
 
 static void cmd_run(void){
@@ -1839,6 +1840,74 @@ static void cmd_wifiraw(const char* mode){
     qos_puts("Usage: wifiraw on|off|stat|read\n");
 }
 
+static void cmd_wifimon(const char* mode){
+    if (!mode || !*mode || str_eq(mode, "status")){
+        cyw43_monitor_status_t st;
+        if (qos_wifi_monitor_status(&st) != 0){
+            qos_puts("WiFi monitor status failed\n");
+            return;
+        }
+        qos_puts("wifimon=");
+        qos_puts(st.enabled ? "on" : "off");
+        qos_puts(" req=");
+        print_uint(st.requested_mode);
+        qos_puts(" mon=");
+        print_uint(st.monitor);
+        qos_puts(" promisc=");
+        print_uint(st.promisc);
+        qos_puts(" scanstop=");
+        print_uint(st.scansuppress);
+        qos_puts(" ch=");
+        print_uint(st.channel);
+        qos_puts(" raw=");
+        print_uint(st.raw_enabled);
+        qos_puts(" rc=");
+        print_int(st.last_rc);
+        qos_puts("\n");
+        return;
+    }
+
+    if (str_eq(mode, "off")){
+        int rc = qos_wifi_monitor_set(0u, 0u);
+        if (rc == 0){
+            qos_puts("WiFi monitor disabled.\n");
+        } else{
+            qos_puts("WiFi monitor disable failed rc=");
+            print_int(rc);
+            qos_puts("\n");
+        }
+        return;
+    }
+
+    if (str_starts_with(mode, "on")){
+        const char* p = mode + 2;
+        unsigned int channel = 0;
+        while (*p == ' '){
+            p++;
+        }
+        if (*p && parse_uint(p, &channel) != 0){
+            qos_puts("Usage: wifimon on [channel]\n");
+            return;
+        }
+        int rc = qos_wifi_monitor_set(2u, channel);
+        if (rc == 0){
+            qos_puts("WiFi monitor enabled mode=2");
+            if (channel){
+                qos_puts(" ch=");
+                print_uint(channel);
+            }
+            qos_puts("\n");
+        } else{
+            qos_puts("WiFi monitor enable failed rc=");
+            print_int(rc);
+            qos_puts(" (stock firmware may reject WLC_SET_MONITOR)\n");
+        }
+        return;
+    }
+
+    qos_puts("Usage: wifimon on [channel]|off|status\n");
+}
+
 static void execute_line(void){
     unsigned int line_len = str_len(g_buf);
     if (line_len == 0u){
@@ -2142,6 +2211,14 @@ static void execute_line(void){
         cmd_wifiraw(p);
     } else if (str_eq(g_buf, "wifiraw")){
         cmd_wifiraw("stat");
+    } else if (str_starts_with(g_buf, "wifimon ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_wifimon(p);
+    } else if (str_eq(g_buf, "wifimon")){
+        cmd_wifimon("status");
     } else{
         qos_puts("Unknown command.\n");
     }

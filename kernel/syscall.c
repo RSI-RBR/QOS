@@ -579,6 +579,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_WIFI_RAW_SET_ENABLED:
         case SYS_WIFI_RAW_RECV:
         case SYS_WIFI_RAW_STATUS:
+        case SYS_WIFI_MONITOR_SET:
+        case SYS_WIFI_MONITOR_STATUS:
         case SYS_WIFI_DUMP_STATUS:
         case SYS_WIFI_GET_VERSION:
         case SYS_USB_DUMP_INFO:
@@ -2503,6 +2505,24 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             cyw43_raw_capture_status_t* user_out = (cyw43_raw_capture_status_t*)frame[TF_X0];
             cyw43_raw_capture_status_t kout;
             if (!user_out || cyw43_raw_capture_get_status(&kout) != 0 ||
+                process_copy_to_user(user_out, &kout, sizeof(kout)) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = 0;
+            return frame_sp;
+        }
+
+        case SYS_WIFI_MONITOR_SET:
+            frame[TF_X0] = (unsigned long)cyw43_ioctl_monitor((unsigned int)frame[TF_X0],
+                                                              (unsigned int)frame[TF_X1]);
+            return frame_sp;
+
+        case SYS_WIFI_MONITOR_STATUS:
+        {
+            cyw43_monitor_status_t* user_out = (cyw43_monitor_status_t*)frame[TF_X0];
+            cyw43_monitor_status_t kout;
+            if (!user_out || cyw43_ioctl_monitor_status(&kout) != 0 ||
                 process_copy_to_user(user_out, &kout, sizeof(kout)) != 0){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
