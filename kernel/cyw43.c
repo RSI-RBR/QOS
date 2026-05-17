@@ -2094,10 +2094,11 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_set_int_monitor_relaxed(const char* name,
-                                            unsigned int op,
-                                            unsigned int value,
-                                            unsigned int* sent_count){
+static int cyw43_wl_cmd_monitor_relaxed(const char* name,
+                                        unsigned int op,
+                                        const unsigned char* data,
+                                        unsigned int data_len,
+                                        unsigned int* sent_count){
     unsigned int seq_before = g_cyw43.sdpcm_tx_seq;
     unsigned int saved_tries = g_cyw43_wl_cmd_tries;
     unsigned int saved_timeout = g_cyw43_wl_cmd_timeout_ms;
@@ -2105,7 +2106,7 @@ static int cyw43_wl_set_int_monitor_relaxed(const char* name,
 
     g_cyw43_wl_cmd_tries = 3u;
     g_cyw43_wl_cmd_timeout_ms = 80u;
-    rc = cyw43_wl_set_int(op, value);
+    rc = cyw43_wl_cmd(1, op, data, data_len, 0, 0, 0);
     g_cyw43_wl_cmd_tries = saved_tries;
     g_cyw43_wl_cmd_timeout_ms = saved_timeout;
 
@@ -2134,6 +2135,15 @@ static int cyw43_wl_set_int_monitor_relaxed(const char* name,
         }
     }
     return rc;
+}
+
+static int cyw43_wl_set_int_monitor_relaxed(const char* name,
+                                            unsigned int op,
+                                            unsigned int value,
+                                            unsigned int* sent_count){
+    unsigned char buf[4];
+    put_le32(buf, value);
+    return cyw43_wl_cmd_monitor_relaxed(name, op, buf, sizeof(buf), sent_count);
 }
 
 static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
@@ -2185,19 +2195,9 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
         return 0;
     }
 
-    rc = cyw43_wl_set_int_monitor_relaxed("monitor", CYW43_WLC_SET_MONITOR, mode, &sent);
+    rc = cyw43_wl_cmd_monitor_relaxed("up", CYW43_WLC_UP, 0, 0, &sent);
     if (rc != 0 && first_error == 0){
-        first_error = -5;
-    }
-
-    rc = cyw43_wl_set_int_monitor_relaxed("promisc", CYW43_WLC_SET_PROMISC, 1u, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -4;
-    }
-
-    rc = cyw43_wl_set_int_monitor_relaxed("scansuppress", CYW43_WLC_SET_SCANSUPPRESS, 1u, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -6;
+        first_error = -7;
     }
 
     if (channel != 0u){
@@ -2205,6 +2205,21 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
         if (rc != 0 && first_error == 0){
             first_error = -3;
         }
+    }
+
+    rc = cyw43_wl_set_int_monitor_relaxed("scansuppress", CYW43_WLC_SET_SCANSUPPRESS, 1u, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -6;
+    }
+
+    rc = cyw43_wl_set_int_monitor_relaxed("promisc", CYW43_WLC_SET_PROMISC, 1u, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -4;
+    }
+
+    rc = cyw43_wl_set_int_monitor_relaxed("monitor", CYW43_WLC_SET_MONITOR, mode, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -5;
     }
 
     if (sent == 0u){
