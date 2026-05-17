@@ -1054,13 +1054,16 @@ static int cyw43_wait_firmware_ready(void){
     unsigned int mbox = 0;
     unsigned char intpend = 0;
     unsigned int proto = 0;
+    unsigned int saw_ready = 0;
+    unsigned int saw_devready = 0;
+    unsigned int quiet = 0;
     uart_puts("CYW43: waiting firmware mailbox\n");
-    for (unsigned int i = 0; i < 100u; i++){
+    for (unsigned int i = 0; i < 160u; i++){
         if (g_cyw43.sd_regs != 0u){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
-            if ((i % 10u) == 0u){
+            if (!saw_ready && (i % 10u) == 0u){
                 uart_puts("CYW43: fw poll pend=");
                 uart_puthex(intpend);
                 uart_puts(" ints=");
@@ -1082,22 +1085,43 @@ static int cyw43_wait_firmware_ready(void){
              */
             if (mbox & (CYW43_HMB_DATA_READY_MASK | CYW43_SD_FW_READY_LEGACY)){
                 proto = (mbox & CYW43_HMB_DATA_VERSION_MASK) >> CYW43_HMB_DATA_VERSION_SHIFT;
+                if (mbox & CYW43_HMB_DATA_DEVREADY){
+                    saw_devready = 1;
+                }
+                saw_ready = 1;
+                quiet = 0;
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                 if (ints){
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
                 }
-                uart_puts("CYW43: firmware ready proto=");
+                uart_puts("CYW43: firmware ready event proto=");
                 uart_putdec(proto);
                 uart_puts(" mbox=");
                 uart_puthex(mbox);
                 uart_puts("\n");
-                return 0;
+                cyw43_delay(250000u);
+                continue;
+            }
+            if (saw_ready && mbox == 0u){
+                quiet++;
+                if (saw_devready || quiet >= 8u){
+                    uart_puts("CYW43: firmware ready proto=");
+                    uart_putdec(proto);
+                    uart_puts(saw_devready ? " devready\n" : " quiet\n");
+                    return 0;
+                }
             }
             if (ints){
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
             }
         }
         cyw43_delay(250000u);
+    }
+    if (saw_ready){
+        uart_puts("CYW43: firmware ready proto=");
+        uart_putdec(proto);
+        uart_puts(" pending-devready-timeout; continuing\n");
+        return 0;
     }
     uart_puts("CYW43: firmware ready timeout ints=");
     uart_puthex(ints);
@@ -1598,6 +1622,12 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
                 if (ints & CYW43_SD_INT_MAILBOX){
                     (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
+                    if (mbox & CYW43_HMB_DATA_FWHALT){
+                        if (!quiet){
+                            uart_puts("CYW43: firmware mailbox halt during RX wait\n");
+                        }
+                        return -1;
+                    }
                 }
                 if (ints & CYW43_SD_INT_FRAME){
                     /*
