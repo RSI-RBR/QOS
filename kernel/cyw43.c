@@ -1715,6 +1715,18 @@ static int cyw43_wait_tx_credit(unsigned int channel){
     return -1;
 }
 
+static void cyw43_force_next_control_credit(void){
+    /*
+     * Nexmon monitor commands on some 43430/43436 firmwares are applied but do
+     * not return a normal SDPCM control response. Without a response the TX
+     * window never advances, so the next control command would block forever
+     * behind our credit guard. Keep this scoped to monitor-only no-response
+     * commands; the normal networking path still uses firmware credits.
+     */
+    g_cyw43.flow_mask &= (unsigned char)~(1u << CYW43_SDPCM_CH_CONTROL);
+    g_cyw43.tx_window = (unsigned char)((g_cyw43.sdpcm_tx_seq + 1u) & 0xFFu);
+}
+
 static int cyw43_packet_write(const unsigned char* data, unsigned int len){
     unsigned int xfer_len = round4_u32(len);
     unsigned int channel = 0;
@@ -1730,6 +1742,49 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
         return -1;
     }
     return sdio_bus_cmd53_write_fixed(2, CYW43_PACKET_ADDR, data, xfer_len);
+}
+
+static int cyw43_wl_set_int_noresp(unsigned int op, unsigned int value){
+    unsigned char tx[CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + 4u];
+    unsigned int raw_frame_len = sizeof(tx);
+    unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
+    unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
+    unsigned short reqid = 0;
+
+    if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
+        return -1;
+    }
+    if (cyw43_sdio_keep_awake() != 0){
+        return -1;
+    }
+
+    mem_zero_local(tx, sizeof(tx));
+    put_le16(tx + 0u, raw_frame_len);
+    put_le16(tx + 2u, raw_frame_len ^ 0xFFFFu);
+    tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
+    tx[5] = CYW43_SDPCM_CH_CONTROL;
+    tx[7] = CYW43_SDPCM_HDR_LEN;
+
+    reqid = (unsigned short)(g_cyw43.reqid + 1u);
+    if (reqid == 0u){
+        reqid = 1u;
+    }
+    g_cyw43.reqid = reqid;
+
+    put_le32(tx + cmd_off + 0u, op);
+    put_le32(tx + cmd_off + 4u, 4u);
+    put_le16(tx + cmd_off + 8u, 2u);
+    put_le16(tx + cmd_off + 10u, reqid);
+    put_le32(tx + cmd_off + 12u, 0u);
+    put_le32(tx + payload_off, value);
+
+    cyw43_force_next_control_credit();
+    if (cyw43_packet_write(tx, raw_frame_len) != 0){
+        return -1;
+    }
+    g_cyw43.sdpcm_tx_seq++;
+    cyw43_force_next_control_credit();
+    return 0;
 }
 
 static unsigned int cyw43_packet_read_xfer_len(unsigned int len){
@@ -2108,9 +2163,9 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
     }
 
     if (mode == 0u){
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, 0u);
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
         (void)cyw43_raw_capture_set_enabled(0u);
         g_cyw43_monitor_mode = 0u;
         g_cyw43_monitor_channel = 0u;
@@ -2119,25 +2174,25 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
     }
 
     if (channel != 0u){
-        rc = cyw43_wl_set_int(CYW43_WLC_SET_CHANNEL, channel);
+        rc = cyw43_wl_set_int_noresp(CYW43_WLC_SET_CHANNEL, channel);
         if (rc != 0){
             g_cyw43_monitor_last_rc = -3;
             return -3;
         }
     }
 
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 1u);
-    rc = cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 1u);
+    (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 1u);
+    rc = cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 1u);
     if (rc != 0){
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
         g_cyw43_monitor_last_rc = -4;
         return -4;
     }
 
-    rc = cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, mode);
+    rc = cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, mode);
     if (rc != 0){
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 0u);
+        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
         (void)cyw43_raw_capture_set_enabled(0u);
         g_cyw43_monitor_mode = 0u;
         g_cyw43_monitor_last_rc = -5;
@@ -3151,16 +3206,17 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
             return -4;
         }
     }
-    if (cyw43_upload_clm_blob() != 0){
+    if (!monitor_minimal && cyw43_upload_clm_blob() != 0){
         uart_puts("CYW43: CLM load warning; continuing\n");
     }
     if (monitor_minimal){
         /*
-         * Nexmon monitor/raw capture does not need the station-mode setup
-         * sequence below. On Pi Zero 2 W firmware, CLM can finish successfully
-         * and the next station iovar can still wedge the control channel.
+         * Nexmon monitor/raw capture does not need CLM or the station-mode
+         * setup sequence below. Keep this path intentionally small because
+         * patched monitor firmware may apply wl commands without returning
+         * normal SDPCM control replies.
          */
-        uart_puts("CYW43: monitor minimal up; skipping station config\n");
+        uart_puts("CYW43: monitor minimal up; skipping CLM/station config\n");
     } else if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){
             uart_puts("CYW43: WiFi configure-on failed\n");
@@ -3214,13 +3270,7 @@ int cyw43_ioctl_up(void){
 }
 
 int cyw43_ioctl_up_monitor(void){
-    /*
-     * Monitor firmware still needs the normal radio/D11 bring-up. Keep the
-     * separate shell command for workflow clarity, but do not skip base Wi-Fi
-     * setup here; skipping it made WLC_SET_MONITOR look enabled while no
-     * frames were actually delivered.
-     */
-    return cyw43_ioctl_up_common(0u);
+    return cyw43_ioctl_up_common(1u);
 }
 
 int cyw43_ioctl_down(void){
