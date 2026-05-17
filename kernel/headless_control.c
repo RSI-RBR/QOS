@@ -267,13 +267,17 @@ static void render_led(unsigned long now){
 }
 
 void headless_control_init(void){
-    if (!QOS_HEADLESS_BUTTON_ENABLED){
+    if (!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED){
         return;
     }
-    gpio_set_input(QOS_HEADLESS_BUTTON_GPIO);
-    gpio_set_pull(QOS_HEADLESS_BUTTON_GPIO, GPIO_PULL_UP);
-    gpio_set_output(QOS_HEADLESS_LED_GPIO);
-    led_apply(0u);
+    if (QOS_HEADLESS_BUTTON_ENABLED){
+        gpio_set_input(QOS_HEADLESS_BUTTON_GPIO);
+        gpio_set_pull(QOS_HEADLESS_BUTTON_GPIO, GPIO_PULL_UP);
+    }
+    if (QOS_HEADLESS_LED_ENABLED){
+        gpio_set_output(QOS_HEADLESS_LED_GPIO);
+        led_apply(0u);
+    }
 
     g_inited = 1u;
     g_btn_raw = 0u;
@@ -287,13 +291,19 @@ void headless_control_init(void){
     g_led_burst_on = 0u;
     g_led_burst_next_tick = system_ticks;
     g_led_base_anchor = system_ticks;
-    uart_puts("Headless: button/LED control enabled\n");
+    if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
+        uart_puts("Headless: button/LED control enabled\n");
+    } else if (QOS_HEADLESS_BUTTON_ENABLED){
+        uart_puts("Headless: button control enabled\n");
+    } else if (QOS_HEADLESS_LED_ENABLED){
+        uart_puts("Headless: LED control enabled\n");
+    }
 }
 
 void headless_control_poll(void){
     unsigned long now;
 
-    if (!QOS_HEADLESS_BUTTON_ENABLED || !g_inited){
+    if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
     }
     if (cpu_get_id() != 0u){
@@ -301,7 +311,11 @@ void headless_control_poll(void){
     }
 
     now = system_ticks;
-    poll_button_state(now);
-    handle_button_actions(now);
-    render_led(now);
+    if (QOS_HEADLESS_BUTTON_ENABLED){
+        poll_button_state(now);
+        handle_button_actions(now);
+    }
+    if (QOS_HEADLESS_LED_ENABLED){
+        render_led(now);
+    }
 }
