@@ -1582,7 +1582,6 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
     unsigned char count1 = 0;
     unsigned char intpend = 0;
     unsigned int ints = 0;
-    unsigned int host_ints = 0;
     unsigned int mbox = 0;
     unsigned int loops = timeout_ms ? (timeout_ms * 20u) : 1u;
 
@@ -1602,7 +1601,6 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
                 unsigned int ack = 0;
-                host_ints = ints & CYW43_SD_HOST_INT_MASK;
                 ack = ints & ~CYW43_SD_INT_FRAME;
                 if (ints & CYW43_SD_INT_MAILBOX){
                     (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
@@ -1615,23 +1613,10 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
                     }
                 }
                 if (ints & CYW43_SD_INT_FRAME){
-                    /*
-                     * The frame interrupt is level/latch-like on some CYW43
-                     * firmware builds. After draining an initial burst it can
-                     * remain set even though RFRAME_COUNT is zero. Treat only
-                     * the frame-count registers as proof that a FIFO packet is
-                     * actually readable; otherwise clear the stale interrupt
-                     * and keep waiting for real traffic.
-                     */
-                    (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0);
-                    (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1);
-                    if (count0 || count1){
-                        if (ack){
-                            (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
-                        }
-                        return 0;
+                    if (ack){
+                        (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
                     }
-                    ack |= CYW43_SD_INT_FRAME;
+                    return 0;
                 }
                 if (ack){
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
@@ -1648,8 +1633,6 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
         uart_puthex(intpend);
         uart_puts(" ints=");
         uart_puthex(ints);
-        uart_puts(" host=");
-        uart_puthex(host_ints);
         uart_puts(" mbox=");
         uart_puthex(mbox);
         uart_puts("\n");
