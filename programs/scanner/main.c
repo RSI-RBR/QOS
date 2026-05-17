@@ -4,6 +4,8 @@
 #define MAX_APS 64u
 #define RAW_BUF_BYTES 2304u
 #define SSID_MAX 32u
+#define DEFAULT_SCAN_CHANNEL 6u
+#define STALE_RECOVER_SECS 3u
 
 typedef struct {
     unsigned char bssid[6];
@@ -287,6 +289,22 @@ static void print_monitor_status_line(void){
     qos_puts("\n");
 }
 
+static void scanner_ensure_monitor_ready(unsigned int channel){
+    cyw43_monitor_status_t st;
+    unsigned int use_ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
+
+    (void)qos_wifi_up_monitor();
+    if (qos_wifi_monitor_status(&st) == 0){
+        if (st.channel != 0u){
+            use_ch = st.channel;
+        }
+        if (st.enabled && st.raw_enabled){
+            return;
+        }
+    }
+    (void)qos_wifi_monitor_set(2u, use_ch);
+}
+
 static void print_final_aps(void){
     unsigned int idx = 0u;
     qos_puts("\nOpen access points:\n");
@@ -444,10 +462,17 @@ void program_main(void){
     unsigned long long start = qos_get_time_us();
     unsigned long long next_print = start + 1000000ull;
     unsigned long long deadline = start + ((unsigned long long)SCAN_MS * 1000ull);
+    unsigned int stale_secs = 0u;
+    unsigned int last_rx_frames = 0u;
+    unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
 
     qos_puts("QOS WiFi scanner starting. Use wifimon on <channel> first.\n");
+    scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
+    if (have_mon && mon.channel != 0u){
+        active_channel = mon.channel;
+    }
     print_monitor_status_line();
     if (!have_mon || !mon.raw_enabled){
         int raw_rc = qos_wifi_raw_set_enabled(1u);
@@ -458,6 +483,12 @@ void program_main(void){
         qos_puts("scanner: raw already enabled; preserving queue\n");
     }
     print_raw_status_line("scanner start");
+    {
+        cyw43_raw_capture_status_t st0;
+        if (qos_wifi_raw_status(&st0) == 0){
+            last_rx_frames = st0.rx_frames;
+        }
+    }
 
     while ((long long)(qos_get_time_us() - deadline) < 0){
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
@@ -474,8 +505,25 @@ void program_main(void){
         }
 
         if ((long long)(qos_get_time_us() - next_print) >= 0){
+            cyw43_raw_capture_status_t st1;
             print_summary(frames, rt, beacon, probe_req, probe_resp, data, eapol, bad);
             print_raw_status_line("scanner raw");
+            if (qos_wifi_raw_status(&st1) == 0){
+                if (st1.rx_frames == last_rx_frames){
+                    stale_secs++;
+                } else{
+                    stale_secs = 0u;
+                    last_rx_frames = st1.rx_frames;
+                }
+                if (stale_secs >= STALE_RECOVER_SECS){
+                    qos_puts("scanner: rx stalled; rearming monitor\n");
+                    scanner_ensure_monitor_ready(active_channel);
+                    if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
+                        active_channel = mon.channel;
+                    }
+                    stale_secs = 0u;
+                }
+            }
             next_print += 1000000ull;
         }
     }

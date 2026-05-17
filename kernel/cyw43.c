@@ -3670,7 +3670,6 @@ static int cyw43_raw_capture_poll_budget(unsigned int max_frames,
 
     if (!g_cyw43_raw_enabled ||
         !g_cyw43.fw_running ||
-        !g_cyw43.iface_up ||
         !g_cyw43.func2_ready){
         spin_unlock(&g_cyw43_raw_poll_lock);
         return 0;
