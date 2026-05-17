@@ -206,6 +206,8 @@ static unsigned int g_cyw43_raw_unknown_frames;
 static unsigned int g_cyw43_monitor_mode;
 static unsigned int g_cyw43_monitor_channel;
 static int g_cyw43_monitor_last_rc;
+static unsigned int g_cyw43_wl_cmd_tries = 48u;
+static unsigned int g_cyw43_wl_cmd_timeout_ms = 250u;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -1927,7 +1929,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     }
     g_cyw43.sdpcm_tx_seq++;
 
-    for (unsigned int tries = 0; tries < 48u; tries++){
+    for (unsigned int tries = 0; tries < g_cyw43_wl_cmd_tries; tries++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
         unsigned int doffset = 0;
@@ -1935,7 +1937,7 @@ static int cyw43_wl_cmd(int write, unsigned int op,
         unsigned int cdc_len = 0;
         unsigned int copy_len = 0;
 
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 250u, 0) != 0){
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, g_cyw43_wl_cmd_timeout_ms, 0) != 0){
             continue;
         }
         if (rx_len == 0u){
@@ -2092,6 +2094,48 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_wl_set_int_monitor_relaxed(const char* name,
+                                            unsigned int op,
+                                            unsigned int value,
+                                            unsigned int* sent_count){
+    unsigned int seq_before = g_cyw43.sdpcm_tx_seq;
+    unsigned int saved_tries = g_cyw43_wl_cmd_tries;
+    unsigned int saved_timeout = g_cyw43_wl_cmd_timeout_ms;
+    int rc = 0;
+
+    g_cyw43_wl_cmd_tries = 3u;
+    g_cyw43_wl_cmd_timeout_ms = 80u;
+    rc = cyw43_wl_set_int(op, value);
+    g_cyw43_wl_cmd_tries = saved_tries;
+    g_cyw43_wl_cmd_timeout_ms = saved_timeout;
+
+    if (g_cyw43.sdpcm_tx_seq != seq_before){
+        if (sent_count){
+            (*sent_count)++;
+        }
+    }
+
+    if (rc != 0){
+        uart_puts("CYW43: monitor cmd no normal reply ");
+        uart_puts(name ? name : "?");
+        uart_puts("\n");
+        /*
+         * Nexmon monitor firmware can accept small WLC_SET_* commands without
+         * returning a normal CDC response. If the frame was written, keep one
+         * local credit open so the next monitor setup command can still go out.
+         * This relaxation is used only by the monitor path, never station mode.
+         */
+        if (g_cyw43.sdpcm_tx_seq != seq_before){
+            g_cyw43.flow_mask = 0;
+            g_cyw43.tx_window = (unsigned char)((g_cyw43.sdpcm_tx_seq + 1u) & 0xFFu);
+            if (g_cyw43.tx_window == 0u){
+                g_cyw43.tx_window = 1u;
+            }
+        }
+    }
+    return rc;
+}
+
 static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
     unsigned char buf[4];
     unsigned int actual = 0;
@@ -2114,6 +2158,8 @@ static int cyw43_control_ready(void){
 
 int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
     int rc = 0;
+    unsigned int sent = 0;
+    int first_error = 0;
 
     /*
      * Nexmon's common monitor path uses WLC_SET_MONITOR=108. Mode 2 is the
@@ -2139,36 +2185,39 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
         return 0;
     }
 
+    rc = cyw43_wl_set_int_monitor_relaxed("monitor", CYW43_WLC_SET_MONITOR, mode, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -5;
+    }
+
+    rc = cyw43_wl_set_int_monitor_relaxed("promisc", CYW43_WLC_SET_PROMISC, 1u, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -4;
+    }
+
+    rc = cyw43_wl_set_int_monitor_relaxed("scansuppress", CYW43_WLC_SET_SCANSUPPRESS, 1u, &sent);
+    if (rc != 0 && first_error == 0){
+        first_error = -6;
+    }
+
     if (channel != 0u){
-        rc = cyw43_wl_set_int(CYW43_WLC_SET_CHANNEL, channel);
-        if (rc != 0){
-            g_cyw43_monitor_last_rc = -3;
-            return -3;
+        rc = cyw43_wl_set_int_monitor_relaxed("channel", CYW43_WLC_SET_CHANNEL, channel, &sent);
+        if (rc != 0 && first_error == 0){
+            first_error = -3;
         }
     }
 
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 1u);
-    rc = cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 1u);
-    if (rc != 0){
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
-        g_cyw43_monitor_last_rc = -4;
-        return -4;
-    }
-
-    rc = cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, mode);
-    if (rc != 0){
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
-        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+    if (sent == 0u){
         (void)cyw43_raw_capture_set_enabled(0u);
         g_cyw43_monitor_mode = 0u;
-        g_cyw43_monitor_last_rc = -5;
-        return -5;
+        g_cyw43_monitor_last_rc = first_error ? first_error : -5;
+        return g_cyw43_monitor_last_rc;
     }
 
     (void)cyw43_raw_capture_set_enabled(1u);
     g_cyw43_monitor_mode = mode;
     g_cyw43_monitor_channel = channel;
-    g_cyw43_monitor_last_rc = 0;
+    g_cyw43_monitor_last_rc = first_error;
     return 0;
 }
 
@@ -3195,6 +3244,10 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
             uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
         }
     }
+    if (monitor_minimal){
+        g_cyw43.iface_up = 1;
+        return 0;
+    }
     if (!g_cyw43.iface_up &&
         cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
         /*
@@ -3205,10 +3258,6 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
-    if (monitor_minimal){
-        cyw43_drain_pending_packets(4u);
-        return 0;
-    }
     /*
      * Some 43430/43436 firmware applies regulatory/scan knobs only after
      * WLC_UP. Re-apply them here while keeping failures non-fatal.
