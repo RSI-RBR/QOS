@@ -241,6 +241,52 @@ static void print_summary(unsigned int frames, unsigned int rt, unsigned int bea
     qos_puts("\n");
 }
 
+static void print_raw_status_line(const char* label){
+    cyw43_raw_capture_status_t st;
+    if (qos_wifi_raw_status(&st) != 0){
+        qos_puts(label);
+        qos_puts(": raw status failed\n");
+        return;
+    }
+    qos_puts(label);
+    qos_puts(": raw=");
+    qos_puts(st.enabled ? "on" : "off");
+    qos_puts(" queued=");
+    put_u32(st.queued);
+    qos_puts(" rx=");
+    put_u32(st.rx_frames);
+    qos_puts(" drop=");
+    put_u32(st.dropped);
+    qos_puts(" rt=");
+    put_u32(st.radiotap_frames);
+    qos_puts(" dot11=");
+    put_u32(st.dot11_frames);
+    qos_puts(" eth=");
+    put_u32(st.ethernet_frames);
+    qos_puts(" unk=");
+    put_u32(st.unknown_frames);
+    qos_puts("\n");
+}
+
+static void print_monitor_status_line(void){
+    cyw43_monitor_status_t st;
+    if (qos_wifi_monitor_status(&st) != 0){
+        qos_puts("monitor: status failed\n");
+        return;
+    }
+    qos_puts("monitor: ");
+    qos_puts(st.enabled ? "on" : "off");
+    qos_puts(" mode=");
+    put_u32(st.requested_mode);
+    qos_puts(" ch=");
+    put_u32(st.channel);
+    qos_puts(" raw=");
+    put_u32(st.raw_enabled);
+    qos_puts(" rc=");
+    put_i32(st.last_rc);
+    qos_puts("\n");
+}
+
 static void print_final_aps(void){
     unsigned int idx = 0u;
     qos_puts("\nOpen access points:\n");
@@ -400,7 +446,12 @@ void program_main(void){
     unsigned long long deadline = start + ((unsigned long long)SCAN_MS * 1000ull);
 
     qos_puts("QOS WiFi scanner starting. Use wifimon on <channel> first.\n");
-    (void)qos_wifi_raw_set_enabled(1u);
+    print_monitor_status_line();
+    int raw_rc = qos_wifi_raw_set_enabled(1u);
+    qos_puts("scanner: raw enable rc=");
+    put_i32(raw_rc);
+    qos_puts("\n");
+    print_raw_status_line("scanner start");
 
     while ((long long)(qos_get_time_us() - deadline) < 0){
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
@@ -418,6 +469,7 @@ void program_main(void){
 
         if ((long long)(qos_get_time_us() - next_print) >= 0){
             print_summary(frames, rt, beacon, probe_req, probe_resp, data, eapol, bad);
+            print_raw_status_line("scanner raw");
             next_print += 1000000ull;
         }
     }
