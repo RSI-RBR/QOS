@@ -230,6 +230,7 @@ static void file_profile_dump(void){
 static void syscall_poll_background_io(void){
     static unsigned long next_net_poll_tick = 0;
     static unsigned long next_remote_poll_tick = 0;
+    static unsigned long next_wifi_raw_poll_tick = 0;
     unsigned long now = system_ticks;
 
     // HID is collected by a background pump; consumers drain queued input so
@@ -242,6 +243,12 @@ static void syscall_poll_background_io(void){
         // intentionally modest. Explicit network syscalls still poll directly.
         next_net_poll_tick = now + 50u;
         (void)net_poll();
+    }
+    if ((long)(now - next_wifi_raw_poll_tick) >= 0){
+        next_wifi_raw_poll_tick = now + 1u;
+        if (cyw43_raw_capture_is_enabled()){
+            (void)cyw43_raw_capture_poll();
+        }
     }
     if ((long)(now - next_remote_poll_tick) >= 0){
         next_remote_poll_tick = now + 10u;
@@ -655,6 +662,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_SLEEP: {
             unsigned int ms = (unsigned int)frame[TF_X0];
+            syscall_poll_background_io();
             frame[TF_X0] = 0;
             return process_sleep_on_frame(ms, frame_sp);
         }

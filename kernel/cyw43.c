@@ -180,6 +180,7 @@ typedef struct {
 } cyw43_raw_frame_t;
 
 static spinlock_t g_cyw43_raw_lock;
+static spinlock_t g_cyw43_raw_poll_lock;
 static cyw43_raw_frame_t g_cyw43_raw_ring[CYW43_RAW_CAPTURE_DEPTH];
 static unsigned int g_cyw43_raw_enabled;
 static unsigned int g_cyw43_raw_head;
@@ -2283,6 +2284,14 @@ int cyw43_raw_capture_set_enabled(unsigned int enabled){
     return 0;
 }
 
+int cyw43_raw_capture_is_enabled(void){
+    unsigned int enabled = 0;
+    unsigned long irq = spin_lock_irqsave(&g_cyw43_raw_lock);
+    enabled = g_cyw43_raw_enabled;
+    spin_unlock_irqrestore(&g_cyw43_raw_lock, irq);
+    return enabled ? 1 : 0;
+}
+
 int cyw43_raw_capture_recv(unsigned char* out, unsigned int out_cap){
     unsigned int n = 0;
     unsigned long irq = 0;
@@ -3514,10 +3523,15 @@ int cyw43_raw_capture_poll(void){
     static unsigned char rx[CYW43_PACKET_MAX_BYTES];
     int delivered = 0;
 
+    if (!spin_trylock(&g_cyw43_raw_poll_lock)){
+        return 0;
+    }
+
     if (!g_cyw43_raw_enabled ||
         !g_cyw43.fw_running ||
         !g_cyw43.iface_up ||
         !g_cyw43.func2_ready){
+        spin_unlock(&g_cyw43_raw_poll_lock);
         return 0;
     }
 
@@ -3525,7 +3539,13 @@ int cyw43_raw_capture_poll(void){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
 
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, 0u, 1) != 0){
+        /*
+         * The scanner is a live consumer, not just a stale-ring reader. Give
+         * the first read a tiny wait window so a user process polling at
+         * 1 kHz can catch fresh monitor frames without needing wifiraw scan.
+         * Any additional queued frames are drained immediately.
+         */
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, (i == 0u) ? 3u : 0u, 1) != 0){
             break;
         }
         if (rx_len < CYW43_SDPCM_HDR_LEN){
@@ -3545,6 +3565,7 @@ int cyw43_raw_capture_poll(void){
             g_cyw43.net_rx_other++;
         }
     }
+    spin_unlock(&g_cyw43_raw_poll_lock);
     return delivered;
 }
 
