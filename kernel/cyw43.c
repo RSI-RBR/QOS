@@ -1744,13 +1744,18 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
     return sdio_bus_cmd53_write_fixed(2, CYW43_PACKET_ADDR, data, xfer_len);
 }
 
-static int cyw43_wl_set_int_noresp(unsigned int op, unsigned int value){
-    unsigned char tx[CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + 4u];
-    unsigned int raw_frame_len = sizeof(tx);
+static int cyw43_wl_cmd_noresp(unsigned int op,
+                               const unsigned char* data,
+                               unsigned int data_len){
+    unsigned char tx[CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + 16u];
+    unsigned int raw_frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + data_len;
     unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
     unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
     unsigned short reqid = 0;
 
+    if (data_len > 16u || (!data && data_len != 0u)){
+        return -1;
+    }
     if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
         return -1;
     }
@@ -1772,11 +1777,13 @@ static int cyw43_wl_set_int_noresp(unsigned int op, unsigned int value){
     g_cyw43.reqid = reqid;
 
     put_le32(tx + cmd_off + 0u, op);
-    put_le32(tx + cmd_off + 4u, 4u);
+    put_le32(tx + cmd_off + 4u, data_len);
     put_le16(tx + cmd_off + 8u, 2u);
     put_le16(tx + cmd_off + 10u, reqid);
     put_le32(tx + cmd_off + 12u, 0u);
-    put_le32(tx + payload_off, value);
+    if (data_len != 0u){
+        mem_copy_local(tx + payload_off, data, data_len);
+    }
 
     cyw43_force_next_control_credit();
     if (cyw43_packet_write(tx, raw_frame_len) != 0){
@@ -1785,6 +1792,16 @@ static int cyw43_wl_set_int_noresp(unsigned int op, unsigned int value){
     g_cyw43.sdpcm_tx_seq++;
     cyw43_force_next_control_credit();
     return 0;
+}
+
+static int cyw43_wl_noresp(unsigned int op){
+    return cyw43_wl_cmd_noresp(op, 0, 0u);
+}
+
+static int cyw43_wl_set_int_noresp(unsigned int op, unsigned int value){
+    unsigned char buf[4];
+    put_le32(buf, value);
+    return cyw43_wl_cmd_noresp(op, buf, sizeof(buf));
 }
 
 static unsigned int cyw43_packet_read_xfer_len(unsigned int len){
@@ -3217,6 +3234,11 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
          * normal SDPCM control replies.
          */
         uart_puts("CYW43: monitor minimal up; skipping CLM/station config\n");
+        if (cyw43_wl_noresp(CYW43_WLC_UP) != 0){
+            uart_puts("CYW43: monitor WLC_UP send failed\n");
+            return -6;
+        }
+        cyw43_delay(200000u);
     } else if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){
             uart_puts("CYW43: WiFi configure-on failed\n");
