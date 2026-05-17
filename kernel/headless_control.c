@@ -14,8 +14,6 @@
 #define BTN_DEBOUNCE_MS       35u
 #define BTN_DOUBLE_WINDOW_MS  420u
 #define BTN_LONG_PRESS_MS     1300u
-#define LED_IDLE_PERIOD_MS    2500u
-#define LED_IDLE_ON_MS        60u
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
 #define LED_PULSE_ON_MS       85u
@@ -41,6 +39,7 @@ static unsigned int g_led_burst_pulses = 0u;
 static unsigned int g_led_burst_on = 0u;
 static unsigned long g_led_burst_next_tick = 0u;
 static unsigned long g_led_base_anchor = 0u;
+static unsigned int g_led_prev_scanner_running = 0u;
 static unsigned int g_led_manual_mode = 0u; /* 0=auto, 1=force-off, 2=force-on */
 static unsigned int g_led_test_active = 0u;
 static unsigned int g_led_test_state_on = 0u;
@@ -344,14 +343,31 @@ static void render_led(unsigned long now){
     }
 
     unsigned int scanner_running = (find_scanner_pid() >= 0) ? 1u : 0u;
-    unsigned int period = scanner_running ? LED_SCAN_PERIOD_MS : LED_IDLE_PERIOD_MS;
-    unsigned int on_ms = scanner_running ? LED_SCAN_ON_MS : LED_IDLE_ON_MS;
-    unsigned long elapsed = now - g_led_base_anchor;
-    if (elapsed >= period){
-        g_led_base_anchor = now;
-        elapsed = 0u;
+
+    /*
+     * Default idle behavior requested: LED solid on when scanner is not
+     * running.
+     */
+    if (!scanner_running){
+        g_led_prev_scanner_running = 0u;
+        led_apply(1u);
+        return;
     }
-    led_apply((elapsed < on_ms) ? 1u : 0u);
+
+    /*
+     * Scanner mode: stable 500/500 phase blink.
+     * Use a fixed anchor + modulo timing so brief scheduler stalls don't
+     * permanently stretch the blink cadence.
+     */
+    if (!g_led_prev_scanner_running){
+        g_led_base_anchor = now;
+        g_led_prev_scanner_running = 1u;
+    }
+    {
+        unsigned long elapsed = now - g_led_base_anchor;
+        unsigned long phase = elapsed % LED_SCAN_PERIOD_MS;
+        led_apply((phase < LED_SCAN_ON_MS) ? 1u : 0u);
+    }
 }
 
 void headless_control_init(void){
@@ -382,6 +398,7 @@ void headless_control_init(void){
     g_led_burst_on = 0u;
     g_led_burst_next_tick = system_ticks;
     g_led_base_anchor = system_ticks;
+    g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
