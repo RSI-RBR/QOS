@@ -1747,13 +1747,14 @@ static int cyw43_packet_write(const unsigned char* data, unsigned int len){
 static int cyw43_wl_cmd_noresp(unsigned int op,
                                const unsigned char* data,
                                unsigned int data_len){
-    unsigned char tx[CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + 16u];
+    static unsigned char tx[CYW43_PACKET_MAX_BYTES];
     unsigned int raw_frame_len = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN + data_len;
+    unsigned int frame_len = round4_u32(raw_frame_len);
     unsigned int cmd_off = CYW43_SDPCM_HDR_LEN;
     unsigned int payload_off = CYW43_SDPCM_HDR_LEN + CYW43_CDC_HDR_LEN;
     unsigned short reqid = 0;
 
-    if (data_len > 16u || (!data && data_len != 0u)){
+    if (frame_len > CYW43_PACKET_MAX_BYTES || (!data && data_len != 0u)){
         return -1;
     }
     if (!g_cyw43.fw_running || !g_cyw43.func2_ready){
@@ -1763,7 +1764,7 @@ static int cyw43_wl_cmd_noresp(unsigned int op,
         return -1;
     }
 
-    mem_zero_local(tx, sizeof(tx));
+    mem_zero_local(tx, frame_len);
     put_le16(tx + 0u, raw_frame_len);
     put_le16(tx + 2u, raw_frame_len ^ 0xFFFFu);
     tx[4] = (unsigned char)(g_cyw43.sdpcm_tx_seq & 0xFFu);
@@ -2063,6 +2064,9 @@ static int cyw43_wl_cmd(int write, unsigned int op,
     uart_puts(" req_miss=");
     uart_putdec(seen_ctrl_other_reqid);
     uart_puts("\n");
+    if (write){
+        cyw43_force_next_control_credit();
+    }
     return -1;
 }
 
@@ -2122,10 +2126,44 @@ static int cyw43_wl_set_var(const char* name, const unsigned char* data,
     return rc;
 }
 
+static int cyw43_wl_set_var_noresp(const char* name, const unsigned char* data,
+                                   unsigned int data_len){
+    static unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
+    unsigned int name_len = 0;
+    unsigned int total_len = 0;
+
+    if (!name){
+        return -1;
+    }
+    name_len = strn_len_local(name, 63u);
+    if (name_len == 0u || name_len >= 64u){
+        return -1;
+    }
+    total_len = name_len + 1u + data_len;
+    if (total_len > sizeof(buf)){
+        return -1;
+    }
+
+    mem_zero_local(buf, total_len);
+    for (unsigned int i = 0; i < name_len; i++){
+        buf[i] = (unsigned char)name[i];
+    }
+    if (data && data_len > 0u){
+        mem_copy_local(buf + name_len + 1u, data, data_len);
+    }
+    return cyw43_wl_cmd_noresp(CYW43_WLC_SET_VAR, buf, total_len);
+}
+
 static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
     unsigned char buf[4];
     put_le32(buf, value);
     return cyw43_wl_set_var(name, buf, sizeof(buf));
+}
+
+static int cyw43_wl_set_var_u32_noresp(const char* name, unsigned int value){
+    unsigned char buf[4];
+    put_le32(buf, value);
+    return cyw43_wl_set_var_noresp(name, buf, sizeof(buf));
 }
 
 static int cyw43_wl_set_var_u32_u32(const char* name,
@@ -2705,6 +2743,28 @@ static int cyw43_wl_set_country(void){
                         country, sizeof(country), 0, 0, 0);
 }
 
+static int cyw43_wl_set_country_noresp(void){
+    unsigned char country[12];
+    char cc0 = g_cyw43.country[0] ? g_cyw43.country[0] : 'W';
+    char cc1 = g_cyw43.country[1] ? g_cyw43.country[1] : 'W';
+    char cc2 = g_cyw43.country[2];
+
+    mem_zero_local(country, sizeof(country));
+    country[0] = (unsigned char)cc0;
+    country[1] = (unsigned char)cc1;
+    country[2] = (unsigned char)cc2;
+    put_le32(country + 4u, g_cyw43.country_rev);
+    country[8] = (unsigned char)cc0;
+    country[9] = (unsigned char)cc1;
+    country[10] = (unsigned char)cc2;
+    uart_puts("CYW43: country ");
+    uart_puts(g_cyw43.country[0] ? g_cyw43.country : "??");
+    uart_puts(" rev=");
+    uart_putdec(g_cyw43.country_rev);
+    uart_puts(" noresp\n");
+    return cyw43_wl_set_var_noresp("country", country, sizeof(country));
+}
+
 static int cyw43_wl_set_event_msgs(void){
     unsigned char mask[32];
     unsigned char bsscfg_mask[36];
@@ -2730,6 +2790,31 @@ static int cyw43_wl_set_event_msgs(void){
         return 0;
     }
     return cyw43_wl_set_var("event_msgs", mask, sizeof(mask));
+}
+
+static int cyw43_wl_set_event_msgs_noresp(void){
+    unsigned char mask[32];
+    unsigned char bsscfg_mask[36];
+
+    mem_zero_local(mask, sizeof(mask));
+    cyw43_event_mask_set(mask, 0u);
+    cyw43_event_mask_set(mask, 1u);
+    cyw43_event_mask_set(mask, 3u);
+    cyw43_event_mask_set(mask, 4u);
+    cyw43_event_mask_set(mask, 5u);
+    cyw43_event_mask_set(mask, 6u);
+    cyw43_event_mask_set(mask, 7u);
+    cyw43_event_mask_set(mask, 8u);
+    cyw43_event_mask_set(mask, 11u);
+    cyw43_event_mask_set(mask, 16u);
+    cyw43_event_mask_set(mask, 26u);
+    cyw43_event_mask_set(mask, 69u);
+
+    mem_zero_local(bsscfg_mask, sizeof(bsscfg_mask));
+    put_le32(bsscfg_mask + 0u, 0u);
+    mem_copy_local(bsscfg_mask + 4u, mask, sizeof(mask));
+    (void)cyw43_wl_set_var_noresp("bsscfg:event_msgs", bsscfg_mask, sizeof(bsscfg_mask));
+    return cyw43_wl_set_var_noresp("event_msgs", mask, sizeof(mask));
 }
 
 static void cyw43_log_radio_status(const char* tag){
@@ -2806,14 +2891,14 @@ static int cyw43_wifi_configure_on(void){
      * set regulatory country/event delivery and disable aggregation knobs that
      * make early bare-metal SDIO bring-up much harder to debug.
      */
-    if (cyw43_wl_set_country() != 0){
+    if (cyw43_wl_set_country_noresp() != 0){
         rc = -1;
     }
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_ANTDIV, 3u) != 0){
+    if (cyw43_wl_set_int_noresp(CYW43_WLC_SET_ANTDIV, 3u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("bus:txglom", 0u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("bus:txglom", 0u) != 0){
         rc = -1;
     }
     /*
@@ -2821,35 +2906,36 @@ static int cyw43_wifi_configure_on(void){
      * builds behave badly if APSTA is changed after the original bring-up
      * sequence, so keep the station path conservative and known-good.
      */
-    if (cyw43_wl_set_var_u32("apsta", 1u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("apsta", 1u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("ampdu_ba_wsize", 8u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("ampdu_ba_wsize", 8u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("ampdu_mpdu", 4u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("ampdu_mpdu", 4u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("ampdu_rx_factor", 0u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("ampdu_rx_factor", 0u) != 0){
         rc = -1;
     }
 
-    if (cyw43_wl_set_event_msgs() != 0){
+    if (cyw43_wl_set_event_msgs_noresp() != 0){
         rc = -1;
     }
     // Circle-style scan dwell defaults that improve escan behavior on 4343x.
-    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_CHANNEL_TIME, 0x28u) != 0){
+    if (cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCAN_CHANNEL_TIME, 0x28u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_UNASSOC_TIME, 0x28u) != 0){
+    if (cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCAN_UNASSOC_TIME, 0x28u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_SCAN_PASSIVE_TIME, 0x82u) != 0){
+    if (cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCAN_PASSIVE_TIME, 0x82u) != 0){
         rc = -1;
     }
-    if (cyw43_wl_set_var_u32("roam_off", 1u) != 0){
+    if (cyw43_wl_set_var_u32_noresp("roam_off", 1u) != 0){
         rc = -1;
     }
+    cyw43_drain_pending_packets(16u);
     if (rc != 0){
         uart_puts("CYW43: configure-on partial; continuing\n");
     }
