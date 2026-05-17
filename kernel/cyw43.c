@@ -3725,7 +3725,7 @@ static int cyw43_raw_capture_poll_budget(unsigned int max_frames,
 }
 
 int cyw43_raw_capture_poll(void){
-    return cyw43_raw_capture_poll_budget(16u, 0u);
+    return cyw43_raw_capture_poll_budget(16u, 3u);
 }
 
 int cyw43_raw_capture_poll_lite(void){
