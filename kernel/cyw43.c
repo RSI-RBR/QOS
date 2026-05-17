@@ -225,6 +225,32 @@ static unsigned int kmin_u32(unsigned int a, unsigned int b){
 
 static void cyw43_log_backplane_fail_limited(const char* op, unsigned int off, unsigned int addr){
     unsigned long now = system_ticks;
+    unsigned int is_monitor_poll_addr = 0u;
+
+    if (g_cyw43.sd_regs != 0u){
+        if (addr == (g_cyw43.sd_regs + CYW43_SD_INT_STATUS) ||
+            addr == (g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA)){
+            is_monitor_poll_addr = 1u;
+        }
+    }
+
+    /*
+     * In monitor/raw capture mode, transient misses reading INT_STATUS/HOSTMBOX
+     * are common and quickly self-heal. Don't spam UART every second for those.
+     */
+    if (is_monitor_poll_addr && g_cyw43_monitor_mode != 0u && g_cyw43_raw_enabled){
+        g_cyw43_bp_fail_suppressed++;
+        if (g_cyw43_bp_fail_last_tick == 0u || (unsigned long)(now - g_cyw43_bp_fail_last_tick) >= 30000u){
+            uart_puts("CYW43: backplane poll transient (monitor) addr=");
+            uart_puthex(addr);
+            uart_puts(" suppressed=");
+            uart_puthex(g_cyw43_bp_fail_suppressed);
+            uart_puts("\n");
+            g_cyw43_bp_fail_suppressed = 0u;
+            g_cyw43_bp_fail_last_tick = now ? now : 1u;
+        }
+        return;
+    }
 
     /*
      * Keep diagnostics visible but prevent tight-loop UART floods that can

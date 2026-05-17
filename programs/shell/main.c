@@ -875,6 +875,7 @@ static void cmd_ledtest(const char* mode){
         unsigned int active_high = (st & (1u << 3)) ? 1u : 0u;
         unsigned int manual = (st >> 4) & 0x3u;
         unsigned int pin = (st >> 8) & 0xFFu;
+        unsigned int pin_alt = (st >> 16) & 0xFFu;
 
         qos_puts("led: enabled=");
         qos_puts(enabled ? "yes" : "no");
@@ -884,6 +885,10 @@ static void cmd_ledtest(const char* mode){
         qos_puts(test ? "active" : "idle");
         qos_puts(" pin=");
         print_uint(pin);
+        if (pin_alt < 54u){
+            qos_puts(" alt=");
+            print_uint(pin_alt);
+        }
         qos_puts(" mode=");
         if (manual == 1u){
             qos_puts("force-off");

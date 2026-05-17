@@ -90,6 +90,13 @@ static void led_apply(unsigned int on){
         hw_on = hw_on ? 0u : 1u;
     }
     gpio_write(QOS_HEADLESS_LED_GPIO, (int)hw_on);
+    if (QOS_HEADLESS_LED_GPIO_ALT < 54u){
+        unsigned int hw_on_alt = on ? 1u : 0u;
+        if (!QOS_HEADLESS_LED_ALT_ACTIVE_HIGH){
+            hw_on_alt = hw_on_alt ? 0u : 1u;
+        }
+        gpio_write(QOS_HEADLESS_LED_GPIO_ALT, (int)hw_on_alt);
+    }
     g_led_state = on ? 1u : 0u;
 }
 
@@ -357,6 +364,9 @@ void headless_control_init(void){
     }
     if (QOS_HEADLESS_LED_ENABLED){
         gpio_set_output(QOS_HEADLESS_LED_GPIO);
+        if (QOS_HEADLESS_LED_GPIO_ALT < 54u){
+            gpio_set_output(QOS_HEADLESS_LED_GPIO_ALT);
+        }
         led_apply(0u);
     }
 
@@ -441,5 +451,6 @@ unsigned int headless_led_status_word(void){
     }
     v |= (g_led_manual_mode & 0x3u) << 4;
     v |= (QOS_HEADLESS_LED_GPIO & 0xFFu) << 8;
+    v |= (QOS_HEADLESS_LED_GPIO_ALT & 0xFFu) << 16;
     return v;
 }
