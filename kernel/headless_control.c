@@ -41,6 +41,7 @@ static unsigned int g_led_burst_pulses = 0u;
 static unsigned int g_led_burst_on = 0u;
 static unsigned long g_led_burst_next_tick = 0u;
 static unsigned long g_led_base_anchor = 0u;
+static unsigned int g_led_manual_mode = 0u; /* 0=auto, 1=force-off, 2=force-on */
 static unsigned int g_led_test_active = 0u;
 static unsigned int g_led_test_state_on = 0u;
 static unsigned int g_led_test_remaining_toggles = 0u;
@@ -132,6 +133,7 @@ static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int 
     g_led_test_on_ms = on_ms;
     g_led_test_off_ms = off_ms;
     g_led_test_active = 1u;
+    g_led_manual_mode = 0u;
     g_led_test_state_on = 0u;
     g_led_test_remaining_toggles = blinks * 2u;
     g_led_test_next_tick = now;
@@ -287,6 +289,15 @@ static void poll_button_state(unsigned long now){
 }
 
 static void render_led(unsigned long now){
+    if (g_led_manual_mode == 1u){
+        led_apply(0u);
+        return;
+    }
+    if (g_led_manual_mode == 2u){
+        led_apply(1u);
+        return;
+    }
+
     if (g_led_test_active){
         if ((long)(now - g_led_test_next_tick) >= 0){
             if (!g_led_test_state_on){
@@ -361,6 +372,7 @@ void headless_control_init(void){
     g_led_burst_on = 0u;
     g_led_burst_next_tick = system_ticks;
     g_led_base_anchor = system_ticks;
+    g_led_manual_mode = 0u;
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
         uart_puts("Headless: button/LED control enabled\n");
@@ -404,6 +416,11 @@ int headless_led_force(unsigned int on){
     }
     led_test_stop();
     g_led_burst_pulses = 0u;
+    if (on == 2u){
+        g_led_manual_mode = 0u;
+        return 0;
+    }
+    g_led_manual_mode = on ? 2u : 1u;
     led_apply(on ? 1u : 0u);
     return 0;
 }
@@ -422,6 +439,7 @@ unsigned int headless_led_status_word(void){
     if (QOS_HEADLESS_LED_ACTIVE_HIGH){
         v |= 1u << 3;
     }
+    v |= (g_led_manual_mode & 0x3u) << 4;
     v |= (QOS_HEADLESS_LED_GPIO & 0xFFu) << 8;
     return v;
 }

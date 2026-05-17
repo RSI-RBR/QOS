@@ -544,7 +544,7 @@ static void cmd_help(void){
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
     qos_puts(" wifiraw on|off|stat|read|drain [ms]|scan [ms]\n");
     qos_puts(" wifimon on [channel]|off|status\n");
-    qos_puts(" ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+    qos_puts(" ledtest [blinks [on_ms off_ms]] | on | off | auto | status\n");
 }
 
 static void cmd_run(void){
@@ -873,6 +873,7 @@ static void cmd_ledtest(const char* mode){
         unsigned int on = (st & (1u << 1)) ? 1u : 0u;
         unsigned int test = (st & (1u << 2)) ? 1u : 0u;
         unsigned int active_high = (st & (1u << 3)) ? 1u : 0u;
+        unsigned int manual = (st >> 4) & 0x3u;
         unsigned int pin = (st >> 8) & 0xFFu;
 
         qos_puts("led: enabled=");
@@ -883,6 +884,14 @@ static void cmd_ledtest(const char* mode){
         qos_puts(test ? "active" : "idle");
         qos_puts(" pin=");
         print_uint(pin);
+        qos_puts(" mode=");
+        if (manual == 1u){
+            qos_puts("force-off");
+        } else if (manual == 2u){
+            qos_puts("force-on");
+        } else{
+            qos_puts("auto");
+        }
         qos_puts(" polarity=");
         qos_puts(active_high ? "active-high" : "active-low");
         qos_puts("\n");
@@ -903,6 +912,15 @@ static void cmd_ledtest(const char* mode){
             qos_puts("LED forced off.\n");
         } else{
             qos_puts("LED force-off failed.\n");
+        }
+        return;
+    }
+
+    if (str_eq(mode, "auto")){
+        if (qos_led_set(2u) == 0){
+            qos_puts("LED auto mode restored.\n");
+        } else{
+            qos_puts("LED auto restore failed.\n");
         }
         return;
     }
@@ -936,7 +954,7 @@ static void cmd_ledtest(const char* mode){
             }
 
             if (parse_uint(a0, &blinks) != 0){
-                qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | auto | status\n");
                 return;
             }
 
@@ -952,7 +970,7 @@ static void cmd_ledtest(const char* mode){
                     }
                 }
                 if (parse_uint(a1, &on_ms) != 0){
-                    qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                    qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | auto | status\n");
                     return;
                 }
                 if (*q){
@@ -961,11 +979,11 @@ static void cmd_ledtest(const char* mode){
                         q++;
                     }
                     if (*q){
-                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | auto | status\n");
                         return;
                     }
                     if (parse_uint(a2, &off_ms) != 0){
-                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | auto | status\n");
                         return;
                     }
                 }
@@ -2350,7 +2368,7 @@ static void execute_line(void){
         }
         cmd_ledtest(p);
     } else if (str_eq(g_buf, "ledtest")){
-        cmd_ledtest("status");
+        cmd_ledtest("6 500 500");
     } else if (str_starts_with(g_buf, "dma ")){
         const char* p = g_buf + 4;
         while (*p == ' '){

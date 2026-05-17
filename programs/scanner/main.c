@@ -901,7 +901,7 @@ void program_main(void){
     stats.handshake_hits = 0u;
 
     unsigned long long now = qos_get_time_us();
-    unsigned long long next_print = now + 1000000ull;
+    unsigned long long next_print = now + 2000000ull;
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
@@ -1010,7 +1010,7 @@ void program_main(void){
                     rearm_attempts++;
                 }
             }
-            next_print = now + 1000000ull;
+            next_print = now + 2000000ull;
         }
 
         if ((long long)(now - next_detail) >= 0){
