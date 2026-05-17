@@ -63,8 +63,15 @@ extern volatile unsigned long system_ticks;
 #define CYW43_SD_INT_HOST_MASK  0x000000F0u
 #define CYW43_SD_INT_CHIPACTIVE (1u << 29)
 #define CYW43_SD_HOST_INT_MASK  (CYW43_SD_INT_HOST_MASK | CYW43_SD_INT_CHIPACTIVE)
-#define CYW43_SD_FW_READY       0x80u
-#define CYW43_SD_FW_READY_ALT   0x08u // Circle's intwait path checks this bit.
+#define CYW43_HMB_DATA_NAKHANDLED 0x0001u
+#define CYW43_HMB_DATA_DEVREADY   0x0002u
+#define CYW43_HMB_DATA_FC         0x0004u
+#define CYW43_HMB_DATA_FWREADY    0x0008u
+#define CYW43_HMB_DATA_FWHALT     0x0010u
+#define CYW43_HMB_DATA_VERSION_MASK 0x00FF0000u
+#define CYW43_HMB_DATA_VERSION_SHIFT 16u
+#define CYW43_HMB_DATA_READY_MASK (CYW43_HMB_DATA_DEVREADY | CYW43_HMB_DATA_FWREADY)
+#define CYW43_SD_FW_READY_LEGACY  0x80u
 
 #define CYW43_CRESCAN_SIZE      512u
 #define CYW43_SDPCM_HDR_LEN     12u
@@ -1046,6 +1053,7 @@ static int cyw43_wait_firmware_ready(void){
     unsigned int ints = 0;
     unsigned int mbox = 0;
     unsigned char intpend = 0;
+    unsigned int proto = 0;
     uart_puts("CYW43: waiting firmware mailbox\n");
     for (unsigned int i = 0; i < 100u; i++){
         if (g_cyw43.sd_regs != 0u){
@@ -1061,9 +1069,28 @@ static int cyw43_wait_firmware_ready(void){
                 uart_puthex(mbox);
                 uart_puts("\n");
             }
-            if (mbox & (CYW43_SD_FW_READY | CYW43_SD_FW_READY_ALT)){
+            if (mbox & CYW43_HMB_DATA_FWHALT){
+                uart_puts("CYW43: firmware mailbox reports halt\n");
+                return -1;
+            }
+            /*
+             * Linux brcmfmac treats HMB_DATA_DEVREADY and HMB_DATA_FWREADY as
+             * the dongle-ready indication. Pi Zero 2 W / Nexmon firmware often
+             * reports 0x00040002: protocol version 4 plus DEVREADY. Accept it
+             * here so the first control command does not consume this mailbox
+             * and then time out waiting for a normal packet response.
+             */
+            if (mbox & (CYW43_HMB_DATA_READY_MASK | CYW43_SD_FW_READY_LEGACY)){
+                proto = (mbox & CYW43_HMB_DATA_VERSION_MASK) >> CYW43_HMB_DATA_VERSION_SHIFT;
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
-                uart_puts("CYW43: firmware ready\n");
+                if (ints){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                }
+                uart_puts("CYW43: firmware ready proto=");
+                uart_putdec(proto);
+                uart_puts(" mbox=");
+                uart_puthex(mbox);
+                uart_puts("\n");
                 return 0;
             }
             if (ints){
