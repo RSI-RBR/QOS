@@ -209,6 +209,8 @@ static unsigned int g_cyw43_monitor_channel;
 static int g_cyw43_monitor_last_rc;
 static unsigned int g_cyw43_wl_cmd_tries = 48u;
 static unsigned int g_cyw43_wl_cmd_timeout_ms = 250u;
+static unsigned long g_cyw43_bp_fail_last_tick;
+static unsigned int g_cyw43_bp_fail_suppressed;
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -218,6 +220,39 @@ static int cyw43_wl_cmd(int write, unsigned int op,
 
 static unsigned int kmin_u32(unsigned int a, unsigned int b){
     return (a < b) ? a : b;
+}
+
+static void cyw43_log_backplane_fail_limited(const char* op, unsigned int off, unsigned int addr){
+    unsigned long now = system_ticks;
+
+    /*
+     * Keep diagnostics visible but prevent tight-loop UART floods that can
+     * stall interactive shell use when SDIO/backplane access is unhealthy.
+     */
+    if (g_cyw43_bp_fail_last_tick != 0u && now != 0u &&
+        (unsigned long)(now - g_cyw43_bp_fail_last_tick) < 1000u){
+        g_cyw43_bp_fail_suppressed++;
+        return;
+    }
+
+    uart_puts("CYW43: backplane ");
+    uart_puts(op ? op : "?");
+    uart_puts(" fail off=");
+    uart_puthex(off);
+    uart_puts(" addr=");
+    uart_puthex(addr);
+    if (g_cyw43_bp_fail_suppressed != 0u){
+        uart_puts(" suppressed=");
+        uart_puthex(g_cyw43_bp_fail_suppressed);
+        g_cyw43_bp_fail_suppressed = 0u;
+    }
+    uart_puts("\n");
+
+    if (now == 0u){
+        g_cyw43_bp_fail_last_tick = 1u;
+    } else{
+        g_cyw43_bp_fail_last_tick = now;
+    }
 }
 
 static void put_le32(unsigned char out[4], unsigned int v){
@@ -520,11 +555,7 @@ static int cyw43_backplane_write(unsigned int addr, const unsigned char* data, u
         }
         if (sdio_bus_cmd53_write(1, (cur & (CYW43_SB_WINDOW_SIZE - 1u)) | CYW43_SB_32BIT_ADDR,
                                  &data[off], n) != 0){
-            uart_puts("CYW43: backplane write fail off=");
-            uart_puthex(off);
-            uart_puts(" addr=");
-            uart_puthex(cur);
-            uart_puts("\n");
+            cyw43_log_backplane_fail_limited("write", off, cur);
             return -1;
         }
         off += n;
@@ -545,11 +576,7 @@ static int cyw43_backplane_read(unsigned int addr, unsigned char* data, unsigned
         }
         if (sdio_bus_cmd53_read(1, (cur & (CYW43_SB_WINDOW_SIZE - 1u)) | CYW43_SB_32BIT_ADDR,
                                 &data[off], n) != 0){
-            uart_puts("CYW43: backplane read fail off=");
-            uart_puthex(off);
-            uart_puts(" addr=");
-            uart_puthex(cur);
-            uart_puts("\n");
+            cyw43_log_backplane_fail_limited("read", off, cur);
             return -1;
         }
         off += n;
