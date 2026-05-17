@@ -501,6 +501,7 @@ static void cmd_help(void){
     qos_puts(" log [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
+    qos_puts(" scanner\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -613,6 +614,20 @@ static void cmd_game(void){
     if (qos_display_switch_graphics(pid) != 0){
         qos_puts("Warning: graphics switch request failed.\n");
     }
+}
+
+static void cmd_scanner(void){
+    // FAT 8.3 uppercase, space-padded: "SCANNER BIN"
+    static const char scanner_file_83[] = "SCANNER BIN";
+    qos_puts("Loading SCANNER.BIN...\n");
+    int pid = qos_run_program_named(scanner_file_83);
+    if (pid < 0){
+        qos_puts("SCANNER.BIN load failed.\n");
+        return;
+    }
+    qos_puts("Scanner queued as PID ");
+    print_uint((unsigned int)pid);
+    qos_puts("\n");
 }
 
 static void cmd_fbinfo(void){
@@ -2156,6 +2171,8 @@ static void execute_line(void){
         qos_puts("Usage: gfx <pid>\n");
     } else if (str_eq(g_buf, "game")){
         cmd_game();
+    } else if (str_eq(g_buf, "scanner")){
+        cmd_scanner();
     } else if (str_eq(g_buf, "web")){
         cmd_web();
     } else if (str_eq(g_buf, "tty")){

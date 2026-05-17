@@ -164,6 +164,7 @@ make BOARD="$BOARD" OPENSSL_BIN="$OPENSSL_BIN" \
 echo "[2/5] Building signed programs..."
 make -C programs/shell clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/webbrowser clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
+make -C programs/scanner clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$ADMIN_KEY_ABS" PQ_SIGN_KEY="$ADMIN_PQ_SIGN_KEY_ABS"
 make -C programs/hello clean all OPENSSL_BIN="$OPENSSL_BIN" SIGN_KEY="$DEV_KEY_ABS" PQ_SIGN_KEY="$DEV_PQ_SIGN_KEY_ABS"
 if [[ -d programs/game && -f programs/game/Makefile ]]; then
   make -C programs/game clean
@@ -247,6 +248,8 @@ cp -f programs/shell/shell.bin "$SD_MOUNT/SHELL.BIN"
 if [[ -f programs/shell/shell.pqs ]]; then cp -f programs/shell/shell.pqs "$SD_MOUNT/SHELL.PQS"; fi
 cp -f programs/webbrowser/webbrowser.bin "$SD_MOUNT/WEBBROWS.BIN"
 if [[ -f programs/webbrowser/webbrowser.pqs ]]; then cp -f programs/webbrowser/webbrowser.pqs "$SD_MOUNT/WEBBROWS.PQS"; fi
+cp -f programs/scanner/scanner.bin "$SD_MOUNT/SCANNER.BIN"
+if [[ -f programs/scanner/scanner.pqs ]]; then cp -f programs/scanner/scanner.pqs "$SD_MOUNT/SCANNER.PQS"; fi
 cp -f programs/hello/program.bin "$SD_MOUNT/PROGRAM.BIN"
 if [[ -f programs/hello/program.pqs ]]; then cp -f programs/hello/program.pqs "$SD_MOUNT/PROGRAM.PQS"; fi
 if [[ -f programs/game/game.bin ]]; then
@@ -294,6 +297,8 @@ echo "  $SD_MOUNT/SHELL.BIN"
 if [[ -f "$SD_MOUNT/SHELL.PQS" ]]; then echo "  $SD_MOUNT/SHELL.PQS"; fi
 echo "  $SD_MOUNT/WEBBROWS.BIN"
 if [[ -f "$SD_MOUNT/WEBBROWS.PQS" ]]; then echo "  $SD_MOUNT/WEBBROWS.PQS"; fi
+echo "  $SD_MOUNT/SCANNER.BIN"
+if [[ -f "$SD_MOUNT/SCANNER.PQS" ]]; then echo "  $SD_MOUNT/SCANNER.PQS"; fi
 echo "  $SD_MOUNT/PROGRAM.BIN"
 if [[ -f "$SD_MOUNT/PROGRAM.PQS" ]]; then echo "  $SD_MOUNT/PROGRAM.PQS"; fi
 if [[ -f "$SD_MOUNT/GAME.BIN" ]]; then
