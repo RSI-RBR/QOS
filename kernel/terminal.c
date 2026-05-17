@@ -319,6 +319,17 @@ static int terminal_pid_can_write_locked(const terminal_t* term, int pid, int ow
     if (owner == pid || term->foreground_pid == pid){
         return 1;
     }
+    /*
+     * Debug-friendly shared tty0 output:
+     * allow processes attached to tty0 to print while the shell owns input.
+     * This keeps long-running tools (scanner) visible without stealing the tty.
+     */
+    if (term->id == 0 &&
+        pid >= 0 &&
+        pid < TERM_PID_MAP_MAX &&
+        g_pid_term[pid] == (signed char)term->id){
+        return 1;
+    }
     return 0;
 }
 

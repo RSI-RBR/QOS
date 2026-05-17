@@ -501,7 +501,7 @@ static void cmd_help(void){
     qos_puts(" log [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
-    qos_puts(" scanner        - start continuous WiFi scanner in background\n");
+    qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -627,11 +627,9 @@ static void cmd_scanner(void){
         return;
     }
     g_foreground_pid = pid;
-    qos_puts("Scanner running in background as PID ");
+    qos_puts("Scanner running as PID ");
     print_uint((unsigned int)pid);
-    qos_puts(" (use 'log ");
-    print_uint((unsigned int)pid);
-    qos_puts("' to inspect output)\n");
+    qos_puts(" (live output in this shell)\n");
 }
 
 static void cmd_fbinfo(void){
