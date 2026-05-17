@@ -3,8 +3,39 @@
 #define MAX_APS 64u
 #define RAW_BUF_BYTES 2304u
 #define SSID_MAX 32u
+#define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
 #define STALE_RECOVER_SECS 3u
+#define HOP_DWELL_MS 100u
+#define DETAIL_PRINT_SECS 12u
+#define KEY_EVENT_RING 96u
+
+typedef enum {
+    CAT_BEACON = 0,
+    CAT_DATA,
+    CAT_PROBE_REQUEST,
+    CAT_PROBE_RESPONSE,
+    CAT_KEY,
+    CAT_ACTION,
+    CAT_BLOCK_ACK,
+    CAT_AUTH_REQUEST,
+    CAT_QOS_NULL,
+    CAT_CLEAR_TO_SEND,
+    CAT_ACKNOWLEDGEMENT,
+    CAT_UNKNOWN,
+    CAT_COUNT
+} frame_cat_t;
+
+typedef struct {
+    unsigned int frame_counts[CAT_COUNT];
+    unsigned int frame_bytes[CAT_COUNT];
+    unsigned int frames;
+    unsigned int rt;
+    unsigned int bad;
+    unsigned int hop_ok;
+    unsigned int hop_fail;
+    unsigned int handshake_hits;
+} scan_stats_t;
 
 typedef struct {
     unsigned char bssid[6];
@@ -17,13 +48,37 @@ typedef struct {
     unsigned char wpa;
     int sig_min;
     int sig_max;
-    unsigned int beacons;
-    unsigned int probe_resps;
     unsigned int clients;
-    unsigned char client_macs[8][6];
+    unsigned char client_macs[MAX_CLIENTS_TRACKED][6];
+    unsigned int data_frames;
+    unsigned int key_frames;
+    unsigned int handshake_hits;
+    unsigned int eapol_msg[5];
+    unsigned char hs_m1;
+    unsigned char hs_m2;
+    unsigned char hs_m3;
+    unsigned int cat_counts[CAT_COUNT];
+    unsigned int cat_bytes[CAT_COUNT];
 } ap_info_t;
 
+typedef struct {
+    unsigned char valid;
+    unsigned char channel;
+    unsigned char msg;
+    unsigned short key_info;
+    unsigned short key_data_len;
+    unsigned char bssid[6];
+    unsigned char transmitter[6];
+    unsigned char mic[16];
+    unsigned char nonce[32];
+} key_event_t;
+
 static ap_info_t g_aps[MAX_APS];
+static key_event_t g_key_events[KEY_EVENT_RING];
+static unsigned int g_key_event_head = 0u;
+static unsigned int g_key_event_count = 0u;
+
+static const unsigned char g_hop_channels[] = {1u, 6u, 11u, 2u, 7u, 3u, 8u, 4u, 9u, 5u, 10u};
 
 static void put_u32(unsigned int v){
     char tmp[16];
@@ -56,6 +111,11 @@ static void put_hex8(unsigned int v){
     qos_putc(h[v & 0xFu]);
 }
 
+static void put_hex16(unsigned int v){
+    put_hex8((v >> 8u) & 0xFFu);
+    put_hex8(v & 0xFFu);
+}
+
 static void put_mac(const unsigned char mac[6]){
     for (unsigned int i = 0; i < 6u; i++){
         if (i){
@@ -67,6 +127,10 @@ static void put_mac(const unsigned char mac[6]){
 
 static unsigned int le16(const unsigned char* p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1] << 8);
+}
+
+static unsigned int be16(const unsigned char* p){
+    return ((unsigned int)p[0] << 8) | ((unsigned int)p[1]);
 }
 
 static int mac_eq(const unsigned char a[6], const unsigned char b[6]){
@@ -83,6 +147,15 @@ static void mac_copy(unsigned char dst[6], const unsigned char src[6]){
     }
 }
 
+static void copy_bytes(unsigned char* dst, const unsigned char* src, unsigned int n){
+    if (!dst || !src){
+        return;
+    }
+    for (unsigned int i = 0; i < n; i++){
+        dst[i] = src[i];
+    }
+}
+
 static int mac_is_broadcast(const unsigned char mac[6]){
     for (unsigned int i = 0; i < 6u; i++){
         if (mac[i] != 0xFFu){
@@ -94,6 +167,14 @@ static int mac_is_broadcast(const unsigned char mac[6]){
 
 static int ssid_char_ok(unsigned char c){
     return c >= 32u && c <= 126u;
+}
+
+static void note_cat(scan_stats_t* stats, frame_cat_t cat, unsigned int bytes){
+    if (!stats || cat >= CAT_COUNT){
+        return;
+    }
+    stats->frame_counts[cat]++;
+    stats->frame_bytes[cat] += bytes;
 }
 
 static int find_ap(const unsigned char bssid[6]){
@@ -130,12 +211,12 @@ static void note_client(ap_info_t* ap, const unsigned char mac[6]){
     if (!ap || !mac || mac_is_broadcast(mac)){
         return;
     }
-    for (unsigned int i = 0; i < ap->clients && i < 8u; i++){
+    for (unsigned int i = 0; i < ap->clients && i < MAX_CLIENTS_TRACKED; i++){
         if (mac_eq(ap->client_macs[i], mac)){
             return;
         }
     }
-    if (ap->clients < 8u){
+    if (ap->clients < MAX_CLIENTS_TRACKED){
         mac_copy(ap->client_macs[ap->clients], mac);
     }
     ap->clients++;
@@ -178,67 +259,187 @@ static void parse_tags(ap_info_t* ap, const unsigned char* p, unsigned int len){
     }
 }
 
+static const char* ap_security_label(const ap_info_t* ap){
+    if (!ap){
+        return "UNK";
+    }
+    if (!ap->privacy && !ap->rsn && !ap->wpa){
+        return "OPEN";
+    }
+    if (ap->rsn && ap->wpa){
+        return "RSN+WPA";
+    }
+    if (ap->rsn){
+        return "RSN/WPA2";
+    }
+    if (ap->wpa){
+        return "WPA";
+    }
+    return "WEP?";
+}
+
 static int is_open_ap(const ap_info_t* ap){
     return ap && ap->seen && ap->ssid_len != 0u && !ap->privacy && !ap->rsn && !ap->wpa;
 }
 
-static void print_ap_line(const ap_info_t* ap, unsigned int idx){
-    qos_puts("AP ");
-    put_u32(idx);
-    qos_puts(" ");
-    put_mac(ap->bssid);
-    qos_puts(" ch=");
-    put_u32(ap->channel);
-    qos_puts(" sig=");
-    put_i32(ap->sig_min);
-    qos_puts("..");
-    put_i32(ap->sig_max);
-    qos_puts(" enc=");
-    qos_puts(is_open_ap(ap) ? "OPEN" : "SEC");
-    qos_puts(" ssid=\"");
-    qos_puts(ap->ssid_len ? ap->ssid : "<hidden>");
-    qos_puts("\" clients=");
-    put_u32(ap->clients);
-    qos_puts(" bcn=");
-    put_u32(ap->beacons);
-    qos_puts(" pr=");
-    put_u32(ap->probe_resps);
-    qos_puts("\n");
+static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
+    if (!ap || cat >= CAT_COUNT){
+        return;
+    }
+    ap->cat_counts[cat]++;
+    ap->cat_bytes[cat] += bytes;
 }
 
-static void print_summary(unsigned int frames, unsigned int rt, unsigned int beacon,
-                          unsigned int probe_req, unsigned int probe_resp,
-                          unsigned int data, unsigned int eapol, unsigned int bad){
-    unsigned int aps = 0u;
-    unsigned int open = 0u;
-    for (unsigned int i = 0; i < MAX_APS; i++){
-        if (g_aps[i].seen){
-            aps++;
-            if (is_open_ap(&g_aps[i])){
-                open++;
-            }
+static void key_event_push(unsigned int channel,
+                           unsigned int msg,
+                           unsigned int key_info,
+                           unsigned int key_data_len,
+                           const unsigned char bssid[6],
+                           const unsigned char tx[6],
+                           const unsigned char* mic,
+                           const unsigned char* nonce){
+    key_event_t* ev = &g_key_events[g_key_event_head];
+    ev->valid = 1u;
+    ev->channel = (unsigned char)channel;
+    ev->msg = (unsigned char)msg;
+    ev->key_info = (unsigned short)(key_info & 0xFFFFu);
+    ev->key_data_len = (unsigned short)(key_data_len & 0xFFFFu);
+    copy_bytes(ev->bssid, bssid, 6u);
+    copy_bytes(ev->transmitter, tx, 6u);
+    if (mic){
+        copy_bytes(ev->mic, mic, 16u);
+    } else{
+        for (unsigned int i = 0; i < 16u; i++){
+            ev->mic[i] = 0u;
         }
     }
-    qos_puts("scan frames=");
-    put_u32(frames);
-    qos_puts(" rt=");
-    put_u32(rt);
-    qos_puts(" aps=");
-    put_u32(aps);
-    qos_puts(" open=");
-    put_u32(open);
-    qos_puts(" beacon=");
-    put_u32(beacon);
-    qos_puts(" probe_req=");
-    put_u32(probe_req);
-    qos_puts(" probe_resp=");
-    put_u32(probe_resp);
+    if (nonce){
+        copy_bytes(ev->nonce, nonce, 32u);
+    } else{
+        for (unsigned int i = 0; i < 32u; i++){
+            ev->nonce[i] = 0u;
+        }
+    }
+
+    g_key_event_head = (g_key_event_head + 1u) % KEY_EVENT_RING;
+    if (g_key_event_count < KEY_EVENT_RING){
+        g_key_event_count++;
+    }
+}
+
+static unsigned int eapol_guess_msg(unsigned int key_info){
+    unsigned int ack = (key_info >> 7) & 1u;
+    unsigned int mic = (key_info >> 8) & 1u;
+    unsigned int install = (key_info >> 6) & 1u;
+    unsigned int secure = (key_info >> 9) & 1u;
+
+    if (ack && !mic){
+        return 1u;
+    }
+    if (!ack && mic && !secure){
+        return 2u;
+    }
+    if (ack && mic && install){
+        return 3u;
+    }
+    if (!ack && mic && secure){
+        return 4u;
+    }
+    return 0u;
+}
+
+static unsigned int parse_eapol_key(const unsigned char* eap,
+                                    unsigned int eap_len,
+                                    unsigned int* out_key_info,
+                                    unsigned int* out_key_data_len,
+                                    const unsigned char** out_nonce,
+                                    const unsigned char** out_mic){
+    if (!eap || eap_len < 4u){
+        return 0u;
+    }
+    if (eap[1] != 3u){
+        return 0u;
+    }
+    if (eap_len < 4u + 95u){
+        return 0u;
+    }
+
+    const unsigned char* desc = eap + 4u;
+    unsigned int key_info = be16(desc + 1u);
+    unsigned int key_data_len = be16(desc + 93u);
+    if (out_key_info){
+        *out_key_info = key_info;
+    }
+    if (out_key_data_len){
+        *out_key_data_len = key_data_len;
+    }
+    if (out_nonce){
+        *out_nonce = desc + 13u;
+    }
+    if (out_mic){
+        *out_mic = desc + 77u;
+    }
+    return eapol_guess_msg(key_info);
+}
+
+static void ap_note_handshake(ap_info_t* ap, unsigned int msg, scan_stats_t* stats){
+    if (!ap){
+        return;
+    }
+    if (msg >= 1u && msg <= 4u){
+        ap->eapol_msg[msg]++;
+    }
+    if (msg == 1u){
+        ap->hs_m1 = 1u;
+        ap->hs_m2 = 0u;
+        ap->hs_m3 = 0u;
+        return;
+    }
+    if (msg == 2u && ap->hs_m1){
+        ap->hs_m2 = 1u;
+        return;
+    }
+    if (msg == 3u && ap->hs_m2){
+        ap->hs_m3 = 1u;
+        return;
+    }
+    if (msg == 4u && ap->hs_m1 && ap->hs_m2){
+        ap->handshake_hits++;
+        if (stats){
+            stats->handshake_hits++;
+        }
+        ap->hs_m1 = 0u;
+        ap->hs_m2 = 0u;
+        ap->hs_m3 = 0u;
+    }
+}
+
+static void print_cat_line(const char* label, const unsigned int* v){
+    qos_puts(label);
+    qos_puts(" bcn=");
+    put_u32(v[CAT_BEACON]);
     qos_puts(" data=");
-    put_u32(data);
-    qos_puts(" eapol=");
-    put_u32(eapol);
-    qos_puts(" bad=");
-    put_u32(bad);
+    put_u32(v[CAT_DATA]);
+    qos_puts(" preq=");
+    put_u32(v[CAT_PROBE_REQUEST]);
+    qos_puts(" presp=");
+    put_u32(v[CAT_PROBE_RESPONSE]);
+    qos_puts(" key=");
+    put_u32(v[CAT_KEY]);
+    qos_puts(" act=");
+    put_u32(v[CAT_ACTION]);
+    qos_puts(" blk=");
+    put_u32(v[CAT_BLOCK_ACK]);
+    qos_puts(" auth=");
+    put_u32(v[CAT_AUTH_REQUEST]);
+    qos_puts(" qnull=");
+    put_u32(v[CAT_QOS_NULL]);
+    qos_puts(" cts=");
+    put_u32(v[CAT_CLEAR_TO_SEND]);
+    qos_puts(" ack=");
+    put_u32(v[CAT_ACKNOWLEDGEMENT]);
+    qos_puts(" unk=");
+    put_u32(v[CAT_UNKNOWN]);
     qos_puts("\n");
 }
 
@@ -288,6 +489,130 @@ static void print_monitor_status_line(void){
     qos_puts("\n");
 }
 
+static void print_ap_line(const ap_info_t* ap, unsigned int idx){
+    qos_puts("AP ");
+    put_u32(idx);
+    qos_puts(" ");
+    put_mac(ap->bssid);
+    qos_puts(" ch=");
+    put_u32(ap->channel);
+    qos_puts(" sig=");
+    put_i32(ap->sig_min);
+    qos_puts("..");
+    put_i32(ap->sig_max);
+    qos_puts(" enc=");
+    qos_puts(ap_security_label(ap));
+    qos_puts(" ssid=\"");
+    qos_puts(ap->ssid_len ? ap->ssid : "<hidden>");
+    qos_puts("\" clients=");
+    put_u32(ap->clients);
+    qos_puts(" bcn=");
+    put_u32(ap->cat_counts[CAT_BEACON]);
+    qos_puts(" data=");
+    put_u32(ap->data_frames);
+    qos_puts(" key=");
+    put_u32(ap->key_frames);
+    qos_puts(" hs=");
+    put_u32(ap->handshake_hits);
+    qos_puts("\n");
+}
+
+static void print_recent_key_events(void){
+    if (g_key_event_count == 0u){
+        qos_puts("key events: none\n");
+        return;
+    }
+    qos_puts("key events: ");
+    put_u32(g_key_event_count);
+    qos_puts(" saved, latest:\n");
+    unsigned int show = (g_key_event_count > 6u) ? 6u : g_key_event_count;
+    for (unsigned int i = 0u; i < show; i++){
+        unsigned int pos = (g_key_event_head + KEY_EVENT_RING - 1u - i) % KEY_EVENT_RING;
+        key_event_t* ev = &g_key_events[pos];
+        if (!ev->valid){
+            continue;
+        }
+        qos_puts(" key ch=");
+        put_u32(ev->channel);
+        qos_puts(" msg=");
+        put_u32(ev->msg);
+        qos_puts(" kinfo=0x");
+        put_hex16(ev->key_info);
+        qos_puts(" klen=");
+        put_u32(ev->key_data_len);
+        qos_puts(" bssid=");
+        put_mac(ev->bssid);
+        qos_puts(" tx=");
+        put_mac(ev->transmitter);
+        qos_puts(" mic=");
+        put_hex8(ev->mic[0]);
+        put_hex8(ev->mic[1]);
+        put_hex8(ev->mic[2]);
+        put_hex8(ev->mic[3]);
+        qos_puts("...\n");
+    }
+}
+
+static void print_summary(const scan_stats_t* st, unsigned int active_channel){
+    unsigned int aps = 0u;
+    unsigned int open = 0u;
+    for (unsigned int i = 0; i < MAX_APS; i++){
+        if (g_aps[i].seen){
+            aps++;
+            if (is_open_ap(&g_aps[i])){
+                open++;
+            }
+        }
+    }
+    qos_puts("scan ch=");
+    put_u32(active_channel);
+    qos_puts(" frames=");
+    put_u32(st->frames);
+    qos_puts(" rt=");
+    put_u32(st->rt);
+    qos_puts(" aps=");
+    put_u32(aps);
+    qos_puts(" open=");
+    put_u32(open);
+    qos_puts(" hs=");
+    put_u32(st->handshake_hits);
+    qos_puts(" bad=");
+    put_u32(st->bad);
+    qos_puts(" hop=");
+    put_u32(st->hop_ok);
+    qos_puts("/");
+    put_u32(st->hop_fail);
+    qos_puts("\n");
+
+    print_cat_line("counts", st->frame_counts);
+    print_cat_line("bytes ", st->frame_bytes);
+}
+
+static void print_overview(void){
+    unsigned int open_idx = 0u;
+    unsigned int all_idx = 0u;
+    qos_puts("open access points:\n");
+    for (unsigned int i = 0; i < MAX_APS; i++){
+        if (is_open_ap(&g_aps[i])){
+            print_ap_line(&g_aps[i], open_idx++);
+        }
+    }
+    if (open_idx == 0u){
+        qos_puts(" none\n");
+    }
+
+    qos_puts("all tracked access points:\n");
+    for (unsigned int i = 0; i < MAX_APS; i++){
+        if (g_aps[i].seen){
+            print_ap_line(&g_aps[i], all_idx++);
+        }
+    }
+    if (all_idx == 0u){
+        qos_puts(" none\n");
+    }
+    print_recent_key_events();
+}
+
 static void scanner_ensure_monitor_ready(unsigned int channel){
     cyw43_monitor_status_t st;
     unsigned int use_ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
@@ -304,35 +629,29 @@ static void scanner_ensure_monitor_ready(unsigned int channel){
     (void)qos_wifi_monitor_set(2u, use_ch);
 }
 
-static void print_final_aps(void){
-    unsigned int idx = 0u;
-    qos_puts("\nOpen access points:\n");
-    for (unsigned int i = 0; i < MAX_APS; i++){
-        if (is_open_ap(&g_aps[i])){
-            print_ap_line(&g_aps[i], idx++);
-        }
+static void maybe_hop_channel(unsigned int* active_channel,
+                              unsigned int* hop_idx,
+                              scan_stats_t* stats){
+    if (!active_channel || !hop_idx || !stats){
+        return;
     }
-    if (idx == 0u){
-        qos_puts(" none\n");
-    }
-
-    qos_puts("\nAll APs:\n");
-    idx = 0u;
-    for (unsigned int i = 0; i < MAX_APS; i++){
-        if (g_aps[i].seen){
-            print_ap_line(&g_aps[i], idx++);
-        }
-    }
-    if (idx == 0u){
-        qos_puts(" none\n");
+    unsigned int idx = *hop_idx;
+    idx = (idx + 1u) % (unsigned int)(sizeof(g_hop_channels) / sizeof(g_hop_channels[0]));
+    unsigned int ch = (unsigned int)g_hop_channels[idx];
+    int rc = qos_wifi_monitor_set(2u, ch);
+    if (rc == 0){
+        *active_channel = ch;
+        *hop_idx = idx;
+        stats->hop_ok++;
+    } else{
+        stats->hop_fail++;
     }
 }
 
-static void parse_frame(const unsigned char* buf, unsigned int len,
-                        unsigned int* rt_count, unsigned int* beacon_count,
-                        unsigned int* probe_req_count, unsigned int* probe_resp_count,
-                        unsigned int* data_count, unsigned int* eapol_count,
-                        unsigned int* bad_count){
+static void parse_frame(const unsigned char* buf,
+                        unsigned int len,
+                        unsigned int active_channel,
+                        scan_stats_t* stats){
     const unsigned char* dot = buf;
     unsigned int dot_len = len;
     unsigned int rt_len = 0u;
@@ -345,15 +664,20 @@ static void parse_frame(const unsigned char* buf, unsigned int len,
     const unsigned char* addr2 = 0;
     const unsigned char* addr3 = 0;
 
-    if (!buf || len < 8u){
-        (*bad_count)++;
+    if (!buf || !stats || len < 8u){
+        if (stats){
+            stats->bad++;
+            note_cat(stats, CAT_UNKNOWN, len);
+        }
         return;
     }
+
+    stats->frames++;
 
     if (buf[0] == 0u && buf[1] == 0u){
         rt_len = le16(buf + 2u);
         if (rt_len >= 8u && rt_len < len){
-            (*rt_count)++;
+            stats->rt++;
             if (rt_len > 22u){
                 signal = (signed char)buf[22];
             }
@@ -363,44 +687,68 @@ static void parse_frame(const unsigned char* buf, unsigned int len,
     }
 
     if (dot_len < 24u){
-        (*bad_count)++;
+        stats->bad++;
+        note_cat(stats, CAT_UNKNOWN, len);
         return;
     }
 
     fc = le16(dot);
     if ((fc & 0x0003u) != 0u){
-        (*bad_count)++;
+        stats->bad++;
+        note_cat(stats, CAT_UNKNOWN, len);
         return;
     }
+
     type = (fc >> 2) & 0x3u;
     subtype = (fc >> 4) & 0xFu;
     addr1 = dot + 4u;
     addr2 = dot + 10u;
     addr3 = dot + 16u;
 
-    if (type == 0u && (subtype == 8u || subtype == 5u)){
-        int idx = find_ap(addr3);
-        if (idx < 0 || dot_len < 36u){
-            (*bad_count)++;
+    if (type == 0u){
+        if (subtype == 8u || subtype == 5u){
+            int idx = find_ap(addr3);
+            note_cat(stats, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
+            if (idx >= 0 && dot_len >= 36u){
+                ap_info_t* ap = &g_aps[idx];
+                ap_note_cat(ap, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
+                note_signal(ap, signal);
+                ap->channel = (unsigned char)active_channel;
+                ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
+                parse_tags(ap, dot + 36u, dot_len - 36u);
+            }
             return;
         }
-        ap_info_t* ap = &g_aps[idx];
-        note_signal(ap, signal);
-        ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
-        parse_tags(ap, dot + 36u, dot_len - 36u);
-        if (subtype == 8u){
-            ap->beacons++;
-            (*beacon_count)++;
-        } else{
-            ap->probe_resps++;
-            (*probe_resp_count)++;
+        if (subtype == 4u){
+            note_cat(stats, CAT_PROBE_REQUEST, len);
+            return;
         }
-        (void)addr2;
+        if (subtype == 11u){
+            note_cat(stats, CAT_AUTH_REQUEST, len);
+            return;
+        }
+        if (subtype == 13u){
+            note_cat(stats, CAT_ACTION, len);
+            return;
+        }
+        note_cat(stats, CAT_UNKNOWN, len);
         return;
     }
 
-    if (type == 0u && subtype == 4u){
-        (*probe_req_count)++;
+    if (type == 1u){
+        if (subtype == 9u){
+            note_cat(stats, CAT_BLOCK_ACK, len);
+            return;
+        }
+        if (subtype == 12u){
+            note_cat(stats, CAT_CLEAR_TO_SEND, len);
+            return;
+        }
+        if (subtype == 13u){
+            note_cat(stats, CAT_ACKNOWLEDGEMENT, len);
+            return;
+        }
+        note_cat(stats, CAT_UNKNOWN, len);
         return;
     }
 
@@ -411,7 +759,7 @@ static void parse_frame(const unsigned char* buf, unsigned int len,
         unsigned int llc = 0u;
         const unsigned char* bssid = addr3;
         const unsigned char* client = addr2;
-        (*data_count)++;
+
         if (to_ds && !from_ds){
             bssid = addr1;
             client = addr2;
@@ -426,13 +774,18 @@ static void parse_frame(const unsigned char* buf, unsigned int len,
         if (qos){
             hdr_len += 2u;
         }
+
+        int ap_idx = -1;
         if (!mac_is_broadcast(bssid)){
-            int idx = find_ap(bssid);
-            if (idx >= 0){
-                note_client(&g_aps[idx], client);
-                note_signal(&g_aps[idx], signal);
+            ap_idx = find_ap(bssid);
+            if (ap_idx >= 0){
+                ap_info_t* ap = &g_aps[ap_idx];
+                note_client(ap, client);
+                note_signal(ap, signal);
+                ap->channel = (unsigned char)active_channel;
             }
         }
+
         llc = hdr_len;
         if (dot_len >= llc + 8u &&
             dot[llc + 0u] == 0xAAu &&
@@ -440,38 +793,100 @@ static void parse_frame(const unsigned char* buf, unsigned int len,
             dot[llc + 2u] == 0x03u &&
             dot[llc + 6u] == 0x88u &&
             dot[llc + 7u] == 0x8Eu){
-            (*eapol_count)++;
+            note_cat(stats, CAT_KEY, len);
+            if (ap_idx >= 0){
+                ap_info_t* ap = &g_aps[ap_idx];
+                ap->key_frames++;
+                ap_note_cat(ap, CAT_KEY, len);
+            }
+
+            if (dot_len > llc + 8u){
+                const unsigned char* eap = dot + llc + 8u;
+                unsigned int eap_len = dot_len - (llc + 8u);
+                unsigned int key_info = 0u;
+                unsigned int key_data_len = 0u;
+                const unsigned char* nonce = 0;
+                const unsigned char* mic = 0;
+                unsigned int msg = parse_eapol_key(eap,
+                                                   eap_len,
+                                                   &key_info,
+                                                   &key_data_len,
+                                                   &nonce,
+                                                   &mic);
+                if (ap_idx >= 0 && msg > 0u){
+                    ap_note_handshake(&g_aps[ap_idx], msg, stats);
+                }
+                key_event_push(active_channel,
+                               msg,
+                               key_info,
+                               key_data_len,
+                               bssid,
+                               addr2,
+                               mic,
+                               nonce);
+            }
+            return;
+        }
+
+        if (subtype == 12u){
+            note_cat(stats, CAT_QOS_NULL, len);
+            if (ap_idx >= 0){
+                ap_note_cat(&g_aps[ap_idx], CAT_QOS_NULL, len);
+            }
+            return;
+        }
+
+        note_cat(stats, CAT_DATA, len);
+        if (ap_idx >= 0){
+            ap_info_t* ap = &g_aps[ap_idx];
+            ap->data_frames++;
+            ap_note_cat(ap, CAT_DATA, len);
         }
         return;
     }
 
-    (*bad_count)++;
+    note_cat(stats, CAT_UNKNOWN, len);
 }
 
 void program_main(void){
     unsigned char buf[RAW_BUF_BYTES];
-    unsigned int frames = 0u;
-    unsigned int rt = 0u;
-    unsigned int beacon = 0u;
-    unsigned int probe_req = 0u;
-    unsigned int probe_resp = 0u;
-    unsigned int data = 0u;
-    unsigned int eapol = 0u;
-    unsigned int bad = 0u;
-    unsigned long long start = qos_get_time_us();
-    unsigned long long next_print = start + 1000000ull;
+    scan_stats_t stats;
     unsigned int stale_secs = 0u;
     unsigned int last_rx_frames = 0u;
     unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
+    unsigned int hop_idx = 0u;
 
-    qos_puts("QOS WiFi scanner starting. Use wifimon on <channel> first.\n");
+    for (unsigned int i = 0; i < CAT_COUNT; i++){
+        stats.frame_counts[i] = 0u;
+        stats.frame_bytes[i] = 0u;
+    }
+    stats.frames = 0u;
+    stats.rt = 0u;
+    stats.bad = 0u;
+    stats.hop_ok = 0u;
+    stats.hop_fail = 0u;
+    stats.handshake_hits = 0u;
+
+    unsigned long long now = qos_get_time_us();
+    unsigned long long next_print = now + 1000000ull;
+    unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+    unsigned long long next_hop = now + ((unsigned long long)HOP_DWELL_MS * 1000ull);
+
+    qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
     scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
     if (have_mon && mon.channel != 0u){
         active_channel = mon.channel;
+        for (unsigned int i = 0u; i < (unsigned int)(sizeof(g_hop_channels) / sizeof(g_hop_channels[0])); i++){
+            if (g_hop_channels[i] == (unsigned char)active_channel){
+                hop_idx = i;
+                break;
+            }
+        }
     }
     print_monitor_status_line();
+
     if (!have_mon || !mon.raw_enabled){
         int raw_rc = qos_wifi_raw_set_enabled(1u);
         qos_puts("scanner: raw enable rc=");
@@ -480,6 +895,7 @@ void program_main(void){
     } else{
         qos_puts("scanner: raw already enabled; preserving queue\n");
     }
+
     print_raw_status_line("scanner start");
     {
         cyw43_raw_capture_status_t st0;
@@ -489,22 +905,27 @@ void program_main(void){
     }
 
     while (1){
+        now = qos_get_time_us();
+        if ((long long)(now - next_hop) >= 0){
+            maybe_hop_channel(&active_channel, &hop_idx, &stats);
+            next_hop = now + ((unsigned long long)HOP_DWELL_MS * 1000ull);
+        }
+
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
         if (n < 0){
             qos_puts("scanner: raw recv failed\n");
             break;
         }
         if (n > 0){
-            frames++;
-            parse_frame(buf, (unsigned int)n, &rt, &beacon, &probe_req,
-                        &probe_resp, &data, &eapol, &bad);
+            parse_frame(buf, (unsigned int)n, active_channel, &stats);
         } else{
             qos_sleep(1u);
         }
 
-        if ((long long)(qos_get_time_us() - next_print) >= 0){
+        now = qos_get_time_us();
+        if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
-            print_summary(frames, rt, beacon, probe_req, probe_resp, data, eapol, bad);
+            print_summary(&stats, active_channel);
             print_raw_status_line("scanner raw");
             if (qos_wifi_raw_status(&st1) == 0){
                 if (st1.rx_frames == last_rx_frames){
@@ -522,11 +943,16 @@ void program_main(void){
                     stale_secs = 0u;
                 }
             }
-            next_print += 1000000ull;
+            next_print = now + 1000000ull;
+        }
+
+        if ((long long)(now - next_detail) >= 0){
+            print_overview();
+            next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
         }
     }
 
-    print_summary(frames, rt, beacon, probe_req, probe_resp, data, eapol, bad);
-    print_final_aps();
+    print_summary(&stats, active_channel);
+    print_overview();
     qos_puts("scanner done.\n");
 }
