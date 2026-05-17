@@ -1074,10 +1074,19 @@ static int cyw43_sdio_keep_awake(void){
         cyw43_delay(30000u);
     }
 
+    if (saw_kso){
+        /*
+         * Some firmware revisions transiently report KSO without DEVON while
+         * still accepting control traffic. Treat this as soft-success to avoid
+         * noisy false alarms during monitor-mode command bursts.
+         */
+        return 0;
+    }
+
     uart_puts("CYW43: KSO wake incomplete csr=");
     uart_puthex(csr);
     uart_puts("\n");
-    return saw_kso ? 0 : -1;
+    return -1;
 }
 
 static int cyw43_wait_firmware_ready(void){

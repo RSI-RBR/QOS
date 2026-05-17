@@ -5,11 +5,12 @@
 #define SSID_MAX 32u
 #define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
-#define STALE_RECOVER_SECS 3u
+#define STALE_RECOVER_SECS 8u
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
 #define DETAIL_PRINT_SECS 12u
 #define KEY_EVENT_RING 96u
+#define FULL_REARM_COOLDOWN_SECS 5u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -623,17 +624,37 @@ static void print_overview(void){
 static void scanner_ensure_monitor_ready(unsigned int channel){
     cyw43_monitor_status_t st;
     unsigned int use_ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
+    static unsigned long long next_full_rearm_us = 0ull;
+    unsigned long long now_us = qos_get_time_us();
+    int have_st = (qos_wifi_monitor_status(&st) == 0) ? 1 : 0;
 
-    (void)qos_wifi_up_monitor();
-    if (qos_wifi_monitor_status(&st) == 0){
-        if (st.channel != 0u){
+    if (have_st){
+        if (st.channel != 0u && channel == 0u){
             use_ch = st.channel;
         }
         if (st.enabled && st.raw_enabled){
+            if (use_ch != 0u && st.channel != use_ch){
+                (void)qos_wifi_monitor_set(2u, use_ch);
+            }
             return;
         }
     }
+
+    // Try lightweight monitor re-arm first.
+    if (qos_wifi_monitor_set(2u, use_ch) == 0){
+        (void)qos_wifi_raw_set_enabled(1u);
+        return;
+    }
+
+    // Full firmware-side monitor rearm is expensive; throttle it.
+    if (next_full_rearm_us != 0ull && (long long)(now_us - next_full_rearm_us) < 0){
+        return;
+    }
+    next_full_rearm_us = now_us + ((unsigned long long)FULL_REARM_COOLDOWN_SECS * 1000000ull);
+
+    (void)qos_wifi_up_monitor();
     (void)qos_wifi_monitor_set(2u, use_ch);
+    (void)qos_wifi_raw_set_enabled(1u);
 }
 
 static void maybe_hop_channel(unsigned int* active_channel,
@@ -866,6 +887,7 @@ void program_main(void){
     unsigned int beacon_only_secs = 0u;
     unsigned int prev_frames = 0u;
     unsigned int prev_non_beacon = 0u;
+    unsigned int rearm_attempts = 0u;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -974,14 +996,18 @@ void program_main(void){
                 } else{
                     stale_secs = 0u;
                     last_rx_frames = st1.rx_frames;
+                    rearm_attempts = 0u;
                 }
                 if (stale_secs >= STALE_RECOVER_SECS){
-                    qos_puts("scanner: rx stalled; rearming monitor\n");
+                    if ((rearm_attempts % 4u) == 0u){
+                        qos_puts("scanner: rx stalled; rearming monitor\n");
+                    }
                     scanner_ensure_monitor_ready(active_channel);
                     if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
                         active_channel = mon.channel;
                     }
                     stale_secs = 0u;
+                    rearm_attempts++;
                 }
             }
             next_print = now + 1000000ull;
