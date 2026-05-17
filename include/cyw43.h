@@ -86,6 +86,8 @@ int cyw43_ioctl_down(void);
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
 int cyw43_ioctl_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
 int cyw43_ioctl_join(const char* ssid, const char* password);
+int cyw43_ioctl_set_mac(const unsigned char mac[6]);
+int cyw43_ioctl_randomize_mac(void);
 int cyw43_get_firmware_version(char* out, unsigned int out_cap);
 
 int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,

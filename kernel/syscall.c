@@ -591,6 +591,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_WIFI_MONITOR_SET:
         case SYS_WIFI_MONITOR_STATUS:
         case SYS_WIFI_UP_MONITOR:
+        case SYS_WIFI_RANDOMIZE_MAC:
         case SYS_WIFI_DUMP_STATUS:
         case SYS_WIFI_GET_VERSION:
         case SYS_USB_DUMP_INFO:
@@ -2401,6 +2402,10 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_WIFI_UP_MONITOR:
             frame[TF_X0] = (unsigned long)cyw43_ioctl_up_monitor();
+            return frame_sp;
+
+        case SYS_WIFI_RANDOMIZE_MAC:
+            frame[TF_X0] = (unsigned long)cyw43_ioctl_randomize_mac();
             return frame_sp;
 
         case SYS_WIFI_DOWN:

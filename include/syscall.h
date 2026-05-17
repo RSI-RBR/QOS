@@ -173,7 +173,8 @@ enum {
     SYS_WIFI_RAW_STATUS = 147,
     SYS_WIFI_MONITOR_SET = 148,
     SYS_WIFI_MONITOR_STATUS = 149,
-    SYS_WIFI_UP_MONITOR = 150
+    SYS_WIFI_UP_MONITOR = 150,
+    SYS_WIFI_RANDOMIZE_MAC = 151
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1074,6 +1075,10 @@ static inline int qos_wifi_monitor_status(cyw43_monitor_status_t* out){
 
 static inline int qos_wifi_join(const char* ssid, const char* password){
     return (int)qos_syscall2(SYS_WIFI_JOIN, (unsigned long)ssid, (unsigned long)password);
+}
+
+static inline int qos_wifi_randomize_mac(void){
+    return (int)qos_syscall0(SYS_WIFI_RANDOMIZE_MAC);
 }
 
 static inline void qos_wifi_dump_status(void){

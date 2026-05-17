@@ -8,6 +8,7 @@
 #include "net_proto.h"
 #include "arp.h"
 #include "spinlock.h"
+#include "crypto.h"
 
 extern volatile unsigned long system_ticks;
 
@@ -2181,6 +2182,46 @@ static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
 
 static int cyw43_control_ready(void){
     return g_cyw43.fw_running && g_cyw43.iface_up && g_cyw43.func2_ready;
+}
+
+int cyw43_ioctl_set_mac(const unsigned char mac[6]){
+    unsigned char local_mac[6];
+    unsigned char gateway_ip[4];
+
+    if (!mac){
+        return -1;
+    }
+    for (unsigned int i = 0u; i < 6u; i++){
+        local_mac[i] = mac[i];
+    }
+    // Enforce locally administered unicast source MAC.
+    local_mac[0] = (unsigned char)((local_mac[0] & 0xFEu) | 0x02u);
+
+    if (cyw43_control_ready()){
+        if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) != 0){
+            uart_puts("CYW43: set cur_etheraddr failed\n");
+            return -2;
+        }
+    }
+
+    for (unsigned int i = 0u; i < 6u; i++){
+        g_cyw43.mac[i] = local_mac[i];
+    }
+    net_proto_set_local_mac(g_cyw43.mac);
+    net_proto_get_gateway_ip(gateway_ip);
+    arp_set_periodic_target(gateway_ip, 1000u);
+    (void)arp_send_request(gateway_ip);
+    return 0;
+}
+
+int cyw43_ioctl_randomize_mac(void){
+    unsigned char local_mac[6];
+
+    if (crypto_random_bytes(local_mac, sizeof(local_mac)) != 0){
+        return -1;
+    }
+    local_mac[0] = (unsigned char)((local_mac[0] & 0xFEu) | 0x02u);
+    return cyw43_ioctl_set_mac(local_mac);
 }
 
 int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){

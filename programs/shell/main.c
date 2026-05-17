@@ -536,6 +536,7 @@ static void cmd_help(void){
     qos_puts(" wifidown\n");
     qos_puts(" wifistat\n");
     qos_puts(" wifiver\n");
+    qos_puts(" wifimac rand\n");
     qos_puts(" wifiscan\n");
     qos_puts(" wifiscanfor <ssid>\n");
     qos_puts(" wifiscanx [passes]\n");
@@ -1627,6 +1628,22 @@ static void cmd_wifiver(void){
     }
 }
 
+static void cmd_wifimac(const char* mode){
+    if (!mode || !*mode || str_eq(mode, "rand") || str_eq(mode, "random")){
+        int rc = qos_wifi_randomize_mac();
+        if (rc == 0){
+            qos_puts("WiFi MAC randomized (locally-administered).\n");
+            qos_wifi_dump_status();
+        } else{
+            qos_puts("WiFi MAC randomize failed rc=");
+            print_int(rc);
+            qos_puts("\n");
+        }
+        return;
+    }
+    qos_puts("Usage: wifimac rand\n");
+}
+
 static void cmd_wifiscan(void){
     cyw43_scan_result_t results[16];
     int n = qos_wifi_scan(results, 16u);
@@ -2392,6 +2409,14 @@ static void execute_line(void){
         qos_wifi_dump_status();
     } else if (str_eq(g_buf, "wifiver")){
         cmd_wifiver();
+    } else if (str_starts_with(g_buf, "wifimac ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_wifimac(p);
+    } else if (str_eq(g_buf, "wifimac")){
+        cmd_wifimac("rand");
     } else if (str_eq(g_buf, "wifiscan")){
         cmd_wifiscan();
     } else if (str_starts_with(g_buf, "wifiscanfor ")){
