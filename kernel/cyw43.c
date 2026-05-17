@@ -2817,11 +2817,11 @@ static int cyw43_wifi_configure_on(void){
         rc = -1;
     }
     /*
-     * Stay in plain station mode for now. APSTA enables concurrent AP+STA and
-     * can alter scan behavior on BCM43430/43436 firmware; QOS is not exposing
-     * SoftAP yet, and Pi Zero 2 W scans can complete empty with APSTA enabled.
+     * This was the hidden-join working baseline. Some 43430/43436 firmware
+     * builds behave badly if APSTA is changed after the original bring-up
+     * sequence, so keep the station path conservative and known-good.
      */
-    if (cyw43_wl_set_var_u32("apsta", 0u) != 0){
+    if (cyw43_wl_set_var_u32("apsta", 1u) != 0){
         rc = -1;
     }
     if (cyw43_wl_set_var_u32("ampdu_ba_wsize", 8u) != 0){
@@ -3247,7 +3247,15 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         g_cyw43.wifi_configured = 1;
     }
     if (!monitor_minimal){
-        cyw43_clear_radio_disable_flags();
+        /*
+         * Keep the station path matching the last known-good hidden-join
+         * baseline: force RF out of software-disable before WLC_UP instead of
+         * relying on a GET_RADIO response first. The control path may be noisy
+         * during early bring-up, but SET_RADIO is safe to attempt.
+         */
+        if (cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u) != 0){
+            uart_puts("CYW43: radio enable command failed; continuing\n");
+        }
         if (cyw43_refresh_cur_etheraddr() != 0){
             uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
         }
@@ -3266,16 +3274,6 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
-    /*
-     * Some 43430/43436 firmware applies regulatory/scan knobs only after
-     * WLC_UP. Re-apply them here while keeping failures non-fatal.
-     */
-    (void)cyw43_wl_set_country();
-    (void)cyw43_wl_set_event_msgs();
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_CHANNEL_TIME, 0x28u);
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_UNASSOC_TIME, 0x28u);
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCAN_PASSIVE_TIME, 0x82u);
-    cyw43_clear_radio_disable_flags();
     cyw43_log_radio_status("after-up");
     // Latency-oriented defaults for bring-up: keep radio awake and disable
     // minimum power consumption mode while we prioritize responsiveness.
