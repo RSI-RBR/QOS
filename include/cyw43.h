@@ -81,6 +81,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
                                    const char* clm_blob_83);
 
 int cyw43_ioctl_up(void);
+int cyw43_ioctl_up_monitor(void);
 int cyw43_ioctl_down(void);
 int cyw43_ioctl_scan(cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);
 int cyw43_ioctl_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned int cap, unsigned int* out_count);

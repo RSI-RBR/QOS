@@ -172,7 +172,8 @@ enum {
     SYS_WIFI_RAW_RECV = 146,
     SYS_WIFI_RAW_STATUS = 147,
     SYS_WIFI_MONITOR_SET = 148,
-    SYS_WIFI_MONITOR_STATUS = 149
+    SYS_WIFI_MONITOR_STATUS = 149,
+    SYS_WIFI_UP_MONITOR = 150
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1028,6 +1029,10 @@ static inline int qos_wifi_load_fw(const char* fw_bin_83,
 
 static inline int qos_wifi_up(void){
     return (int)qos_syscall0(SYS_WIFI_UP);
+}
+
+static inline int qos_wifi_up_monitor(void){
+    return (int)qos_syscall0(SYS_WIFI_UP_MONITOR);
 }
 
 static inline int qos_wifi_down(void){

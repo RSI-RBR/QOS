@@ -532,6 +532,7 @@ static void cmd_help(void){
     qos_puts(" wifiinit        - SDIO bus probe only; reboot before wifiload\n");
     qos_puts(" wifiload [fw83 nv83 [clm83]] - read firmware first, then init WiFi\n");
     qos_puts(" wifiup          - release WiFi firmware and enable data path\n");
+    qos_puts(" wifiupmon       - minimal Nexmon/monitor bring-up path\n");
     qos_puts(" wifidown\n");
     qos_puts(" wifistat\n");
     qos_puts(" wifiver\n");
@@ -1596,6 +1597,17 @@ static void cmd_wifiup(void){
     }
 }
 
+static void cmd_wifiupmon(void){
+    int rc = qos_wifi_up_monitor();
+    if (rc == 0){
+        qos_puts("WiFi monitor UP OK\n");
+    } else{
+        qos_puts("WiFi monitor UP failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+    }
+}
+
 static void cmd_wifidown(void){
     int rc = qos_wifi_down();
     if (rc == 0){
@@ -2377,6 +2389,8 @@ static void execute_line(void){
         cmd_wifiload(0, 0, 0);
     } else if (str_eq(g_buf, "wifiup")){
         cmd_wifiup();
+    } else if (str_eq(g_buf, "wifiupmon")){
+        cmd_wifiupmon();
     } else if (str_eq(g_buf, "wifidown")){
         cmd_wifidown();
     } else if (str_eq(g_buf, "wifistat")){

@@ -3151,7 +3151,7 @@ int cyw43_get_firmware_version(char* out, unsigned int out_cap){
     return 0;
 }
 
-int cyw43_ioctl_up(void){
+static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
     if (!g_cyw43.enabled){
         if (cyw43_init() != 0){
             return -2;
@@ -3175,16 +3175,25 @@ int cyw43_ioctl_up(void){
     if (cyw43_upload_clm_blob() != 0){
         uart_puts("CYW43: CLM load warning; continuing\n");
     }
-    if (!g_cyw43.wifi_configured){
+    if (monitor_minimal){
+        /*
+         * Nexmon monitor/raw capture does not need the station-mode setup
+         * sequence below. On Pi Zero 2 W firmware, CLM can finish successfully
+         * and the next station iovar can still wedge the control channel.
+         */
+        uart_puts("CYW43: monitor minimal up; skipping station config\n");
+    } else if (!g_cyw43.wifi_configured){
         if (cyw43_wifi_configure_on() != 0){
             uart_puts("CYW43: WiFi configure-on failed\n");
             return -5;
         }
         g_cyw43.wifi_configured = 1;
     }
-    cyw43_clear_radio_disable_flags();
-    if (cyw43_refresh_cur_etheraddr() != 0){
-        uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
+    if (!monitor_minimal){
+        cyw43_clear_radio_disable_flags();
+        if (cyw43_refresh_cur_etheraddr() != 0){
+            uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
+        }
     }
     if (!g_cyw43.iface_up &&
         cyw43_wl_cmd(1, CYW43_WLC_UP, 0, 0, 0, 0, 0) != 0){
@@ -3196,6 +3205,10 @@ int cyw43_ioctl_up(void){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
+    if (monitor_minimal){
+        cyw43_drain_pending_packets(4u);
+        return 0;
+    }
     /*
      * Some 43430/43436 firmware applies regulatory/scan knobs only after
      * WLC_UP. Re-apply them here while keeping failures non-fatal.
@@ -3215,6 +3228,14 @@ int cyw43_ioctl_up(void){
     }
     cyw43_drain_pending_packets(16u);
     return 0;
+}
+
+int cyw43_ioctl_up(void){
+    return cyw43_ioctl_up_common(0u);
+}
+
+int cyw43_ioctl_up_monitor(void){
+    return cyw43_ioctl_up_common(1u);
 }
 
 int cyw43_ioctl_down(void){
