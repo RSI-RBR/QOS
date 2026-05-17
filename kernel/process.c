@@ -13,6 +13,7 @@
 #include "display.h"
 #include "usb_host.h"
 #include "gpu2d.h"
+#include "headless_control.h"
 
 typedef struct {
     int pid[MAX_PROCESSES];
@@ -1464,10 +1465,12 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
     asm volatile("msr daifclr, #2" : : : "memory");
     scheduler_run_once();
     while (1){
+        headless_control_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
             usb_host_service();
+            headless_control_poll();
             asm volatile("wfi");
         }
     }

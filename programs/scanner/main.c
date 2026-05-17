@@ -1,6 +1,5 @@
 #include "syscall.h"
 
-#define SCAN_MS 30000u
 #define MAX_APS 64u
 #define RAW_BUF_BYTES 2304u
 #define SSID_MAX 32u
@@ -461,7 +460,6 @@ void program_main(void){
     unsigned int bad = 0u;
     unsigned long long start = qos_get_time_us();
     unsigned long long next_print = start + 1000000ull;
-    unsigned long long deadline = start + ((unsigned long long)SCAN_MS * 1000ull);
     unsigned int stale_secs = 0u;
     unsigned int last_rx_frames = 0u;
     unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
@@ -490,7 +488,7 @@ void program_main(void){
         }
     }
 
-    while ((long long)(qos_get_time_us() - deadline) < 0){
+    while (1){
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
         if (n < 0){
             qos_puts("scanner: raw recv failed\n");

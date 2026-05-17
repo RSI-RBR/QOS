@@ -27,6 +27,7 @@
 #include "mailbox.h"
 #include "gpu2d.h"
 #include "v3d.h"
+#include "headless_control.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -254,6 +255,7 @@ static void syscall_poll_background_io(void){
         next_remote_poll_tick = now + 10u;
         remote_login_poll();
     }
+    headless_control_poll();
 }
 
 static void syscall_write_puts(int pid, const char* s){

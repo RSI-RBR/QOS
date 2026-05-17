@@ -38,6 +38,7 @@
 #include "klog.h"
 #include "display.h"
 #include "program.h"
+#include "headless_control.h"
 #include "platform/board.h"
 #include "platform/soc.h"
 
@@ -353,6 +354,7 @@ void kernel_main(void){
     } else{
         (void)remote_login_init();
     }
+    headless_control_init();
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
@@ -432,10 +434,12 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
+        headless_control_poll();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
             usb_host_service();
+            headless_control_poll();
             asm volatile("wfi");
         }
     }

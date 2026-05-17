@@ -47,6 +47,7 @@ C_SOURCES = \
 $(SOC_C_SOURCES) \
 $(BOARD_C_SOURCES) \
 kernel/kernel.c \
+kernel/headless_control.c \
 kernel/uart.c \
 kernel/klog.c \
 kernel/shell.c \

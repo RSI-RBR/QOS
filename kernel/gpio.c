@@ -8,37 +8,128 @@
 #define GPFSEL4 ((volatile unsigned int*)(GPIO_BASE + 0x10))
 #define GPFSEL5 ((volatile unsigned int*)(GPIO_BASE + 0x14))
 
+#define GPSET0 ((volatile unsigned int*)(GPIO_BASE + 0x1C))
+#define GPSET1 ((volatile unsigned int*)(GPIO_BASE + 0x20))
+#define GPCLR0 ((volatile unsigned int*)(GPIO_BASE + 0x28))
+#define GPCLR1 ((volatile unsigned int*)(GPIO_BASE + 0x2C))
+#define GPLEV0 ((volatile unsigned int*)(GPIO_BASE + 0x34))
+#define GPLEV1 ((volatile unsigned int*)(GPIO_BASE + 0x38))
+
 #define GPPUD     ((volatile unsigned int*)(GPIO_BASE + 0x94))
+#define GPPUDCLK0 ((volatile unsigned int*)(GPIO_BASE + 0x98))
 #define GPPUDCLK1 ((volatile unsigned int*)(GPIO_BASE + 0x9C))
 
 static void delay(int count) {
     while (count--) asm volatile("nop");
 }
 
-static void gpio_set_alt(unsigned int pin, unsigned int alt) {
+static volatile unsigned int* gpio_fsel_reg(unsigned int pin){
+    if (pin < 10u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x00);
+    }
+    if (pin < 20u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x04);
+    }
+    if (pin < 30u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x08);
+    }
+    if (pin < 40u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x0C);
+    }
+    if (pin < 50u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x10);
+    }
+    if (pin < 60u){
+        return (volatile unsigned int*)(GPIO_BASE + 0x14);
+    }
+    return 0;
+}
+
+static void gpio_set_func(unsigned int pin, unsigned int func) {
     volatile unsigned int *fsel;
     unsigned int shift;
 
-    if (pin < 10) {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x00);
-    } else if (pin < 20) {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x04);
-    } else if (pin < 30) {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x08);
-    } else if (pin < 40) {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x0C);
-    } else if (pin < 50) {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x10);
-    } else {
-        fsel = (volatile unsigned int*)(GPIO_BASE + 0x14);
+    fsel = gpio_fsel_reg(pin);
+    if (!fsel){
+        return;
     }
 
     shift = (pin % 10) * 3;
 
     unsigned int val = *fsel;
-    val &= ~(7 << shift);
-    val |= (alt << shift);
+    val &= ~(7u << shift);
+    val |= ((func & 7u) << shift);
     *fsel = val;
+}
+
+static void gpio_set_alt(unsigned int pin, unsigned int alt) {
+    gpio_set_func(pin, alt & 7u);
+}
+
+void gpio_set_input(unsigned int pin){
+    gpio_set_func(pin, 0u);
+}
+
+void gpio_set_output(unsigned int pin){
+    gpio_set_func(pin, 1u);
+}
+
+void gpio_set_pull(unsigned int pin, unsigned int pull){
+    volatile unsigned int* clk = 0;
+    unsigned int bit = 0;
+
+    if (pin >= 54u){
+        return;
+    }
+
+    *GPPUD = (pull & 0x3u);
+    delay(150);
+
+    if (pin < 32u){
+        clk = GPPUDCLK0;
+        bit = pin;
+    } else{
+        clk = GPPUDCLK1;
+        bit = pin - 32u;
+    }
+
+    *clk = (1u << bit);
+    delay(150);
+    *clk = 0u;
+}
+
+int gpio_read(unsigned int pin){
+    volatile unsigned int* lev = 0;
+    unsigned int bit = 0;
+
+    if (pin >= 54u){
+        return 0;
+    }
+    if (pin < 32u){
+        lev = GPLEV0;
+        bit = pin;
+    } else{
+        lev = GPLEV1;
+        bit = pin - 32u;
+    }
+    return ((*lev & (1u << bit)) != 0u) ? 1 : 0;
+}
+
+void gpio_write(unsigned int pin, int value){
+    volatile unsigned int* reg = 0;
+    unsigned int bit = 0;
+
+    if (pin >= 54u){
+        return;
+    }
+    if (pin < 32u){
+        reg = value ? GPSET0 : GPCLR0;
+        bit = pin;
+    } else{
+        reg = value ? GPSET1 : GPCLR1;
+        bit = pin - 32u;
+    }
+    *reg = (1u << bit);
 }
 
 void gpio_init_sd(void) {
@@ -53,31 +144,12 @@ void gpio_init_sd(void) {
     gpio_set_alt(53, 4); // SD_DAT3
 
     // Disable pull-up/down
-    *GPPUD = 0;
-    delay(150);
-
-    *GPPUDCLK1 = (1 << (48 - 32)) |
-                 (1 << (49 - 32)) |
-                 (1 << (50 - 32)) |
-                 (1 << (51 - 32)) |
-                 (1 << (52 - 32)) |
-                 (1 << (53 - 32));
-
-    delay(150);
-    *GPPUDCLK1 = 0;
-
-    *GPPUD = 2;
-    delay(150);
-
-    *GPPUDCLK1 = (1 << (49 - 32)) |
-                 (1 << (50 - 32)) |
-                 (1 << (51 - 32)) |
-                 (1 << (52 - 32)) |
-                 (1 << (53 - 32));
-
-    delay(150);
-
-    *GPPUDCLK1 = 0;
+    gpio_set_pull(48u, GPIO_PULL_NONE);
+    gpio_set_pull(49u, GPIO_PULL_UP);
+    gpio_set_pull(50u, GPIO_PULL_UP);
+    gpio_set_pull(51u, GPIO_PULL_UP);
+    gpio_set_pull(52u, GPIO_PULL_UP);
+    gpio_set_pull(53u, GPIO_PULL_UP);
 
     
 
@@ -98,15 +170,11 @@ void gpio_init_emmc(void) {
     gpio_set_alt(53, 7); // DAT3
 
     // Pull up CMD/DAT lines; keep CLK without pull.
-    *GPPUD = 2;
-    delay(150);
-    *GPPUDCLK1 = (1 << (49 - 32)) |
-                 (1 << (50 - 32)) |
-                 (1 << (51 - 32)) |
-                 (1 << (52 - 32)) |
-                 (1 << (53 - 32));
-    delay(150);
-    *GPPUDCLK1 = 0;
+    gpio_set_pull(49u, GPIO_PULL_UP);
+    gpio_set_pull(50u, GPIO_PULL_UP);
+    gpio_set_pull(51u, GPIO_PULL_UP);
+    gpio_set_pull(52u, GPIO_PULL_UP);
+    gpio_set_pull(53u, GPIO_PULL_UP);
 
     uart_puts("GPIO: EMMC pins configured\n");
 }
@@ -118,16 +186,12 @@ void gpio_disconnect_wifi_sdio(void){
         gpio_set_alt(pin, 0); // input
     }
 
-    *GPPUD = 0;
-    delay(150);
-    *GPPUDCLK1 = (1u << (34 - 32)) |
-                 (1u << (35 - 32)) |
-                 (1u << (36 - 32)) |
-                 (1u << (37 - 32)) |
-                 (1u << (38 - 32)) |
-                 (1u << (39 - 32));
-    delay(150);
-    *GPPUDCLK1 = 0;
+    gpio_set_pull(34u, GPIO_PULL_NONE);
+    gpio_set_pull(35u, GPIO_PULL_NONE);
+    gpio_set_pull(36u, GPIO_PULL_NONE);
+    gpio_set_pull(37u, GPIO_PULL_NONE);
+    gpio_set_pull(38u, GPIO_PULL_NONE);
+    gpio_set_pull(39u, GPIO_PULL_NONE);
 }
 
 void gpio_init_wifi_sdio(void){
@@ -144,21 +208,12 @@ void gpio_init_wifi_sdio(void){
 
     // Pull scheme used by Raspberry Pi Linux DT overlays:
     // CLK no pull, CMD/DAT pull-up.
-    *GPPUD = 0;
-    delay(150);
-    *GPPUDCLK1 = (1u << (34 - 32));
-    delay(150);
-    *GPPUDCLK1 = 0;
-
-    *GPPUD = 2;
-    delay(150);
-    *GPPUDCLK1 = (1u << (35 - 32)) |
-                 (1u << (36 - 32)) |
-                 (1u << (37 - 32)) |
-                 (1u << (38 - 32)) |
-                 (1u << (39 - 32));
-    delay(150);
-    *GPPUDCLK1 = 0;
+    gpio_set_pull(34u, GPIO_PULL_NONE);
+    gpio_set_pull(35u, GPIO_PULL_UP);
+    gpio_set_pull(36u, GPIO_PULL_UP);
+    gpio_set_pull(37u, GPIO_PULL_UP);
+    gpio_set_pull(38u, GPIO_PULL_UP);
+    gpio_set_pull(39u, GPIO_PULL_UP);
 
     uart_puts("GPIO: WiFi SDIO pins configured\n");
 }

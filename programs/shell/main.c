@@ -501,7 +501,7 @@ static void cmd_help(void){
     qos_puts(" log [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
-    qos_puts(" scanner\n");
+    qos_puts(" scanner        - start continuous WiFi scanner in background\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -627,14 +627,11 @@ static void cmd_scanner(void){
         return;
     }
     g_foreground_pid = pid;
-    if (qos_tty_set_owner(pid) != 0){
-        qos_puts("Warning: could not transfer TTY ownership.\n");
-    } else{
-        g_tty_owned = 0;
-    }
-    qos_puts("Scanner queued as PID ");
+    qos_puts("Scanner running in background as PID ");
     print_uint((unsigned int)pid);
-    qos_puts("\n");
+    qos_puts(" (use 'log ");
+    print_uint((unsigned int)pid);
+    qos_puts("' to inspect output)\n");
 }
 
 static void cmd_fbinfo(void){
