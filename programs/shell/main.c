@@ -625,6 +625,12 @@ static void cmd_scanner(void){
         qos_puts("SCANNER.BIN load failed.\n");
         return;
     }
+    g_foreground_pid = pid;
+    if (qos_tty_set_owner(pid) != 0){
+        qos_puts("Warning: could not transfer TTY ownership.\n");
+    } else{
+        g_tty_owned = 0;
+    }
     qos_puts("Scanner queued as PID ");
     print_uint((unsigned int)pid);
     qos_puts("\n");
