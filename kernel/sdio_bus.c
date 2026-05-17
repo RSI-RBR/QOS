@@ -75,6 +75,18 @@ static void sdio_short_delay(unsigned int n){
     }
 }
 
+static unsigned long sdio_read_cntpct(void){
+    unsigned long v = 0;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(v));
+    return v;
+}
+
+static unsigned long sdio_read_cntfrq(void){
+    unsigned long v = 0;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(v));
+    return v;
+}
+
 static void sdio_clear_interrupts(void){
     EMMC_INTERRUPT = 0xFFFFFFFFu;
 }
@@ -543,17 +555,28 @@ int sdio_bus_enable_func(unsigned int fn){
 }
 
 int sdio_bus_wait_func_ready(unsigned int fn, unsigned int timeout_ms){
-    unsigned long start = system_ticks;
-    unsigned int polls = (timeout_ms / 10u) + 1u;
+    unsigned long freq = sdio_read_cntfrq();
+    unsigned long start = sdio_read_cntpct();
+    unsigned long timeout_cycles = 0;
+    unsigned int polls = 0;
     unsigned char iorx = 0;
     unsigned char last_iorx = 0;
     if (fn == 0 || fn > 7){
         return -1;
     }
-    if (polls > 200u){
-        polls = 200u;
+    if (timeout_ms == 0u){
+        timeout_ms = 1u;
     }
-    for (unsigned int i = 0; i < polls; i++){
+    timeout_cycles = (freq / 1000u) * (unsigned long)timeout_ms;
+    if (timeout_cycles == 0u){
+        timeout_cycles = freq / 1000u;
+    }
+    /*
+     * Do not cap this to a tiny fixed poll count. Function 2 can legitimately
+     * take hundreds of milliseconds to report ready after CYW43 firmware boot,
+     * especially on Pi Zero-class boards and with patched monitor firmware.
+     */
+    while ((unsigned long)(sdio_read_cntpct() - start) <= timeout_cycles){
         if (sdio_bus_cmd52_read(0, SDIO_CCCR_IORX, &iorx) == 0){
             last_iorx = iorx;
             if (iorx & (1u << fn)){
@@ -564,27 +587,26 @@ int sdio_bus_wait_func_ready(unsigned int fn, unsigned int timeout_ms){
                 uart_puts("\n");
                 return 0;
             }
-        } else if (i == 0u || i == 10u || i == 50u){
+        } else if (polls == 0u || polls == 10u || polls == 50u || polls == 200u){
             uart_puts("SDIO: IORX read fail fn=");
             uart_putdec(fn);
             uart_puts(" i=");
-            uart_putdec(i);
+            uart_putdec(polls);
             uart_puts(" status=");
             uart_puthex(EMMC_STATUS);
             uart_puts(" irpt=");
             uart_puthex(EMMC_INTERRUPT);
             uart_puts("\n");
         }
-        if ((i == 0u || i == 10u || i == 50u || i + 1u == polls) && last_iorx){
+        if ((polls == 0u || polls == 10u || polls == 50u ||
+             polls == 200u || polls == 1000u) && last_iorx){
             uart_puts("SDIO: wait fn=");
             uart_putdec(fn);
             uart_puts(" iorx=");
             uart_puthex(last_iorx);
             uart_puts("\n");
         }
-        if ((system_ticks - start) > timeout_ms){
-            break;
-        }
+        polls++;
         sdio_short_delay(50000u);
     }
     uart_puts("SDIO: fn ready timeout fn=");

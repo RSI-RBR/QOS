@@ -1143,7 +1143,7 @@ static int cyw43_start_firmware(void){
         return -1;
     }
     uart_puts("CYW43: SDIO intmask OK\n");
-    if (sdio_bus_wait_func_ready(2, 2500) != 0){
+    if (sdio_bus_wait_func_ready(2, 8000) != 0){
         uart_puts("CYW43: function 2 not ready after boot mailbox\n");
         return -1;
     }
