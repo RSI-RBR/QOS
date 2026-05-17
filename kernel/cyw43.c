@@ -2201,6 +2201,30 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
         return 0;
     }
 
+    /*
+     * Fast retune path: when monitor mode is already active, avoid replaying
+     * full monitor/promisc setup and avoid resetting raw capture state.
+     * Scanner channel-hopping calls this frequently; re-init each hop can
+     * starve capture and make AP discovery look regressed.
+     */
+    if (g_cyw43_monitor_mode == mode){
+        if (channel != 0u && channel != g_cyw43_monitor_channel){
+            rc = cyw43_wl_set_int_noresp(CYW43_WLC_SET_CHANNEL, channel);
+            if (rc != 0){
+                g_cyw43_monitor_last_rc = -3;
+                return -3;
+            }
+            g_cyw43_monitor_channel = channel;
+        } else if (channel != 0u){
+            g_cyw43_monitor_channel = channel;
+        }
+        if (!g_cyw43_raw_enabled){
+            (void)cyw43_raw_capture_set_enabled(1u);
+        }
+        g_cyw43_monitor_last_rc = 0;
+        return 0;
+    }
+
     if (channel != 0u){
         rc = cyw43_wl_set_int_noresp(CYW43_WLC_SET_CHANNEL, channel);
         if (rc != 0){
