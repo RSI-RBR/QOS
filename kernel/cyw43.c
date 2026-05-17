@@ -9,6 +9,7 @@
 #include "arp.h"
 #include "spinlock.h"
 #include "crypto.h"
+#include "headless_control.h"
 
 extern volatile unsigned long system_ticks;
 
@@ -1653,6 +1654,7 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
     }
 
     while (loops-- > 0u){
+        headless_control_poll();
         if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0) == 0 &&
             sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1) == 0){
             if (count0 || count1){
@@ -1662,7 +1664,8 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
 
         if (g_cyw43.sd_regs != 0u){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
-            if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
+            if (intpend != 0u &&
+                cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
                 unsigned int ack = 0;
                 ack = ints & ~CYW43_SD_INT_FRAME;
                 if (ints & CYW43_SD_INT_MAILBOX){
