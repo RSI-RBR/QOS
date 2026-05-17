@@ -17,7 +17,7 @@
 #define LED_IDLE_PERIOD_MS    2500u
 #define LED_IDLE_ON_MS        60u
 #define LED_SCAN_PERIOD_MS    1000u
-#define LED_SCAN_ON_MS        90u
+#define LED_SCAN_ON_MS        500u
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
