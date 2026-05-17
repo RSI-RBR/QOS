@@ -23,7 +23,8 @@
 #define LED_PULSE_GAP_MS      220u
 #define HTTPS_PROBE_TIMEOUT_MS 900u
 
-static const char g_scanner_name_83[] = "SCANNER BIN";
+static const char g_scanner_program_83[] = "SCANNER BIN";
+static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
 
 static unsigned int g_inited = 0u;
 static unsigned int g_led_state = 0u;
@@ -40,6 +41,12 @@ static unsigned int g_led_burst_pulses = 0u;
 static unsigned int g_led_burst_on = 0u;
 static unsigned long g_led_burst_next_tick = 0u;
 static unsigned long g_led_base_anchor = 0u;
+static unsigned int g_led_test_active = 0u;
+static unsigned int g_led_test_state_on = 0u;
+static unsigned int g_led_test_remaining_toggles = 0u;
+static unsigned int g_led_test_on_ms = 500u;
+static unsigned int g_led_test_off_ms = 500u;
+static unsigned long g_led_test_next_tick = 0u;
 
 static int str83_eq(const char a[11], const char b[11]){
     if (!a || !b){
@@ -63,7 +70,7 @@ static int is_scanner_process(const process_t* p){
     if (!p->file_sandbox_enabled){
         return 0;
     }
-    return str83_eq(p->file_sandbox_83, g_scanner_name_83);
+    return str83_eq(p->file_sandbox_83, g_scanner_sandbox_83);
 }
 
 static int find_scanner_pid(void){
@@ -91,8 +98,49 @@ static void led_burst(unsigned int pulses, unsigned long now){
     g_led_burst_next_tick = now;
 }
 
+static void led_test_stop(void){
+    g_led_test_active = 0u;
+    g_led_test_state_on = 0u;
+    g_led_test_remaining_toggles = 0u;
+    g_led_test_next_tick = system_ticks;
+}
+
+static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
+    unsigned long now = system_ticks;
+    if (!QOS_HEADLESS_LED_ENABLED){
+        return -1;
+    }
+    if (blinks == 0u){
+        blinks = 6u;
+    }
+    if (blinks > 120u){
+        blinks = 120u;
+    }
+    if (on_ms == 0u){
+        on_ms = 500u;
+    }
+    if (off_ms == 0u){
+        off_ms = 500u;
+    }
+    if (on_ms > 10000u){
+        on_ms = 10000u;
+    }
+    if (off_ms > 10000u){
+        off_ms = 10000u;
+    }
+
+    g_led_test_on_ms = on_ms;
+    g_led_test_off_ms = off_ms;
+    g_led_test_active = 1u;
+    g_led_test_state_on = 0u;
+    g_led_test_remaining_toggles = blinks * 2u;
+    g_led_test_next_tick = now;
+    g_led_burst_pulses = 0u;
+    return 0;
+}
+
 static int scanner_start(void){
-    loaded_program_t prog = load_program_from_sd_named(g_scanner_name_83);
+    loaded_program_t prog = load_program_from_sd_named(g_scanner_program_83);
     int pid = -1;
 
     if (!prog.entry){
@@ -239,6 +287,28 @@ static void poll_button_state(unsigned long now){
 }
 
 static void render_led(unsigned long now){
+    if (g_led_test_active){
+        if ((long)(now - g_led_test_next_tick) >= 0){
+            if (!g_led_test_state_on){
+                led_apply(1u);
+                g_led_test_state_on = 1u;
+                g_led_test_next_tick = now + g_led_test_on_ms;
+            } else{
+                led_apply(0u);
+                g_led_test_state_on = 0u;
+                if (g_led_test_remaining_toggles > 0u){
+                    g_led_test_remaining_toggles--;
+                }
+                if (g_led_test_remaining_toggles == 0u){
+                    led_test_stop();
+                } else{
+                    g_led_test_next_tick = now + g_led_test_off_ms;
+                }
+            }
+        }
+        return;
+    }
+
     if (g_led_burst_pulses > 0u){
         if ((long)(now - g_led_burst_next_tick) >= 0){
             if (!g_led_burst_on){
@@ -291,6 +361,7 @@ void headless_control_init(void){
     g_led_burst_on = 0u;
     g_led_burst_next_tick = system_ticks;
     g_led_base_anchor = system_ticks;
+    led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
         uart_puts("Headless: button/LED control enabled\n");
     } else if (QOS_HEADLESS_BUTTON_ENABLED){
@@ -318,4 +389,39 @@ void headless_control_poll(void){
     if (QOS_HEADLESS_LED_ENABLED){
         render_led(now);
     }
+}
+
+int headless_led_test(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
+    if (cpu_get_id() != 0u){
+        return -1;
+    }
+    return led_test_start(blinks, on_ms, off_ms);
+}
+
+int headless_led_force(unsigned int on){
+    if (!QOS_HEADLESS_LED_ENABLED || cpu_get_id() != 0u){
+        return -1;
+    }
+    led_test_stop();
+    g_led_burst_pulses = 0u;
+    led_apply(on ? 1u : 0u);
+    return 0;
+}
+
+unsigned int headless_led_status_word(void){
+    unsigned int v = 0u;
+    if (QOS_HEADLESS_LED_ENABLED){
+        v |= 1u << 0;
+    }
+    if (g_led_state){
+        v |= 1u << 1;
+    }
+    if (g_led_test_active){
+        v |= 1u << 2;
+    }
+    if (QOS_HEADLESS_LED_ACTIVE_HIGH){
+        v |= 1u << 3;
+    }
+    v |= (QOS_HEADLESS_LED_GPIO & 0xFFu) << 8;
+    return v;
 }

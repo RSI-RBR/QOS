@@ -544,6 +544,7 @@ static void cmd_help(void){
     qos_puts(" wifijoinhidden <ssid> <password>   (join without scan)\n");
     qos_puts(" wifiraw on|off|stat|read|drain [ms]|scan [ms]\n");
     qos_puts(" wifimon on [channel]|off|status\n");
+    qos_puts(" ledtest [blinks [on_ms off_ms]] | on | off | status\n");
 }
 
 static void cmd_run(void){
@@ -863,6 +864,120 @@ static void cmd_termout(const char* mode){
         return;
     }
     qos_puts("terminal output set.\n");
+}
+
+static void cmd_ledtest(const char* mode){
+    if (!mode || !*mode || str_eq(mode, "status")){
+        unsigned int st = qos_led_status();
+        unsigned int enabled = (st & (1u << 0)) ? 1u : 0u;
+        unsigned int on = (st & (1u << 1)) ? 1u : 0u;
+        unsigned int test = (st & (1u << 2)) ? 1u : 0u;
+        unsigned int active_high = (st & (1u << 3)) ? 1u : 0u;
+        unsigned int pin = (st >> 8) & 0xFFu;
+
+        qos_puts("led: enabled=");
+        qos_puts(enabled ? "yes" : "no");
+        qos_puts(" state=");
+        qos_puts(on ? "on" : "off");
+        qos_puts(" test=");
+        qos_puts(test ? "active" : "idle");
+        qos_puts(" pin=");
+        print_uint(pin);
+        qos_puts(" polarity=");
+        qos_puts(active_high ? "active-high" : "active-low");
+        qos_puts("\n");
+        return;
+    }
+
+    if (str_eq(mode, "on")){
+        if (qos_led_set(1u) == 0){
+            qos_puts("LED forced on.\n");
+        } else{
+            qos_puts("LED force-on failed.\n");
+        }
+        return;
+    }
+
+    if (str_eq(mode, "off")){
+        if (qos_led_set(0u) == 0){
+            qos_puts("LED forced off.\n");
+        } else{
+            qos_puts("LED force-off failed.\n");
+        }
+        return;
+    }
+
+    {
+        unsigned int blinks = 0u;
+        unsigned int on_ms = 500u;
+        unsigned int off_ms = 500u;
+        char local[64];
+        unsigned int i = 0u;
+        const char* p = mode;
+        while (p && *p && i + 1u < sizeof(local)){
+            local[i++] = *p++;
+        }
+        local[i] = 0;
+
+        char* q = local;
+        while (*q == ' '){
+            q++;
+        }
+        if (*q){
+            char* a0 = q;
+            while (*q && *q != ' '){
+                q++;
+            }
+            if (*q){
+                *q++ = 0;
+                while (*q == ' '){
+                    q++;
+                }
+            }
+
+            if (parse_uint(a0, &blinks) != 0){
+                qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                return;
+            }
+
+            if (*q){
+                char* a1 = q;
+                while (*q && *q != ' '){
+                    q++;
+                }
+                if (*q){
+                    *q++ = 0;
+                    while (*q == ' '){
+                        q++;
+                    }
+                }
+                if (parse_uint(a1, &on_ms) != 0){
+                    qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                    return;
+                }
+                if (*q){
+                    char* a2 = q;
+                    while (*q && *q != ' '){
+                        q++;
+                    }
+                    if (*q){
+                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                        return;
+                    }
+                    if (parse_uint(a2, &off_ms) != 0){
+                        qos_puts("Usage: ledtest [blinks [on_ms off_ms]] | on | off | status\n");
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (qos_led_test(blinks, on_ms, off_ms) == 0){
+            qos_puts("LED test started.\n");
+        } else{
+            qos_puts("LED test failed.\n");
+        }
+    }
 }
 
 static void cmd_dma(const char* mode){
@@ -2228,6 +2343,14 @@ static void execute_line(void){
         cmd_termout(p);
     } else if (str_eq(g_buf, "termout")){
         cmd_termout("status");
+    } else if (str_starts_with(g_buf, "ledtest ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_ledtest(p);
+    } else if (str_eq(g_buf, "ledtest")){
+        cmd_ledtest("status");
     } else if (str_starts_with(g_buf, "dma ")){
         const char* p = g_buf + 4;
         while (*p == ' '){

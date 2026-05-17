@@ -29,6 +29,8 @@ static volatile int loader_busy = 0;
 static const char* DEFAULT_PROGRAM_83 = "PROGRAM BIN";
 static const char GAME_PROGRAM_83[11] = {'G','A','M','E',' ',' ',' ',' ','B','I','N'};
 static const char GAME_SANDBOX_83[11] = {'Q','F','2','D',' ',' ',' ',' ',' ',' ',' '};
+static const char SCANNER_PROGRAM_83[11] = {'S','C','A','N','N','E','R',' ','B','I','N'};
+static const char SCANNER_SANDBOX_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
 
 static unsigned long daif_read(void){
     unsigned long v;
@@ -165,6 +167,14 @@ static void loader_assign_file_sandbox(loaded_program_t* prog, const char* file_
         prog->file_sandbox_enabled = 1;
         for (unsigned int i = 0; i < 11u; i++){
             prog->file_sandbox_83[i] = GAME_SANDBOX_83[i];
+        }
+        return;
+    }
+
+    if (fat83_equal11(file_83, SCANNER_PROGRAM_83)){
+        prog->file_sandbox_enabled = 1;
+        for (unsigned int i = 0; i < 11u; i++){
+            prog->file_sandbox_83[i] = SCANNER_SANDBOX_83[i];
         }
     }
 }

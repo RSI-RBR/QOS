@@ -174,7 +174,10 @@ enum {
     SYS_WIFI_MONITOR_SET = 148,
     SYS_WIFI_MONITOR_STATUS = 149,
     SYS_WIFI_UP_MONITOR = 150,
-    SYS_WIFI_RANDOMIZE_MAC = 151
+    SYS_WIFI_RANDOMIZE_MAC = 151,
+    SYS_LED_TEST = 152,
+    SYS_LED_SET = 153,
+    SYS_LED_STATUS = 154
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1079,6 +1082,21 @@ static inline int qos_wifi_join(const char* ssid, const char* password){
 
 static inline int qos_wifi_randomize_mac(void){
     return (int)qos_syscall0(SYS_WIFI_RANDOMIZE_MAC);
+}
+
+static inline int qos_led_test(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
+    return (int)qos_syscall3(SYS_LED_TEST,
+                             (unsigned long)blinks,
+                             (unsigned long)on_ms,
+                             (unsigned long)off_ms);
+}
+
+static inline int qos_led_set(unsigned int on){
+    return (int)qos_syscall1(SYS_LED_SET, (unsigned long)on);
+}
+
+static inline unsigned int qos_led_status(void){
+    return (unsigned int)qos_syscall0(SYS_LED_STATUS);
 }
 
 static inline void qos_wifi_dump_status(void){
