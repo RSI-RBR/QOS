@@ -7,6 +7,7 @@
 #define DEFAULT_SCAN_CHANNEL 6u
 #define STALE_RECOVER_SECS 3u
 #define HOP_DWELL_MS 100u
+#define HOP_DWELL_BEACON_ONLY_MS 350u
 #define DETAIL_PRINT_SECS 12u
 #define KEY_EVENT_RING 96u
 
@@ -78,7 +79,13 @@ static key_event_t g_key_events[KEY_EVENT_RING];
 static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 
-static const unsigned char g_hop_channels[] = {1u, 6u, 11u, 2u, 7u, 3u, 8u, 4u, 9u, 5u, 10u};
+/*
+ * Include 12/13 so scanners in regions using those channels can still detect
+ * local APs. Channel 14 is intentionally excluded (Japan-only, 11b specific).
+ */
+static const unsigned char g_hop_channels[] = {
+    1u, 6u, 11u, 2u, 7u, 12u, 3u, 8u, 13u, 4u, 9u, 5u, 10u
+};
 
 static void put_u32(unsigned int v){
     char tmp[16];
@@ -855,6 +862,10 @@ void program_main(void){
     unsigned int last_rx_frames = 0u;
     unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
     unsigned int hop_idx = 0u;
+    unsigned int hop_dwell_ms = HOP_DWELL_MS;
+    unsigned int beacon_only_secs = 0u;
+    unsigned int prev_frames = 0u;
+    unsigned int prev_non_beacon = 0u;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -870,7 +881,7 @@ void program_main(void){
     unsigned long long now = qos_get_time_us();
     unsigned long long next_print = now + 1000000ull;
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
-    unsigned long long next_hop = now + ((unsigned long long)HOP_DWELL_MS * 1000ull);
+    unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
     scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL);
@@ -908,7 +919,7 @@ void program_main(void){
         now = qos_get_time_us();
         if ((long long)(now - next_hop) >= 0){
             maybe_hop_channel(&active_channel, &hop_idx, &stats);
-            next_hop = now + ((unsigned long long)HOP_DWELL_MS * 1000ull);
+            next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
         }
 
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
@@ -925,8 +936,38 @@ void program_main(void){
         now = qos_get_time_us();
         if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
+            unsigned int non_beacon = 0u;
+
             print_summary(&stats, active_channel);
             print_raw_status_line("scanner raw");
+
+            non_beacon = (stats.frames >= stats.frame_counts[CAT_BEACON])
+                             ? (stats.frames - stats.frame_counts[CAT_BEACON])
+                             : 0u;
+            if (stats.frames > prev_frames && non_beacon == prev_non_beacon){
+                beacon_only_secs++;
+            } else{
+                beacon_only_secs = 0u;
+            }
+            prev_frames = stats.frames;
+            prev_non_beacon = non_beacon;
+
+            /*
+             * If we only see beacons while hopping, widen dwell time so we can
+             * catch probe/data/EAPOL bursts between beacon intervals.
+             */
+            if (beacon_only_secs >= 5u && hop_dwell_ms < HOP_DWELL_BEACON_ONLY_MS){
+                hop_dwell_ms = HOP_DWELL_BEACON_ONLY_MS;
+                qos_puts("scanner: beacon-only traffic; using slower hop dwell ");
+                put_u32(hop_dwell_ms);
+                qos_puts("ms\n");
+            } else if (beacon_only_secs == 0u && hop_dwell_ms != HOP_DWELL_MS){
+                hop_dwell_ms = HOP_DWELL_MS;
+                qos_puts("scanner: non-beacon traffic seen; restoring hop dwell ");
+                put_u32(hop_dwell_ms);
+                qos_puts("ms\n");
+            }
+
             if (qos_wifi_raw_status(&st1) == 0){
                 if (st1.rx_frames == last_rx_frames){
                     stale_secs++;
