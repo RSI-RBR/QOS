@@ -1573,10 +1573,23 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                 }
                 if (ints & CYW43_SD_INT_FRAME){
-                    if (ack){
-                        (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
+                    /*
+                     * The frame interrupt is level/latch-like on some CYW43
+                     * firmware builds. After draining an initial burst it can
+                     * remain set even though RFRAME_COUNT is zero. Treat only
+                     * the frame-count registers as proof that a FIFO packet is
+                     * actually readable; otherwise clear the stale interrupt
+                     * and keep waiting for real traffic.
+                     */
+                    (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &count0);
+                    (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &count1);
+                    if (count0 || count1){
+                        if (ack){
+                            (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
+                        }
+                        return 0;
                     }
-                    return 0;
+                    ack |= CYW43_SD_INT_FRAME;
                 }
                 if (ack){
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ack);
