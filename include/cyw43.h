@@ -106,6 +106,7 @@ int cyw43_net_ready(void);
 int cyw43_raw_capture_set_enabled(unsigned int enabled);
 int cyw43_raw_capture_is_enabled(void);
 int cyw43_raw_capture_poll(void);
+int cyw43_raw_capture_poll_lite(void);
 int cyw43_raw_capture_recv(unsigned char* out, unsigned int out_cap);
 int cyw43_raw_capture_get_status(cyw43_raw_capture_status_t* out);
 int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel);

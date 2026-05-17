@@ -3674,7 +3674,8 @@ int cyw43_net_poll(void){
     return delivered;
 }
 
-int cyw43_raw_capture_poll(void){
+static int cyw43_raw_capture_poll_budget(unsigned int max_frames,
+                                         unsigned int first_wait_ms){
     static unsigned char rx[CYW43_PACKET_MAX_BYTES];
     int delivered = 0;
 
@@ -3690,17 +3691,16 @@ int cyw43_raw_capture_poll(void){
         return 0;
     }
 
-    for (unsigned int i = 0; i < 16u; i++){
+    for (unsigned int i = 0; i < max_frames; i++){
         unsigned int rx_len = 0;
         unsigned int channel = 0;
 
         /*
-         * The scanner is a live consumer, not just a stale-ring reader. Give
-         * the first read a tiny wait window so a user process polling at
-         * 1 kHz can catch fresh monitor frames without needing wifiraw scan.
-         * Any additional queued frames are drained immediately.
+         * Never let monitor capture block foreground typing/rendering. The
+         * caller decides whether a short wait is acceptable; background polls
+         * use zero wait and only skim a couple of queued frames.
          */
-        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, (i == 0u) ? 3u : 0u, 1) != 0){
+        if (cyw43_packet_read(rx, sizeof(rx), &rx_len, (i == 0u) ? first_wait_ms : 0u, 1) != 0){
             break;
         }
         if (rx_len < CYW43_SDPCM_HDR_LEN){
@@ -3722,6 +3722,14 @@ int cyw43_raw_capture_poll(void){
     }
     spin_unlock(&g_cyw43_raw_poll_lock);
     return delivered;
+}
+
+int cyw43_raw_capture_poll(void){
+    return cyw43_raw_capture_poll_budget(16u, 0u);
+}
+
+int cyw43_raw_capture_poll_lite(void){
+    return cyw43_raw_capture_poll_budget(2u, 0u);
 }
 
 int cyw43_get_status(cyw43_status_t* out){

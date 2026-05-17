@@ -245,9 +245,9 @@ static void syscall_poll_background_io(void){
         (void)net_poll();
     }
     if ((long)(now - next_wifi_raw_poll_tick) >= 0){
-        next_wifi_raw_poll_tick = now + 1u;
+        next_wifi_raw_poll_tick = now + 10u;
         if (cyw43_raw_capture_is_enabled()){
-            (void)cyw43_raw_capture_poll();
+            (void)cyw43_raw_capture_poll_lite();
         }
     }
     if ((long)(now - next_remote_poll_tick) >= 0){
