@@ -2094,63 +2094,6 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
-static int cyw43_wl_cmd_monitor_relaxed(const char* name,
-                                        unsigned int op,
-                                        const unsigned char* data,
-                                        unsigned int data_len,
-                                        unsigned int* sent_count){
-    unsigned int seq_before = g_cyw43.sdpcm_tx_seq;
-    unsigned int saved_tries = g_cyw43_wl_cmd_tries;
-    unsigned int saved_timeout = g_cyw43_wl_cmd_timeout_ms;
-    int rc = 0;
-
-    /*
-     * Monitor setup is a one-time foreground operation, so prefer correctness
-     * over speed here. The shell lag came from background raw polling, not
-     * from waiting for these setup replies.
-     */
-    g_cyw43_wl_cmd_tries = 24u;
-    g_cyw43_wl_cmd_timeout_ms = 250u;
-    rc = cyw43_wl_cmd(1, op, data, data_len, 0, 0, 0);
-    g_cyw43_wl_cmd_tries = saved_tries;
-    g_cyw43_wl_cmd_timeout_ms = saved_timeout;
-
-    if (g_cyw43.sdpcm_tx_seq != seq_before){
-        if (sent_count){
-            (*sent_count)++;
-        }
-    }
-
-    if (rc != 0){
-        uart_puts("CYW43: monitor cmd no normal reply ");
-        uart_puts(name ? name : "?");
-        uart_puts("\n");
-        /*
-         * Nexmon monitor firmware can accept small WLC_SET_* commands without
-         * returning a normal CDC response. If the frame was written, keep one
-         * local credit open so the next monitor setup command can still go out.
-         * This relaxation is used only by the monitor path, never station mode.
-         */
-        if (g_cyw43.sdpcm_tx_seq != seq_before){
-            g_cyw43.flow_mask = 0;
-            g_cyw43.tx_window = (unsigned char)((g_cyw43.sdpcm_tx_seq + 1u) & 0xFFu);
-            if (g_cyw43.tx_window == 0u){
-                g_cyw43.tx_window = 1u;
-            }
-        }
-    }
-    return rc;
-}
-
-static int cyw43_wl_set_int_monitor_relaxed(const char* name,
-                                            unsigned int op,
-                                            unsigned int value,
-                                            unsigned int* sent_count){
-    unsigned char buf[4];
-    put_le32(buf, value);
-    return cyw43_wl_cmd_monitor_relaxed(name, op, buf, sizeof(buf), sent_count);
-}
-
 static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
     unsigned char buf[4];
     unsigned int actual = 0;
@@ -2173,8 +2116,6 @@ static int cyw43_control_ready(void){
 
 int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
     int rc = 0;
-    unsigned int sent = 0;
-    int first_error = 0;
 
     /*
      * Nexmon's common monitor path uses WLC_SET_MONITOR=108. Mode 2 is the
@@ -2200,44 +2141,36 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
         return 0;
     }
 
-    rc = cyw43_wl_cmd_monitor_relaxed("up", CYW43_WLC_UP, 0, 0, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -7;
-    }
-
     if (channel != 0u){
-        rc = cyw43_wl_set_int_monitor_relaxed("channel", CYW43_WLC_SET_CHANNEL, channel, &sent);
-        if (rc != 0 && first_error == 0){
-            first_error = -3;
+        rc = cyw43_wl_set_int(CYW43_WLC_SET_CHANNEL, channel);
+        if (rc != 0){
+            g_cyw43_monitor_last_rc = -3;
+            return -3;
         }
     }
 
-    rc = cyw43_wl_set_int_monitor_relaxed("scansuppress", CYW43_WLC_SET_SCANSUPPRESS, 1u, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -6;
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 1u);
+    rc = cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 1u);
+    if (rc != 0){
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        g_cyw43_monitor_last_rc = -4;
+        return -4;
     }
 
-    rc = cyw43_wl_set_int_monitor_relaxed("promisc", CYW43_WLC_SET_PROMISC, 1u, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -4;
-    }
-
-    rc = cyw43_wl_set_int_monitor_relaxed("monitor", CYW43_WLC_SET_MONITOR, mode, &sent);
-    if (rc != 0 && first_error == 0){
-        first_error = -5;
-    }
-
-    if (sent == 0u){
+    rc = cyw43_wl_set_int(CYW43_WLC_SET_MONITOR, mode);
+    if (rc != 0){
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u);
+        (void)cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u);
         (void)cyw43_raw_capture_set_enabled(0u);
         g_cyw43_monitor_mode = 0u;
-        g_cyw43_monitor_last_rc = first_error ? first_error : -5;
-        return g_cyw43_monitor_last_rc;
+        g_cyw43_monitor_last_rc = -5;
+        return -5;
     }
 
     (void)cyw43_raw_capture_set_enabled(1u);
     g_cyw43_monitor_mode = mode;
     g_cyw43_monitor_channel = channel;
-    g_cyw43_monitor_last_rc = first_error;
+    g_cyw43_monitor_last_rc = 0;
     return 0;
 }
 
@@ -3304,7 +3237,13 @@ int cyw43_ioctl_up(void){
 }
 
 int cyw43_ioctl_up_monitor(void){
-    return cyw43_ioctl_up_common(1u);
+    /*
+     * Monitor firmware still needs the normal radio/D11 bring-up. Keep the
+     * separate shell command for workflow clarity, but do not skip base Wi-Fi
+     * setup here; skipping it made WLC_SET_MONITOR look enabled while no
+     * frames were actually delivered.
+     */
+    return cyw43_ioctl_up_common(0u);
 }
 
 int cyw43_ioctl_down(void){
