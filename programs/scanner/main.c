@@ -446,11 +446,17 @@ void program_main(void){
     unsigned long long deadline = start + ((unsigned long long)SCAN_MS * 1000ull);
 
     qos_puts("QOS WiFi scanner starting. Use wifimon on <channel> first.\n");
+    cyw43_monitor_status_t mon;
+    int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
     print_monitor_status_line();
-    int raw_rc = qos_wifi_raw_set_enabled(1u);
-    qos_puts("scanner: raw enable rc=");
-    put_i32(raw_rc);
-    qos_puts("\n");
+    if (!have_mon || !mon.raw_enabled){
+        int raw_rc = qos_wifi_raw_set_enabled(1u);
+        qos_puts("scanner: raw enable rc=");
+        put_i32(raw_rc);
+        qos_puts("\n");
+    } else{
+        qos_puts("scanner: raw already enabled; preserving queue\n");
+    }
     print_raw_status_line("scanner start");
 
     while ((long long)(qos_get_time_us() - deadline) < 0){
