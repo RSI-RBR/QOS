@@ -61,6 +61,7 @@ extern volatile unsigned long system_ticks;
 #define CYW43_SD_INT_FRAME      (1u << 6)
 #define CYW43_SD_INT_MAILBOX    (1u << 7)
 #define CYW43_SD_INT_HOST_MASK  0x000000F0u
+#define CYW43_SD_INT_XMTDATA_AVAIL (1u << 23)
 #define CYW43_SD_INT_CHIPACTIVE (1u << 29)
 #define CYW43_SD_HOST_INT_MASK  (CYW43_SD_INT_HOST_MASK | CYW43_SD_INT_CHIPACTIVE)
 #define CYW43_HMB_DATA_NAKHANDLED 0x0001u
@@ -1060,8 +1061,10 @@ static int cyw43_wait_firmware_ready(void){
     uart_puts("CYW43: waiting firmware mailbox\n");
     for (unsigned int i = 0; i < 160u; i++){
         if (g_cyw43.sd_regs != 0u){
+            unsigned int host_ints = 0;
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
+            host_ints = ints & CYW43_SD_HOST_INT_MASK;
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
             if (!saw_ready && (i % 10u) == 0u){
                 uart_puts("CYW43: fw poll pend=");
@@ -1091,8 +1094,8 @@ static int cyw43_wait_firmware_ready(void){
                 saw_ready = 1;
                 quiet = 0;
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
-                if (ints){
-                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+                if (host_ints){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, host_ints);
                 }
                 uart_puts("CYW43: firmware ready event proto=");
                 uart_putdec(proto);
@@ -1111,8 +1114,8 @@ static int cyw43_wait_firmware_ready(void){
                     return 0;
                 }
             }
-            if (ints){
-                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
+            if (host_ints){
+                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, host_ints);
             }
         }
         cyw43_delay(250000u);
@@ -1600,6 +1603,7 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
     unsigned char count1 = 0;
     unsigned char intpend = 0;
     unsigned int ints = 0;
+    unsigned int host_ints = 0;
     unsigned int mbox = 0;
     unsigned int loops = timeout_ms ? (timeout_ms * 20u) : 1u;
 
@@ -1618,8 +1622,10 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
         if (g_cyw43.sd_regs != 0u){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
-                unsigned int ack = ints & ~CYW43_SD_INT_FRAME;
-                if (ints & CYW43_SD_INT_MAILBOX){
+                unsigned int ack = 0;
+                host_ints = ints & CYW43_SD_HOST_INT_MASK;
+                ack = host_ints & ~CYW43_SD_INT_FRAME;
+                if (host_ints & CYW43_SD_INT_MAILBOX){
                     (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                     if (mbox & CYW43_HMB_DATA_FWHALT){
@@ -1629,7 +1635,7 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
                         return -1;
                     }
                 }
-                if (ints & CYW43_SD_INT_FRAME){
+                if (host_ints & CYW43_SD_INT_FRAME){
                     /*
                      * The frame interrupt is level/latch-like on some CYW43
                      * firmware builds. After draining an initial burst it can
@@ -1663,6 +1669,8 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
         uart_puthex(intpend);
         uart_puts(" ints=");
         uart_puthex(ints);
+        uart_puts(" host=");
+        uart_puthex(host_ints);
         uart_puts(" mbox=");
         uart_puthex(mbox);
         uart_puts("\n");
@@ -2032,6 +2040,7 @@ static int cyw43_wl_set_var(const char* name, const unsigned char* data,
     static unsigned char buf[CYW43_WL_IOVAR_BUF_LEN];
     unsigned int name_len = 0;
     unsigned int total_len = 0;
+    int rc = 0;
 
     if (!name){
         return -1;
@@ -2053,7 +2062,13 @@ static int cyw43_wl_set_var(const char* name, const unsigned char* data,
         mem_copy_local(buf + name_len + 1u, data, data_len);
     }
 
-    return cyw43_wl_cmd(1, CYW43_WLC_SET_VAR, buf, total_len, 0, 0, 0);
+    rc = cyw43_wl_cmd(1, CYW43_WLC_SET_VAR, buf, total_len, 0, 0, 0);
+    if (rc != 0){
+        uart_puts("CYW43: iovar set failed ");
+        uart_puts(name);
+        uart_puts("\n");
+    }
+    return rc;
 }
 
 static int cyw43_wl_set_var_u32(const char* name, unsigned int value){
