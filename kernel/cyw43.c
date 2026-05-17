@@ -72,7 +72,8 @@ extern volatile unsigned long system_ticks;
 #define CYW43_HMB_DATA_VERSION_MASK 0x00FF0000u
 #define CYW43_HMB_DATA_VERSION_SHIFT 16u
 #define CYW43_HMB_DATA_READY_MASK (CYW43_HMB_DATA_DEVREADY | CYW43_HMB_DATA_FWREADY)
-#define CYW43_SD_FW_READY_LEGACY  0x80u
+#define CYW43_SD_FW_READY         0x80u
+#define CYW43_SD_FW_READY_ALT     0x08u // Circle's intwait path treats this as firmware-ready.
 
 #define CYW43_CRESCAN_SIZE      512u
 #define CYW43_SDPCM_HDR_LEN     12u
@@ -1057,18 +1058,13 @@ static int cyw43_wait_firmware_ready(void){
     unsigned int mbox = 0;
     unsigned char intpend = 0;
     unsigned int proto = 0;
-    unsigned int saw_ready = 0;
-    unsigned int saw_devready = 0;
-    unsigned int quiet = 0;
     uart_puts("CYW43: waiting firmware mailbox\n");
     for (unsigned int i = 0; i < 160u; i++){
         if (g_cyw43.sd_regs != 0u){
-            unsigned int host_ints = 0;
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
-            host_ints = ints & CYW43_SD_HOST_INT_MASK;
             (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
-            if (!saw_ready && (i % 10u) == 0u){
+            if ((i % 10u) == 0u){
                 uart_puts("CYW43: fw poll pend=");
                 uart_puthex(intpend);
                 uart_puts(" ints=");
@@ -1082,51 +1078,32 @@ static int cyw43_wait_firmware_ready(void){
                 return -1;
             }
             /*
-             * Linux brcmfmac treats HMB_DATA_DEVREADY and HMB_DATA_FWREADY as
-             * the dongle-ready indication. Pi Zero 2 W / Nexmon firmware often
-             * reports 0x00040002: protocol version 4 plus DEVREADY. Accept it
-             * here so the first control command does not consume this mailbox
-             * and then time out waiting for a normal packet response.
+             * Match Circle/Plan9-style mailbox handling: acknowledge the
+             * ready mailbox immediately and clear the interrupt word the chip
+             * actually reported. Waiting for the mailbox to go quiet can leave
+             * non-host status bits (notably 0x00800000) latched and later
+             * make control commands time out.
              */
-            if (mbox & (CYW43_HMB_DATA_READY_MASK | CYW43_SD_FW_READY_LEGACY)){
+            if (mbox & (CYW43_HMB_DATA_READY_MASK |
+                        CYW43_SD_FW_READY |
+                        CYW43_SD_FW_READY_ALT)){
                 proto = (mbox & CYW43_HMB_DATA_VERSION_MASK) >> CYW43_HMB_DATA_VERSION_SHIFT;
-                if (mbox & CYW43_HMB_DATA_DEVREADY){
-                    saw_devready = 1;
-                }
-                saw_ready = 1;
-                quiet = 0;
                 (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
-                if (host_ints){
-                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, host_ints);
+                if (ints){
+                    (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
                 }
-                uart_puts("CYW43: firmware ready event proto=");
+                uart_puts("CYW43: firmware ready proto=");
                 uart_putdec(proto);
                 uart_puts(" mbox=");
                 uart_puthex(mbox);
                 uart_puts("\n");
-                cyw43_delay(250000u);
-                continue;
+                return 0;
             }
-            if (saw_ready && mbox == 0u){
-                quiet++;
-                if (saw_devready || quiet >= 8u){
-                    uart_puts("CYW43: firmware ready proto=");
-                    uart_putdec(proto);
-                    uart_puts(saw_devready ? " devready\n" : " quiet\n");
-                    return 0;
-                }
-            }
-            if (host_ints){
-                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, host_ints);
+            if (ints){
+                (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, ints);
             }
         }
         cyw43_delay(250000u);
-    }
-    if (saw_ready){
-        uart_puts("CYW43: firmware ready proto=");
-        uart_putdec(proto);
-        uart_puts(" pending-devready-timeout; continuing\n");
-        return 0;
     }
     uart_puts("CYW43: firmware ready timeout ints=");
     uart_puthex(ints);
@@ -1626,8 +1603,8 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
             if (cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){
                 unsigned int ack = 0;
                 host_ints = ints & CYW43_SD_HOST_INT_MASK;
-                ack = host_ints & ~CYW43_SD_INT_FRAME;
-                if (host_ints & CYW43_SD_INT_MAILBOX){
+                ack = ints & ~CYW43_SD_INT_FRAME;
+                if (ints & CYW43_SD_INT_MAILBOX){
                     (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
                     (void)cyw43_backplane_write32(g_cyw43.sd_regs + CYW43_SD_SBMBOX, 2u);
                     if (mbox & CYW43_HMB_DATA_FWHALT){
@@ -1637,7 +1614,7 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
                         return -1;
                     }
                 }
-                if (host_ints & CYW43_SD_INT_FRAME){
+                if (ints & CYW43_SD_INT_FRAME){
                     /*
                      * The frame interrupt is level/latch-like on some CYW43
                      * firmware builds. After draining an initial burst it can
