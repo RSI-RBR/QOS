@@ -2104,8 +2104,13 @@ static int cyw43_wl_cmd_monitor_relaxed(const char* name,
     unsigned int saved_timeout = g_cyw43_wl_cmd_timeout_ms;
     int rc = 0;
 
-    g_cyw43_wl_cmd_tries = 3u;
-    g_cyw43_wl_cmd_timeout_ms = 80u;
+    /*
+     * Monitor setup is a one-time foreground operation, so prefer correctness
+     * over speed here. The shell lag came from background raw polling, not
+     * from waiting for these setup replies.
+     */
+    g_cyw43_wl_cmd_tries = 24u;
+    g_cyw43_wl_cmd_timeout_ms = 250u;
     rc = cyw43_wl_cmd(1, op, data, data_len, 0, 0, 0);
     g_cyw43_wl_cmd_tries = saved_tries;
     g_cyw43_wl_cmd_timeout_ms = saved_timeout;
@@ -3807,7 +3812,36 @@ void cyw43_dump_status(void){
     uart_putdec(g_cyw43.country_rev);
     uart_puts("\n");
     if (g_cyw43.fw_running && g_cyw43.func2_ready){
+        unsigned char rfc0 = 0;
+        unsigned char rfc1 = 0;
+        unsigned char intpend = 0;
+        unsigned int ints = 0;
+        unsigned int mbox = 0;
         cyw43_log_radio_status("dump");
+        (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &rfc0);
+        (void)sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &rfc1);
+        (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
+        if (g_cyw43.sd_regs != 0u){
+            (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints);
+            (void)cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_HOSTMBOX_DATA, &mbox);
+        }
+        uart_puts("CYW43 sdio rfcnt=");
+        uart_puthex(((unsigned int)rfc1 << 8) | rfc0);
+        uart_puts(" pend=");
+        uart_puthex(intpend);
+        uart_puts(" ints=");
+        uart_puthex(ints);
+        uart_puts(" host=");
+        uart_puthex(ints & CYW43_SD_HOST_INT_MASK);
+        uart_puts(" mbox=");
+        uart_puthex(mbox);
+        uart_puts(" seq=");
+        uart_putdec(g_cyw43.sdpcm_tx_seq & 0xFFu);
+        uart_puts(" win=");
+        uart_putdec(g_cyw43.tx_window);
+        uart_puts(" flow=");
+        uart_puthex(g_cyw43.flow_mask);
+        uart_puts("\n");
     }
     uart_puts("CYW43 net tx_ok=");
     uart_putdec(g_cyw43.net_tx_ok);
