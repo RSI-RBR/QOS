@@ -1407,6 +1407,7 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
 static int scanner_restore_monitor_path(unsigned int channel){
     cyw43_monitor_status_t st;
     unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
+    int recover_rc = -1;
     for (unsigned int attempt = 0u; attempt < 2u; attempt++){
         int rc = qos_wifi_up_monitor();
         if (rc == 0){
@@ -1422,10 +1423,14 @@ static int scanner_restore_monitor_path(unsigned int channel){
     }
 
     qos_puts("scanner: monitor restore failed; hard recovery\n");
-    if (qos_wifi_monitor_recover(ch) == 0 &&
+    recover_rc = qos_wifi_monitor_recover(ch);
+    if (recover_rc == 0 &&
         qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
         return 1;
     }
+    qos_puts("scanner: hard recovery rc=");
+    put_i32(recover_rc);
+    qos_puts("\n");
     return 0;
 }
 

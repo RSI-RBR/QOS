@@ -19,6 +19,17 @@ extern volatile unsigned long system_ticks;
 #define CYW43_CLM_MAX_BYTES     (96u * 1024u)
 #define CYW43_SDIO_XFER_CHUNK   64u
 
+enum {
+    CYW43_FWLOAD_ERR_NO_MEMORY = -101,
+    CYW43_FWLOAD_ERR_EMMC_REINIT = -102,
+    CYW43_FWLOAD_ERR_FAT_INIT = -103,
+    CYW43_FWLOAD_ERR_FW_READ = -104,
+    CYW43_FWLOAD_ERR_NVRAM_READ = -105,
+    CYW43_FWLOAD_ERR_CLM_NO_MEMORY = -106,
+    CYW43_FWLOAD_ERR_CLM_READ = -107,
+    CYW43_FWLOAD_ERR_SDIO_STAGE = -108
+};
+
 // Circle/ether4330 backplane access constants.
 #define CYW43_SB_WINDOW_SIZE    0x8000u
 #define CYW43_SB_32BIT_ADDR     0x8000u
@@ -1545,12 +1556,14 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
     int fw_len = -1;
     int nv_len = -1;
     int clm_len = -1;
-    int rc = -1;
+    int rc = CYW43_FWLOAD_ERR_NO_MEMORY;
+    int io_rc = 0;
 
     fw_buf = (unsigned char*)kmalloc(CYW43_FW_MAX_BYTES);
     nv_buf = (unsigned char*)kmalloc(CYW43_NVRAM_MAX_BYTES);
     if (!fw_buf || !nv_buf){
         uart_puts("CYW43: no memory for firmware buffers\n");
+        rc = CYW43_FWLOAD_ERR_NO_MEMORY;
         goto out;
     }
 
@@ -1564,20 +1577,34 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
         cyw43_drop_sdio_state();
     }
 
-    if (blockdev_reinit_emmc() != 0){
+    io_rc = blockdev_reinit_emmc();
+    if (io_rc != 0){
         uart_puts("CYW43: EMMC storage reinit failed\n");
+        rc = CYW43_FWLOAD_ERR_EMMC_REINIT;
         goto out;
     }
     fat32_reset();
-    if (fat32_init() != 0){
+    io_rc = fat32_init();
+    if (io_rc != 0){
         uart_puts("CYW43: FAT init failed\n");
+        rc = CYW43_FWLOAD_ERR_FAT_INIT;
         goto out;
     }
 
     fw_len = fat32_read_file(fw_name, fw_buf, (int)CYW43_FW_MAX_BYTES);
     nv_len = fat32_read_file(nv_name, nv_buf, (int)CYW43_NVRAM_MAX_BYTES);
-    if (fw_len <= 0 || nv_len <= 0){
-        uart_puts("CYW43: firmware/NVRAM file read failed\n");
+    if (fw_len <= 0){
+        uart_puts("CYW43: firmware file read failed: ");
+        uart_puts(fw_name);
+        uart_puts("\n");
+        rc = CYW43_FWLOAD_ERR_FW_READ;
+        goto out;
+    }
+    if (nv_len <= 0){
+        uart_puts("CYW43: NVRAM file read failed: ");
+        uart_puts(nv_name);
+        uart_puts("\n");
+        rc = CYW43_FWLOAD_ERR_NVRAM_READ;
         goto out;
     }
     uart_puts("CYW43: firmware file bytes=");
@@ -1590,11 +1617,13 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
         clm_buf = (unsigned char*)kmalloc(CYW43_CLM_MAX_BYTES);
         if (!clm_buf){
             uart_puts("CYW43: no memory for CLM buffer\n");
+            rc = CYW43_FWLOAD_ERR_CLM_NO_MEMORY;
             goto out;
         }
         clm_len = fat32_read_file(clm_name, clm_buf, (int)CYW43_CLM_MAX_BYTES);
         if (clm_len <= 0){
             uart_puts("CYW43: CLM file read failed\n");
+            rc = CYW43_FWLOAD_ERR_CLM_READ;
             goto out;
         }
         if (g_cyw43_clm_blob){
@@ -1621,8 +1650,16 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
     // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
     // SDIO before touching the CYW43 backplane.
     cyw43_drop_sdio_state();
-    rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
-                                            (const char*)nv_buf, (unsigned int)nv_len);
+    io_rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
+                                               (const char*)nv_buf, (unsigned int)nv_len);
+    if (io_rc != 0){
+        uart_puts("CYW43: SDIO firmware stage failed rc=");
+        uart_putdec((unsigned int)((io_rc < 0) ? -io_rc : io_rc));
+        uart_puts("\n");
+        rc = CYW43_FWLOAD_ERR_SDIO_STAGE;
+        goto out;
+    }
+    rc = 0;
 
 out:
     if (fw_buf){
@@ -2434,6 +2471,20 @@ int cyw43_ioctl_monitor_status(cyw43_monitor_status_t* out){
     return 0;
 }
 
+static const char* cyw43_fwload_err_text(int rc){
+    switch (rc){
+        case CYW43_FWLOAD_ERR_NO_MEMORY: return "no memory";
+        case CYW43_FWLOAD_ERR_EMMC_REINIT: return "emmc reinit";
+        case CYW43_FWLOAD_ERR_FAT_INIT: return "fat init";
+        case CYW43_FWLOAD_ERR_FW_READ: return "firmware read";
+        case CYW43_FWLOAD_ERR_NVRAM_READ: return "nvram read";
+        case CYW43_FWLOAD_ERR_CLM_NO_MEMORY: return "clm no memory";
+        case CYW43_FWLOAD_ERR_CLM_READ: return "clm read";
+        case CYW43_FWLOAD_ERR_SDIO_STAGE: return "sdio stage";
+        default: return "unknown";
+    }
+}
+
 int cyw43_monitor_hard_recover(unsigned int channel){
     unsigned int ch = channel ? channel : 6u;
     int rc;
@@ -2480,11 +2531,29 @@ int cyw43_monitor_hard_recover(unsigned int channel){
 
     (void)cyw43_release_emmc_for_storage();
 
-    rc = cyw43_upload_firmware_from_fat(0, 0, 0);
-    if (rc != 0){
-        uart_puts("CYW43: hard recovery firmware reload failed rc=");
-        uart_putdec((unsigned int)(-rc));
+    rc = -1;
+    for (unsigned int attempt = 0u; attempt < 3u; attempt++){
+        rc = cyw43_upload_firmware_from_fat(0, 0, 0);
+        if (rc == 0){
+            break;
+        }
+        uart_puts("CYW43: hard recovery firmware reload failed attempt=");
+        uart_putdec(attempt + 1u);
+        uart_puts(" rc=");
+        uart_putdec((unsigned int)((rc < 0) ? -rc : rc));
+        uart_puts(" stage=");
+        uart_puts(cyw43_fwload_err_text(rc));
         uart_puts("\n");
+        if (attempt + 1u < 3u){
+            /*
+             * Give EMMC/SDIO arbitration a short settle window before retry.
+             */
+            cyw43_delay_ms(25u + (attempt * 25u));
+            cyw43_drop_sdio_state();
+        }
+    }
+    if (rc != 0){
+        uart_puts("CYW43: hard recovery firmware reload failed permanently\n");
         headless_control_note_scanner_recovery(0u);
         return -10 + rc;
     }
