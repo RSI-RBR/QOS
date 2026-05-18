@@ -20,6 +20,7 @@
 #define IDLE_RECOVER_CONSEC_WINDOWS 3u
 #define LOAD_PERSISTENT_STATE_ON_START 0u
 #define AUTO_FLUSH_DURING_CAPTURE 0u
+#define CHANNEL_HOP_DURING_CAPTURE 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1912,7 +1913,9 @@ void program_main(void){
         }
 
         if ((long long)(now - next_hop) >= 0){
+#if CHANNEL_HOP_DURING_CAPTURE
             maybe_hop_channel(&active_channel, &hop_idx, &stats);
+#endif
             next_hop += ((unsigned long long)hop_dwell_ms * 1000ull);
             if ((long long)(now - next_hop) >= 0){
                 next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);

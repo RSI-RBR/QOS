@@ -973,6 +973,113 @@ static int cmd_scanlog_handshakes_summary(void){
     return rc;
 }
 
+static void scanlog_print_ap_brief(const char* line, unsigned int index){
+    if (!line || !str_find(line, " bssid=")){
+        return;
+    }
+    qos_puts(" ap#");
+    print_uint(index);
+    qos_puts(" bssid=");
+    scanlog_print_value_after_key(line, " bssid=", 17u);
+    qos_puts(" ch=");
+    scanlog_print_value_after_key(line, " ch=", 3u);
+    qos_puts(" enc=");
+    scanlog_print_value_after_key(line, " enc=", 12u);
+    qos_puts(" ssid=");
+    scanlog_print_value_after_key(line, " ssid=", 48u);
+    qos_puts(" clients=");
+    scanlog_print_value_after_key(line, " clients=", 6u);
+    qos_puts(" bcn=");
+    scanlog_print_value_after_key(line, " bcn=", 8u);
+    qos_puts(" data=");
+    scanlog_print_value_after_key(line, " data=", 8u);
+    qos_puts(" hs=");
+    scanlog_print_value_after_key(line, " hs=", 8u);
+    qos_puts("\n");
+}
+
+static int cmd_scanlog_aps_summary(void){
+    scan_file_overview_t aps;
+    unsigned int off = 0u;
+    char line[512];
+    unsigned int line_len = 0u;
+    unsigned int printed = 0u;
+    int saw_any = 0;
+    int rc = 0;
+
+    for (unsigned int i = 0u; i < sizeof(aps); i++){
+        ((volatile unsigned char*)&aps)[i] = 0u;
+    }
+
+    qos_puts("Scanner FAT AP summary:\n");
+    while (1){
+        int n = qos_scanner_log_read_fat("aps.log", off,
+                                         (unsigned char*)g_log_buf,
+                                         sizeof(g_log_buf) - 1u);
+        if (n < 0){
+            rc = -1;
+            break;
+        }
+        if (n == 0){
+            break;
+        }
+        saw_any = 1;
+        for (int i = 0; i < n; i++){
+            char c = g_log_buf[(unsigned int)i];
+            aps.bytes++;
+            if (c == '\r' || c == 0){
+                continue;
+            }
+            if (c == '\n'){
+                line[line_len] = 0;
+                aps.lines++;
+                scanlog_overview_line(&aps, "aps.log", line);
+                if (str_find(line, " bssid=") && printed < 32u){
+                    scanlog_print_ap_brief(line, aps.ap_lines);
+                    printed++;
+                }
+                line_len = 0u;
+                continue;
+            }
+            if (line_len + 1u < sizeof(line)){
+                line[line_len++] = c;
+            }
+        }
+        off += (unsigned int)n;
+    }
+    if (line_len > 0u){
+        line[line_len] = 0;
+        aps.lines++;
+        scanlog_overview_line(&aps, "aps.log", line);
+        if (str_find(line, " bssid=") && printed < 32u){
+            scanlog_print_ap_brief(line, aps.ap_lines);
+            printed++;
+        }
+    }
+
+    qos_puts(" aps.log rc=");
+    print_int(rc);
+    qos_puts(" bytes=");
+    print_uint(aps.bytes);
+    qos_puts(" lines=");
+    print_uint(aps.lines);
+    qos_puts(" ap_entries=");
+    print_uint(aps.ap_lines);
+    qos_puts(" open_entries=");
+    print_uint(aps.ap_open);
+    qos_puts("\n");
+    if (!saw_any){
+        qos_puts("(empty)\n");
+    } else if (aps.ap_lines > printed){
+        qos_puts(" showing first ");
+        print_uint(printed);
+        qos_puts(" AP entries; use scanfat aps for raw dump.\n");
+    } else if (aps.ap_lines == 0u){
+        qos_puts(" no parsed AP entries found in file.\n");
+    }
+    return rc;
+}
+
 static void cmd_scanlog_overview(void){
     scan_file_overview_t counts;
     scan_file_overview_t aps;
@@ -1047,6 +1154,10 @@ static void cmd_scanlog(const char* arg){
     }
     if (str_eq(arg, "handshakes")){
         (void)cmd_scanlog_handshakes_summary();
+        return;
+    }
+    if (str_eq(arg, "aps")){
+        (void)cmd_scanlog_aps_summary();
         return;
     }
     cmd_scanlog_common(arg, 1);
