@@ -100,6 +100,24 @@ static int scanner_fat_prepare_emmc(void){
     return -1;
 }
 
+static int cstr_eq_lit(const char* a, const char* b){
+    if (!a || !b){
+        return 0;
+    }
+    while (*a && *b){
+        if (*a != *b){
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return (*a == 0 && *b == 0) ? 1 : 0;
+}
+
+static int scanner_log_is_replace_file(const char* path){
+    return (cstr_eq_lit(path, "counts.log") || cstr_eq_lit(path, "aps.log")) ? 1 : 0;
+}
+
 static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
     unsigned int i = 0;
     if (!out || out_cap == 0u || !in){
@@ -2665,11 +2683,15 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
              * scanner persistence.
              */
             if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
-                rc = sandbox_file_flush_to_fat(scanner83, path);
+                rc = scanner_log_is_replace_file(path)
+                         ? sandbox_file_flush_to_fat_replace(scanner83, path)
+                         : sandbox_file_flush_to_fat(scanner83, path);
             }
             if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
                 blockdev_is_emmc() && fat32_init() == 0){
-                rc = sandbox_file_flush_to_fat(scanner83, path);
+                rc = scanner_log_is_replace_file(path)
+                         ? sandbox_file_flush_to_fat_replace(scanner83, path)
+                         : sandbox_file_flush_to_fat(scanner83, path);
             }
             kernel_preempt_exit();
 

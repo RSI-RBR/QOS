@@ -406,3 +406,42 @@ int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_pat
     }
     return rc;
 }
+
+int sandbox_file_flush_to_fat_replace(const char sandbox83[11], const char* relative_path){
+    sandbox_file_entry_t* e;
+    unsigned char* copy = 0;
+    unsigned int len = 0u;
+    int rc;
+
+    if (!g_files_inited){
+        sandbox_file_init();
+    }
+    if (!sandbox83 || !relative_path || !path_valid(relative_path)){
+        return -1;
+    }
+
+    spin_lock(&g_files_lock);
+    e = find_entry_locked(sandbox83, relative_path);
+    if (!e){
+        spin_unlock(&g_files_lock);
+        return -1;
+    }
+    len = e->size;
+    if (len > 0u){
+        copy = (unsigned char*)kmalloc(len);
+        if (!copy){
+            spin_unlock(&g_files_lock);
+            return -1;
+        }
+        for (unsigned int i = 0u; i < len; i++){
+            copy[i] = e->data[i];
+        }
+    }
+    spin_unlock(&g_files_lock);
+
+    rc = fat32_write_file_in_dir_path_existing(sandbox83, relative_path, copy, len);
+    if (copy){
+        kfree_secure(copy, len);
+    }
+    return rc;
+}

@@ -15,6 +15,7 @@
 #define FULL_REARM_COOLDOWN_SECS 5u
 #define RECV_ERR_FORCE_REARM 8u
 #define RECOVERY_SETTLE_MS 30u
+#define SCAN_LOAD_BUF_BYTES (64u * 1024u)
 
 typedef enum {
     CAT_BEACON = 0,
@@ -86,6 +87,7 @@ static key_event_t g_key_events[KEY_EVENT_RING];
 static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 static unsigned long long g_last_open_hit_notify_us = 0ull;
+static unsigned char g_scan_load_buf[SCAN_LOAD_BUF_BYTES];
 
 #define SCAN_LOG_LINE_MAX 8192u
 static const char SCAN_LOG_COUNTS[] = "counts.log";
@@ -510,27 +512,12 @@ static void log_scanner_start(void){
     scan_log_line_t l;
     unsigned long long now = qos_get_time_us();
     log_init(&l);
-    log_str(&l, "start t_us=");
-    log_u64(&l, now);
-    log_str(&l, " mode=monitor-hop counts=");
-    log_str(&l, SCAN_LOG_COUNTS);
-    log_str(&l, " aps=");
-    log_str(&l, SCAN_LOG_APS);
-    log_str(&l, " handshakes=");
-    log_str(&l, SCAN_LOG_HANDSHAKES);
-    log_ch(&l, '\n');
-    log_append_line(SCAN_LOG_COUNTS, &l);
-
+    log_str(&l, "QOSSCAN_HANDSHAKES v=2 mode=append fields=t_us,ch,msg,dir,key_info,key_data_len,bssid,rx,tx,mic,nonce,key_data,eapol,raw\n");
+    log_append_line(SCAN_LOG_HANDSHAKES, &l);
     log_init(&l);
-    log_str(&l, "start t_us=");
+    log_str(&l, "session t_us=");
     log_u64(&l, now);
-    log_str(&l, " ap_snapshot_log=1\n");
-    log_append_line(SCAN_LOG_APS, &l);
-
-    log_init(&l);
-    log_str(&l, "start t_us=");
-    log_u64(&l, now);
-    log_str(&l, " handshake_log=1\n");
+    log_str(&l, " mode=monitor-hop\n");
     log_append_line(SCAN_LOG_HANDSHAKES, &l);
 }
 
@@ -542,8 +529,13 @@ static void log_summary_line(const scan_stats_t* st, unsigned int active_channel
         return;
     }
     count_aps(&aps, &open);
+    (void)qos_file_clear(SCAN_LOG_COUNTS);
     log_init(&l);
-    log_str(&l, "t_us=");
+    log_str(&l, "QOSSCAN_COUNTS v=2 mode=replace fields=total\n");
+    log_append_line(SCAN_LOG_COUNTS, &l);
+
+    log_init(&l);
+    log_str(&l, "total t_us=");
     log_u64(&l, qos_get_time_us());
     log_str(&l, " ch=");
     log_u32(&l, active_channel);
@@ -626,10 +618,317 @@ static void log_ap_line(const ap_info_t* ap){
 }
 
 static void log_ap_snapshot(void){
+    scan_log_line_t l;
+    (void)qos_file_clear(SCAN_LOG_APS);
+    log_init(&l);
+    log_str(&l, "QOSSCAN_APS v=2 mode=replace key=bssid fields=ap\n");
+    log_append_line(SCAN_LOG_APS, &l);
     for (unsigned int i = 0u; i < MAX_APS; i++){
         if (g_aps[i].seen){
             log_ap_line(&g_aps[i]);
         }
+    }
+}
+
+static const char* find_text(const char* s, const char* needle){
+    if (!s || !needle || !needle[0]){
+        return 0;
+    }
+    for (const char* p = s; *p; p++){
+        const char* a = p;
+        const char* b = needle;
+        while (*a && *b && *a == *b){
+            a++;
+            b++;
+        }
+        if (*b == 0){
+            return p;
+        }
+    }
+    return 0;
+}
+
+static unsigned int text_len(const char* s){
+    unsigned int n = 0u;
+    if (!s){
+        return 0u;
+    }
+    while (s[n]){
+        n++;
+    }
+    return n;
+}
+
+static int hex_val(char c){
+    if (c >= '0' && c <= '9'){
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f'){
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F'){
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static int parse_u32_at(const char* p, unsigned int* out){
+    unsigned int v = 0u;
+    unsigned int any = 0u;
+    if (!p || !out){
+        return 0;
+    }
+    while (*p >= '0' && *p <= '9'){
+        unsigned int d = (unsigned int)(*p - '0');
+        if (v > (0xFFFFFFFFu - d) / 10u){
+            return 0;
+        }
+        v = (v * 10u) + d;
+        any = 1u;
+        p++;
+    }
+    if (!any){
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_i32_at(const char* p, int* out){
+    unsigned int neg = 0u;
+    unsigned int uv = 0u;
+    if (!p || !out){
+        return 0;
+    }
+    if (*p == '-'){
+        neg = 1u;
+        p++;
+    }
+    if (!parse_u32_at(p, &uv)){
+        return 0;
+    }
+    if (neg){
+        if (uv > 2147483648u){
+            return 0;
+        }
+        *out = -(int)uv;
+    } else{
+        if (uv > 2147483647u){
+            return 0;
+        }
+        *out = (int)uv;
+    }
+    return 1;
+}
+
+static int line_get_u32(const char* line, const char* key, unsigned int* out){
+    const char* p = find_text(line, key);
+    if (!p){
+        return 0;
+    }
+    return parse_u32_at(p + text_len(key), out);
+}
+
+static int line_get_i32(const char* line, const char* key, int* out){
+    const char* p = find_text(line, key);
+    if (!p){
+        return 0;
+    }
+    return parse_i32_at(p + text_len(key), out);
+}
+
+static int line_get_mac(const char* line, const char* key, unsigned char mac[6]){
+    const char* p = find_text(line, key);
+    if (!p || !mac){
+        return 0;
+    }
+    p += text_len(key);
+    for (unsigned int i = 0u; i < 6u; i++){
+        int hi = hex_val(p[0]);
+        int lo = hex_val(p[1]);
+        if (hi < 0 || lo < 0){
+            return 0;
+        }
+        mac[i] = (unsigned char)((hi << 4) | lo);
+        p += 2;
+        if (i < 5u){
+            if (*p != ':'){
+                return 0;
+            }
+            p++;
+        }
+    }
+    return 1;
+}
+
+static unsigned int copy_quoted_ssid_from_line(const char* line,
+                                               char out[SSID_MAX + 1u]){
+    const char* p = find_text(line, "ssid=\"");
+    unsigned int n = 0u;
+    if (!p || !out){
+        return 0u;
+    }
+    p += 6;
+    if (p[0] == '<' && find_text(p, "<hidden>") == p){
+        out[0] = 0;
+        return 0u;
+    }
+    while (*p && *p != '"' && n < SSID_MAX){
+        if (*p == '\\' && p[1]){
+            p++;
+        }
+        out[n++] = ssid_char_ok((unsigned char)*p) ? *p : '?';
+        p++;
+    }
+    out[n] = 0;
+    return n;
+}
+
+static void parse_counts_line_into_stats(const char* line, scan_stats_t* st){
+    unsigned int v;
+    if (!line || !st || !find_text(line, "frames=")){
+        return;
+    }
+    if (line_get_u32(line, "frames=", &v)) st->frames = v;
+    if (line_get_u32(line, "rt=", &v)) st->rt = v;
+    if (line_get_u32(line, "hs=", &v)) st->handshake_hits = v;
+    if (line_get_u32(line, "bad=", &v)) st->bad = v;
+    if (line_get_u32(line, "hop_ok=", &v)) st->hop_ok = v;
+    if (line_get_u32(line, "hop_fail=", &v)) st->hop_fail = v;
+    if (line_get_u32(line, "bcn=", &v)) st->frame_counts[CAT_BEACON] = v;
+    if (line_get_u32(line, "data=", &v)) st->frame_counts[CAT_DATA] = v;
+    if (line_get_u32(line, "preq=", &v)) st->frame_counts[CAT_PROBE_REQUEST] = v;
+    if (line_get_u32(line, "presp=", &v)) st->frame_counts[CAT_PROBE_RESPONSE] = v;
+    if (line_get_u32(line, "key=", &v)) st->frame_counts[CAT_KEY] = v;
+    if (line_get_u32(line, "action=", &v)) st->frame_counts[CAT_ACTION] = v;
+    if (line_get_u32(line, "block_ack=", &v)) st->frame_counts[CAT_BLOCK_ACK] = v;
+    if (line_get_u32(line, "auth=", &v)) st->frame_counts[CAT_AUTH_REQUEST] = v;
+    if (line_get_u32(line, "qos_null=", &v)) st->frame_counts[CAT_QOS_NULL] = v;
+    if (line_get_u32(line, "cts=", &v)) st->frame_counts[CAT_CLEAR_TO_SEND] = v;
+    if (line_get_u32(line, "ack=", &v)) st->frame_counts[CAT_ACKNOWLEDGEMENT] = v;
+    if (line_get_u32(line, "unk=", &v)) st->frame_counts[CAT_UNKNOWN] = v;
+}
+
+static unsigned int load_counts_from_fat(scan_stats_t* st){
+    int n;
+    char* line;
+    if (!st){
+        return 0u;
+    }
+    n = qos_scanner_log_read_fat(SCAN_LOG_COUNTS, 0u, g_scan_load_buf, SCAN_LOAD_BUF_BYTES - 1u);
+    if (n <= 0){
+        return 0u;
+    }
+    g_scan_load_buf[n] = 0u;
+    line = (char*)g_scan_load_buf;
+    for (int i = 0; i <= n; i++){
+        if (g_scan_load_buf[i] == '\r' || g_scan_load_buf[i] == '\n' || g_scan_load_buf[i] == 0u){
+            char saved = (char)g_scan_load_buf[i];
+            g_scan_load_buf[i] = 0u;
+            parse_counts_line_into_stats(line, st);
+            if (saved == 0){
+                break;
+            }
+            line = (char*)&g_scan_load_buf[i + 1];
+        }
+    }
+    return (unsigned int)n;
+}
+
+static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
+    unsigned char mac[6];
+    unsigned int uv;
+    int iv;
+    char ssid[SSID_MAX + 1u];
+    if (!line || !line_get_mac(line, "bssid=", mac)){
+        return;
+    }
+    int idx = find_ap(mac);
+    if (idx < 0){
+        return;
+    }
+    ap_info_t* ap = &g_aps[idx];
+    if (line_get_u32(line, "ch=", &uv) && uv <= 255u){
+        ap->channel = (unsigned char)uv;
+    }
+    if (line_get_i32(line, "sig_min=", &iv)){
+        if (ap->sig_min == 127 || iv < ap->sig_min){
+            ap->sig_min = iv;
+        }
+    }
+    if (line_get_i32(line, "sig_max=", &iv)){
+        if (ap->sig_max == -127 || iv > ap->sig_max){
+            ap->sig_max = iv;
+        }
+    }
+    if (find_text(line, "enc=RSN")){
+        ap->privacy = 1u;
+        ap->rsn = 1u;
+    } else if (find_text(line, "enc=WPA")){
+        ap->privacy = 1u;
+        ap->wpa = 1u;
+    } else if (find_text(line, "enc=WEP")){
+        ap->privacy = 1u;
+    }
+    uv = copy_quoted_ssid_from_line(line, ssid);
+    if (uv > 0u && ap->ssid_len == 0u){
+        set_ssid(ap, (const unsigned char*)ssid, uv);
+    }
+    if (line_get_u32(line, "clients=", &uv) && uv > ap->clients){
+        ap->clients = uv;
+    }
+    if (line_get_u32(line, "bcn=", &uv) && uv > ap->cat_counts[CAT_BEACON]){
+        ap->cat_counts[CAT_BEACON] = uv;
+    }
+    if (line_get_u32(line, "data=", &uv) && uv > ap->data_frames){
+        ap->data_frames = uv;
+        ap->cat_counts[CAT_DATA] = uv;
+    }
+    if (line_get_u32(line, "key=", &uv) && uv > ap->key_frames){
+        ap->key_frames = uv;
+        ap->cat_counts[CAT_KEY] = uv;
+    }
+    if (line_get_u32(line, "hs=", &uv) && uv > ap->handshake_hits){
+        ap->handshake_hits = uv;
+    }
+    if (loaded){
+        (*loaded)++;
+    }
+}
+
+static unsigned int load_aps_from_fat(void){
+    int n;
+    char* line;
+    unsigned int loaded = 0u;
+    n = qos_scanner_log_read_fat(SCAN_LOG_APS, 0u, g_scan_load_buf, SCAN_LOAD_BUF_BYTES - 1u);
+    if (n <= 0){
+        return 0u;
+    }
+    g_scan_load_buf[n] = 0u;
+    line = (char*)g_scan_load_buf;
+    for (int i = 0; i <= n; i++){
+        if (g_scan_load_buf[i] == '\r' || g_scan_load_buf[i] == '\n' || g_scan_load_buf[i] == 0u){
+            char saved = (char)g_scan_load_buf[i];
+            g_scan_load_buf[i] = 0u;
+            parse_ap_line_into_table(line, &loaded);
+            if (saved == 0){
+                break;
+            }
+            line = (char*)&g_scan_load_buf[i + 1];
+        }
+    }
+    return loaded;
+}
+
+static void load_persistent_scanner_state(scan_stats_t* st){
+    unsigned int count_bytes = load_counts_from_fat(st);
+    unsigned int ap_lines = load_aps_from_fat();
+    if (count_bytes || ap_lines){
+        qos_puts("scanner loaded prior state: counts_bytes=");
+        put_u32(count_bytes);
+        qos_puts(" ap_lines=");
+        put_u32(ap_lines);
+        qos_puts("\n");
     }
 }
 
@@ -644,7 +943,7 @@ static void log_key_event_line(const key_event_t* ev,
         return;
     }
     log_init(&l);
-    log_str(&l, "t_us=");
+    log_str(&l, "hs t_us=");
     log_u64(&l, qos_get_time_us());
     log_str(&l, " ch=");
     log_u32(&l, ev->channel);
@@ -686,17 +985,6 @@ static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
     }
     ap->cat_counts[cat]++;
     ap->cat_bytes[cat] += bytes;
-}
-
-static unsigned int ap_total_observed_frames(const ap_info_t* ap){
-    unsigned int n = 0u;
-    if (!ap){
-        return 0u;
-    }
-    for (unsigned int i = 0u; i < CAT_COUNT; i++){
-        n += ap->cat_counts[i];
-    }
-    return n;
 }
 
 static void key_event_push(unsigned int channel,
@@ -1262,25 +1550,11 @@ static void parse_frame(const unsigned char* buf,
             note_cat(stats, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
             if (idx >= 0 && dot_len >= 36u){
                 ap_info_t* ap = &g_aps[idx];
-                unsigned int old_seen_frames = ap_total_observed_frames(ap);
-                unsigned int old_ssid_len = ap->ssid_len;
-                unsigned char old_channel = ap->channel;
-                unsigned char old_privacy = ap->privacy;
-                unsigned char old_rsn = ap->rsn;
-                unsigned char old_wpa = ap->wpa;
                 ap_note_cat(ap, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
                 note_signal(ap, signal);
                 ap->channel = (unsigned char)active_channel;
                 ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
                 parse_tags(ap, dot + 36u, dot_len - 36u);
-                if (old_seen_frames == 0u ||
-                    old_ssid_len != ap->ssid_len ||
-                    old_channel != ap->channel ||
-                    old_privacy != ap->privacy ||
-                    old_rsn != ap->rsn ||
-                    old_wpa != ap->wpa){
-                    log_ap_line(ap);
-                }
                 maybe_notify_open_hit(ap);
             }
             return;
@@ -1346,13 +1620,9 @@ static void parse_frame(const unsigned char* buf,
             ap_idx = find_ap(bssid);
             if (ap_idx >= 0){
                 ap_info_t* ap = &g_aps[ap_idx];
-                unsigned int old_seen_frames = ap_total_observed_frames(ap);
                 note_client(ap, client);
                 note_signal(ap, signal);
                 ap->channel = (unsigned char)active_channel;
-                if (old_seen_frames == 0u){
-                    log_ap_line(ap);
-                }
             }
         }
 
@@ -1457,6 +1727,8 @@ void program_main(void){
     stats.hop_fail = 0u;
     stats.handshake_hits = 0u;
 
+    load_persistent_scanner_state(&stats);
+
     unsigned long long now = qos_get_time_us();
     last_rx_progress_us = now;
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
@@ -1465,8 +1737,10 @@ void program_main(void){
     unsigned long long next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
-    qos_puts("scanner logs: counts.log aps.log handshakes.log (RAM append, FAT autosave 60s)\n");
+    qos_puts("scanner logs: counts/aps replace state, handshakes append, FAT autosave 60s\n");
     log_scanner_start();
+    log_summary_line(&stats, active_channel);
+    log_ap_snapshot();
     /*
      * Always (re)enter monitor minimal-up first for scanner sessions so we
      * start from a clean capture state even if station-mode commands were run

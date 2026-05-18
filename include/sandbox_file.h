@@ -26,5 +26,6 @@ int sandbox_file_read_at(const char sandbox83[11],
 int sandbox_file_size(const char sandbox83[11], const char* relative_path);
 int sandbox_file_clear(const char sandbox83[11], const char* relative_path);
 int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_path);
+int sandbox_file_flush_to_fat_replace(const char sandbox83[11], const char* relative_path);
 
 #endif
