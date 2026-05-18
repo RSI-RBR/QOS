@@ -25,6 +25,7 @@
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
+#define LED_SCANNER_REFRESH_MS 100u
 #define HTTPS_PROBE_TIMEOUT_MS 900u
 
 static const char g_scanner_program_83[] = "SCANNER BIN";
@@ -32,6 +33,7 @@ static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' 
 
 static unsigned int g_inited = 0u;
 static unsigned int g_led_state = 0u;
+static unsigned int g_led_hw_known = 0u;
 
 static unsigned int g_btn_raw = 0u;
 static unsigned int g_btn_stable = 0u;
@@ -58,6 +60,8 @@ static unsigned long g_led_open_hit_expire = 0u;
 static unsigned int g_led_open_step = 0u;
 static unsigned long g_led_open_next_tick = 0u;
 static unsigned long g_led_last_render_tick = 0u;
+static unsigned int g_led_scanner_running_cached = 0u;
+static unsigned long g_led_scanner_next_check = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -104,6 +108,9 @@ static int find_scanner_pid(void){
 
 static void led_apply(unsigned int on){
     unsigned int hw_on = on ? 1u : 0u;
+    if (g_led_hw_known && g_led_state == (on ? 1u : 0u)){
+        return;
+    }
     if (!QOS_HEADLESS_LED_ACTIVE_HIGH){
         hw_on = hw_on ? 0u : 1u;
     }
@@ -116,6 +123,27 @@ static void led_apply(unsigned int on){
         gpio_write(QOS_HEADLESS_LED_GPIO_ALT, (int)hw_on_alt);
     }
     g_led_state = on ? 1u : 0u;
+    g_led_hw_known = 1u;
+}
+
+static unsigned long headless_now_ms(void){
+    unsigned long cnt = 0;
+    unsigned long freq = 0;
+
+    asm volatile("mrs %0, cntpct_el0" : "=r"(cnt));
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    if (freq == 0u){
+        return system_ticks;
+    }
+    return (cnt * 1000u) / freq;
+}
+
+static void refresh_scanner_running(unsigned long now, unsigned int force){
+    if (!force && (long)(now - g_led_scanner_next_check) < 0){
+        return;
+    }
+    g_led_scanner_running_cached = (find_scanner_pid() >= 0) ? 1u : 0u;
+    g_led_scanner_next_check = now + LED_SCANNER_REFRESH_MS;
 }
 
 static void led_burst(unsigned int pulses, unsigned long now){
@@ -128,11 +156,11 @@ static void led_test_stop(void){
     g_led_test_active = 0u;
     g_led_test_state_on = 0u;
     g_led_test_remaining_toggles = 0u;
-    g_led_test_next_tick = system_ticks;
+    g_led_test_next_tick = headless_now_ms();
 }
 
 static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
-    unsigned long now = system_ticks;
+    unsigned long now = headless_now_ms();
     if (!QOS_HEADLESS_LED_ENABLED){
         return -1;
     }
@@ -377,7 +405,7 @@ static void render_led(unsigned long now){
         return;
     }
 
-    unsigned int scanner_running = (find_scanner_pid() >= 0) ? 1u : 0u;
+    unsigned int scanner_running = g_led_scanner_running_cached;
 
     /*
      * Default idle behavior requested: LED solid on when scanner is not
@@ -428,6 +456,8 @@ static void render_led(unsigned long now){
 }
 
 void headless_control_init(void){
+    unsigned long now;
+
     if (!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED){
         return;
     }
@@ -440,28 +470,32 @@ void headless_control_init(void){
         if (QOS_HEADLESS_LED_GPIO_ALT < 54u){
             gpio_set_output(QOS_HEADLESS_LED_GPIO_ALT);
         }
+        g_led_hw_known = 0u;
         led_apply(0u);
     }
 
     g_inited = 1u;
+    now = headless_now_ms();
     g_btn_raw = 0u;
     g_btn_stable = 0u;
     g_btn_long_fired = 0u;
     g_btn_clicks = 0u;
-    g_btn_raw_tick = system_ticks;
-    g_btn_press_tick = system_ticks;
+    g_btn_raw_tick = now;
+    g_btn_press_tick = now;
     g_btn_click_deadline = 0u;
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
-    g_led_burst_next_tick = system_ticks;
-    g_led_base_anchor = system_ticks;
+    g_led_burst_next_tick = now;
+    g_led_base_anchor = now;
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
     g_led_open_hit_valid = 0u;
     g_led_open_hit_expire = 0u;
     g_led_open_step = 0u;
-    g_led_open_next_tick = system_ticks;
-    g_led_last_render_tick = system_ticks;
+    g_led_open_next_tick = now;
+    g_led_last_render_tick = now;
+    g_led_scanner_running_cached = 0u;
+    g_led_scanner_next_check = now;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -480,8 +514,9 @@ void headless_control_poll(void){
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
     }
-    now = system_ticks;
+    now = headless_now_ms();
     if (spin_trylock(&g_headless_lock)){
+        refresh_scanner_running(now, 0u);
         if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
             poll_button_state(now);
             action = handle_button_actions(now);
@@ -513,7 +548,7 @@ void headless_control_led_tick(void){
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
         return;
     }
-    now = system_ticks;
+    now = headless_now_ms();
     if (!spin_trylock(&g_headless_lock)){
         return;
     }
@@ -527,7 +562,7 @@ void headless_control_note_open_network_packet(void){
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
         return;
     }
-    now = system_ticks;
+    now = headless_now_ms();
     if (!spin_trylock(&g_headless_lock)){
         /*
          * Don't block scanner/network paths on LED bookkeeping. A missed hit
@@ -535,6 +570,7 @@ void headless_control_note_open_network_packet(void){
          */
         return;
     }
+    g_led_scanner_running_cached = 1u;
     if (!g_led_open_hit_valid || (long)(g_led_open_hit_expire - now) <= 0){
         g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
         g_led_open_hit_valid = 1u;
