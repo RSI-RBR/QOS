@@ -680,11 +680,14 @@ static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* 
     unsigned int s = stage ? *stage : 0u;
 
     if (s == 0u){
-        qos_puts("scanner: rx stalled; soft rearm\n");
+        qos_puts("scanner: rx stalled; monitor reset\n");
         (void)qos_wifi_raw_set_enabled(0u);
+        (void)qos_wifi_monitor_set(0u, 0u);
+        qos_sleep(20u);
+        (void)qos_wifi_up_monitor();
+        (void)qos_wifi_monitor_set(2u, ch);
         qos_sleep(5u);
         (void)qos_wifi_raw_set_enabled(1u);
-        (void)qos_wifi_monitor_set(2u, ch);
         if (stage){
             *stage = 1u;
         }
@@ -692,10 +695,10 @@ static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* 
     }
 
     if (s == 1u){
-        qos_puts("scanner: rx stalled; monitor reset\n");
-        (void)qos_wifi_monitor_set(0u, 0u);
-        qos_sleep(10u);
+        qos_puts("scanner: rx stalled; full monitor up\n");
+        (void)qos_wifi_up_monitor();
         (void)qos_wifi_monitor_set(2u, ch);
+        qos_sleep(5u);
         (void)qos_wifi_raw_set_enabled(1u);
         if (stage){
             *stage = 2u;
@@ -703,8 +706,15 @@ static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* 
         return;
     }
 
-    qos_puts("scanner: rx stalled; full monitor up\n");
-    scanner_ensure_monitor_ready(ch, 1u);
+    qos_puts("scanner: rx stalled; down/up monitor cycle\n");
+    (void)qos_wifi_raw_set_enabled(0u);
+    (void)qos_wifi_monitor_set(0u, 0u);
+    (void)qos_wifi_down();
+    qos_sleep(80u);
+    (void)qos_wifi_up_monitor();
+    (void)qos_wifi_monitor_set(2u, ch);
+    qos_sleep(5u);
+    (void)qos_wifi_raw_set_enabled(1u);
     if (stage){
         *stage = 0u;
     }
@@ -1074,6 +1084,7 @@ void program_main(void){
             if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
                 active_channel = mon.channel;
             }
+            next_hop = now + 1000000ull;
             last_rx_progress_us = now;
         }
 
