@@ -195,42 +195,43 @@ static void pi0_headless_wifi_autojoin(void){
     char password[96];
     int rc;
 
+    uart_puts("Pi0 headless WiFi: autojoin enabled\n");
     memzero((unsigned long)ssid, sizeof(ssid));
     memzero((unsigned long)password, sizeof(password));
 
     if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password)) != 0){
-        klog_puts("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
+        uart_puts("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
         return;
     }
 
-    klog_puts("Pi0 headless WiFi: loading firmware...\n");
+    uart_puts("Pi0 headless WiFi: loading firmware...\n");
     rc = cyw43_upload_firmware_from_fat(0, 0, 0);
     if (rc != 0){
-        klog_puts("Pi0 headless WiFi: firmware load failed rc=");
+        uart_puts("Pi0 headless WiFi: firmware load failed rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        klog_puts("\n");
+        uart_puts("\n");
         goto out;
     }
 
-    klog_puts("Pi0 headless WiFi: raising interface...\n");
+    uart_puts("Pi0 headless WiFi: raising interface...\n");
     rc = cyw43_ioctl_up();
     if (rc != 0){
-        klog_puts("Pi0 headless WiFi: wifiup failed rc=");
+        uart_puts("Pi0 headless WiFi: wifiup failed rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        klog_puts("\n");
+        uart_puts("\n");
         goto out;
     }
 
-    klog_puts("Pi0 headless WiFi: joining hidden SSID...\n");
+    uart_puts("Pi0 headless WiFi: joining hidden SSID...\n");
     rc = cyw43_ioctl_join(ssid, password);
     if (rc != 0){
-        klog_puts("Pi0 headless WiFi: join failed rc=");
+        uart_puts("Pi0 headless WiFi: join failed rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        klog_puts("\n");
+        uart_puts("\n");
         goto out;
     }
 
-    klog_puts("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
+    uart_puts("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
 
 out:
     memzero((unsigned long)ssid, sizeof(ssid));
@@ -528,8 +529,6 @@ void kernel_main(void){
         while (1){
             asm volatile("wfi");
         }
-    } else{
-        (void)remote_login_init();
     }
     headless_control_init();
 //    check_stack();
@@ -600,6 +599,7 @@ void kernel_main(void){
         }
     }
     pi0_headless_wifi_autojoin();
+    (void)remote_login_init();
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
