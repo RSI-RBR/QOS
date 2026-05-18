@@ -39,6 +39,7 @@
 #include "display.h"
 #include "program.h"
 #include "headless_control.h"
+#include "sandbox_file.h"
 #include "platform/board.h"
 #include "platform/soc.h"
 
@@ -206,6 +207,7 @@ void kernel_main(void){
     }
 
     process_init();
+    sandbox_file_init();
     interrupt_init();
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");

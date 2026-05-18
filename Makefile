@@ -69,6 +69,7 @@ kernel/sd.c \
 kernel/loader.c \
 kernel/api.c \
 kernel/fat32.c \
+kernel/sandbox_file.c \
 kernel/gpio.c \
 kernel/clock.c \
 kernel/emmc.c \

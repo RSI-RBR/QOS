@@ -177,7 +177,12 @@ enum {
     SYS_WIFI_RANDOMIZE_MAC = 151,
     SYS_LED_TEST = 152,
     SYS_LED_SET = 153,
-    SYS_LED_STATUS = 154
+    SYS_LED_STATUS = 154,
+    SYS_FILE_APPEND_DATA = 155,
+    SYS_FILE_READ_DATA = 156,
+    SYS_FILE_SIZE = 157,
+    SYS_FILE_CLEAR = 158,
+    SYS_HEADLESS_OPEN_HIT = 159
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -408,6 +413,28 @@ static inline int qos_file_read_bmp(const char* relative_path, unsigned char* ou
                              (unsigned long)relative_path,
                              (unsigned long)out,
                              (unsigned long)out_cap);
+}
+
+static inline int qos_file_append_data(const char* relative_path, const unsigned char* data, unsigned int len){
+    return (int)qos_syscall3(SYS_FILE_APPEND_DATA,
+                             (unsigned long)relative_path,
+                             (unsigned long)data,
+                             (unsigned long)len);
+}
+
+static inline int qos_file_read_data(const char* relative_path, unsigned char* out, unsigned int out_cap){
+    return (int)qos_syscall3(SYS_FILE_READ_DATA,
+                             (unsigned long)relative_path,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_file_size(const char* relative_path){
+    return (int)qos_syscall1(SYS_FILE_SIZE, (unsigned long)relative_path);
+}
+
+static inline int qos_file_clear(const char* relative_path){
+    return (int)qos_syscall1(SYS_FILE_CLEAR, (unsigned long)relative_path);
 }
 
 static inline void qos_file_profile_reset(void){
@@ -1097,6 +1124,10 @@ static inline int qos_led_set(unsigned int on){
 
 static inline unsigned int qos_led_status(void){
     return (unsigned int)qos_syscall0(SYS_LED_STATUS);
+}
+
+static inline int qos_headless_open_hit(void){
+    return (int)qos_syscall0(SYS_HEADLESS_OPEN_HIT);
 }
 
 static inline void qos_wifi_dump_status(void){

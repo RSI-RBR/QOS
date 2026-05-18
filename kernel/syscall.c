@@ -28,6 +28,7 @@
 #include "gpu2d.h"
 #include "v3d.h"
 #include "headless_control.h"
+#include "sandbox_file.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -38,6 +39,7 @@
 #define USER_WIFI_SCAN_MAX 64u
 #define USER_BMP_FILE_MAX (4u * 1024u * 1024u)
 #define USER_BMP_PATH_MAX 96u
+#define USER_FILE_RW_MAX (256u * 1024u)
 static int validate_gpu2d_blit_source(const qos_gpu2d_blit_t* blit){
     if (!blit || !blit->pixels || blit->texture_w == 0u || blit->texture_h == 0u ||
         blit->src_w == 0u || blit->src_h == 0u ||
@@ -482,8 +484,13 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_TRY_GETC_EX:
         case SYS_INPUT_POLL_EVENT:
         case SYS_FILE_READ_BMP:
+        case SYS_FILE_APPEND_DATA:
+        case SYS_FILE_READ_DATA:
+        case SYS_FILE_SIZE:
+        case SYS_FILE_CLEAR:
         case SYS_FILE_PROFILE_RESET:
         case SYS_FILE_PROFILE_DUMP:
+        case SYS_HEADLESS_OPEN_HIT:
         case SYS_GETPID:
         case SYS_GET_TICKS:
         case SYS_GET_COUNTER_HZ:
@@ -1355,6 +1362,130 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             kfree(kbuf);
             file_profile_note(1, (unsigned long)n, cstr_us, alloc_us, fat_init_us, fat_read_us, copy_us, profile_time_us() - t_total);
             frame[TF_X0] = (unsigned long)n;
+            return frame_sp;
+        }
+
+        case SYS_FILE_APPEND_DATA: {
+            char sandbox83[11];
+            char path[USER_BMP_PATH_MAX];
+            const unsigned char* user_in = (const unsigned char*)frame[TF_X1];
+            unsigned int in_len = (unsigned int)frame[TF_X2];
+            unsigned char* kbuf = 0;
+            int rc = -1;
+
+            if (!frame[TF_X0] || !user_in || in_len == 0u || in_len > SANDBOX_FILE_WRITE_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kbuf = (unsigned char*)kmalloc((unsigned long)in_len);
+            if (!kbuf || process_copy_from_user(kbuf, user_in, in_len) != 0){
+                if (kbuf){
+                    kfree_secure(kbuf, in_len);
+                }
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            rc = sandbox_file_append(sandbox83, path, kbuf, in_len);
+            kfree_secure(kbuf, in_len);
+            frame[TF_X0] = (rc >= 0) ? (unsigned long)rc : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FILE_READ_DATA: {
+            char sandbox83[11];
+            char path[USER_BMP_PATH_MAX];
+            unsigned char* user_out = (unsigned char*)frame[TF_X1];
+            unsigned int out_cap = (unsigned int)frame[TF_X2];
+            unsigned char* kbuf = 0;
+            int n = -1;
+
+            if (!frame[TF_X0] || !user_out || out_cap == 0u || out_cap > USER_FILE_RW_MAX){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kbuf = (unsigned char*)kmalloc((unsigned long)out_cap);
+            if (!kbuf){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            n = sandbox_file_read(sandbox83, path, kbuf, out_cap);
+            if (n > 0 && process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                kfree_secure(kbuf, out_cap);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kfree_secure(kbuf, out_cap);
+            frame[TF_X0] = (n >= 0) ? (unsigned long)n : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FILE_SIZE: {
+            char sandbox83[11];
+            char path[USER_BMP_PATH_MAX];
+            int n = -1;
+            if (!frame[TF_X0]){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            n = sandbox_file_size(sandbox83, path);
+            frame[TF_X0] = (n >= 0) ? (unsigned long)n : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_FILE_CLEAR: {
+            char sandbox83[11];
+            char path[USER_BMP_PATH_MAX];
+            int rc = -1;
+            if (!frame[TF_X0]){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            rc = sandbox_file_clear(sandbox83, path);
+            frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
             return frame_sp;
         }
 
@@ -2424,6 +2555,30 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
         case SYS_LED_STATUS:
             frame[TF_X0] = (unsigned long)headless_led_status_word();
             return frame_sp;
+
+        case SYS_HEADLESS_OPEN_HIT:
+        {
+            char sandbox83[11];
+            static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+            int ok = 1;
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < 11u; i++){
+                if (sandbox83[i] != scanner83[i]){
+                    ok = 0;
+                    break;
+                }
+            }
+            if (!ok){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            headless_control_note_open_network_packet();
+            frame[TF_X0] = 0;
+            return frame_sp;
+        }
 
         case SYS_WIFI_DOWN:
             frame[TF_X0] = (unsigned long)cyw43_ioctl_down();

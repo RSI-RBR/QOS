@@ -17,6 +17,11 @@
 #define BTN_LONG_PRESS_MS     1300u
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
+#define LED_OPEN_ALERT_WINDOW_MS 2000u
+#define LED_OPEN_ALERT_PERIOD_MS 1000u
+#define LED_OPEN_ALERT_ON1_MS 200u
+#define LED_OPEN_ALERT_GAP1_MS 100u
+#define LED_OPEN_ALERT_ON2_MS 200u
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
@@ -48,6 +53,8 @@ static unsigned int g_led_test_remaining_toggles = 0u;
 static unsigned int g_led_test_on_ms = 500u;
 static unsigned int g_led_test_off_ms = 500u;
 static unsigned long g_led_test_next_tick = 0u;
+static unsigned int g_led_open_hit_valid = 0u;
+static unsigned long g_led_open_hit_tick = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -379,6 +386,21 @@ static void render_led(unsigned long now){
         return;
     }
 
+    if (g_led_open_hit_valid){
+        unsigned long since = now - g_led_open_hit_tick;
+        if (since < LED_OPEN_ALERT_WINDOW_MS){
+            unsigned long phase = since % LED_OPEN_ALERT_PERIOD_MS;
+            if (phase < LED_OPEN_ALERT_ON1_MS ||
+                (phase >= (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS) &&
+                 phase < (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS + LED_OPEN_ALERT_ON2_MS))){
+                led_apply(1u);
+            } else{
+                led_apply(0u);
+            }
+            return;
+        }
+    }
+
     /*
      * Scanner mode: stable 500/500 phase blink.
      * Use a fixed anchor + modulo timing so brief scheduler stalls don't
@@ -425,6 +447,8 @@ void headless_control_init(void){
     g_led_base_anchor = system_ticks;
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
+    g_led_open_hit_valid = 0u;
+    g_led_open_hit_tick = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -474,6 +498,16 @@ void headless_control_led_tick(void){
         return;
     }
     render_led(now);
+    spin_unlock(&g_headless_lock);
+}
+
+void headless_control_note_open_network_packet(void){
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    spin_lock(&g_headless_lock);
+    g_led_open_hit_tick = system_ticks;
+    g_led_open_hit_valid = 1u;
     spin_unlock(&g_headless_lock);
 }
 

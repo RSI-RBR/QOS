@@ -79,6 +79,7 @@ static ap_info_t g_aps[MAX_APS];
 static key_event_t g_key_events[KEY_EVENT_RING];
 static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
+static unsigned long long g_last_open_hit_notify_us = 0ull;
 
 /*
  * Include 12/13 so scanners in regions using those channels can still detect
@@ -288,6 +289,20 @@ static const char* ap_security_label(const ap_info_t* ap){
 
 static int is_open_ap(const ap_info_t* ap){
     return ap && ap->seen && !ap->privacy && !ap->rsn && !ap->wpa;
+}
+
+static void maybe_notify_open_hit(const ap_info_t* ap){
+    unsigned long long now_us;
+    if (!is_open_ap(ap)){
+        return;
+    }
+    now_us = qos_get_time_us();
+    if (g_last_open_hit_notify_us != 0ull &&
+        (long long)(now_us - g_last_open_hit_notify_us) < 100000ll){
+        return;
+    }
+    g_last_open_hit_notify_us = now_us;
+    (void)qos_headless_open_hit();
 }
 
 static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
@@ -744,6 +759,7 @@ static void parse_frame(const unsigned char* buf,
                 ap->channel = (unsigned char)active_channel;
                 ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
                 parse_tags(ap, dot + 36u, dot_len - 36u);
+                maybe_notify_open_hit(ap);
             }
             return;
         }
@@ -880,6 +896,7 @@ void program_main(void){
     unsigned char buf[RAW_BUF_BYTES];
     scan_stats_t stats;
     unsigned int stale_secs = 0u;
+    unsigned int recv_err_streak = 0u;
     unsigned int last_rx_frames = 0u;
     unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
     unsigned int hop_idx = 0u;
@@ -946,12 +963,17 @@ void program_main(void){
 
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
         if (n < 0){
-            qos_puts("scanner: raw recv failed\n");
-            break;
-        }
-        if (n > 0){
+            recv_err_streak++;
+            if ((recv_err_streak & 0x7u) == 1u){
+                qos_puts("scanner: raw recv error; rearming monitor\n");
+            }
+            scanner_ensure_monitor_ready(active_channel);
+            qos_sleep(5u);
+        } else if (n > 0){
+            recv_err_streak = 0u;
             parse_frame(buf, (unsigned int)n, active_channel, &stats);
         } else{
+            recv_err_streak = 0u;
             qos_sleep(1u);
         }
 
