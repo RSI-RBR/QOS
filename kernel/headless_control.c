@@ -476,9 +476,6 @@ void headless_control_poll(void){
             poll_button_state(now);
             action = handle_button_actions(now);
         }
-        if (QOS_HEADLESS_LED_ENABLED){
-            render_led(now);
-        }
         spin_unlock(&g_headless_lock);
     }
 
