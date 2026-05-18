@@ -5,10 +5,10 @@
 #define SSID_MAX 32u
 #define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
-#define STALE_RECOVER_SECS 8u
+#define STALE_RECOVER_SECS 4u
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
-#define DETAIL_PRINT_SECS 12u
+#define DETAIL_PRINT_SECS 8u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
 
@@ -636,7 +636,7 @@ static void print_overview(void){
     print_recent_key_events();
 }
 
-static void scanner_ensure_monitor_ready(unsigned int channel){
+static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int force_rearm){
     cyw43_monitor_status_t st;
     unsigned int use_ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
     static unsigned long long next_full_rearm_us = 0ull;
@@ -647,7 +647,7 @@ static void scanner_ensure_monitor_ready(unsigned int channel){
         if (st.channel != 0u && channel == 0u){
             use_ch = st.channel;
         }
-        if (st.enabled && st.raw_enabled){
+        if (!force_rearm && st.enabled && st.raw_enabled){
             if (use_ch != 0u && st.channel != use_ch){
                 (void)qos_wifi_monitor_set(2u, use_ch);
             }
@@ -662,7 +662,8 @@ static void scanner_ensure_monitor_ready(unsigned int channel){
     }
 
     // Full firmware-side monitor rearm is expensive; throttle it.
-    if (next_full_rearm_us != 0ull && (long long)(now_us - next_full_rearm_us) < 0){
+    if (!force_rearm &&
+        next_full_rearm_us != 0ull && (long long)(now_us - next_full_rearm_us) < 0){
         return;
     }
     next_full_rearm_us = now_us + ((unsigned long long)FULL_REARM_COOLDOWN_SECS * 1000000ull);
@@ -670,6 +671,41 @@ static void scanner_ensure_monitor_ready(unsigned int channel){
     (void)qos_wifi_up_monitor();
     (void)qos_wifi_monitor_set(2u, use_ch);
     (void)qos_wifi_raw_set_enabled(1u);
+}
+
+static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* stage){
+    unsigned int ch = active_channel ? active_channel : DEFAULT_SCAN_CHANNEL;
+    unsigned int s = stage ? *stage : 0u;
+
+    if (s == 0u){
+        qos_puts("scanner: rx stalled; soft rearm\n");
+        (void)qos_wifi_raw_set_enabled(0u);
+        qos_sleep(5u);
+        (void)qos_wifi_raw_set_enabled(1u);
+        (void)qos_wifi_monitor_set(2u, ch);
+        if (stage){
+            *stage = 1u;
+        }
+        return;
+    }
+
+    if (s == 1u){
+        qos_puts("scanner: rx stalled; monitor reset\n");
+        (void)qos_wifi_monitor_set(0u, 0u);
+        qos_sleep(10u);
+        (void)qos_wifi_monitor_set(2u, ch);
+        (void)qos_wifi_raw_set_enabled(1u);
+        if (stage){
+            *stage = 2u;
+        }
+        return;
+    }
+
+    qos_puts("scanner: rx stalled; full monitor up\n");
+    scanner_ensure_monitor_ready(ch, 1u);
+    if (stage){
+        *stage = 0u;
+    }
 }
 
 static void maybe_hop_channel(unsigned int* active_channel,
@@ -904,7 +940,7 @@ void program_main(void){
     unsigned int beacon_only_secs = 0u;
     unsigned int prev_frames = 0u;
     unsigned int prev_non_beacon = 0u;
-    unsigned int rearm_attempts = 0u;
+    unsigned int rearm_stage = 0u;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -923,7 +959,7 @@ void program_main(void){
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
-    scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL);
+    scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL, 0u);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
     if (have_mon && mon.channel != 0u){
@@ -996,18 +1032,17 @@ void program_main(void){
                 } else{
                     stale_secs = 0u;
                     last_rx_frames = st1.rx_frames;
-                    rearm_attempts = 0u;
+                    rearm_stage = 0u;
                 }
                 if (stale_secs >= STALE_RECOVER_SECS){
-                    if ((rearm_attempts % 4u) == 0u){
-                        qos_puts("scanner: rx stalled; rearming monitor\n");
-                    }
-                    scanner_ensure_monitor_ready(active_channel);
+                    qos_puts("scanner: rx stalled\n");
+                    scanner_recover_rx_stall(active_channel, &rearm_stage);
                     if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
                         active_channel = mon.channel;
                     }
                     stale_secs = 0u;
-                    rearm_attempts++;
+                } else{
+                    rearm_stage = 0u;
                 }
             }
             next_print += 2000000ull;
@@ -1038,7 +1073,7 @@ void program_main(void){
             if ((recv_err_streak & 0x7u) == 1u){
                 qos_puts("scanner: raw recv error; rearming monitor\n");
             }
-            scanner_ensure_monitor_ready(active_channel);
+            scanner_ensure_monitor_ready(active_channel, 1u);
             qos_sleep(5u);
         } else if (n > 0){
             recv_err_streak = 0u;
