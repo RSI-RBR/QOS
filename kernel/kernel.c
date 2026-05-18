@@ -83,6 +83,38 @@ static void pi0_wifi_wait_ms(unsigned int ms){
     }
 }
 
+static void pi0_headless_write(const char* s){
+    unsigned long len = 0;
+    if (!s){
+        return;
+    }
+    while (s[len]){
+        len++;
+    }
+    terminal_write(0, -1, s, len);
+}
+
+static void pi0_headless_putdec(unsigned long v){
+    char tmp[21];
+    char out[21];
+    int n = 0;
+    int o = 0;
+
+    if (v == 0UL){
+        pi0_headless_write("0");
+        return;
+    }
+    while (v > 0UL && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10UL));
+        v /= 10UL;
+    }
+    while (n > 0 && o + 1 < (int)sizeof(out)){
+        out[o++] = tmp[--n];
+    }
+    out[o] = 0;
+    pi0_headless_write(out);
+}
+
 static int cfg_is_space(char c){
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
@@ -212,50 +244,75 @@ static void pi0_headless_wifi_autojoin(void){
     int up_ok = 0;
     int join_ok = 0;
 
-    uart_puts("Pi0 headless WiFi: autojoin enabled\n");
+    pi0_headless_write("Pi0 headless WiFi: autojoin enabled\n");
     memzero((unsigned long)ssid, sizeof(ssid));
     memzero((unsigned long)password, sizeof(password));
 
     headless_control_note_boot_stage(4u, 0u);
     if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password)) != 0){
-        uart_puts("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
+        pi0_headless_write("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
         headless_control_note_boot_stage(4u, 1u);
         return;
     }
 
     headless_control_note_boot_stage(5u, 0u);
-    uart_puts("Pi0 headless WiFi: loading station firmware ");
-    uart_puts(PI0_AUTO_WIFI_FW_83);
-    uart_puts(" / ");
-    uart_puts(PI0_AUTO_WIFI_NV_83);
-    uart_puts(" / ");
-    uart_puts(PI0_AUTO_WIFI_CLM_83);
-    uart_puts("...\n");
+    pi0_headless_write("Pi0 headless WiFi: loading station firmware ");
+    pi0_headless_write(PI0_AUTO_WIFI_FW_83);
+    pi0_headless_write(" / ");
+    pi0_headless_write(PI0_AUTO_WIFI_NV_83);
+    pi0_headless_write(" / ");
+    pi0_headless_write(PI0_AUTO_WIFI_CLM_83);
+    pi0_headless_write("...\n");
     rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83,
                                         PI0_AUTO_WIFI_NV_83,
                                         PI0_AUTO_WIFI_CLM_83);
     if (rc != 0){
-        uart_puts("Pi0 headless WiFi: firmware load failed rc=");
-        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        uart_puts("\n");
+        pi0_headless_write("Pi0 headless WiFi: firmware load failed rc=");
+        pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+        pi0_headless_write("\n");
         headless_control_note_boot_stage(5u, 1u);
         goto out;
     }
 
     headless_control_note_boot_stage(6u, 0u);
-    uart_puts("Pi0 headless WiFi: raising interface...\n");
+    pi0_headless_write("Pi0 headless WiFi: raising interface...\n");
     for (unsigned int attempt = 0u; attempt < 3u; attempt++){
         rc = cyw43_ioctl_up();
         if (rc == 0){
             up_ok = 1;
             break;
         }
-        uart_puts("Pi0 headless WiFi: wifiup failed attempt=");
-        uart_putdec(attempt + 1u);
-        uart_puts(" rc=");
-        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        uart_puts("\n");
+        pi0_headless_write("Pi0 headless WiFi: wifiup failed attempt=");
+        pi0_headless_putdec(attempt + 1u);
+        pi0_headless_write(" rc=");
+        pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+        pi0_headless_write("\n");
         pi0_wifi_wait_ms(300u + (attempt * 250u));
+    }
+    if (!up_ok){
+        pi0_headless_write("Pi0 headless WiFi: restaging firmware after wifiup failure...\n");
+        rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83,
+                                            PI0_AUTO_WIFI_NV_83,
+                                            PI0_AUTO_WIFI_CLM_83);
+        if (rc == 0){
+            for (unsigned int attempt = 0u; attempt < 3u; attempt++){
+                rc = cyw43_ioctl_up();
+                if (rc == 0){
+                    up_ok = 1;
+                    break;
+                }
+                pi0_headless_write("Pi0 headless WiFi: wifiup restage failed attempt=");
+                pi0_headless_putdec(attempt + 1u);
+                pi0_headless_write(" rc=");
+                pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+                pi0_headless_write("\n");
+                pi0_wifi_wait_ms(450u + (attempt * 300u));
+            }
+        } else{
+            pi0_headless_write("Pi0 headless WiFi: firmware restage failed rc=");
+            pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+            pi0_headless_write("\n");
+        }
     }
     if (!up_ok){
         headless_control_note_boot_stage(6u, 1u);
@@ -263,18 +320,18 @@ static void pi0_headless_wifi_autojoin(void){
     }
 
     headless_control_note_boot_stage(7u, 0u);
-    uart_puts("Pi0 headless WiFi: joining hidden SSID...\n");
+    pi0_headless_write("Pi0 headless WiFi: joining hidden SSID...\n");
     for (unsigned int attempt = 0u; attempt < 5u; attempt++){
         rc = cyw43_ioctl_join(ssid, password);
         if (rc == 0){
             join_ok = 1;
             break;
         }
-        uart_puts("Pi0 headless WiFi: join failed attempt=");
-        uart_putdec(attempt + 1u);
-        uart_puts(" rc=");
-        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-        uart_puts("\n");
+        pi0_headless_write("Pi0 headless WiFi: join failed attempt=");
+        pi0_headless_putdec(attempt + 1u);
+        pi0_headless_write(" rc=");
+        pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+        pi0_headless_write("\n");
         /*
          * Nexmon station joins can be timing-sensitive on Pi0. Do not reload
          * firmware here; just reset the interface state and retry association.
@@ -283,9 +340,9 @@ static void pi0_headless_wifi_autojoin(void){
         pi0_wifi_wait_ms(250u + (attempt * 150u));
         rc = cyw43_ioctl_up();
         if (rc != 0){
-            uart_puts("Pi0 headless WiFi: retry wifiup failed rc=");
-            uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
-            uart_puts("\n");
+            pi0_headless_write("Pi0 headless WiFi: retry wifiup failed rc=");
+            pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+            pi0_headless_write("\n");
             pi0_wifi_wait_ms(500u);
         } else{
             pi0_wifi_wait_ms(350u + (attempt * 150u));
@@ -296,7 +353,7 @@ static void pi0_headless_wifi_autojoin(void){
         goto out;
     }
 
-    uart_puts("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
+    pi0_headless_write("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
     headless_control_note_wifi_joined_waiting_login();
 
 out:
