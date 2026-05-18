@@ -4,11 +4,7 @@
 #include "gpio.h"
 #include "timer.h"
 #include "process.h"
-#include "loader.h"
-#include "memory.h"
 #include "cyw43.h"
-#include "net.h"
-#include "tcp.h"
 #include "blockdev.h"
 #include "fat32.h"
 #include "sandbox_file.h"
@@ -31,9 +27,13 @@
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
 #define LED_SCANNER_REFRESH_MS 100u
-#define HTTPS_PROBE_TIMEOUT_MS 900u
+#define LED_BOOT_ON_MS        120u
+#define LED_BOOT_OFF_MS       120u
+#define LED_BOOT_GAP_MS       1200u
+#define LED_BOOT_FAIL_ON_MS   260u
+#define LED_BOOT_FAIL_OFF_MS  160u
+#define LED_BOOT_FAIL_GAP_MS  1800u
 
-static const char g_scanner_program_83[] = "SCANNER BIN";
 static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
 static const char* const g_scanner_log_paths[] = {
     "counts.log",
@@ -77,6 +77,9 @@ static unsigned long g_led_scanner_recovery_expire = 0u;
 static unsigned int g_led_wifi_joined_waiting_login = 0u;
 static unsigned int g_led_login_seen = 0u;
 static unsigned long g_led_login_wait_anchor = 0u;
+static unsigned int g_led_boot_stage = 0u;
+static unsigned int g_led_boot_failed = 0u;
+static unsigned long g_led_boot_anchor = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -209,48 +212,10 @@ static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int 
     return 0;
 }
 
-static int scanner_start(void){
-    loaded_program_t prog = load_program_from_sd_named(g_scanner_program_83);
-    int pid = -1;
-
-    if (!prog.entry){
-        return -1;
-    }
-
-    pid = process_create_loaded(prog);
-    if (pid >= 0){
-        return pid;
-    }
-
-    if (prog.heap_allocated){
-        kfree_secure(prog.memory, prog.size);
-    } else{
-        loader_free_program_memory(prog.memory, prog.size);
-    }
-    return -1;
-}
-
 static void scanner_stop(void){
     int pid = find_scanner_pid();
     if (pid >= 0){
         process_exit(pid);
-    }
-}
-
-static void scanner_toggle(unsigned long now){
-    int pid = find_scanner_pid();
-    if (pid >= 0){
-        scanner_stop();
-        led_burst(1u, now);
-        uart_puts("Headless: scanner stopped\n");
-        return;
-    }
-    if (scanner_start() >= 0){
-        led_burst(2u, now);
-        uart_puts("Headless: scanner started\n");
-    } else{
-        led_burst(5u, now);
-        uart_puts("Headless: scanner start failed\n");
     }
 }
 
@@ -292,50 +257,6 @@ static void scanner_secure_stop(unsigned long now){
     uart_puts(" failed=");
     uart_putdec((unsigned long)failed);
     uart_puts("\n");
-}
-
-static unsigned int count_open_aps(void){
-    cyw43_scan_result_t scans[20];
-    unsigned int count = 0u;
-    unsigned int open = 0u;
-
-    if (cyw43_ioctl_scan(scans, 20u, &count) != 0){
-        return 0u;
-    }
-    for (unsigned int i = 0; i < count; i++){
-        if (scans[i].auth == 0u){
-            open++;
-        }
-    }
-    return open;
-}
-
-static int quick_https_probe(void){
-    static unsigned char out[384];
-    static const unsigned char ip[4] = {1u, 1u, 1u, 1u};
-    int ping_rc = net_ping_gateway(HTTPS_PROBE_TIMEOUT_MS);
-    int https_rc = -1;
-    if (ping_rc != 0){
-        return 0;
-    }
-    https_rc = tcp_https_get(ip, "one.one.one.one", "/", out, sizeof(out));
-    return (https_rc > 0) ? 1 : 0;
-}
-
-static void scanner_single_press_check(unsigned long now){
-    unsigned int open_count = count_open_aps();
-    if (open_count == 0u){
-        led_burst(1u, now);
-        uart_puts("Headless: single-press check, no open APs\n");
-        return;
-    }
-    if (quick_https_probe()){
-        led_burst(3u, now);
-        uart_puts("Headless: single-press check, open AP + HTTPS OK\n");
-    } else{
-        led_burst(2u, now);
-        uart_puts("Headless: single-press check, open AP no internet\n");
-    }
 }
 
 static unsigned int handle_button_actions(unsigned long now){
@@ -457,6 +378,30 @@ static void render_led(unsigned long now){
             led_apply((phase < LED_LOGIN_WAIT_ON_MS) ? 1u : 0u);
             return;
         }
+        if (g_led_boot_stage != 0u){
+            unsigned int code = g_led_boot_stage;
+            unsigned long on_ms = g_led_boot_failed ? LED_BOOT_FAIL_ON_MS : LED_BOOT_ON_MS;
+            unsigned long off_ms = g_led_boot_failed ? LED_BOOT_FAIL_OFF_MS : LED_BOOT_OFF_MS;
+            unsigned long gap_ms = g_led_boot_failed ? LED_BOOT_FAIL_GAP_MS : LED_BOOT_GAP_MS;
+            unsigned long pulse_ms;
+            unsigned long active_ms;
+            unsigned long cycle;
+            unsigned long phase;
+
+            if (code > 12u){
+                code = 12u;
+            }
+            pulse_ms = on_ms + off_ms;
+            active_ms = pulse_ms * code;
+            cycle = active_ms + gap_ms;
+            phase = cycle ? ((now - g_led_boot_anchor) % cycle) : 0u;
+            if (phase < active_ms && (phase % pulse_ms) < on_ms){
+                led_apply(1u);
+            } else{
+                led_apply(0u);
+            }
+            return;
+        }
         /*
          * Default idle behavior requested: LED solid on when scanner is not
          * running.
@@ -511,6 +456,9 @@ static void render_led(unsigned long now){
 void headless_control_init(void){
     unsigned long now;
 
+    if (g_inited){
+        return;
+    }
     if (!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED){
         return;
     }
@@ -554,8 +502,14 @@ void headless_control_init(void){
     g_led_wifi_joined_waiting_login = 0u;
     g_led_login_seen = 0u;
     g_led_login_wait_anchor = now;
+    g_led_boot_stage = 0u;
+    g_led_boot_failed = 0u;
+    g_led_boot_anchor = now;
     spinlock_init(&g_headless_lock);
     led_test_stop();
+    if (QOS_HEADLESS_LED_ENABLED){
+        led_apply(1u);
+    }
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
         uart_puts("Headless: button/LED control enabled\n");
     } else if (QOS_HEADLESS_BUTTON_ENABLED){
@@ -563,6 +517,23 @@ void headless_control_init(void){
     } else if (QOS_HEADLESS_LED_ENABLED){
         uart_puts("Headless: LED control enabled\n");
     }
+}
+
+void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = headless_now_ms();
+    spin_lock(&g_headless_lock);
+    g_led_boot_stage = stage;
+    g_led_boot_failed = failed ? 1u : 0u;
+    g_led_boot_anchor = now;
+    g_led_wifi_joined_waiting_login = 0u;
+    g_led_burst_pulses = 0u;
+    g_led_test_active = 0u;
+    g_led_manual_mode = 0u;
+    spin_unlock(&g_headless_lock);
 }
 
 void headless_control_poll(void){
@@ -627,6 +598,8 @@ void headless_control_note_wifi_joined_waiting_login(void){
     if (!g_led_login_seen){
         g_led_wifi_joined_waiting_login = 1u;
         g_led_login_wait_anchor = now;
+        g_led_boot_stage = 0u;
+        g_led_boot_failed = 0u;
         g_led_burst_pulses = 0u;
         g_led_test_active = 0u;
         g_led_manual_mode = 0u;
@@ -643,6 +616,8 @@ void headless_control_note_login_success(void){
     }
     g_led_login_seen = 1u;
     g_led_wifi_joined_waiting_login = 0u;
+    g_led_boot_stage = 0u;
+    g_led_boot_failed = 0u;
     spin_unlock(&g_headless_lock);
 }
 

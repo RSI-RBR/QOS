@@ -216,11 +216,14 @@ static void pi0_headless_wifi_autojoin(void){
     memzero((unsigned long)ssid, sizeof(ssid));
     memzero((unsigned long)password, sizeof(password));
 
+    headless_control_note_boot_stage(4u, 0u);
     if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password)) != 0){
         uart_puts("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
+        headless_control_note_boot_stage(4u, 1u);
         return;
     }
 
+    headless_control_note_boot_stage(5u, 0u);
     uart_puts("Pi0 headless WiFi: loading station firmware ");
     uart_puts(PI0_AUTO_WIFI_FW_83);
     uart_puts(" / ");
@@ -235,9 +238,11 @@ static void pi0_headless_wifi_autojoin(void){
         uart_puts("Pi0 headless WiFi: firmware load failed rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
         uart_puts("\n");
+        headless_control_note_boot_stage(5u, 1u);
         goto out;
     }
 
+    headless_control_note_boot_stage(6u, 0u);
     uart_puts("Pi0 headless WiFi: raising interface...\n");
     for (unsigned int attempt = 0u; attempt < 3u; attempt++){
         rc = cyw43_ioctl_up();
@@ -253,9 +258,11 @@ static void pi0_headless_wifi_autojoin(void){
         pi0_wifi_wait_ms(300u + (attempt * 250u));
     }
     if (!up_ok){
+        headless_control_note_boot_stage(6u, 1u);
         goto out;
     }
 
+    headless_control_note_boot_stage(7u, 0u);
     uart_puts("Pi0 headless WiFi: joining hidden SSID...\n");
     for (unsigned int attempt = 0u; attempt < 5u; attempt++){
         rc = cyw43_ioctl_join(ssid, password);
@@ -285,6 +292,7 @@ static void pi0_headless_wifi_autojoin(void){
         }
     }
     if (!join_ok){
+        headless_control_note_boot_stage(7u, 1u);
         goto out;
     }
 
@@ -381,6 +389,7 @@ void kernel_main(void){
     uart_puts(" SoC: ");
     uart_puts(soc_name());
     uart_puts("\n");
+    headless_control_init();
 #if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
     uart_puts("Pi0 headless WiFi: build hook present; autojoin after shell load.\n");
 #else
@@ -453,6 +462,8 @@ void kernel_main(void){
     interrupt_init();
     enable_interrupts();
     uart_puts("Interrupt system initialized!\n");
+    headless_control_init();
+    headless_control_note_boot_stage(1u, 0u);
 
     if (board_has_dwc2_usb()){
         if (usb_host_init() != 0){
@@ -550,15 +561,18 @@ void kernel_main(void){
 //    extern int sdhost_read_block(unsigned int lba, unsigned char* buffer);
     if (blockdev_init() != 0){
         klog_puts("Blockdev init failed!\n");
-        return;
+        headless_control_note_boot_stage(1u, 1u);
+        while (1){ asm volatile("wfi"); }
     }
     klog_puts("Storage init OK...\n");
 
+    headless_control_note_boot_stage(2u, 0u);
     int kv = kernel_verify_self();
     if (kv < 0){
         klog_puts("Kernel verify failed.\n");
         if (kernel_verify_enforce()){
             klog_puts("Kernel verify enforced: HALTING.\n");
+            headless_control_note_boot_stage(2u, 1u);
             while (1){ asm volatile("wfi"); }
         }
         klog_puts("Kernel verify warn-only mode: continuing boot.\n");
@@ -571,6 +585,7 @@ void kernel_main(void){
         klog_puts("Kernel file verify failed.\n");
         if (kernel_verify_enforce()){
             klog_puts("Kernel verify enforced: HALTING.\n");
+            headless_control_note_boot_stage(2u, 1u);
             while (1){ asm volatile("wfi"); }
         }
         klog_puts("Kernel file verify warn-only mode: continuing.\n");
@@ -583,6 +598,7 @@ void kernel_main(void){
         if (!kernel_trust_ok){
             klog_puts("Boot security policy: kernel trust not established.\n");
             klog_puts("Boot security policy: local shell + remote login disabled.\n");
+            headless_control_note_boot_stage(2u, 1u);
             while (1){
                 asm volatile("wfi");
             }
@@ -592,11 +608,11 @@ void kernel_main(void){
     if (auth_init() != 0){
         klog_puts("AUTH init failed; local shell + remote login disabled.\n");
         klog_puts("Boot security policy: signed AUTH.BIN/AUTH.SIG/AUTH.PQS required.\n");
+        headless_control_note_boot_stage(2u, 1u);
         while (1){
             asm volatile("wfi");
         }
     }
-    headless_control_init();
 //    check_stack();
 //    sdhost_read_block(0, sector);
 //    uart_puts("First read OK\n");
@@ -658,9 +674,11 @@ void kernel_main(void){
 //    
     
     uart_puts("Boot shell: loading SHELL.BIN before Pi0 WiFi takeover...\n");
+    headless_control_note_boot_stage(3u, 0u);
     loaded_program_t shell_prog = load_boot_shell_program();
     if (!shell_prog.entry){
         klog_puts("SHELL.BIN not found; boot shell disabled by policy.\n");
+        headless_control_note_boot_stage(3u, 1u);
         while (1){
             asm volatile("wfi");
         }
