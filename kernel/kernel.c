@@ -251,9 +251,11 @@ void test_task(void *arg){
     uart_puts(" running\n");
 }
 
-static int create_boot_shell_process(void){
-    // SHELL.BIN in FAT 8.3 format.
-    loaded_program_t shell_prog = load_program_from_sd_named("SHELL   BIN");
+static loaded_program_t load_boot_shell_program(void){
+    return load_program_from_sd_named("SHELL   BIN");
+}
+
+static int start_boot_shell_process(loaded_program_t shell_prog){
     if (shell_prog.entry){
         int pid = process_create_loaded(shell_prog);
         if (pid >= 0){
@@ -597,15 +599,25 @@ void kernel_main(void){
 //    }
 //    
     
-    int shell_pid = create_boot_shell_process();
+    uart_puts("Boot shell: loading SHELL.BIN before Pi0 WiFi takeover...\n");
+    loaded_program_t shell_prog = load_boot_shell_program();
+    if (!shell_prog.entry){
+        klog_puts("SHELL.BIN not found; boot shell disabled by policy.\n");
+        while (1){
+            asm volatile("wfi");
+        }
+    }
+    uart_puts("Boot shell: SHELL.BIN loaded; running Pi0 WiFi autojoin hook...\n");
+    pi0_headless_wifi_autojoin();
+    (void)remote_login_init();
+    uart_puts("Boot shell: creating scheduled user shell...\n");
+    int shell_pid = start_boot_shell_process(shell_prog);
     if (shell_pid < 0){
         klog_puts("No boot shell process available; halting in idle loop.\n");
         while (1){
             asm volatile("wfi");
         }
     }
-    pi0_headless_wifi_autojoin();
-    (void)remote_login_init();
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
