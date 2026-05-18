@@ -1319,11 +1319,14 @@ static int cyw43_attach_running_firmware(void){
     return 0;
 }
 
-static void cyw43_drop_sdio_state(void){
+static void cyw43_drop_sdio_state_common(int forget_loaded_firmware){
     cyw43_clear_monitor_raw_state(-6);
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.func2_ready = 0;
+    if (forget_loaded_firmware){
+        g_cyw43.fw_loaded = 0;
+    }
     g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
     g_cyw43.wifi_configured = 0;
@@ -1339,6 +1342,14 @@ static void cyw43_drop_sdio_state(void){
     g_cyw43.net_rx_other = 0;
     sdio_bus_reset_state();
     blockdev_reserve_emmc_for_wifi(0);
+}
+
+static void cyw43_drop_sdio_state(void){
+    cyw43_drop_sdio_state_common(0);
+}
+
+static void cyw43_drop_sdio_state_for_restage(void){
+    cyw43_drop_sdio_state_common(1);
 }
 
 int cyw43_release_emmc_for_storage(void){
@@ -1601,7 +1612,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
          * Recovery path: if SDIO readiness latched through a failed monitor
          * cycle, force a clean state before reclaiming EMMC for FAT reads.
          */
-        cyw43_drop_sdio_state();
+        cyw43_drop_sdio_state_for_restage();
     }
 
     io_rc = blockdev_reinit_emmc();
@@ -1676,7 +1687,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
 
     // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
     // SDIO before touching the CYW43 backplane.
-    cyw43_drop_sdio_state();
+    cyw43_drop_sdio_state_for_restage();
     io_rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
                                                (const char*)nv_buf, (unsigned int)nv_len);
     if (io_rc != 0){
@@ -2577,7 +2588,7 @@ int cyw43_monitor_hard_recover(unsigned int channel){
              * Give EMMC/SDIO arbitration a short settle window before retry.
              */
             cyw43_delay_ms(25u + (attempt * 25u));
-            cyw43_drop_sdio_state();
+            cyw43_drop_sdio_state_for_restage();
         }
     }
     if (rc != 0){
