@@ -2544,7 +2544,9 @@ static void cmd_wifijoin(const char* ssid, const char* password){
     if (rc == 0){
         qos_puts("WiFi join OK\n");
     } else{
-        qos_puts("WiFi join failed\n");
+        qos_puts("WiFi join failed rc=");
+        print_int(rc);
+        qos_puts("\n");
     }
 }
 
