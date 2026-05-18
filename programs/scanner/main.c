@@ -680,13 +680,10 @@ static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* 
     unsigned int s = stage ? *stage : 0u;
 
     if (s == 0u){
-        qos_puts("scanner: rx stalled; monitor reset\n");
+        qos_puts("scanner: rx stalled; raw/monitor rearm\n");
         (void)qos_wifi_raw_set_enabled(0u);
-        (void)qos_wifi_monitor_set(0u, 0u);
-        qos_sleep(20u);
-        (void)qos_wifi_up_monitor();
-        (void)qos_wifi_monitor_set(2u, ch);
         qos_sleep(5u);
+        (void)qos_wifi_monitor_set(2u, ch);
         (void)qos_wifi_raw_set_enabled(1u);
         if (stage){
             *stage = 1u;
@@ -706,12 +703,11 @@ static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* 
         return;
     }
 
-    qos_puts("scanner: rx stalled; down/up monitor cycle\n");
+    qos_puts("scanner: rx stalled; monitor retune cycle\n");
     (void)qos_wifi_raw_set_enabled(0u);
-    (void)qos_wifi_monitor_set(0u, 0u);
-    (void)qos_wifi_down();
-    qos_sleep(80u);
     (void)qos_wifi_up_monitor();
+    (void)qos_wifi_monitor_set(2u, 0u);
+    qos_sleep(20u);
     (void)qos_wifi_monitor_set(2u, ch);
     qos_sleep(5u);
     (void)qos_wifi_raw_set_enabled(1u);

@@ -3410,8 +3410,12 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
          */
         uart_puts("CYW43: monitor minimal up; skipping CLM/station config\n");
         if (cyw43_wl_noresp(CYW43_WLC_UP) != 0){
-            uart_puts("CYW43: monitor WLC_UP send failed\n");
-            return -6;
+            /*
+             * Nexmon monitor firmware can already be up, or can refuse this
+             * no-response control send while raw capture still works. Treat it
+             * like the station path treats WLC_UP: useful signal, not fatal.
+             */
+            uart_puts("CYW43: monitor WLC_UP send failed; continuing\n");
         }
         cyw43_delay(200000u);
     } else if (!g_cyw43.wifi_configured){
