@@ -16,6 +16,21 @@ AUTH.BIN
 AUTH.SIG
 AUTH.PQS
 
+# Local WiFi credentials for Pi Zero 2W headless auto-join.
+# Keep these on the SD card or local machine only.
+WIFI.CFG
+WIFI.TXT
+WIFI.KEY
+WIFI.SSID
+WIFI.PASS
+WIFI.PSK
+WIFI.SEC
+WIFI.SIG
+WIFI.PQS
+wifi.cfg
+wifi.local
+wifi.env
+
 rpi-fw/
 
 __pycache__/

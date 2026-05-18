@@ -33,6 +33,7 @@
 #include "pq_sig.h"
 #include "auth.h"
 #include "remote_login.h"
+#include "cyw43.h"
 #include "panic.h"
 #include "terminal.h"
 #include "klog.h"
@@ -65,6 +66,180 @@ void memzero(unsigned long start, unsigned long size){
     for (unsigned long i = 0; i < size; i++)
         ((char*)start)[i] = 0;
 }
+
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+static int cfg_is_space(char c){
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static char cfg_lower(char c){
+    if (c >= 'A' && c <= 'Z'){
+        return (char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int cfg_key_eq(const char* a, const char* b){
+    while (*a && *b){
+        if (cfg_lower(*a) != cfg_lower(*b)){
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static char* cfg_trim(char* s){
+    char* e;
+    while (*s && cfg_is_space(*s)){
+        s++;
+    }
+    e = s;
+    while (*e){
+        e++;
+    }
+    while (e > s && cfg_is_space(e[-1])){
+        e--;
+        *e = 0;
+    }
+    return s;
+}
+
+static void cfg_copy_value(char* dst, unsigned int cap, const char* src){
+    unsigned int i = 0;
+    char quote = 0;
+    if (!dst || cap == 0){
+        return;
+    }
+    dst[0] = 0;
+    if (!src){
+        return;
+    }
+    if (*src == '"' || *src == '\''){
+        quote = *src;
+        src++;
+    }
+    while (*src && i + 1u < cap){
+        if (quote && *src == quote){
+            break;
+        }
+        dst[i++] = *src++;
+    }
+    dst[i] = 0;
+}
+
+static int pi0_read_wifi_cfg(char* ssid, unsigned int ssid_cap,
+                             char* password, unsigned int password_cap){
+    static char cfg[1024];
+    static const char wifi_cfg_83[] = "WIFI    CFG";
+    int n;
+    char* p;
+
+    if (!ssid || ssid_cap == 0 || !password || password_cap == 0){
+        return -1;
+    }
+    ssid[0] = 0;
+    password[0] = 0;
+
+    n = fat32_read_file(wifi_cfg_83, (unsigned char*)cfg, (int)sizeof(cfg) - 1);
+    if (n <= 0){
+        return -1;
+    }
+    cfg[n] = 0;
+
+    p = cfg;
+    while (*p){
+        char* line = p;
+        char* eq;
+        char* key;
+        char* val;
+        while (*p && *p != '\n'){
+            p++;
+        }
+        if (*p == '\n'){
+            *p++ = 0;
+        }
+
+        line = cfg_trim(line);
+        if (!*line || *line == '#'){
+            continue;
+        }
+        eq = line;
+        while (*eq && *eq != '='){
+            eq++;
+        }
+        if (*eq != '='){
+            continue;
+        }
+        *eq = 0;
+        key = cfg_trim(line);
+        val = cfg_trim(eq + 1);
+
+        if (cfg_key_eq(key, "ssid") || cfg_key_eq(key, "wifi_ssid")){
+            cfg_copy_value(ssid, ssid_cap, val);
+        } else if (cfg_key_eq(key, "password") ||
+                   cfg_key_eq(key, "pass") ||
+                   cfg_key_eq(key, "psk") ||
+                   cfg_key_eq(key, "wifi_password")){
+            cfg_copy_value(password, password_cap, val);
+        }
+    }
+
+    memzero((unsigned long)cfg, sizeof(cfg));
+    return ssid[0] ? 0 : -1;
+}
+
+static void pi0_headless_wifi_autojoin(void){
+    char ssid[33];
+    char password[96];
+    int rc;
+
+    memzero((unsigned long)ssid, sizeof(ssid));
+    memzero((unsigned long)password, sizeof(password));
+
+    if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password)) != 0){
+        klog_puts("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
+        return;
+    }
+
+    klog_puts("Pi0 headless WiFi: loading firmware...\n");
+    rc = cyw43_upload_firmware_from_fat(0, 0, 0);
+    if (rc != 0){
+        klog_puts("Pi0 headless WiFi: firmware load failed rc=");
+        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
+        klog_puts("\n");
+        goto out;
+    }
+
+    klog_puts("Pi0 headless WiFi: raising interface...\n");
+    rc = cyw43_ioctl_up();
+    if (rc != 0){
+        klog_puts("Pi0 headless WiFi: wifiup failed rc=");
+        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
+        klog_puts("\n");
+        goto out;
+    }
+
+    klog_puts("Pi0 headless WiFi: joining hidden SSID...\n");
+    rc = cyw43_ioctl_join(ssid, password);
+    if (rc != 0){
+        klog_puts("Pi0 headless WiFi: join failed rc=");
+        uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
+        klog_puts("\n");
+        goto out;
+    }
+
+    klog_puts("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
+
+out:
+    memzero((unsigned long)ssid, sizeof(ssid));
+    memzero((unsigned long)password, sizeof(password));
+}
+#else
+static void pi0_headless_wifi_autojoin(void){
+}
+#endif
 
 void test_task(void *arg){
     char id = (char)(unsigned long)arg;
@@ -424,6 +599,7 @@ void kernel_main(void){
             asm volatile("wfi");
         }
     }
+    pi0_headless_wifi_autojoin();
 
     // -----------------------------
     // OPTION 2: TASK DEMO (COMMENTED)
