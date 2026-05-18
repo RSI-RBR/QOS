@@ -239,6 +239,7 @@ out:
 }
 #else
 static void pi0_headless_wifi_autojoin(void){
+    uart_puts("Pi0 headless WiFi: skipped; not a BOARD=pi_zero2w build.\n");
 }
 #endif
 
