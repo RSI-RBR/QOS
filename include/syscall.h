@@ -188,7 +188,8 @@ enum {
     SYS_SCANNER_LOG_READ_FAT = 162,
     SYS_WIFI_MONITOR_RECOVER = 163,
     SYS_SCANNER_LOG_FLUSH_ALL = 164,
-    SYS_HEADLESS_SCANNER_IDLE = 165
+    SYS_HEADLESS_SCANNER_IDLE = 165,
+    SYS_SCANNER_LOG_SET_PASSWORD = 166
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1172,6 +1173,10 @@ static inline int qos_headless_open_hit(void){
 
 static inline int qos_headless_scanner_idle(unsigned int active){
     return (int)qos_syscall1(SYS_HEADLESS_SCANNER_IDLE, (unsigned long)(active ? 1u : 0u));
+}
+
+static inline int qos_scanner_log_set_password(const char* password){
+    return (int)qos_syscall1(SYS_SCANNER_LOG_SET_PASSWORD, (unsigned long)password);
 }
 
 static inline void qos_wifi_dump_status(void){

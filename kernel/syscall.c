@@ -30,6 +30,10 @@
 #include "v3d.h"
 #include "headless_control.h"
 #include "sandbox_file.h"
+#include "aes_gcm.h"
+#include "crypto.h"
+#include "spinlock.h"
+#include "argon2_kdf.h"
 
 #define ESR_EC_SHIFT 26
 #define ESR_EC_MASK   0x3FUL
@@ -41,6 +45,15 @@
 #define USER_BMP_FILE_MAX (4u * 1024u * 1024u)
 #define USER_BMP_PATH_MAX 96u
 #define USER_FILE_RW_MAX (256u * 1024u)
+#define SCANNER_LOG_ENC_MAGIC_LEN 8u
+#define SCANNER_LOG_ENC_HDR_LEN 40u
+static const unsigned char g_scanner_log_enc_magic[SCANNER_LOG_ENC_MAGIC_LEN] = {
+    'Q','O','S','E','N','C','1','\n'
+};
+static spinlock_t g_scanner_log_key_lock = {0};
+static unsigned char g_scanner_log_key[32];
+static unsigned int g_scanner_log_key_valid = 0u;
+
 static int validate_gpu2d_blit_source(const qos_gpu2d_blit_t* blit){
     if (!blit || !blit->pixels || blit->texture_w == 0u || blit->texture_h == 0u ||
         blit->src_w == 0u || blit->src_h == 0u ||
@@ -128,12 +141,363 @@ static int scanner_log_is_replace_file(const char* path){
     return (cstr_eq_lit(path, "counts.log") || cstr_eq_lit(path, "aps.log")) ? 1 : 0;
 }
 
-static int scanner_log_flush_all_files(void){
+static void scanner_log_store_be32(unsigned char out[4], unsigned int v){
+    out[0] = (unsigned char)((v >> 24) & 0xFFu);
+    out[1] = (unsigned char)((v >> 16) & 0xFFu);
+    out[2] = (unsigned char)((v >> 8) & 0xFFu);
+    out[3] = (unsigned char)(v & 0xFFu);
+}
+
+static unsigned int scanner_log_load_be32(const unsigned char in[4]){
+    return ((unsigned int)in[0] << 24) |
+           ((unsigned int)in[1] << 16) |
+           ((unsigned int)in[2] << 8) |
+           (unsigned int)in[3];
+}
+
+static int scanner_log_is_encrypted_buf(const unsigned char* data, unsigned int len){
+    if (!data || len < SCANNER_LOG_ENC_MAGIC_LEN){
+        return 0;
+    }
+    for (unsigned int i = 0u; i < SCANNER_LOG_ENC_MAGIC_LEN; i++){
+        if (data[i] != g_scanner_log_enc_magic[i]){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void scanner_log_clear_password(void){
+    unsigned long irq = spin_lock_irqsave(&g_scanner_log_key_lock);
+    crypto_memzero(g_scanner_log_key, sizeof(g_scanner_log_key));
+    g_scanner_log_key_valid = 0u;
+    spin_unlock_irqrestore(&g_scanner_log_key_lock, irq);
+}
+
+static int scanner_log_copy_key(unsigned char out[32]){
+    unsigned long irq;
+    if (!out){
+        return -1;
+    }
+    irq = spin_lock_irqsave(&g_scanner_log_key_lock);
+    if (!g_scanner_log_key_valid){
+        spin_unlock_irqrestore(&g_scanner_log_key_lock, irq);
+        return -1;
+    }
+    for (unsigned int i = 0u; i < 32u; i++){
+        out[i] = g_scanner_log_key[i];
+    }
+    spin_unlock_irqrestore(&g_scanner_log_key_lock, irq);
+    return 0;
+}
+
+static int scanner_log_has_key(void){
+    unsigned int valid;
+    unsigned long irq = spin_lock_irqsave(&g_scanner_log_key_lock);
+    valid = g_scanner_log_key_valid;
+    spin_unlock_irqrestore(&g_scanner_log_key_lock, irq);
+    return valid ? 1 : 0;
+}
+
+static int scanner_log_set_password_kernel(const char* password){
+    static const unsigned char salt[] = "QOS scanner log password v1";
+    unsigned char new_key[32];
+    unsigned long irq;
+    int kdf_rc;
+    unsigned int pw_len = 0u;
+
+    if (!password || !password[0]){
+        scanner_log_clear_password();
+        return -1;
+    }
+    while (password[pw_len] && pw_len < USER_PASS_MAX - 1u){
+        pw_len++;
+    }
+    if (pw_len == 0u){
+        scanner_log_clear_password();
+        return -1;
+    }
+
+    kdf_rc = argon2id_hash_raw_qos(AUTH_ARGON2_DEFAULT_T_COST,
+                                   AUTH_ARGON2_DEFAULT_M_COST_KIB,
+                                   AUTH_ARGON2_DEFAULT_PARALLELISM,
+                                   (const void*)password,
+                                   pw_len,
+                                   salt,
+                                   (unsigned int)(sizeof(salt) - 1u),
+                                   new_key,
+                                   sizeof(new_key),
+                                   AUTH_ARGON2_DEFAULT_VERSION);
+    if (kdf_rc != 0){
+        crypto_memzero(new_key, sizeof(new_key));
+        scanner_log_clear_password();
+        return -1;
+    }
+    irq = spin_lock_irqsave(&g_scanner_log_key_lock);
+    for (unsigned int i = 0u; i < 32u; i++){
+        g_scanner_log_key[i] = new_key[i];
+    }
+    g_scanner_log_key_valid = 1u;
+    spin_unlock_irqrestore(&g_scanner_log_key_lock, irq);
+    crypto_memzero(new_key, sizeof(new_key));
+    return 0;
+}
+
+static int scanner_log_encrypt_record(const unsigned char* plain,
+                                      unsigned int plain_len,
+                                      unsigned char** out_record,
+                                      unsigned int* out_len){
+    aes_gcm_key_t key;
+    unsigned char key_bytes[32];
+    unsigned char* rec;
+    unsigned int rec_len;
+
+    if (!out_record || !out_len || !plain || plain_len == 0u ||
+        plain_len > USER_FILE_RW_MAX - SCANNER_LOG_ENC_HDR_LEN ||
+        scanner_log_copy_key(key_bytes) != 0){
+        return -1;
+    }
+    rec_len = SCANNER_LOG_ENC_HDR_LEN + plain_len;
+    rec = (unsigned char*)kmalloc(rec_len);
+    if (!rec){
+        crypto_memzero(key_bytes, sizeof(key_bytes));
+        return -1;
+    }
+    for (unsigned int i = 0u; i < SCANNER_LOG_ENC_MAGIC_LEN; i++){
+        rec[i] = g_scanner_log_enc_magic[i];
+    }
+    scanner_log_store_be32(&rec[8], plain_len);
+    if (crypto_random_bytes(&rec[12], 12u) != 0){
+        crypto_memzero(key_bytes, sizeof(key_bytes));
+        kfree_secure(rec, rec_len);
+        return -1;
+    }
+    for (unsigned int i = 24u; i < 40u; i++){
+        rec[i] = 0u;
+    }
+    if (aes_gcm_key_init(&key, key_bytes, sizeof(key_bytes)) != 0){
+        crypto_memzero(key_bytes, sizeof(key_bytes));
+        kfree_secure(rec, rec_len);
+        return -1;
+    }
+    crypto_memzero(key_bytes, sizeof(key_bytes));
+    if (aes_gcm_encrypt(&key,
+                        &rec[12], 12u,
+                        rec, 24u,
+                        plain, plain_len,
+                        &rec[SCANNER_LOG_ENC_HDR_LEN],
+                        &rec[24], 16u) != 0){
+        crypto_memzero(&key, sizeof(key));
+        kfree_secure(rec, rec_len);
+        return -1;
+    }
+    crypto_memzero(&key, sizeof(key));
+    *out_record = rec;
+    *out_len = rec_len;
+    return 0;
+}
+
+static int scanner_log_decrypt_records(const unsigned char* enc,
+                                       unsigned int enc_len,
+                                       unsigned char* out,
+                                       unsigned int out_cap){
+    aes_gcm_key_t key;
+    unsigned char key_bytes[32];
+    unsigned int pos = 0u;
+    unsigned int out_len = 0u;
+
+    if (!enc || !out || out_cap == 0u){
+        return -1;
+    }
+    if (!scanner_log_is_encrypted_buf(enc, enc_len)){
+        unsigned int n = enc_len;
+        if (n > out_cap){
+            n = out_cap;
+        }
+        for (unsigned int i = 0u; i < n; i++){
+            out[i] = enc[i];
+        }
+        return (int)n;
+    }
+    if (scanner_log_copy_key(key_bytes) != 0){
+        return -1;
+    }
+    if (aes_gcm_key_init(&key, key_bytes, sizeof(key_bytes)) != 0){
+        crypto_memzero(key_bytes, sizeof(key_bytes));
+        return -1;
+    }
+    crypto_memzero(key_bytes, sizeof(key_bytes));
+    while (pos < enc_len){
+        unsigned int plain_len;
+        if (pos + SCANNER_LOG_ENC_HDR_LEN > enc_len ||
+            !scanner_log_is_encrypted_buf(&enc[pos], enc_len - pos)){
+            crypto_memzero(&key, sizeof(key));
+            return -1;
+        }
+        plain_len = scanner_log_load_be32(&enc[pos + 8u]);
+        if (plain_len > USER_FILE_RW_MAX ||
+            pos + SCANNER_LOG_ENC_HDR_LEN + plain_len > enc_len ||
+            out_len + plain_len > out_cap){
+            crypto_memzero(&key, sizeof(key));
+            return -1;
+        }
+        if (aes_gcm_decrypt(&key,
+                            &enc[pos + 12u], 12u,
+                            &enc[pos], 24u,
+                            &enc[pos + SCANNER_LOG_ENC_HDR_LEN],
+                            plain_len,
+                            &out[out_len],
+                            &enc[pos + 24u], 16u) != 0){
+            crypto_memzero(&key, sizeof(key));
+            return -1;
+        }
+        out_len += plain_len;
+        pos += SCANNER_LOG_ENC_HDR_LEN + plain_len;
+    }
+    crypto_memzero(&key, sizeof(key));
+    return (int)out_len;
+}
+
+static int scanner_log_flush_to_fat_encrypted(const char scanner83[11],
+                                              const char* path,
+                                              int replace_file){
+    unsigned char* plain = 0;
+    unsigned char* rec = 0;
+    unsigned char* old = 0;
+    unsigned char* old_rec = 0;
+    unsigned int rec_len = 0u;
+    unsigned int old_rec_len = 0u;
+    int size;
+    int rc;
+    int old_n;
+
+    if (!scanner_log_has_key()){
+        return -1;
+    }
+
+    size = sandbox_file_size(scanner83, path);
+    if (size <= 0){
+        return (size == 0) ? 0 : -1;
+    }
+    if ((unsigned int)size > USER_FILE_RW_MAX - SCANNER_LOG_ENC_HDR_LEN){
+        return -1;
+    }
+    plain = (unsigned char*)kmalloc((unsigned long)size);
+    if (!plain){
+        return -1;
+    }
+    if (sandbox_file_read(scanner83, path, plain, (unsigned int)size) != size){
+        kfree_secure(plain, (unsigned int)size);
+        return -1;
+    }
+    if (scanner_log_encrypt_record(plain, (unsigned int)size, &rec, &rec_len) != 0){
+        kfree_secure(plain, (unsigned int)size);
+        return -1;
+    }
+    if (replace_file){
+        rc = fat32_write_file_in_dir_path_existing(scanner83, path, rec, rec_len);
+    } else{
+        /*
+         * First encrypted run after old plaintext captures: rewrite the
+         * existing plaintext log as one encrypted record before appending the
+         * new record. Otherwise handshakes.log would become mixed text/binary.
+         */
+        old = (unsigned char*)kmalloc(USER_FILE_RW_MAX);
+        if (!old){
+            kfree_secure(plain, (unsigned int)size);
+            kfree_secure(rec, rec_len);
+            return -1;
+        }
+        old_n = fat32_read_file_in_dir_path_any(scanner83, path, old, USER_FILE_RW_MAX);
+        if (old_n > 0 && !scanner_log_is_encrypted_buf(old, (unsigned int)old_n)){
+            if ((unsigned int)old_n > USER_FILE_RW_MAX - SCANNER_LOG_ENC_HDR_LEN ||
+                scanner_log_encrypt_record(old, (unsigned int)old_n, &old_rec, &old_rec_len) != 0){
+                kfree_secure(old, USER_FILE_RW_MAX);
+                kfree_secure(plain, (unsigned int)size);
+                kfree_secure(rec, rec_len);
+                return -1;
+            }
+            rc = fat32_write_file_in_dir_path_existing(scanner83, path, old_rec, old_rec_len);
+            if (rc == 0){
+                rc = fat32_append_file_in_dir_path_existing(scanner83, path, rec, rec_len);
+            }
+        } else{
+            rc = fat32_append_file_in_dir_path_existing(scanner83, path, rec, rec_len);
+        }
+    }
+    if (rc == 0){
+        (void)sandbox_file_clear(scanner83, path);
+    }
+    if (old){
+        kfree_secure(old, USER_FILE_RW_MAX);
+    }
+    if (old_rec){
+        kfree_secure(old_rec, old_rec_len);
+    }
+    kfree_secure(plain, (unsigned int)size);
+    kfree_secure(rec, rec_len);
+    return rc;
+}
+
+static int scanner_log_flush_all_files_encrypted(void){
     static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
-    int rc_counts = sandbox_file_flush_to_fat_replace(scanner83, "counts.log");
-    int rc_aps = sandbox_file_flush_to_fat_replace(scanner83, "aps.log");
-    int rc_hs = sandbox_file_flush_to_fat(scanner83, "handshakes.log");
+    int rc_counts = scanner_log_flush_to_fat_encrypted(scanner83, "counts.log", 1);
+    int rc_aps = scanner_log_flush_to_fat_encrypted(scanner83, "aps.log", 1);
+    int rc_hs = scanner_log_flush_to_fat_encrypted(scanner83, "handshakes.log", 0);
     return (rc_counts == 0 && rc_aps == 0 && rc_hs == 0) ? 0 : -1;
+}
+
+static int scanner_log_read_fat_plaintext(const char scanner83[11],
+                                          const char* path,
+                                          unsigned int offset,
+                                          unsigned char* out,
+                                          unsigned int out_cap){
+    unsigned char* enc = 0;
+    unsigned char* plain = 0;
+    int enc_n;
+    int plain_n;
+    int rc = -1;
+
+    if (!out || out_cap == 0u){
+        return -1;
+    }
+    enc = (unsigned char*)kmalloc(USER_FILE_RW_MAX);
+    plain = (unsigned char*)kmalloc(USER_FILE_RW_MAX);
+    if (!enc || !plain){
+        goto out;
+    }
+    enc_n = fat32_read_file_in_dir_path_any(scanner83, path, enc, USER_FILE_RW_MAX);
+    if (enc_n < 0){
+        goto out;
+    }
+    if (enc_n == 0){
+        rc = 0;
+        goto out;
+    }
+    plain_n = scanner_log_decrypt_records(enc, (unsigned int)enc_n, plain, USER_FILE_RW_MAX);
+    if (plain_n < 0){
+        goto out;
+    }
+    if (offset >= (unsigned int)plain_n){
+        rc = 0;
+        goto out;
+    }
+    rc = (int)((unsigned int)plain_n - offset);
+    if ((unsigned int)rc > out_cap){
+        rc = (int)out_cap;
+    }
+    for (unsigned int i = 0u; i < (unsigned int)rc; i++){
+        out[i] = plain[offset + i];
+    }
+
+out:
+    if (enc){
+        kfree_secure(enc, USER_FILE_RW_MAX);
+    }
+    if (plain){
+        kfree_secure(plain, USER_FILE_RW_MAX);
+    }
+    return rc;
 }
 
 static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
@@ -642,6 +1006,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_SCANNER_LOG_FLUSH:
         case SYS_SCANNER_LOG_READ_FAT:
         case SYS_SCANNER_LOG_FLUSH_ALL:
+        case SYS_SCANNER_LOG_SET_PASSWORD:
         case SYS_HEADLESS_SCANNER_IDLE:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
@@ -2666,6 +3031,20 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             return frame_sp;
         }
 
+        case SYS_SCANNER_LOG_SET_PASSWORD:
+        {
+            char password[USER_PASS_MAX];
+            if (!frame[TF_X0] ||
+                copy_cstr_from_user_bound(password, sizeof(password), (const char*)frame[TF_X0]) != 0){
+                scanner_log_clear_password();
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            frame[TF_X0] = (scanner_log_set_password_kernel(password) == 0) ? 0ul : (unsigned long)-1;
+            crypto_memzero(password, sizeof(password));
+            return frame_sp;
+        }
+
         case SYS_SCANNER_LOG_READ:
         {
             static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
@@ -2728,15 +3107,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
              * scanner persistence.
              */
             if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
-                rc = scanner_log_is_replace_file(path)
-                         ? sandbox_file_flush_to_fat_replace(scanner83, path)
-                         : sandbox_file_flush_to_fat(scanner83, path);
+                rc = scanner_log_flush_to_fat_encrypted(scanner83, path, scanner_log_is_replace_file(path));
             }
             if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
                 blockdev_is_emmc() && fat32_init() == 0){
-                rc = scanner_log_is_replace_file(path)
-                         ? sandbox_file_flush_to_fat_replace(scanner83, path)
-                         : sandbox_file_flush_to_fat(scanner83, path);
+                rc = scanner_log_flush_to_fat_encrypted(scanner83, path, scanner_log_is_replace_file(path));
             }
             kernel_preempt_exit();
 
@@ -2749,11 +3124,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             int rc = -1;
             kernel_preempt_enter();
             if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
-                rc = scanner_log_flush_all_files();
+                rc = scanner_log_flush_all_files_encrypted();
             }
             if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
                 blockdev_is_emmc() && fat32_init() == 0){
-                rc = scanner_log_flush_all_files();
+                rc = scanner_log_flush_all_files_encrypted();
             }
             kernel_preempt_exit();
             frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
@@ -2789,11 +3164,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
             kernel_preempt_enter();
             if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
-                n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
+                n = scanner_log_read_fat_plaintext(scanner83, path, offset, kbuf, out_cap);
             }
             if (n < 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
                 blockdev_is_emmc() && fat32_init() == 0){
-                n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
+                n = scanner_log_read_fat_plaintext(scanner83, path, offset, kbuf, out_cap);
             }
             kernel_preempt_exit();
 

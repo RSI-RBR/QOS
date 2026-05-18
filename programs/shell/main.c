@@ -508,11 +508,11 @@ static void cmd_help(void){
     qos_puts(" log [pid]\n");
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
-    qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
-    qos_puts(" scanstart [ch] - one-shot remote handoff: Nexmon monitor + scanner\n");
-    qos_puts(" scanlog [overview|counts|aps|handshakes]  (reads FAT summaries)\n");
+    qos_puts(" scanner <pw>   - start scanner with AES-GCM encrypted FAT logs\n");
+    qos_puts(" scanstart [ch] <pw> - remote handoff: Nexmon monitor + scanner\n");
+    qos_puts(" scanlog [overview|counts|aps|handshakes] <pw>  (decrypt FAT summaries)\n");
     qos_puts(" scanram [counts|aps|handshakes]           (reads RAM log view)\n");
-    qos_puts(" scanfat [counts|aps|handshakes]           (raw FAT log dump)\n");
+    qos_puts(" scanfat [counts|aps|handshakes] <pw>      (decrypted raw FAT dump)\n");
     qos_puts(" scanflush [counts|aps|handshakes|all]\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
@@ -631,7 +631,31 @@ static void cmd_game(void){
     }
 }
 
-static void cmd_scanner(void){
+static void wipe_cstr(char* s){
+    if (!s){
+        return;
+    }
+    while (*s){
+        *s++ = 0;
+    }
+}
+
+static int set_scanner_log_password_or_usage(char* password){
+    int rc;
+    if (!password || !*password){
+        qos_puts("Scanner log password required.\n");
+        return -1;
+    }
+    rc = qos_scanner_log_set_password(password);
+    wipe_cstr(password);
+    if (rc != 0){
+        qos_puts("Scanner log password setup failed.\n");
+        return -1;
+    }
+    return 0;
+}
+
+static void cmd_scanner_launch(void){
     // FAT 8.3 uppercase, space-padded: "SCANNER BIN"
     static const char scanner_file_83[] = "SCANNER BIN";
     qos_puts("Loading SCANNER.BIN...\n");
@@ -647,11 +671,23 @@ static void cmd_scanner(void){
     qos_puts(" (live output in this shell)\n");
 }
 
-static void cmd_scanstart(unsigned int channel){
+static void cmd_scanner(char* password){
+    if (set_scanner_log_password_or_usage(password) != 0){
+        qos_puts("Usage: scanner <log-password>\n");
+        return;
+    }
+    cmd_scanner_launch();
+}
+
+static void cmd_scanstart(unsigned int channel, char* password){
     int rc;
     const char* clm = (g_wifi_clm_83 && *g_wifi_clm_83) ? g_wifi_clm_83 : 0;
     if (channel == 0u || channel > 13u){
         channel = 6u;
+    }
+    if (set_scanner_log_password_or_usage(password) != 0){
+        qos_puts("Usage: scanstart [1-13] <log-password>\n");
+        return;
     }
 
     qos_puts("Scanstart: switching WiFi from station/remote-shell mode to monitor scanner mode.\n");
@@ -713,7 +749,7 @@ static void cmd_scanstart(unsigned int channel){
     qos_puts("Scanstart: monitor ready on channel ");
     print_uint(channel);
     qos_puts("; launching scanner.\n");
-    cmd_scanner();
+    cmd_scanner_launch();
 }
 
 static const char* scanlog_path_for_arg(const char* arg){
@@ -727,6 +763,16 @@ static const char* scanlog_path_for_arg(const char* arg){
         return "aps.log";
     }
     return 0;
+}
+
+static int scanlog_arg_is_mode(const char* arg){
+    if (!arg || !*arg){
+        return 0;
+    }
+    return (str_eq(arg, "overview") ||
+            str_eq(arg, "counts") ||
+            str_eq(arg, "aps") ||
+            str_eq(arg, "handshakes")) ? 1 : 0;
 }
 
 static const char* str_find(const char* s, const char* needle){
@@ -1219,7 +1265,17 @@ static void cmd_scanlog_overview(void){
     qos_puts("\n");
 }
 
-static void cmd_scanlog(const char* arg){
+static int scanner_log_unlock_optional(char* password){
+    if (!password || !*password){
+        return 0;
+    }
+    return set_scanner_log_password_or_usage(password);
+}
+
+static void cmd_scanlog(const char* arg, char* password){
+    if (scanner_log_unlock_optional(password) != 0){
+        return;
+    }
     if (!arg || !*arg || str_eq(arg, "overview")){
         cmd_scanlog_overview();
         return;
@@ -1235,7 +1291,10 @@ static void cmd_scanlog(const char* arg){
     cmd_scanlog_common(arg, 1);
 }
 
-static void cmd_scanfat(const char* arg){
+static void cmd_scanfat(const char* arg, char* password){
+    if (scanner_log_unlock_optional(password) != 0){
+        return;
+    }
     cmd_scanlog_common(arg, 1);
 }
 
@@ -3004,16 +3063,33 @@ static void execute_line(void){
         qos_puts("Usage: gfx <pid>\n");
     } else if (str_eq(g_buf, "game")){
         cmd_game();
-    } else if (str_eq(g_buf, "scanner")){
-        cmd_scanner();
-    } else if (str_eq(g_buf, "scanlog")){
-        cmd_scanlog("overview");
-    } else if (str_starts_with(g_buf, "scanlog ")){
-        const char* p = g_buf + 8;
-        while (*p == ' '){
-            p++;
+    } else if (str_starts_with(g_buf, "scanner ")){
+        char* p = g_buf + 8;
+        char* password = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: scanner <log-password>\n");
+        } else{
+            cmd_scanner(password);
         }
-        cmd_scanlog(p);
+    } else if (str_eq(g_buf, "scanner")){
+        qos_puts("Usage: scanner <log-password>\n");
+    } else if (str_eq(g_buf, "scanlog")){
+        cmd_scanlog("overview", 0);
+    } else if (str_starts_with(g_buf, "scanlog ")){
+        char* p = g_buf + 8;
+        char* arg = parse_arg_token(&p);
+        char* password = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: scanlog [overview|counts|aps|handshakes] [log-password]\n");
+        } else{
+            if (arg && *arg && !scanlog_arg_is_mode(arg) && !password){
+                password = arg;
+                arg = "overview";
+            }
+            cmd_scanlog(arg, password);
+        }
     } else if (str_eq(g_buf, "scanram")){
         cmd_scanram("handshakes");
     } else if (str_starts_with(g_buf, "scanram ")){
@@ -3031,13 +3107,21 @@ static void execute_line(void){
         }
         cmd_scanflush(p);
     } else if (str_eq(g_buf, "scanfat")){
-        cmd_scanfat("handshakes");
+        cmd_scanfat("handshakes", 0);
     } else if (str_starts_with(g_buf, "scanfat ")){
-        const char* p = g_buf + 8;
-        while (*p == ' '){
-            p++;
+        char* p = g_buf + 8;
+        char* arg = parse_arg_token(&p);
+        char* password = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
+        if (extra && *extra){
+            qos_puts("Usage: scanfat [counts|aps|handshakes] [log-password]\n");
+        } else{
+            if (arg && *arg && !scanlog_arg_is_mode(arg) && !password){
+                password = arg;
+                arg = "handshakes";
+            }
+            cmd_scanfat(arg, password);
         }
-        cmd_scanfat(p);
     } else if (str_eq(g_buf, "web")){
         cmd_web();
     } else if (str_eq(g_buf, "tty")){
@@ -3203,18 +3287,29 @@ static void execute_line(void){
     } else if (str_eq(g_buf, "tlstest")){
         cmd_tlstest();
     } else if (str_starts_with(g_buf, "scanstart ")){
-        const char* p = g_buf + 10;
+        char* p = g_buf + 10;
+        char* a0 = parse_arg_token(&p);
+        char* a1 = parse_arg_token(&p);
+        char* extra = parse_arg_token(&p);
         unsigned int channel = 0u;
-        while (*p == ' '){
-            p++;
-        }
-        if (parse_uint(p, &channel) != 0 || channel == 0u || channel > 13u){
-            qos_puts("Usage: scanstart [1-13]\n");
+        char* password = 0;
+        if (extra && *extra){
+            qos_puts("Usage: scanstart [1-13] <log-password>\n");
+        } else if (a0 && a1 && parse_uint(a0, &channel) == 0){
+            if (channel == 0u || channel > 13u){
+                qos_puts("Usage: scanstart [1-13] <log-password>\n");
+            } else{
+                password = a1;
+                cmd_scanstart(channel, password);
+            }
+        } else if (a0 && *a0){
+            password = a0;
+            cmd_scanstart(6u, password);
         } else{
-            cmd_scanstart(channel);
+            qos_puts("Usage: scanstart [1-13] <log-password>\n");
         }
     } else if (str_eq(g_buf, "scanstart")){
-        cmd_scanstart(6u);
+        qos_puts("Usage: scanstart [1-13] <log-password>\n");
     } else if (str_eq(g_buf, "wifiinit")){
         cmd_wifiinit();
     } else if (str_starts_with(g_buf, "wifiload ")){
