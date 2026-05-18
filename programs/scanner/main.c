@@ -16,6 +16,7 @@
 #define RECV_ERR_FORCE_REARM 8u
 #define RECOVERY_SETTLE_MS 30u
 #define SCAN_LOAD_BUF_BYTES (64u * 1024u)
+#define IDLE_RECOVER_CONSEC_WINDOWS 3u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1743,6 +1744,7 @@ void program_main(void){
     unsigned int prev_frames = 0u;
     unsigned int prev_non_beacon = 0u;
     unsigned int rearm_stage = 0u;
+    unsigned int idle_quiet_windows = 0u;
     unsigned long long last_rx_progress_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
@@ -1807,6 +1809,7 @@ void program_main(void){
     }
 
     while (1){
+        int skip_rx_poll = 0;
         now = qos_get_time_us();
         if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
@@ -1847,6 +1850,7 @@ void program_main(void){
                 if (scanner_note_raw_progress(&st1, &last_rx_frames)){
                     last_rx_progress_us = now;
                     rearm_stage = 0u;
+                    idle_quiet_windows = 0u;
                 }
                 if (!st1.enabled){
                     qos_puts("scanner: raw capture disabled; rearming monitor\n");
@@ -1888,42 +1892,74 @@ void program_main(void){
 
         if ((long long)(now - last_rx_progress_us) >= ((long long)STALE_RECOVER_SECS * 1000000ll)){
             int recovered;
-            qos_puts("scanner: rx idle window hit; recovering monitor path\n");
-            recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
-            if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
-                active_channel = mon.channel;
-            }
-            next_hop = now + 1000000ull;
+            int have_mon;
+            int have_raw;
+            int path_looks_up;
+            cyw43_raw_capture_status_t st_idle;
+
+            have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
+            have_raw = (qos_wifi_raw_status(&st_idle) == 0) ? 1 : 0;
+            path_looks_up = (have_mon && have_raw && mon.enabled && mon.raw_enabled && st_idle.enabled) ? 1 : 0;
+
             /*
-             * Give each recovery attempt its own settle window, but only reset
-             * the stage to zero after actual raw RX progress. Counter resets
-             * alone no longer count as health.
+             * A short idle window can be normal while hopping channels.
+             * Avoid expensive hard recovery loops unless idle repeats.
              */
-            last_rx_progress_us = recovered ? qos_get_time_us() : now;
+            if (path_looks_up && recv_err_streak == 0u){
+                idle_quiet_windows++;
+                if (idle_quiet_windows < IDLE_RECOVER_CONSEC_WINDOWS){
+                    last_rx_progress_us = now;
+                    skip_rx_poll = 1;
+                }
+            } else{
+                idle_quiet_windows = 0u;
+            }
+
+            if (!skip_rx_poll){
+                qos_puts("scanner: rx idle window hit; recovering monitor path\n");
+                recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
+                if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
+                    active_channel = mon.channel;
+                }
+                next_hop = now + 1000000ull;
+                /*
+                 * Give each recovery attempt its own settle window, but only reset
+                 * the stage to zero after actual raw RX progress. Counter resets
+                 * alone no longer count as health.
+                 */
+                last_rx_progress_us = recovered ? qos_get_time_us() : now;
+                if (recovered){
+                    idle_quiet_windows = 0u;
+                }
+            }
         }
 
-        int n = qos_wifi_raw_recv(buf, sizeof(buf));
-        if (n < 0){
-            recv_err_streak++;
-            if ((recv_err_streak & 0x1Fu) == 1u){
-                qos_puts("scanner: raw recv error; rearming monitor\n");
+        if (!skip_rx_poll){
+            int n = qos_wifi_raw_recv(buf, sizeof(buf));
+            if (n < 0){
+                recv_err_streak++;
+                if ((recv_err_streak & 0x1Fu) == 1u){
+                    qos_puts("scanner: raw recv error; rearming monitor\n");
+                }
+                /*
+                 * Avoid hammering full firmware rearm on transient SDIO misses.
+                 * Escalate only if errors persist for a while.
+                 */
+                scanner_ensure_monitor_ready(active_channel,
+                                             (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
+                qos_sleep(2u);
+            } else if (n > 0){
+                recv_err_streak = 0u;
+                last_rx_progress_us = now;
+                idle_quiet_windows = 0u;
+                parse_frame(buf, (unsigned int)n, active_channel, &stats);
+            } else{
+                recv_err_streak = 0u;
+                qos_sleep(1u);
             }
-            /*
-             * Avoid hammering full firmware rearm on transient SDIO misses.
-             * Escalate only if errors persist for a while.
-             */
-            scanner_ensure_monitor_ready(active_channel,
-                                         (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
-            qos_sleep(2u);
-        } else if (n > 0){
-            recv_err_streak = 0u;
-            last_rx_progress_us = now;
-            parse_frame(buf, (unsigned int)n, active_channel, &stats);
         } else{
-            recv_err_streak = 0u;
             qos_sleep(1u);
         }
-
         now = qos_get_time_us();
     }
 
