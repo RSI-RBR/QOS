@@ -81,6 +81,23 @@ static unsigned long clamp_puts_len(const char* s){
     return n;
 }
 
+static int scanner_fat_prepare_emmc(void){
+    if (blockdev_is_emmc()){
+        return 0;
+    }
+    if (blockdev_reinit_emmc_from_wifi() == 0 && blockdev_is_emmc()){
+        return 0;
+    }
+
+    /*
+     * SDHOST has been too flaky for long-running scanner persistence. Keep the
+     * RAM log intact and retry on the next autosave instead of risking FAT
+     * writes through SDHOST.
+     */
+    uart_puts("Scanner FAT: EMMC unavailable; SDHOST save disabled\n");
+    return -1;
+}
+
 static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
     unsigned int i = 0;
     if (!out || out_cap == 0u || !in){
@@ -2642,13 +2659,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             kernel_preempt_enter();
             /*
              * Scanner monitor mode can reserve the shared EMMC/SDIO path.
-             * Try the current storage path first, then reclaim storage if the
-             * WiFi side currently owns the shared host.
+             * Save through EMMC only; SDHOST is intentionally not used for
+             * scanner persistence.
              */
-            if (fat32_init() == 0){
+            if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
                 rc = sandbox_file_flush_to_fat(scanner83, path);
             }
-            if (rc != 0 && blockdev_reinit() == 0 && fat32_init() == 0){
+            if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
+                blockdev_is_emmc() && fat32_init() == 0){
                 rc = sandbox_file_flush_to_fat(scanner83, path);
             }
             kernel_preempt_exit();
@@ -2685,10 +2703,11 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
 
             kernel_preempt_enter();
-            if (fat32_init() == 0){
+            if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
                 n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
             }
-            if (n < 0 && blockdev_reinit() == 0 && fat32_init() == 0){
+            if (n < 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
+                blockdev_is_emmc() && fat32_init() == 0){
                 n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
             }
             kernel_preempt_exit();

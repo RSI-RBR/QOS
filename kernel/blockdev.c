@@ -45,6 +45,13 @@ const char* blockdev_name(void){
     return name;
 }
 
+int blockdev_is_emmc(void){
+    unsigned long irq = blockdev_lock();
+    int is_emmc = (g_backend == BACKEND_EMMC);
+    blockdev_unlock(irq);
+    return is_emmc;
+}
+
 static int blockdev_init_unlocked(void){
     if (!g_emmc_reserved_for_wifi){
         gpio_init_emmc();
@@ -156,6 +163,30 @@ int blockdev_reinit(void){
 int blockdev_reinit_emmc(void){
     unsigned long irq = blockdev_lock();
     int rc = blockdev_reinit_emmc_unlocked();
+    blockdev_unlock(irq);
+    return rc;
+}
+
+int blockdev_reinit_emmc_from_wifi(void){
+    unsigned long irq = blockdev_lock();
+    int reserved = g_emmc_reserved_for_wifi;
+    blockdev_unlock(irq);
+
+    /*
+     * Scanner persistence must use the stable EMMC path only. If WiFi monitor
+     * owns the shared host, pause/release it and reclaim EMMC, but never fall
+     * back to SDHOST here.
+     */
+    if (reserved){
+        uart_puts("Blockdev: EMMC reclaim for scanner save...\n");
+        (void)cyw43_release_emmc_for_storage();
+    }
+
+    irq = blockdev_lock();
+    int rc = blockdev_reinit_emmc_unlocked();
+    if (rc == 0){
+        uart_puts("Blockdev: EMMC active for scanner save\n");
+    }
     blockdev_unlock(irq);
     return rc;
 }

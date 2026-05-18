@@ -4,6 +4,8 @@
 int blockdev_init(void);
 int blockdev_reinit(void);
 int blockdev_reinit_emmc(void);
+int blockdev_reinit_emmc_from_wifi(void);
+int blockdev_is_emmc(void);
 int blockdev_read_block(unsigned int lba, unsigned char *buffer);
 int blockdev_read_blocks(unsigned int lba, unsigned int count, unsigned char *buffer);
 int blockdev_write_block(unsigned int lba, const unsigned char *buffer);
