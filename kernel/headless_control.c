@@ -574,8 +574,13 @@ void headless_control_note_open_network_packet(void){
     if (!g_led_open_hit_valid || (long)(g_led_open_hit_expire - now) <= 0){
         g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
         g_led_open_hit_valid = 1u;
-        g_led_open_step = 0u;
-        g_led_open_next_tick = now + LED_OPEN_ALERT_ON1_MS;
+        /*
+         * Start with the off gap so the alert creates a visible edge even if
+         * the normal scanner blink was already on when the open AP arrived.
+         */
+        g_led_open_step = 1u;
+        g_led_open_next_tick = now + LED_OPEN_ALERT_GAP1_MS;
+        led_apply(0u);
     } else{
         unsigned long ext = now + LED_OPEN_ALERT_WINDOW_MS;
         if ((long)(ext - g_led_open_hit_expire) > 0){
