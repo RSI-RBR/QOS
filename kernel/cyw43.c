@@ -227,6 +227,18 @@ static unsigned int g_cyw43_bp_fail_suppressed;
 static unsigned int g_cyw43_pending_mac_valid;
 static unsigned char g_cyw43_pending_mac[6];
 
+static void cyw43_clear_monitor_raw_state(int last_rc){
+    /*
+     * Storage reads can reclaim the shared EMMC/SDIO controller from WiFi.
+     * When that happens, monitor/raw capture must not remain logically enabled
+     * or the next scanner run will believe stale software state.
+     */
+    (void)cyw43_raw_capture_set_enabled(0u);
+    g_cyw43_monitor_mode = 0u;
+    g_cyw43_monitor_channel = 0u;
+    g_cyw43_monitor_last_rc = last_rc;
+}
+
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
                         const unsigned char* data, unsigned int data_len,
@@ -1308,6 +1320,7 @@ static int cyw43_attach_running_firmware(void){
 }
 
 static void cyw43_drop_sdio_state(void){
+    cyw43_clear_monitor_raw_state(-6);
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.func2_ready = 0;
@@ -1330,6 +1343,7 @@ static void cyw43_drop_sdio_state(void){
 
 int cyw43_release_emmc_for_storage(void){
     if (!g_cyw43.enabled && !sdio_bus_is_ready()){
+        cyw43_clear_monitor_raw_state(-6);
         blockdev_reserve_emmc_for_wifi(0);
         return 0;
     }
@@ -1346,6 +1360,7 @@ int cyw43_release_emmc_for_storage(void){
         cyw43_drain_pending_packets(16u);
     }
 
+    cyw43_clear_monitor_raw_state(-6);
     g_cyw43.iface_up = 0;
     g_cyw43.joined = 0;
     g_cyw43.func2_ready = 0;

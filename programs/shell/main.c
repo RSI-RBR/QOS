@@ -508,9 +508,9 @@ static void cmd_help(void){
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
-    qos_puts(" scanlog [overview|counts|aps|handshakes]  (reads FAT files)\n");
+    qos_puts(" scanlog [overview|counts|aps|handshakes]  (reads FAT summaries)\n");
     qos_puts(" scanram [counts|aps|handshakes]           (reads RAM log view)\n");
-    qos_puts(" scanfat [counts|aps|handshakes]           (alias of scanlog)\n");
+    qos_puts(" scanfat [counts|aps|handshakes]           (raw FAT log dump)\n");
     qos_puts(" scanflush [counts|aps|handshakes|all]\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
@@ -833,6 +833,144 @@ static int scanlog_collect_overview_for_path(const char* path, scan_file_overvie
     return saw_any ? 0 : 1;
 }
 
+static void scanlog_print_value_after_key(const char* line,
+                                          const char* key,
+                                          unsigned int max_chars){
+    const char* p = str_find(line, key);
+    unsigned int n = 0u;
+    if (!p){
+        qos_puts("-");
+        return;
+    }
+    p += str_len(key);
+    while (*p && *p != ' ' && n < max_chars){
+        qos_putc(*p++);
+        n++;
+    }
+    if (n == 0u){
+        qos_puts("-");
+    } else if (*p && *p != ' '){
+        qos_puts("...");
+    }
+}
+
+static void scanlog_print_handshake_brief(const char* line, unsigned int index){
+    if (!line || !str_starts_with(line, "hs ")){
+        return;
+    }
+    qos_puts(" hs#");
+    print_uint(index);
+    qos_puts(" t_us=");
+    scanlog_print_value_after_key(line, " t_us=", 18u);
+    qos_puts(" ch=");
+    scanlog_print_value_after_key(line, " ch=", 3u);
+    qos_puts(" msg=");
+    scanlog_print_value_after_key(line, " msg=", 2u);
+    qos_puts(" bssid=");
+    scanlog_print_value_after_key(line, " bssid=", 17u);
+    qos_puts(" rx=");
+    scanlog_print_value_after_key(line, " rx=", 17u);
+    qos_puts(" tx=");
+    scanlog_print_value_after_key(line, " tx=", 17u);
+    qos_puts(" key_info=");
+    scanlog_print_value_after_key(line, " key_info=", 10u);
+    qos_puts(" key_data_len=");
+    scanlog_print_value_after_key(line, " key_data_len=", 6u);
+    qos_puts(" eapol_len=");
+    scanlog_print_value_after_key(line, " eapol_len=", 6u);
+    qos_puts("\n");
+}
+
+static int cmd_scanlog_handshakes_summary(void){
+    scan_file_overview_t hs;
+    unsigned int off = 0u;
+    char line[512];
+    unsigned int line_len = 0u;
+    unsigned int printed = 0u;
+    int saw_any = 0;
+    int rc = 0;
+
+    for (unsigned int i = 0u; i < sizeof(hs); i++){
+        ((volatile unsigned char*)&hs)[i] = 0u;
+    }
+
+    qos_puts("Scanner FAT handshakes summary:\n");
+    while (1){
+        int n = qos_scanner_log_read_fat("handshakes.log", off,
+                                         (unsigned char*)g_log_buf,
+                                         sizeof(g_log_buf) - 1u);
+        if (n < 0){
+            rc = -1;
+            break;
+        }
+        if (n == 0){
+            break;
+        }
+        saw_any = 1;
+        for (int i = 0; i < n; i++){
+            char c = g_log_buf[(unsigned int)i];
+            hs.bytes++;
+            if (c == '\r'){
+                continue;
+            }
+            if (c == '\n'){
+                line[line_len] = 0;
+                hs.lines++;
+                scanlog_overview_line(&hs, "handshakes.log", line);
+                if (str_starts_with(line, "hs ")){
+                    if (printed < 8u){
+                        scanlog_print_handshake_brief(line, hs.hs_lines);
+                        printed++;
+                    }
+                }
+                line_len = 0u;
+                continue;
+            }
+            if (line_len + 1u < sizeof(line)){
+                line[line_len++] = c;
+            }
+        }
+        off += (unsigned int)n;
+    }
+    if (line_len > 0u){
+        line[line_len] = 0;
+        hs.lines++;
+        scanlog_overview_line(&hs, "handshakes.log", line);
+        if (str_starts_with(line, "hs ") && printed < 8u){
+            scanlog_print_handshake_brief(line, hs.hs_lines);
+            printed++;
+        }
+    }
+
+    qos_puts(" handshakes.log rc=");
+    print_int(rc);
+    qos_puts(" bytes=");
+    print_uint(hs.bytes);
+    qos_puts(" lines=");
+    print_uint(hs.lines);
+    qos_puts(" hs_entries=");
+    print_uint(hs.hs_lines);
+    qos_puts(" msg1/2/3/4=");
+    print_uint(hs.hs_msg1);
+    qos_puts("/");
+    print_uint(hs.hs_msg2);
+    qos_puts("/");
+    print_uint(hs.hs_msg3);
+    qos_puts("/");
+    print_uint(hs.hs_msg4);
+    qos_puts("\n");
+    if (!saw_any){
+        qos_puts("(empty)\n");
+    } else if (hs.hs_lines > printed){
+        qos_puts(" showing first ");
+        print_uint(printed);
+        qos_puts(" handshake entries; use scanfat handshakes for raw dump.\n");
+    } else if (hs.hs_lines == 0u){
+        qos_puts(" no parsed hs entries found in file.\n");
+    }
+    return rc;
+}
+
 static void cmd_scanlog_overview(void){
     scan_file_overview_t counts;
     scan_file_overview_t aps;
@@ -903,6 +1041,10 @@ static void cmd_scanlog_overview(void){
 static void cmd_scanlog(const char* arg){
     if (!arg || !*arg || str_eq(arg, "overview")){
         cmd_scanlog_overview();
+        return;
+    }
+    if (str_eq(arg, "handshakes")){
+        (void)cmd_scanlog_handshakes_summary();
         return;
     }
     cmd_scanlog_common(arg, 1);
