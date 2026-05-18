@@ -3004,9 +3004,280 @@ static int cyw43_wl_legacy_scan_submit(const char* ssid){
     return cyw43_wl_cmd(1, CYW43_WLC_SCAN, params, sizeof(params), 0, 0, 0);
 }
 
-static int cyw43_wl_set_pmk(const char* password){
+typedef struct {
+    unsigned int h[5];
+    unsigned long long bits;
+    unsigned char buf[64];
+    unsigned int used;
+} cyw43_sha1_ctx_t;
+
+static unsigned int cyw43_rol32(unsigned int v, unsigned int n){
+    return (v << n) | (v >> (32u - n));
+}
+
+static unsigned int cyw43_be32(const unsigned char* p){
+    return ((unsigned int)p[0] << 24u) |
+           ((unsigned int)p[1] << 16u) |
+           ((unsigned int)p[2] << 8u) |
+           (unsigned int)p[3];
+}
+
+static void cyw43_put_be64(unsigned char* p, unsigned long long v){
+    for (unsigned int i = 0; i < 8u; i++){
+        p[7u - i] = (unsigned char)(v & 0xFFu);
+        v >>= 8u;
+    }
+}
+
+static void cyw43_sha1_block(cyw43_sha1_ctx_t* ctx, const unsigned char block[64]){
+    unsigned int w[80];
+    unsigned int a;
+    unsigned int b;
+    unsigned int c;
+    unsigned int d;
+    unsigned int e;
+
+    for (unsigned int i = 0; i < 16u; i++){
+        w[i] = cyw43_be32(block + (i * 4u));
+    }
+    for (unsigned int i = 16u; i < 80u; i++){
+        w[i] = cyw43_rol32(w[i - 3u] ^ w[i - 8u] ^ w[i - 14u] ^ w[i - 16u], 1u);
+    }
+
+    a = ctx->h[0];
+    b = ctx->h[1];
+    c = ctx->h[2];
+    d = ctx->h[3];
+    e = ctx->h[4];
+
+    for (unsigned int i = 0; i < 80u; i++){
+        unsigned int f;
+        unsigned int k;
+        unsigned int t;
+        if (i < 20u){
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999u;
+        } else if (i < 40u){
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1u;
+        } else if (i < 60u){
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDCu;
+        } else{
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6u;
+        }
+        t = cyw43_rol32(a, 5u) + f + e + k + w[i];
+        e = d;
+        d = c;
+        c = cyw43_rol32(b, 30u);
+        b = a;
+        a = t;
+    }
+
+    ctx->h[0] += a;
+    ctx->h[1] += b;
+    ctx->h[2] += c;
+    ctx->h[3] += d;
+    ctx->h[4] += e;
+    mem_zero_local((unsigned char*)w, sizeof(w));
+}
+
+static void cyw43_sha1_init(cyw43_sha1_ctx_t* ctx){
+    ctx->h[0] = 0x67452301u;
+    ctx->h[1] = 0xEFCDAB89u;
+    ctx->h[2] = 0x98BADCFEu;
+    ctx->h[3] = 0x10325476u;
+    ctx->h[4] = 0xC3D2E1F0u;
+    ctx->bits = 0u;
+    ctx->used = 0u;
+    mem_zero_local(ctx->buf, sizeof(ctx->buf));
+}
+
+static void cyw43_sha1_update(cyw43_sha1_ctx_t* ctx,
+                              const unsigned char* data,
+                              unsigned int len){
+    if (!data || len == 0u){
+        return;
+    }
+    ctx->bits += ((unsigned long long)len * 8ull);
+    while (len > 0u){
+        unsigned int take = 64u - ctx->used;
+        if (take > len){
+            take = len;
+        }
+        mem_copy_local(ctx->buf + ctx->used, data, take);
+        ctx->used += take;
+        data += take;
+        len -= take;
+        if (ctx->used == 64u){
+            cyw43_sha1_block(ctx, ctx->buf);
+            ctx->used = 0u;
+        }
+    }
+}
+
+static void cyw43_sha1_final(cyw43_sha1_ctx_t* ctx, unsigned char out[20]){
+    unsigned char len_be[8];
+
+    cyw43_put_be64(len_be, ctx->bits);
+    ctx->buf[ctx->used++] = 0x80u;
+    if (ctx->used > 56u){
+        while (ctx->used < 64u){
+            ctx->buf[ctx->used++] = 0u;
+        }
+        cyw43_sha1_block(ctx, ctx->buf);
+        ctx->used = 0u;
+    }
+    while (ctx->used < 56u){
+        ctx->buf[ctx->used++] = 0u;
+    }
+    mem_copy_local(ctx->buf + 56u, len_be, sizeof(len_be));
+    cyw43_sha1_block(ctx, ctx->buf);
+
+    for (unsigned int i = 0; i < 5u; i++){
+        out[(i * 4u) + 0u] = (unsigned char)(ctx->h[i] >> 24u);
+        out[(i * 4u) + 1u] = (unsigned char)(ctx->h[i] >> 16u);
+        out[(i * 4u) + 2u] = (unsigned char)(ctx->h[i] >> 8u);
+        out[(i * 4u) + 3u] = (unsigned char)(ctx->h[i]);
+    }
+    mem_zero_local((unsigned char*)ctx, sizeof(*ctx));
+    mem_zero_local(len_be, sizeof(len_be));
+}
+
+static void cyw43_hmac_sha1(const unsigned char* key,
+                            unsigned int key_len,
+                            const unsigned char* data,
+                            unsigned int data_len,
+                            unsigned char out[20]){
+    unsigned char k0[64];
+    unsigned char ipad[64];
+    unsigned char opad[64];
+    unsigned char inner[20];
+    cyw43_sha1_ctx_t ctx;
+
+    mem_zero_local(k0, sizeof(k0));
+    if (key_len > sizeof(k0)){
+        cyw43_sha1_init(&ctx);
+        cyw43_sha1_update(&ctx, key, key_len);
+        cyw43_sha1_final(&ctx, k0);
+    } else if (key && key_len > 0u){
+        mem_copy_local(k0, key, key_len);
+    }
+    for (unsigned int i = 0; i < 64u; i++){
+        ipad[i] = (unsigned char)(k0[i] ^ 0x36u);
+        opad[i] = (unsigned char)(k0[i] ^ 0x5Cu);
+    }
+
+    cyw43_sha1_init(&ctx);
+    cyw43_sha1_update(&ctx, ipad, sizeof(ipad));
+    cyw43_sha1_update(&ctx, data, data_len);
+    cyw43_sha1_final(&ctx, inner);
+
+    cyw43_sha1_init(&ctx);
+    cyw43_sha1_update(&ctx, opad, sizeof(opad));
+    cyw43_sha1_update(&ctx, inner, sizeof(inner));
+    cyw43_sha1_final(&ctx, out);
+
+    mem_zero_local(k0, sizeof(k0));
+    mem_zero_local(ipad, sizeof(ipad));
+    mem_zero_local(opad, sizeof(opad));
+    mem_zero_local(inner, sizeof(inner));
+}
+
+static void cyw43_pbkdf2_sha1_block(const unsigned char* pass,
+                                    unsigned int pass_len,
+                                    const unsigned char* ssid,
+                                    unsigned int ssid_len,
+                                    unsigned int block_index,
+                                    unsigned char out[20]){
+    unsigned char salt_idx[36];
+    unsigned char u[20];
+
+    mem_zero_local(salt_idx, sizeof(salt_idx));
+    mem_copy_local(salt_idx, ssid, ssid_len);
+    salt_idx[ssid_len + 0u] = (unsigned char)(block_index >> 24u);
+    salt_idx[ssid_len + 1u] = (unsigned char)(block_index >> 16u);
+    salt_idx[ssid_len + 2u] = (unsigned char)(block_index >> 8u);
+    salt_idx[ssid_len + 3u] = (unsigned char)(block_index);
+
+    cyw43_hmac_sha1(pass, pass_len, salt_idx, ssid_len + 4u, out);
+    mem_copy_local(u, out, sizeof(u));
+    for (unsigned int iter = 1u; iter < 4096u; iter++){
+        cyw43_hmac_sha1(pass, pass_len, u, sizeof(u), u);
+        for (unsigned int i = 0; i < 20u; i++){
+            out[i] ^= u[i];
+        }
+    }
+
+    mem_zero_local(salt_idx, sizeof(salt_idx));
+    mem_zero_local(u, sizeof(u));
+}
+
+static int cyw43_wpa2_psk_from_passphrase(const char* password,
+                                          const char* ssid,
+                                          unsigned int ssid_len,
+                                          unsigned char out_pmk[32]){
+    unsigned char block[20];
+    unsigned int pass_len = strn_len_local(password, 65u);
+
+    if (!password || !ssid || ssid_len == 0u || ssid_len > 32u ||
+        pass_len < 8u || pass_len > 63u){
+        return -1;
+    }
+
+    cyw43_pbkdf2_sha1_block((const unsigned char*)password, pass_len,
+                            (const unsigned char*)ssid, ssid_len, 1u, block);
+    mem_copy_local(out_pmk, block, 20u);
+    cyw43_pbkdf2_sha1_block((const unsigned char*)password, pass_len,
+                            (const unsigned char*)ssid, ssid_len, 2u, block);
+    mem_copy_local(out_pmk + 20u, block, 12u);
+    mem_zero_local(block, sizeof(block));
+    return 0;
+}
+
+static int cyw43_wl_set_pmk_payload(const unsigned char* key,
+                                    unsigned int key_len,
+                                    unsigned int flags){
     unsigned char pmk[72];
     unsigned char bsscfg_pmk[76];
+    int rc = 0;
+
+    if (!key || key_len == 0u || key_len > 64u){
+        return -1;
+    }
+
+    mem_zero_local(pmk, sizeof(pmk));
+    put_le16(pmk + 0u, key_len);
+    put_le16(pmk + 2u, flags);
+    mem_copy_local(pmk + 4u, key, key_len);
+
+    rc = cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+    if (rc == 0){
+        mem_zero_local(pmk, sizeof(pmk));
+        return 0;
+    }
+
+    uart_puts("CYW43: PMK command failed; trying wsec_pmk iovar\n");
+    rc = cyw43_wl_set_var("wsec_pmk", pmk, sizeof(pmk));
+    if (rc == 0){
+        mem_zero_local(pmk, sizeof(pmk));
+        return 0;
+    }
+
+    mem_zero_local(bsscfg_pmk, sizeof(bsscfg_pmk));
+    put_le32(bsscfg_pmk + 0u, 0u);
+    mem_copy_local(bsscfg_pmk + 4u, pmk, sizeof(pmk));
+    uart_puts("CYW43: PMK iovar failed; trying bsscfg:wsec_pmk\n");
+    rc = cyw43_wl_set_var("bsscfg:wsec_pmk", bsscfg_pmk, sizeof(bsscfg_pmk));
+    mem_zero_local(pmk, sizeof(pmk));
+    mem_zero_local(bsscfg_pmk, sizeof(bsscfg_pmk));
+    return rc;
+}
+
+static int cyw43_wl_set_pmk(const char* password, const char* ssid, unsigned int ssid_len){
+    unsigned char passbuf[64];
+    unsigned char bin_pmk[32];
     unsigned int len = 0;
     int rc = 0;
 
@@ -3018,40 +3289,28 @@ static int cyw43_wl_set_pmk(const char* password){
         uart_puts("CYW43: WPA password must be 8..64 chars\n");
         return -1;
     }
+    if (len == 64u){
+        uart_puts("CYW43: 64-char WPA PSK text not supported yet\n");
+        return -1;
+    }
 
-    mem_zero_local(pmk, sizeof(pmk));
-    put_le16(pmk + 0u, len);
-    /*
-     * Follow known-good CYW43 station join paths: always mark this as a
-     * passphrase payload. Use the full aligned Broadcom PMK structure size;
-     * some firmware rejects the shorter command payload but accepts the iovar.
-     */
-    put_le16(pmk + 2u, CYW43_WSEC_PASSPHRASE);
+    if (cyw43_wpa2_psk_from_passphrase(password, ssid, ssid_len, bin_pmk) == 0){
+        uart_puts("CYW43: using host-derived WPA2 PMK\n");
+        rc = cyw43_wl_set_pmk_payload(bin_pmk, sizeof(bin_pmk), 0u);
+        mem_zero_local(bin_pmk, sizeof(bin_pmk));
+        if (rc == 0){
+            return 0;
+        }
+        uart_puts("CYW43: binary PMK rejected; trying passphrase payload\n");
+    }
+
+    mem_zero_local(passbuf, sizeof(passbuf));
     for (unsigned int i = 0; i < len; i++){
-        pmk[4u + i] = (unsigned char)password[i];
+        passbuf[i] = (unsigned char)password[i];
     }
-
-    rc = cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
-    if (rc == 0){
-        return 0;
-    }
-
-    /*
-     * Pi0/Nexmon firmware can report WLC_SET_WSEC_PMK unsupported while still
-     * accepting the same payload through the wsec_pmk iovar, which is what
-     * Linux brcmfmac-style drivers use on many CYW43 firmware builds.
-     */
-    uart_puts("CYW43: PMK command failed; trying wsec_pmk iovar\n");
-    rc = cyw43_wl_set_var("wsec_pmk", pmk, sizeof(pmk));
-    if (rc == 0){
-        return 0;
-    }
-
-    mem_zero_local(bsscfg_pmk, sizeof(bsscfg_pmk));
-    put_le32(bsscfg_pmk + 0u, 0u);
-    mem_copy_local(bsscfg_pmk + 4u, pmk, sizeof(pmk));
-    uart_puts("CYW43: PMK iovar failed; trying bsscfg:wsec_pmk\n");
-    return cyw43_wl_set_var("bsscfg:wsec_pmk", bsscfg_pmk, sizeof(bsscfg_pmk));
+    rc = cyw43_wl_set_pmk_payload(passbuf, len, CYW43_WSEC_PASSPHRASE);
+    mem_zero_local(passbuf, sizeof(passbuf));
+    return rc;
 }
 
 static int cyw43_wl_prepare_sta_supplicant(void){
@@ -3917,7 +4176,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
          * supplicant iovar setup. Keep a short settle delay.
          */
         cyw43_delay(200000u);
-        if (cyw43_wl_set_pmk(password) != 0){
+        if (cyw43_wl_set_pmk(password, ssid, n) != 0){
             /*
              * Compatibility fallback for APs/firmware that insist on mixed
              * WPA/WPA2 auth mode while using AES.
@@ -3928,7 +4187,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
                 return -33;
             }
             cyw43_delay(200000u);
-            if (cyw43_wl_set_pmk(password) != 0){
+            if (cyw43_wl_set_pmk(password, ssid, n) != 0){
                 uart_puts("CYW43: join WPA PMK setup failed\n");
                 return -34;
             }
