@@ -10,6 +10,7 @@
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
 #define DETAIL_PRINT_SECS 20u
+#define ALL_AP_PRINT_SECS 30u
 #define AUTO_FLUSH_SECS 60u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
@@ -1335,7 +1336,7 @@ static void print_summary(const scan_stats_t* st, unsigned int active_channel){
     print_cat_line("bytes ", st->frame_bytes);
 }
 
-static void print_overview(void){
+static void print_overview(unsigned int include_all){
     unsigned int open_idx = 0u;
     unsigned int all_idx = 0u;
     qos_puts("open access points:\n");
@@ -1348,6 +1349,24 @@ static void print_overview(void){
         qos_puts(" none\n");
     }
 
+    if (include_all){
+        qos_puts("all tracked access points:\n");
+        for (unsigned int i = 0; i < MAX_APS; i++){
+            if (g_aps[i].seen){
+                print_ap_line(&g_aps[i], all_idx++);
+            }
+        }
+        if (all_idx == 0u){
+            qos_puts(" none\n");
+        }
+    }
+    print_recent_key_events();
+    log_ap_snapshot();
+    print_log_sizes();
+}
+
+static void print_all_tracked_aps(void){
+    unsigned int all_idx = 0u;
     qos_puts("all tracked access points:\n");
     for (unsigned int i = 0; i < MAX_APS; i++){
         if (g_aps[i].seen){
@@ -1357,9 +1376,6 @@ static void print_overview(void){
     if (all_idx == 0u){
         qos_puts(" none\n");
     }
-    print_recent_key_events();
-    log_ap_snapshot();
-    print_log_sizes();
 }
 
 static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int force_rearm){
@@ -1758,6 +1774,7 @@ void program_main(void){
     last_rx_progress_us = now;
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+    unsigned long long next_all_ap_detail = now + ((unsigned long long)ALL_AP_PRINT_SECS * 1000000ull);
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
     unsigned long long next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
 
@@ -1858,10 +1875,18 @@ void program_main(void){
         }
 
         if ((long long)(now - next_detail) >= 0){
-            print_overview();
+            print_overview(0u);
             next_detail += ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
             if ((long long)(now - next_detail) >= 0){
                 next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+            }
+        }
+
+        if ((long long)(now - next_all_ap_detail) >= 0){
+            print_all_tracked_aps();
+            next_all_ap_detail += ((unsigned long long)ALL_AP_PRINT_SECS * 1000000ull);
+            if ((long long)(now - next_all_ap_detail) >= 0){
+                next_all_ap_detail = now + ((unsigned long long)ALL_AP_PRINT_SECS * 1000000ull);
             }
         }
 
@@ -1979,6 +2004,6 @@ void program_main(void){
     }
 
     print_summary(&stats, active_channel);
-    print_overview();
+    print_overview(1u);
     qos_puts("scanner done.\n");
 }
