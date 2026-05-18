@@ -269,6 +269,25 @@ static void log_ssid(scan_log_line_t* l, const ap_info_t* ap){
     log_ch(l, '"');
 }
 
+static void log_client_list(scan_log_line_t* l, const ap_info_t* ap){
+    unsigned int n;
+    if (!l || !ap){
+        return;
+    }
+    n = ap->clients;
+    if (n > MAX_CLIENTS_TRACKED){
+        n = MAX_CLIENTS_TRACKED;
+    }
+    log_ch(l, '"');
+    for (unsigned int i = 0u; i < n; i++){
+        if (i != 0u){
+            log_ch(l, ',');
+        }
+        log_mac(l, ap->client_macs[i]);
+    }
+    log_ch(l, '"');
+}
+
 static void log_append_line(const char* path, scan_log_line_t* l){
     if (!path || !l || l->len == 0u){
         return;
@@ -604,6 +623,8 @@ static void log_ap_line(const ap_info_t* ap){
     log_ssid(&l, ap);
     log_str(&l, " clients=");
     log_u32(&l, ap->clients);
+    log_str(&l, " client_macs=");
+    log_client_list(&l, ap);
     log_str(&l, " bcn=");
     log_u32(&l, ap->cat_counts[CAT_BEACON]);
     log_str(&l, " data=");
@@ -1248,6 +1269,7 @@ static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
 }
 
 static void print_ap_line(const ap_info_t* ap, unsigned int idx){
+    unsigned int n;
     qos_puts("AP ");
     put_u32(idx);
     qos_puts(" ");
@@ -1264,6 +1286,21 @@ static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts(ap->ssid_len ? ap->ssid : "<hidden>");
     qos_puts("\" clients=");
     put_u32(ap->clients);
+    qos_puts(" client_macs=");
+    n = ap->clients;
+    if (n > MAX_CLIENTS_TRACKED){
+        n = MAX_CLIENTS_TRACKED;
+    }
+    if (n == 0u){
+        qos_puts("-");
+    } else{
+        for (unsigned int i = 0u; i < n; i++){
+            if (i != 0u){
+                qos_puts(",");
+            }
+            put_mac(ap->client_macs[i]);
+        }
+    }
     qos_puts(" bcn=");
     put_u32(ap->cat_counts[CAT_BEACON]);
     qos_puts(" data=");

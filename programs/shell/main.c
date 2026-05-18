@@ -989,6 +989,8 @@ static void scanlog_print_ap_brief(const char* line, unsigned int index){
     scanlog_print_value_after_key(line, " ssid=", 48u);
     qos_puts(" clients=");
     scanlog_print_value_after_key(line, " clients=", 6u);
+    qos_puts(" client_macs=");
+    scanlog_print_value_after_key(line, " client_macs=", 96u);
     qos_puts(" bcn=");
     scanlog_print_value_after_key(line, " bcn=", 8u);
     qos_puts(" data=");
