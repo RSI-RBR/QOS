@@ -681,7 +681,6 @@ static void cmd_scanner(char* password){
 
 static void cmd_scanstart(unsigned int channel, char* password){
     int rc;
-    const char* clm = (g_wifi_clm_83 && *g_wifi_clm_83) ? g_wifi_clm_83 : 0;
     if (channel == 0u || channel > 13u){
         channel = 6u;
     }
@@ -727,63 +726,7 @@ static void cmd_scanstart(unsigned int channel, char* password){
         print_int(rc);
         qos_puts("\n");
     }
-
-    qos_puts("Scanstart: falling back to monitor firmware reload.\n");
-    (void)qos_wifi_down();
-    qos_sleep(250u);
-
-    qos_puts("Scanstart: loading monitor firmware ");
-    qos_puts(g_wifi_fw_83);
-    qos_puts(" / ");
-    qos_puts(g_wifi_nv_83);
-    if (clm){
-        qos_puts(" / ");
-        qos_puts(clm);
-    }
-    qos_puts("\n");
-    rc = qos_wifi_load_fw(g_wifi_fw_83, g_wifi_nv_83, clm);
-    if (rc != 0){
-        qos_puts("Scanstart: wifiload failed rc=");
-        print_int(rc);
-        qos_puts("\n");
-        return;
-    }
-
-    rc = qos_wifi_randomize_mac();
-    if (rc != 0){
-        qos_puts("Scanstart: MAC randomize warning rc=");
-        print_int(rc);
-        qos_puts("\n");
-    }
-
-    rc = qos_wifi_up_monitor();
-    if (rc != 0){
-        qos_puts("Scanstart: wifiupmon failed rc=");
-        print_int(rc);
-        qos_puts("\n");
-        return;
-    }
-
-    rc = qos_wifi_monitor_set(2u, channel);
-    if (rc != 0){
-        qos_puts("Scanstart: wifimon failed rc=");
-        print_int(rc);
-        qos_puts("\n");
-        return;
-    }
-
-    rc = qos_wifi_raw_set_enabled(1u);
-    if (rc != 0){
-        qos_puts("Scanstart: raw enable failed rc=");
-        print_int(rc);
-        qos_puts("\n");
-        return;
-    }
-
-    qos_puts("Scanstart: monitor ready on channel ");
-    print_uint(channel);
-    qos_puts("; launching scanner.\n");
-    cmd_scanner_launch();
+    qos_puts("Scanstart: not reloading firmware. Boot/join with Nexmon firmware first.\n");
 }
 
 static const char* scanlog_path_for_arg(const char* arg){
