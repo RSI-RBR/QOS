@@ -82,6 +82,16 @@ static unsigned long clamp_puts_len(const char* s){
 }
 
 static int scanner_fat_prepare_emmc(void){
+    if (cyw43_monitor_capture_active()){
+        /*
+         * Pi 3/Zero-class WiFi shares the EMMC/SDIO controller with storage.
+         * Reclaiming it while monitor capture is alive leaves Nexmon in a
+         * half-up state on real boards. Refuse FAT log I/O until WiFi/monitor
+         * has been explicitly stopped.
+         */
+        uart_puts("Scanner FAT: WiFi owns EMMC; stop scanner/monitor before FAT log I/O\n");
+        return -1;
+    }
     if (blockdev_is_emmc()){
         fat32_reset();
         return 0;

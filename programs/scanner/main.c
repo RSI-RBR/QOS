@@ -18,6 +18,8 @@
 #define RECOVERY_SETTLE_MS 30u
 #define SCAN_LOAD_BUF_BYTES (64u * 1024u)
 #define IDLE_RECOVER_CONSEC_WINDOWS 3u
+#define LOAD_PERSISTENT_STATE_ON_START 0u
+#define AUTO_FLUSH_DURING_CAPTURE 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -917,6 +919,7 @@ static unsigned int load_aps_from_fat(void){
 }
 
 static void load_persistent_scanner_state(scan_stats_t* st){
+#if LOAD_PERSISTENT_STATE_ON_START
     unsigned int count_bytes = load_counts_from_fat(st);
     unsigned int ap_lines = load_aps_from_fat();
     if (count_bytes || ap_lines){
@@ -926,6 +929,9 @@ static void load_persistent_scanner_state(scan_stats_t* st){
         put_u32(ap_lines);
         qos_puts("\n");
     }
+#else
+    (void)st;
+#endif
 }
 
 static void log_key_event_line(const key_event_t* ev,
@@ -1240,6 +1246,15 @@ static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
     return 0;
 }
 
+static int scanner_wait_for_monitor_packets(unsigned int wait_ms){
+    cyw43_raw_capture_status_t st;
+    unsigned int last_rx_frames = 0u;
+    if (qos_wifi_raw_status(&st) == 0){
+        last_rx_frames = st.rx_frames;
+    }
+    return scanner_wait_for_raw_progress(&last_rx_frames, wait_ms);
+}
+
 static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts("AP ");
     put_u32(idx);
@@ -1424,12 +1439,16 @@ static int scanner_restore_monitor_path(unsigned int channel){
         if (rc == 0){
             scanner_ensure_monitor_ready(ch, 1u);
             if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-                return 1;
+                if (scanner_wait_for_monitor_packets(700u)){
+                    return 1;
+                }
             }
         }
         qos_sleep(40u);
         if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-            return 1;
+            if (scanner_wait_for_monitor_packets(700u)){
+                return 1;
+            }
         }
     }
 
@@ -1437,7 +1456,9 @@ static int scanner_restore_monitor_path(unsigned int channel){
     recover_rc = qos_wifi_monitor_recover(ch);
     if (recover_rc == 0 &&
         qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-        return 1;
+        if (scanner_wait_for_monitor_packets(1500u)){
+            return 1;
+        }
     }
     qos_puts("scanner: hard recovery rc=");
     put_i32(recover_rc);
@@ -1779,7 +1800,7 @@ void program_main(void){
     unsigned long long next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
-    qos_puts("scanner logs: counts/aps replace state, handshakes append, FAT autosave 60s\n");
+    qos_puts("scanner logs: RAM live; stop scanner then scanflush all to persist FAT logs\n");
     log_scanner_start();
     log_summary_line(&stats, active_channel);
     log_ap_snapshot();
@@ -1899,6 +1920,7 @@ void program_main(void){
         }
 
         if ((long long)(now - next_flush) >= 0){
+#if AUTO_FLUSH_DURING_CAPTURE
             unsigned long long flush_start_us = qos_get_time_us();
             unsigned long long flush_elapsed_us;
             int flush_rc;
@@ -1924,6 +1946,16 @@ void program_main(void){
             recv_err_streak = 0u;
             rearm_stage = 0u;
             idle_quiet_windows = 0u;
+#else
+            /*
+             * Storage and CYW43 monitor mode share the EMMC/SDIO host on the
+             * boards we are using. Keep capture stable and let shell/button
+             * control perform the FAT flush after monitor mode is stopped.
+             */
+            log_summary_line(&stats, active_channel);
+            log_ap_snapshot();
+            qos_puts("scanner autosave deferred while monitor is active; use exit then scanflush all\n");
+#endif
             next_flush += ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
             if ((long long)(now - next_flush) >= 0){
                 next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);

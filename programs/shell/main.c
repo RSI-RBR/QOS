@@ -15,6 +15,7 @@ static int g_remote_len = 0;
 static int g_tty_owned = 1;
 static int g_shell_pid = -1;
 static int g_foreground_pid = -1;
+static int g_scanner_pid = -1;
 static char g_login_user[LOGIN_BUF_SIZE];
 static char g_login_pass[LOGIN_BUF_SIZE];
 static unsigned int g_login_user_len = 0u;
@@ -639,6 +640,7 @@ static void cmd_scanner(void){
         return;
     }
     g_foreground_pid = pid;
+    g_scanner_pid = pid;
     qos_puts("Scanner running as PID ");
     print_uint((unsigned int)pid);
     qos_puts(" (live output in this shell)\n");
@@ -1223,6 +1225,11 @@ static int foreground_process_exited(void){
     if (st > QOS_PROC_DEAD && st != QOS_PROC_REAPING){
         return 0;
     }
+    if (g_foreground_pid == g_scanner_pid){
+        (void)qos_wifi_raw_set_enabled(0u);
+        (void)qos_wifi_monitor_set(0u, 0u);
+        g_scanner_pid = -1;
+    }
     g_foreground_pid = -1;
     (void)qos_display_switch_session(0u);
     qos_puts("\nProcess exited, returned to shell.\n");
@@ -1253,6 +1260,11 @@ static void cmd_exit_process(const char* arg){
     if (qos_process_kill(target) != 0){
         qos_puts("Process exit failed.\n");
         return;
+    }
+    if (target == g_scanner_pid){
+        (void)qos_wifi_raw_set_enabled(0u);
+        (void)qos_wifi_monitor_set(0u, 0u);
+        g_scanner_pid = -1;
     }
     g_foreground_pid = target;
     (void)foreground_process_exited();

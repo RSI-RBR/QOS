@@ -1377,6 +1377,18 @@ int cyw43_release_emmc_for_storage(void){
     return 0;
 }
 
+int cyw43_shared_emmc_active(void){
+    return (g_cyw43.enabled ||
+            g_cyw43.func1_ready ||
+            g_cyw43.func2_ready ||
+            g_cyw43.fw_running ||
+            g_cyw43.iface_up) ? 1 : 0;
+}
+
+int cyw43_monitor_capture_active(void){
+    return (g_cyw43_monitor_mode || g_cyw43_raw_enabled) ? 1 : 0;
+}
+
 int cyw43_init(void){
     int preserve_fw = g_cyw43.fw_loaded || g_cyw43.fw_running;
     unsigned char was_fw_running = g_cyw43.fw_running;
@@ -2393,6 +2405,18 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
      * Nexmon's common monitor path uses WLC_SET_MONITOR=108. Mode 2 is the
      * practical "raw monitor/radiotap-ish" mode exposed by nexutil -m2.
      */
+    if (mode == 0u){
+        if (cyw43_control_ready()){
+            (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, 0u);
+            (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 0u);
+            (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+        }
+        (void)cyw43_raw_capture_set_enabled(0u);
+        g_cyw43_monitor_mode = 0u;
+        g_cyw43_monitor_channel = 0u;
+        g_cyw43_monitor_last_rc = 0;
+        return 0;
+    }
     if (!cyw43_control_ready()){
         g_cyw43_monitor_last_rc = -1;
         return -1;
@@ -2400,17 +2424,6 @@ int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel){
     if (mode > 3u || channel > 14u){
         g_cyw43_monitor_last_rc = -2;
         return -2;
-    }
-
-    if (mode == 0u){
-        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, 0u);
-        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 0u);
-        (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
-        (void)cyw43_raw_capture_set_enabled(0u);
-        g_cyw43_monitor_mode = 0u;
-        g_cyw43_monitor_channel = 0u;
-        g_cyw43_monitor_last_rc = 0;
-        return 0;
     }
 
     /*
