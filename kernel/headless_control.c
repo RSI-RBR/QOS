@@ -10,6 +10,7 @@
 #include "net.h"
 #include "tcp.h"
 #include "uart.h"
+#include "spinlock.h"
 
 #define BTN_DEBOUNCE_MS       35u
 #define BTN_DOUBLE_WINDOW_MS  420u
@@ -47,6 +48,7 @@ static unsigned int g_led_test_remaining_toggles = 0u;
 static unsigned int g_led_test_on_ms = 500u;
 static unsigned int g_led_test_off_ms = 500u;
 static unsigned long g_led_test_next_tick = 0u;
+static spinlock_t g_headless_lock;
 
 static int str83_eq(const char a[11], const char b[11]){
     if (!a || !b){
@@ -209,7 +211,7 @@ static unsigned int count_open_aps(void){
         return 0u;
     }
     for (unsigned int i = 0; i < count; i++){
-        if (scans[i].auth == 0u && scans[i].ssid[0] != 0){
+        if (scans[i].auth == 0u){
             open++;
         }
     }
@@ -400,6 +402,7 @@ void headless_control_init(void){
     g_led_base_anchor = system_ticks;
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
+    spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
         uart_puts("Headless: button/LED control enabled\n");
@@ -416,39 +419,47 @@ void headless_control_poll(void){
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
     }
-    if (cpu_get_id() != 0u){
+    if (!spin_trylock(&g_headless_lock)){
         return;
     }
 
     now = system_ticks;
-    if (QOS_HEADLESS_BUTTON_ENABLED){
+    if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
         poll_button_state(now);
         handle_button_actions(now);
     }
     if (QOS_HEADLESS_LED_ENABLED){
         render_led(now);
     }
+    spin_unlock(&g_headless_lock);
 }
 
 int headless_led_test(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
+    int rc = -1;
     if (cpu_get_id() != 0u){
         return -1;
     }
-    return led_test_start(blinks, on_ms, off_ms);
+    spin_lock(&g_headless_lock);
+    rc = led_test_start(blinks, on_ms, off_ms);
+    spin_unlock(&g_headless_lock);
+    return rc;
 }
 
 int headless_led_force(unsigned int on){
     if (!QOS_HEADLESS_LED_ENABLED || cpu_get_id() != 0u){
         return -1;
     }
+    spin_lock(&g_headless_lock);
     led_test_stop();
     g_led_burst_pulses = 0u;
     if (on == 2u){
         g_led_manual_mode = 0u;
+        spin_unlock(&g_headless_lock);
         return 0;
     }
     g_led_manual_mode = on ? 2u : 1u;
     led_apply(on ? 1u : 0u);
+    spin_unlock(&g_headless_lock);
     return 0;
 }
 

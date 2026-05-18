@@ -287,7 +287,7 @@ static const char* ap_security_label(const ap_info_t* ap){
 }
 
 static int is_open_ap(const ap_info_t* ap){
-    return ap && ap->seen && ap->ssid_len != 0u && !ap->privacy && !ap->rsn && !ap->wpa;
+    return ap && ap->seen && !ap->privacy && !ap->rsn && !ap->wpa;
 }
 
 static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
