@@ -321,6 +321,11 @@ void kernel_main(void){
     uart_puts(" SoC: ");
     uart_puts(soc_name());
     uart_puts("\n");
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+    uart_puts("Pi0 headless WiFi: build hook present; autojoin after shell load.\n");
+#else
+    uart_puts("Pi0 headless WiFi: build hook absent for this board.\n");
+#endif
 
     (void)board_power_on_usb();
 
