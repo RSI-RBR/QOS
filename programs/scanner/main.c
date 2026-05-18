@@ -9,6 +9,8 @@
 #define SUMMARY_PRINT_SECS 2u
 #define HOP_DWELL_MS 1000u
 #define HOP_DWELL_BEACON_ONLY_MS 1000u
+#define HOP_RAW_QUIET_MS 20u
+#define HOP_CHANNEL_SETTLE_MS 60u
 #define DETAIL_PRINT_SECS 20u
 #define ALL_AP_PRINT_SECS 30u
 #define AUTO_FLUSH_SECS 60u
@@ -1527,8 +1529,8 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     if (s == 2u){
         qos_puts("scanner: rx stalled; full monitor up/reapply\n");
         (void)qos_wifi_raw_set_enabled(0u);
-    (void)scanner_restore_monitor_path(ch);
-    recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
+        (void)scanner_restore_monitor_path(ch);
+        recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
         if (stage){
             *stage = recovered ? 0u : 3u;
         }
@@ -1555,14 +1557,33 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
 
 static void maybe_hop_channel(unsigned int* active_channel,
                               unsigned int* hop_idx,
-                              scan_stats_t* stats){
+                              scan_stats_t* stats,
+                              unsigned int* last_rx_frames){
     if (!active_channel || !hop_idx || !stats){
         return;
     }
     unsigned int idx = *hop_idx;
     idx = (idx + 1u) % (unsigned int)(sizeof(g_hop_channels) / sizeof(g_hop_channels[0]));
     unsigned int ch = (unsigned int)g_hop_channels[idx];
+
+    /*
+     * Safer Nexmon hop:
+     * - stop raw capture so the scanner is not reading the F2 FIFO mid-hop
+     * - let firmware/SDIO settle
+     * - change channel
+     * - settle again before accepting frames from the new channel
+     *
+     * This intentionally discards queued packets around the hop boundary.
+     */
+    (void)qos_wifi_raw_set_enabled(0u);
+    qos_sleep(HOP_RAW_QUIET_MS);
     int rc = qos_wifi_monitor_set(2u, ch);
+    qos_sleep(HOP_CHANNEL_SETTLE_MS);
+    (void)qos_wifi_raw_set_enabled(1u);
+    if (last_rx_frames){
+        *last_rx_frames = 0u;
+    }
+
     if (rc == 0){
         *active_channel = ch;
         *hop_idx = idx;
@@ -1929,7 +1950,7 @@ void program_main(void){
 
         if ((long long)(now - next_hop) >= 0){
 #if CHANNEL_HOP_DURING_CAPTURE
-            maybe_hop_channel(&active_channel, &hop_idx, &stats);
+            maybe_hop_channel(&active_channel, &hop_idx, &stats, &last_rx_frames);
 #endif
             next_hop += ((unsigned long long)hop_dwell_ms * 1000ull);
             if ((long long)(now - next_hop) >= 0){
