@@ -17,6 +17,8 @@
 #define BTN_LONG_PRESS_MS     1300u
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
+#define LED_LOGIN_WAIT_PERIOD_MS 200u
+#define LED_LOGIN_WAIT_ON_MS  100u
 #define LED_OPEN_ALERT_WINDOW_MS 5000u
 #define LED_OPEN_ALERT_ON1_MS 350u
 #define LED_OPEN_ALERT_GAP1_MS 180u
@@ -64,6 +66,9 @@ static unsigned int g_led_scanner_running_cached = 0u;
 static unsigned long g_led_scanner_next_check = 0u;
 static unsigned int g_led_scanner_recovery = 0u;
 static unsigned long g_led_scanner_recovery_expire = 0u;
+static unsigned int g_led_wifi_joined_waiting_login = 0u;
+static unsigned int g_led_login_seen = 0u;
+static unsigned long g_led_login_wait_anchor = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -409,12 +414,18 @@ static void render_led(unsigned long now){
 
     unsigned int scanner_running = g_led_scanner_running_cached;
 
-    /*
-     * Default idle behavior requested: LED solid on when scanner is not
-     * running.
-     */
     if (!scanner_running){
         g_led_prev_scanner_running = 0u;
+        if (g_led_wifi_joined_waiting_login && !g_led_login_seen){
+            unsigned long elapsed = now - g_led_login_wait_anchor;
+            unsigned long phase = elapsed % LED_LOGIN_WAIT_PERIOD_MS;
+            led_apply((phase < LED_LOGIN_WAIT_ON_MS) ? 1u : 0u);
+            return;
+        }
+        /*
+         * Default idle behavior requested: LED solid on when scanner is not
+         * running.
+         */
         led_apply(1u);
         return;
     }
@@ -505,6 +516,9 @@ void headless_control_init(void){
     g_led_scanner_next_check = now;
     g_led_scanner_recovery = 0u;
     g_led_scanner_recovery_expire = 0u;
+    g_led_wifi_joined_waiting_login = 0u;
+    g_led_login_seen = 0u;
+    g_led_login_wait_anchor = now;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -563,6 +577,37 @@ void headless_control_led_tick(void){
     }
     render_led(now);
     g_led_last_render_tick = now;
+    spin_unlock(&g_headless_lock);
+}
+
+void headless_control_note_wifi_joined_waiting_login(void){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = headless_now_ms();
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    if (!g_led_login_seen){
+        g_led_wifi_joined_waiting_login = 1u;
+        g_led_login_wait_anchor = now;
+        g_led_burst_pulses = 0u;
+        g_led_test_active = 0u;
+        g_led_manual_mode = 0u;
+    }
+    spin_unlock(&g_headless_lock);
+}
+
+void headless_control_note_login_success(void){
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    g_led_login_seen = 1u;
+    g_led_wifi_joined_waiting_login = 0u;
     spin_unlock(&g_headless_lock);
 }
 
@@ -666,6 +711,12 @@ unsigned int headless_led_status_word(void){
     }
     if (QOS_HEADLESS_LED_ACTIVE_HIGH){
         v |= 1u << 3;
+    }
+    if (g_led_wifi_joined_waiting_login){
+        v |= 1u << 6;
+    }
+    if (g_led_login_seen){
+        v |= 1u << 7;
     }
     v |= (g_led_manual_mode & 0x3u) << 4;
     v |= (QOS_HEADLESS_LED_GPIO & 0xFFu) << 8;

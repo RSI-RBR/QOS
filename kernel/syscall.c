@@ -2907,6 +2907,9 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             auth_rc = auth_verify_password(username, password);
+            if (auth_rc == 0){
+                headless_control_note_login_success();
+            }
             for (unsigned int i = 0; i < sizeof(password); i++){
                 password[i] = 0;
             }

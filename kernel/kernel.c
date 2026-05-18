@@ -289,6 +289,7 @@ static void pi0_headless_wifi_autojoin(void){
     }
 
     uart_puts("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
+    headless_control_note_wifi_joined_waiting_login();
 
 out:
     memzero((unsigned long)ssid, sizeof(ssid));

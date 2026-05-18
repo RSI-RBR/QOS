@@ -9,6 +9,7 @@
 #include "klog.h"
 #include "timer.h"
 #include "panic.h"
+#include "headless_control.h"
 
 #define uart_puts klog_puts
 #define uart_putdec klog_putdec
@@ -895,6 +896,7 @@ static void handle_auth_proof(const unsigned char* frame,
         result = 1u;
         g_stats.auth_ok++;
         auth_mark_success();
+        headless_control_note_login_success();
     } else{
         g_stats.auth_fail++;
         auth_mark_failure();
