@@ -1728,7 +1728,6 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
     unsigned char intpend = 0;
     unsigned int ints = 0;
     unsigned int mbox = 0;
-    unsigned int monitor_fifo_only = (g_cyw43_monitor_mode && g_cyw43_raw_enabled) ? 1u : 0u;
     unsigned int loops = timeout_ms ? (timeout_ms * 20u) : 1u;
 
     if (timeout_ms != 0u && loops < 1000u){
@@ -1744,15 +1743,7 @@ static int cyw43_wait_rx_frame(unsigned int timeout_ms, int quiet){
             }
         }
 
-        /*
-         * Nexmon monitor firmware is much more fragile than the station data
-         * path. Sticky-Fingers/airodump-style capture effectively treats the
-         * Function 2 packet FIFO as the source of truth. Avoid touching the
-         * backplane INT_STATUS/HOSTMBOX window while monitor capture is active:
-         * those reads have been observed to go transient and can leave capture
-         * looking half-alive.
-         */
-        if (!monitor_fifo_only && g_cyw43.sd_regs != 0u){
+        if (g_cyw43.sd_regs != 0u){
             (void)sdio_bus_cmd52_read(0, 0x05u, &intpend);
             if (intpend != 0u &&
                 cyw43_backplane_read32(g_cyw43.sd_regs + CYW43_SD_INT_STATUS, &ints) == 0){

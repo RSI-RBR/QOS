@@ -1790,14 +1790,19 @@ void program_main(void){
     log_scanner_start();
     log_summary_line(&stats, active_channel);
     log_ap_snapshot();
-    /*
-     * Always (re)enter monitor minimal-up first for scanner sessions so we
-     * start from a clean capture state even if station-mode commands were run
-     * earlier in this boot.
-     */
-    (void)scanner_restore_monitor_path(DEFAULT_SCAN_CHANNEL);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
+    /*
+     * Do not reset a monitor path the user already brought up with wifiupmon /
+     * wifimon. Nexmon capture is fragile; preserving an already-armed path is
+     * safer than replaying WLC_UP/monitor commands at scanner startup.
+     */
+    if (!have_mon || !mon.enabled || !mon.raw_enabled){
+        (void)scanner_restore_monitor_path(DEFAULT_SCAN_CHANNEL);
+        have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
+    } else{
+        qos_puts("scanner: preserving existing monitor/raw path\n");
+    }
     if (have_mon && mon.channel != 0u){
         active_channel = mon.channel;
         for (unsigned int i = 0u; i < (unsigned int)(sizeof(g_hop_channels) / sizeof(g_hop_channels[0])); i++){
