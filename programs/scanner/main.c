@@ -5,10 +5,10 @@
 #define SSID_MAX 32u
 #define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
-#define STALE_RECOVER_SECS 4u
+#define STALE_RECOVER_SECS 10u
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
-#define DETAIL_PRINT_SECS 8u
+#define DETAIL_PRINT_SECS 10u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
 
@@ -959,6 +959,12 @@ void program_main(void){
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
+    /*
+     * Always (re)enter monitor minimal-up first for scanner sessions so we
+     * start from a clean capture state even if station-mode commands were run
+     * earlier in this boot.
+     */
+    (void)qos_wifi_up_monitor();
     scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL, 0u);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
@@ -1070,11 +1076,15 @@ void program_main(void){
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
         if (n < 0){
             recv_err_streak++;
-            if ((recv_err_streak & 0x7u) == 1u){
+            if ((recv_err_streak & 0x1Fu) == 1u){
                 qos_puts("scanner: raw recv error; rearming monitor\n");
             }
-            scanner_ensure_monitor_ready(active_channel, 1u);
-            qos_sleep(5u);
+            /*
+             * Avoid hammering full firmware rearm on transient SDIO misses.
+             * Escalate only if errors persist for a while.
+             */
+            scanner_ensure_monitor_ready(active_channel, (recv_err_streak > 32u) ? 1u : 0u);
+            qos_sleep(2u);
         } else if (n > 0){
             recv_err_streak = 0u;
             parse_frame(buf, (unsigned int)n, active_channel, &stats);
