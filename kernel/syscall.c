@@ -642,6 +642,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_SCANNER_LOG_FLUSH:
         case SYS_SCANNER_LOG_READ_FAT:
         case SYS_SCANNER_LOG_FLUSH_ALL:
+        case SYS_HEADLESS_SCANNER_IDLE:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -2637,6 +2638,30 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             headless_control_note_open_network_packet();
+            frame[TF_X0] = 0;
+            return frame_sp;
+        }
+
+        case SYS_HEADLESS_SCANNER_IDLE:
+        {
+            char sandbox83[11];
+            static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+            int ok = 1;
+            if (process_current_file_sandbox(sandbox83) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < 11u; i++){
+                if (sandbox83[i] != scanner83[i]){
+                    ok = 0;
+                    break;
+                }
+            }
+            if (!ok){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            headless_control_note_scanner_recovery((unsigned int)frame[TF_X0] ? 1u : 0u);
             frame[TF_X0] = 0;
             return frame_sp;
         }

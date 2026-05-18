@@ -187,7 +187,8 @@ enum {
     SYS_SCANNER_LOG_FLUSH = 161,
     SYS_SCANNER_LOG_READ_FAT = 162,
     SYS_WIFI_MONITOR_RECOVER = 163,
-    SYS_SCANNER_LOG_FLUSH_ALL = 164
+    SYS_SCANNER_LOG_FLUSH_ALL = 164,
+    SYS_HEADLESS_SCANNER_IDLE = 165
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1167,6 +1168,10 @@ static inline unsigned int qos_led_status(void){
 
 static inline int qos_headless_open_hit(void){
     return (int)qos_syscall0(SYS_HEADLESS_OPEN_HIT);
+}
+
+static inline int qos_headless_scanner_idle(unsigned int active){
+    return (int)qos_syscall1(SYS_HEADLESS_SCANNER_IDLE, (unsigned long)(active ? 1u : 0u));
 }
 
 static inline void qos_wifi_dump_status(void){

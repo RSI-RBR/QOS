@@ -1821,6 +1821,7 @@ void program_main(void){
     unsigned int prev_non_beacon = 0u;
     unsigned int rearm_stage = 0u;
     unsigned int idle_quiet_windows = 0u;
+    unsigned int idle_led_active = 0u;
     unsigned long long last_rx_progress_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
@@ -1846,6 +1847,7 @@ void program_main(void){
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
     qos_puts("scanner logs: RAM live; stop scanner then scanflush all to persist FAT logs\n");
+    (void)qos_headless_scanner_idle(0u);
     log_scanner_start();
     log_summary_line(&stats, active_channel);
     log_ap_snapshot();
@@ -1920,6 +1922,10 @@ void program_main(void){
                     last_rx_progress_us = now;
                     rearm_stage = 0u;
                     idle_quiet_windows = 0u;
+                    if (idle_led_active){
+                        (void)qos_headless_scanner_idle(0u);
+                        idle_led_active = 0u;
+                    }
                 }
                 if (!st1.enabled){
                     qos_puts("scanner: raw capture disabled; rearming monitor\n");
@@ -2018,6 +2024,10 @@ void program_main(void){
              */
             if (path_looks_up && recv_err_streak == 0u){
                 idle_quiet_windows++;
+                if (!idle_led_active){
+                    (void)qos_headless_scanner_idle(1u);
+                    idle_led_active = 1u;
+                }
                 if (idle_quiet_windows < IDLE_RECOVER_CONSEC_WINDOWS){
                     last_rx_progress_us = now;
                     skip_rx_poll = 1;
@@ -2069,6 +2079,10 @@ void program_main(void){
                 recv_err_streak = 0u;
                 last_rx_progress_us = now;
                 idle_quiet_windows = 0u;
+                if (idle_led_active){
+                    (void)qos_headless_scanner_idle(0u);
+                    idle_led_active = 0u;
+                }
                 parse_frame(buf, (unsigned int)n, active_channel, &stats);
             } else{
                 recv_err_streak = 0u;
