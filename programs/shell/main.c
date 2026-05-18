@@ -695,6 +695,40 @@ static void cmd_scanstart(unsigned int channel, char* password){
 
     (void)qos_wifi_raw_set_enabled(0u);
     (void)qos_wifi_monitor_set(0u, 0u);
+
+    /*
+     * Preferred Pi0/headless path: boot and join using Nexmon firmware, then
+     * flip the already-running firmware into monitor mode. Reloading firmware
+     * after station mode can leave the CYW43 absent at SDIO CMD5 on Pi0.
+     */
+    qos_puts("Scanstart: trying existing firmware monitor switch...\n");
+    rc = qos_wifi_up_monitor();
+    if (rc == 0){
+        rc = qos_wifi_monitor_set(2u, channel);
+        if (rc == 0){
+            rc = qos_wifi_raw_set_enabled(1u);
+            if (rc == 0){
+                qos_puts("Scanstart: monitor ready on existing firmware channel ");
+                print_uint(channel);
+                qos_puts("; launching scanner.\n");
+                cmd_scanner_launch();
+                return;
+            }
+            qos_puts("Scanstart: raw enable failed rc=");
+            print_int(rc);
+            qos_puts("\n");
+            return;
+        }
+        qos_puts("Scanstart: existing firmware monitor switch failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+    } else{
+        qos_puts("Scanstart: existing firmware not usable rc=");
+        print_int(rc);
+        qos_puts("\n");
+    }
+
+    qos_puts("Scanstart: falling back to monitor firmware reload.\n");
     (void)qos_wifi_down();
     qos_sleep(250u);
 

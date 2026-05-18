@@ -68,8 +68,9 @@ void memzero(unsigned long start, unsigned long size){
 }
 
 #if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
-#define PI0_AUTO_WIFI_FW_83  "P0WIFI36BIN"
-#define PI0_AUTO_WIFI_NV_83  "P0WIFI36TXT"
+#define PI0_AUTO_WIFI_FW_83  "P0NEXMONBIN"
+#define PI0_AUTO_WIFI_NV_83  "P0NEXMONTXT"
+#define PI0_AUTO_WIFI_CLM_83 "P0NEXMONCLM"
 
 static int cfg_is_space(char c){
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -207,12 +208,16 @@ static void pi0_headless_wifi_autojoin(void){
         return;
     }
 
-    uart_puts("Pi0 headless WiFi: loading station firmware ");
+    uart_puts("Pi0 headless WiFi: loading Nexmon station firmware ");
     uart_puts(PI0_AUTO_WIFI_FW_83);
     uart_puts(" / ");
     uart_puts(PI0_AUTO_WIFI_NV_83);
+    uart_puts(" / ");
+    uart_puts(PI0_AUTO_WIFI_CLM_83);
     uart_puts("...\n");
-    rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83, PI0_AUTO_WIFI_NV_83, 0);
+    rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83,
+                                        PI0_AUTO_WIFI_NV_83,
+                                        PI0_AUTO_WIFI_CLM_83);
     if (rc != 0){
         uart_puts("Pi0 headless WiFi: firmware load failed rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
