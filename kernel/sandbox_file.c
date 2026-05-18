@@ -387,7 +387,20 @@ int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_pat
         spin_lock(&g_files_lock);
         e = find_entry_locked(sandbox83, relative_path);
         if (e && e->fat_flushed_size == offset){
-            e->fat_flushed_size = offset + len;
+            unsigned int flushed_end = offset + len;
+            if (flushed_end <= e->size){
+                unsigned int remaining = e->size - flushed_end;
+                for (unsigned int i = 0u; i < remaining; i++){
+                    e->data[i] = e->data[flushed_end + i];
+                }
+                for (unsigned int i = remaining; i < e->size; i++){
+                    e->data[i] = 0u;
+                }
+                e->size = remaining;
+                e->fat_flushed_size = 0u;
+            } else{
+                e->fat_flushed_size = e->size;
+            }
         }
         spin_unlock(&g_files_lock);
     }

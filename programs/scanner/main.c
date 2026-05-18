@@ -688,6 +688,17 @@ static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
     ap->cat_bytes[cat] += bytes;
 }
 
+static unsigned int ap_total_observed_frames(const ap_info_t* ap){
+    unsigned int n = 0u;
+    if (!ap){
+        return 0u;
+    }
+    for (unsigned int i = 0u; i < CAT_COUNT; i++){
+        n += ap->cat_counts[i];
+    }
+    return n;
+}
+
 static void key_event_push(unsigned int channel,
                            unsigned int msg,
                            unsigned int key_info,
@@ -1251,11 +1262,25 @@ static void parse_frame(const unsigned char* buf,
             note_cat(stats, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
             if (idx >= 0 && dot_len >= 36u){
                 ap_info_t* ap = &g_aps[idx];
+                unsigned int old_seen_frames = ap_total_observed_frames(ap);
+                unsigned int old_ssid_len = ap->ssid_len;
+                unsigned char old_channel = ap->channel;
+                unsigned char old_privacy = ap->privacy;
+                unsigned char old_rsn = ap->rsn;
+                unsigned char old_wpa = ap->wpa;
                 ap_note_cat(ap, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
                 note_signal(ap, signal);
                 ap->channel = (unsigned char)active_channel;
                 ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
                 parse_tags(ap, dot + 36u, dot_len - 36u);
+                if (old_seen_frames == 0u ||
+                    old_ssid_len != ap->ssid_len ||
+                    old_channel != ap->channel ||
+                    old_privacy != ap->privacy ||
+                    old_rsn != ap->rsn ||
+                    old_wpa != ap->wpa){
+                    log_ap_line(ap);
+                }
                 maybe_notify_open_hit(ap);
             }
             return;
@@ -1321,9 +1346,13 @@ static void parse_frame(const unsigned char* buf,
             ap_idx = find_ap(bssid);
             if (ap_idx >= 0){
                 ap_info_t* ap = &g_aps[ap_idx];
+                unsigned int old_seen_frames = ap_total_observed_frames(ap);
                 note_client(ap, client);
                 note_signal(ap, signal);
                 ap->channel = (unsigned char)active_channel;
+                if (old_seen_frames == 0u){
+                    log_ap_line(ap);
+                }
             }
         }
 
@@ -1545,6 +1574,8 @@ void program_main(void){
         }
 
         if ((long long)(now - next_flush) >= 0){
+            log_summary_line(&stats, active_channel);
+            log_ap_snapshot();
             (void)flush_scanner_logs(1);
             (void)qos_wifi_up_monitor();
             scanner_ensure_monitor_ready(active_channel, 1u);

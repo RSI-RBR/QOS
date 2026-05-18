@@ -259,6 +259,20 @@ int fat32_init(void){
     return rc;
 }
 
+void fat32_reset(void){
+    unsigned long irq = fat_lock();
+    fat_initialized = 0;
+    fat_start = 0;
+    data_start = 0;
+    sectors_per_cluster = 0;
+    sectors_per_fat_global = 0;
+    fat_count_global = 0;
+    total_clusters_global = 0;
+    root_cluster = 0;
+    fat_cache_reset();
+    fat_unlock(irq);
+}
+
 static int name_match(unsigned char *entry, const char *name){
     // FAT uses 8.3 uppercase
     for (int i = 0; i < 11; i++){

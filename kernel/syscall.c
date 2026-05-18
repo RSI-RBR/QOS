@@ -83,9 +83,11 @@ static unsigned long clamp_puts_len(const char* s){
 
 static int scanner_fat_prepare_emmc(void){
     if (blockdev_is_emmc()){
+        fat32_reset();
         return 0;
     }
     if (blockdev_reinit_emmc_from_wifi() == 0 && blockdev_is_emmc()){
+        fat32_reset();
         return 0;
     }
 
