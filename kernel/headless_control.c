@@ -18,10 +18,10 @@
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
 #define LED_OPEN_ALERT_WINDOW_MS 2000u
-#define LED_OPEN_ALERT_PERIOD_MS 1000u
 #define LED_OPEN_ALERT_ON1_MS 200u
 #define LED_OPEN_ALERT_GAP1_MS 100u
 #define LED_OPEN_ALERT_ON2_MS 200u
+#define LED_OPEN_ALERT_GAP2_MS 500u
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
@@ -54,8 +54,9 @@ static unsigned int g_led_test_on_ms = 500u;
 static unsigned int g_led_test_off_ms = 500u;
 static unsigned long g_led_test_next_tick = 0u;
 static unsigned int g_led_open_hit_valid = 0u;
-static unsigned long g_led_open_hit_anchor = 0u;
 static unsigned long g_led_open_hit_expire = 0u;
+static unsigned int g_led_open_step = 0u;
+static unsigned long g_led_open_next_tick = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -388,19 +389,25 @@ static void render_led(unsigned long now){
     }
 
     if (g_led_open_hit_valid){
-        unsigned long remain = g_led_open_hit_expire - now;
-        if ((long)remain > 0){
-            unsigned long since_anchor = now - g_led_open_hit_anchor;
-            unsigned long phase = since_anchor % LED_OPEN_ALERT_PERIOD_MS;
-            if (phase < LED_OPEN_ALERT_ON1_MS ||
-                (phase >= (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS) &&
-                 phase < (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS + LED_OPEN_ALERT_ON2_MS))){
-                led_apply(1u);
-            } else{
-                led_apply(0u);
+        static const unsigned int alert_step_ms[4] = {
+            LED_OPEN_ALERT_ON1_MS, LED_OPEN_ALERT_GAP1_MS,
+            LED_OPEN_ALERT_ON2_MS, LED_OPEN_ALERT_GAP2_MS
+        };
+        static const unsigned int alert_step_on[4] = {1u, 0u, 1u, 0u};
+
+        if ((long)(g_led_open_hit_expire - now) > 0){
+            if (g_led_open_step >= 4u){
+                g_led_open_step = 0u;
+                g_led_open_next_tick = now + alert_step_ms[0];
             }
+            while ((long)(now - g_led_open_next_tick) >= 0){
+                g_led_open_step = (g_led_open_step + 1u) & 3u;
+                g_led_open_next_tick += alert_step_ms[g_led_open_step];
+            }
+            led_apply(alert_step_on[g_led_open_step]);
             return;
         }
+        g_led_open_hit_valid = 0u;
     }
 
     /*
@@ -450,8 +457,9 @@ void headless_control_init(void){
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
     g_led_open_hit_valid = 0u;
-    g_led_open_hit_anchor = 0u;
     g_led_open_hit_expire = 0u;
+    g_led_open_step = 0u;
+    g_led_open_next_tick = system_ticks;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -509,9 +517,10 @@ void headless_control_note_open_network_packet(void){
     now = system_ticks;
     spin_lock(&g_headless_lock);
     if (!g_led_open_hit_valid || (long)(g_led_open_hit_expire - now) <= 0){
-        g_led_open_hit_anchor = now;
         g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
         g_led_open_hit_valid = 1u;
+        g_led_open_step = 0u;
+        g_led_open_next_tick = now + LED_OPEN_ALERT_ON1_MS;
     } else{
         unsigned long ext = now + LED_OPEN_ALERT_WINDOW_MS;
         if ((long)(ext - g_led_open_hit_expire) > 0){
