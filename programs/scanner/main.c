@@ -1247,15 +1247,6 @@ static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
     return 0;
 }
 
-static int scanner_wait_for_monitor_packets(unsigned int wait_ms){
-    cyw43_raw_capture_status_t st;
-    unsigned int last_rx_frames = 0u;
-    if (qos_wifi_raw_status(&st) == 0){
-        last_rx_frames = st.rx_frames;
-    }
-    return scanner_wait_for_raw_progress(&last_rx_frames, wait_ms);
-}
-
 static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts("AP ");
     put_u32(idx);
@@ -1440,16 +1431,12 @@ static int scanner_restore_monitor_path(unsigned int channel){
         if (rc == 0){
             scanner_ensure_monitor_ready(ch, 1u);
             if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-                if (scanner_wait_for_monitor_packets(700u)){
-                    return 1;
-                }
+                return 1;
             }
         }
         qos_sleep(40u);
         if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-            if (scanner_wait_for_monitor_packets(700u)){
-                return 1;
-            }
+            return 1;
         }
     }
 
@@ -1457,9 +1444,7 @@ static int scanner_restore_monitor_path(unsigned int channel){
     recover_rc = qos_wifi_monitor_recover(ch);
     if (recover_rc == 0 &&
         qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-        if (scanner_wait_for_monitor_packets(1500u)){
-            return 1;
-        }
+        return 1;
     }
     qos_puts("scanner: hard recovery rc=");
     put_i32(recover_rc);
