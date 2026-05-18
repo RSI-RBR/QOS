@@ -78,6 +78,9 @@ typedef struct {
     unsigned long long last_seen_rel_ms;
     unsigned long long strongest_rel_ms;
     unsigned int strongest_channel;
+    unsigned char session_seen;
+    int session_sig_min;
+    int session_sig_max;
 } ap_info_t;
 
 typedef struct {
@@ -425,10 +428,28 @@ static int find_ap(const unsigned char bssid[6]){
             g_aps[i].last_seen_rel_ms = g_aps[i].first_seen_rel_ms;
             g_aps[i].strongest_rel_ms = g_aps[i].first_seen_rel_ms;
             g_aps[i].strongest_channel = 0u;
+            g_aps[i].session_seen = 0u;
+            g_aps[i].session_sig_min = 127;
+            g_aps[i].session_sig_max = -127;
             return (int)i;
         }
     }
     return -1;
+}
+
+static void reset_session_ap_timing(void){
+    for (unsigned int i = 0u; i < MAX_APS; i++){
+        if (!g_aps[i].seen){
+            continue;
+        }
+        g_aps[i].first_seen_rel_ms = 0ull;
+        g_aps[i].last_seen_rel_ms = 0ull;
+        g_aps[i].strongest_rel_ms = 0ull;
+        g_aps[i].strongest_channel = 0u;
+        g_aps[i].session_seen = 0u;
+        g_aps[i].session_sig_min = 127;
+        g_aps[i].session_sig_max = -127;
+    }
 }
 
 static void note_signal(ap_info_t* ap, int sig, unsigned int active_channel){
@@ -437,20 +458,27 @@ static void note_signal(ap_info_t* ap, int sig, unsigned int active_channel){
         return;
     }
     rel_ms = scanner_rel_ms_now();
-    if (ap->first_seen_rel_ms == 0ull){
+    if (!ap->session_seen){
         ap->first_seen_rel_ms = rel_ms;
+        ap->session_seen = 1u;
     }
     ap->last_seen_rel_ms = rel_ms;
     if (sig <= -128){
         return;
+    }
+    if (sig < ap->session_sig_min){
+        ap->session_sig_min = sig;
+    }
+    if (sig > ap->session_sig_max){
+        ap->session_sig_max = sig;
+        ap->strongest_rel_ms = rel_ms;
+        ap->strongest_channel = active_channel;
     }
     if (sig < ap->sig_min){
         ap->sig_min = sig;
     }
     if (sig > ap->sig_max){
         ap->sig_max = sig;
-        ap->strongest_rel_ms = rel_ms;
-        ap->strongest_channel = active_channel;
     }
 }
 
@@ -1939,6 +1967,7 @@ void program_main(void){
     unsigned long long now = qos_get_time_us();
     g_scan_start_us = now;
     load_persistent_scanner_state(&stats);
+    reset_session_ap_timing();
 
     last_rx_progress_us = now;
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
