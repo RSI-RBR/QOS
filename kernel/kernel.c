@@ -43,6 +43,7 @@
 #include "sandbox_file.h"
 #include "platform/board.h"
 #include "platform/soc.h"
+#include "timer.h"
 
 static int kernel_ranges_overlap(unsigned long a, unsigned long a_size,
                                  unsigned long b, unsigned long b_size){
@@ -71,6 +72,16 @@ void memzero(unsigned long start, unsigned long size){
 #define PI0_AUTO_WIFI_FW_83  "P0NEXMONBIN"
 #define PI0_AUTO_WIFI_NV_83  "P0NEXMONTXT"
 #define PI0_AUTO_WIFI_CLM_83 "P0NEXMONCLM"
+
+static void pi0_wifi_wait_ms(unsigned int ms){
+    unsigned long start = system_ticks;
+    if (ms == 0u){
+        return;
+    }
+    while ((unsigned long)(system_ticks - start) < (unsigned long)ms){
+        asm volatile("wfe" : : : "memory");
+    }
+}
 
 static int cfg_is_space(char c){
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -198,6 +209,8 @@ static void pi0_headless_wifi_autojoin(void){
     char ssid[33];
     char password[96];
     int rc;
+    int up_ok = 0;
+    int join_ok = 0;
 
     uart_puts("Pi0 headless WiFi: autojoin enabled\n");
     memzero((unsigned long)ssid, sizeof(ssid));
@@ -226,20 +239,52 @@ static void pi0_headless_wifi_autojoin(void){
     }
 
     uart_puts("Pi0 headless WiFi: raising interface...\n");
-    rc = cyw43_ioctl_up();
-    if (rc != 0){
-        uart_puts("Pi0 headless WiFi: wifiup failed rc=");
+    for (unsigned int attempt = 0u; attempt < 3u; attempt++){
+        rc = cyw43_ioctl_up();
+        if (rc == 0){
+            up_ok = 1;
+            break;
+        }
+        uart_puts("Pi0 headless WiFi: wifiup failed attempt=");
+        uart_putdec(attempt + 1u);
+        uart_puts(" rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
         uart_puts("\n");
+        pi0_wifi_wait_ms(300u + (attempt * 250u));
+    }
+    if (!up_ok){
         goto out;
     }
 
     uart_puts("Pi0 headless WiFi: joining hidden SSID...\n");
-    rc = cyw43_ioctl_join(ssid, password);
-    if (rc != 0){
-        uart_puts("Pi0 headless WiFi: join failed rc=");
+    for (unsigned int attempt = 0u; attempt < 5u; attempt++){
+        rc = cyw43_ioctl_join(ssid, password);
+        if (rc == 0){
+            join_ok = 1;
+            break;
+        }
+        uart_puts("Pi0 headless WiFi: join failed attempt=");
+        uart_putdec(attempt + 1u);
+        uart_puts(" rc=");
         uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
         uart_puts("\n");
+        /*
+         * Nexmon station joins can be timing-sensitive on Pi0. Do not reload
+         * firmware here; just reset the interface state and retry association.
+         */
+        (void)cyw43_ioctl_down();
+        pi0_wifi_wait_ms(250u + (attempt * 150u));
+        rc = cyw43_ioctl_up();
+        if (rc != 0){
+            uart_puts("Pi0 headless WiFi: retry wifiup failed rc=");
+            uart_putdec((unsigned int)(rc < 0 ? -rc : rc));
+            uart_puts("\n");
+            pi0_wifi_wait_ms(500u);
+        } else{
+            pi0_wifi_wait_ms(350u + (attempt * 150u));
+        }
+    }
+    if (!join_ok){
         goto out;
     }
 
