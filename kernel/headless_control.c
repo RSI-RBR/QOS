@@ -57,6 +57,7 @@ static unsigned int g_led_open_hit_valid = 0u;
 static unsigned long g_led_open_hit_expire = 0u;
 static unsigned int g_led_open_step = 0u;
 static unsigned long g_led_open_next_tick = 0u;
+static unsigned long g_led_last_render_tick = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -460,6 +461,7 @@ void headless_control_init(void){
     g_led_open_hit_expire = 0u;
     g_led_open_step = 0u;
     g_led_open_next_tick = system_ticks;
+    g_led_last_render_tick = system_ticks;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -484,6 +486,16 @@ void headless_control_poll(void){
             poll_button_state(now);
             action = handle_button_actions(now);
         }
+        if (QOS_HEADLESS_LED_ENABLED){
+            /*
+             * Fallback refresh path: if timer-driven LED rendering is briefly
+             * starved by lock contention, refresh here at most every ~2ms.
+             */
+            if ((unsigned long)(now - g_led_last_render_tick) >= 2u){
+                render_led(now);
+                g_led_last_render_tick = now;
+            }
+        }
         spin_unlock(&g_headless_lock);
     }
 
@@ -506,6 +518,7 @@ void headless_control_led_tick(void){
         return;
     }
     render_led(now);
+    g_led_last_render_tick = now;
     spin_unlock(&g_headless_lock);
 }
 
@@ -515,7 +528,13 @@ void headless_control_note_open_network_packet(void){
         return;
     }
     now = system_ticks;
-    spin_lock(&g_headless_lock);
+    if (!spin_trylock(&g_headless_lock)){
+        /*
+         * Don't block scanner/network paths on LED bookkeeping. A missed hit
+         * here is acceptable because subsequent packets will re-notify.
+         */
+        return;
+    }
     if (!g_led_open_hit_valid || (long)(g_led_open_hit_expire - now) <= 0){
         g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
         g_led_open_hit_valid = 1u;

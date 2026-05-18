@@ -2216,6 +2216,7 @@ static int cyw43_control_ready(void){
 int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     unsigned char local_mac[6];
     unsigned char gateway_ip[4];
+    int set_ok = 0;
 
     if (!mac){
         return -1;
@@ -2227,9 +2228,60 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     local_mac[0] = (unsigned char)((local_mac[0] & 0xFEu) | 0x02u);
 
     if (cyw43_control_ready()){
-        if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) != 0){
-            uart_puts("CYW43: set cur_etheraddr failed\n");
-            return -2;
+        if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) == 0){
+            set_ok = 1;
+        } else{
+            /*
+             * Nexmon monitor sessions can transiently reject cur_etheraddr
+             * updates while monitor/promisc/scansuppress are active. Try a
+             * safe fallback: briefly drop monitor flags, set MAC, then restore.
+             */
+            if (g_cyw43_monitor_mode != 0u){
+                unsigned int saved_mode = g_cyw43_monitor_mode;
+                unsigned int saved_channel = g_cyw43_monitor_channel;
+                int restore_rc = 0;
+
+                (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, 0u);
+                (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_PROMISC, 0u);
+                (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_SCANSUPPRESS, 0u);
+                (void)cyw43_raw_capture_set_enabled(0u);
+                g_cyw43_monitor_mode = 0u;
+                g_cyw43_monitor_channel = 0u;
+                g_cyw43_monitor_last_rc = 0;
+                cyw43_delay(20000u);
+
+                if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) == 0){
+                    set_ok = 1;
+                } else{
+                    /*
+                     * Final lightweight retry for transient control-path
+                     * misses before reporting failure.
+                     */
+                    cyw43_delay(20000u);
+                    if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) == 0){
+                        set_ok = 1;
+                    }
+                }
+
+                restore_rc = cyw43_ioctl_monitor(saved_mode, saved_channel);
+                if (restore_rc != 0 && saved_channel != 0u){
+                    (void)cyw43_ioctl_monitor(saved_mode, 0u);
+                }
+            } else{
+                /*
+                 * Non-monitor path: one quick retry can recover from SDIO
+                 * control transient without forcing the caller to rerun.
+                 */
+                cyw43_delay(20000u);
+                if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) == 0){
+                    set_ok = 1;
+                }
+            }
+
+            if (!set_ok){
+                uart_puts("CYW43: set cur_etheraddr failed\n");
+                return -2;
+            }
         }
     }
 
