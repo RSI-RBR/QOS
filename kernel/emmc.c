@@ -21,6 +21,7 @@
 
 #define INT_CMD_DONE      (1u << 0)
 #define INT_DATA_DONE     (1u << 1)
+#define INT_WRITE_RDY     (1u << 4)
 #define INT_READ_RDY      (1u << 5)
 #define INT_ERR           (1u << 15)
 #define INT_ERROR_MASK    0xFFFF0000u
@@ -495,6 +496,71 @@ int emmc_read_blocks(unsigned int lba, unsigned int count, unsigned char *buffer
 
 retry:
         continue;
+    }
+
+    return -1;
+}
+
+int emmc_write_block(unsigned int lba, const unsigned char *buffer){
+    unsigned int addr;
+    unsigned int irpt;
+
+    if (!buffer){
+        return -1;
+    }
+
+    for (int attempt = 0; attempt < 3; attempt++){
+        if (emmc_ensure_data_mode() != 0){
+            emmc_reset_cmd_line();
+            emmc_reset_dat_line();
+            continue;
+        }
+
+        addr = g_sdhc ? lba : (lba * 512u);
+        EMMC_BLKSIZECNT = (1u << 16) | 512u;
+
+        if (emmc_cmd(24, addr,
+                     CMD_RSPNS_48 | CMD_CRCCHK_EN | CMD_IXCHK_EN |
+                     CMD_ISDATA | TM_BLKCNT_EN,
+                     500) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+
+        if (wait_irq(INT_WRITE_RDY, 500, &irpt) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+        EMMC_INTERRUPT = (irpt & (INT_WRITE_RDY | INT_ERROR_MASK | INT_ERR));
+        if (irpt & (INT_ERROR_MASK | INT_ERR)){
+            emmc_stop_transmission();
+            continue;
+        }
+
+        for (int i = 0; i < 128; i++){
+            unsigned int j = (unsigned int)i * 4u;
+            unsigned int d = ((unsigned int)buffer[j + 0u]) |
+                             ((unsigned int)buffer[j + 1u] << 8) |
+                             ((unsigned int)buffer[j + 2u] << 16) |
+                             ((unsigned int)buffer[j + 3u] << 24);
+            EMMC_DATA = d;
+        }
+
+        if (wait_irq(INT_DATA_DONE, 500, &irpt) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+        EMMC_INTERRUPT = (irpt & (INT_DATA_DONE | INT_ERROR_MASK | INT_ERR));
+        if (irpt & (INT_ERROR_MASK | INT_ERR)){
+            emmc_stop_transmission();
+            continue;
+        }
+        if (wait_status_clear(SR_DAT_INHIBIT, 500) != 0){
+            emmc_stop_transmission();
+            continue;
+        }
+
+        return 0;
     }
 
     return -1;

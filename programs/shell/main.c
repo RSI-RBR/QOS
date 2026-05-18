@@ -509,6 +509,8 @@ static void cmd_help(void){
     qos_puts(" game\n");
     qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
     qos_puts(" scanlog counts|aps|handshakes\n");
+    qos_puts(" scanflush [counts|aps|handshakes|all]\n");
+    qos_puts(" scanfat counts|aps|handshakes\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -654,22 +656,25 @@ static const char* scanlog_path_for_arg(const char* arg){
     return 0;
 }
 
-static void cmd_scanlog(const char* arg){
+static void cmd_scanlog_common(const char* arg, int from_fat){
     const char* path = scanlog_path_for_arg(arg);
     unsigned int off = 0u;
     unsigned int total = 0u;
     char last = '\n';
     if (!path){
-        qos_puts("Usage: scanlog counts|aps|handshakes\n");
+        qos_puts(from_fat ? "Usage: scanfat counts|aps|handshakes\n"
+                          : "Usage: scanlog counts|aps|handshakes\n");
         return;
     }
-    qos_puts("Scanner log ");
+    qos_puts(from_fat ? "Scanner FAT log " : "Scanner RAM log ");
     qos_puts(path);
     qos_puts(":\n");
     while (1){
-        int n = qos_scanner_log_read(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u);
+        int n = from_fat
+            ? qos_scanner_log_read_fat(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u)
+            : qos_scanner_log_read(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u);
         if (n < 0){
-            qos_puts("scanlog read failed.\n");
+            qos_puts(from_fat ? "scanfat read failed.\n" : "scanlog read failed.\n");
             return;
         }
         if (n == 0){
@@ -689,6 +694,49 @@ static void cmd_scanlog(const char* arg){
         qos_puts("(empty)\n");
     } else if (last != '\n'){
         qos_puts("\n");
+    }
+}
+
+static void cmd_scanlog(const char* arg){
+    cmd_scanlog_common(arg, 0);
+}
+
+static void cmd_scanfat(const char* arg){
+    cmd_scanlog_common(arg, 1);
+}
+
+static int flush_one_scanlog(const char* label){
+    const char* path = scanlog_path_for_arg(label);
+    int rc;
+    if (!path){
+        return -1;
+    }
+    qos_puts("Flushing ");
+    qos_puts(path);
+    qos_puts("... ");
+    rc = qos_scanner_log_flush(path);
+    qos_puts(rc == 0 ? "OK\n" : "failed\n");
+    return rc;
+}
+
+static void cmd_scanflush(const char* arg){
+    const char* p = arg;
+    while (p && *p == ' '){
+        p++;
+    }
+    if (!p || !*p || str_eq(p, "all")){
+        int ok = 1;
+        if (flush_one_scanlog("counts") != 0) ok = 0;
+        if (flush_one_scanlog("aps") != 0) ok = 0;
+        if (flush_one_scanlog("handshakes") != 0) ok = 0;
+        if (!ok){
+            qos_puts("scanflush note: files must already exist in /SCANNER with enough allocated space.\n");
+        }
+        return;
+    }
+    if (flush_one_scanlog(p) != 0){
+        qos_puts("Usage: scanflush [counts|aps|handshakes|all]\n");
+        qos_puts("Files must already exist in /SCANNER with enough allocated space.\n");
     }
 }
 
@@ -2407,6 +2455,22 @@ static void execute_line(void){
             p++;
         }
         cmd_scanlog(p);
+    } else if (str_eq(g_buf, "scanflush")){
+        cmd_scanflush("all");
+    } else if (str_starts_with(g_buf, "scanflush ")){
+        const char* p = g_buf + 10;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_scanflush(p);
+    } else if (str_eq(g_buf, "scanfat")){
+        cmd_scanfat("handshakes");
+    } else if (str_starts_with(g_buf, "scanfat ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_scanfat(p);
     } else if (str_eq(g_buf, "web")){
         cmd_web();
     } else if (str_eq(g_buf, "tty")){

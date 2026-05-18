@@ -179,6 +179,18 @@ static int blockdev_read_block_unlocked(unsigned int lba, unsigned char *buffer)
     return -1;
 }
 
+static int blockdev_write_block_unlocked(unsigned int lba, const unsigned char *buffer){
+    if (g_backend == BACKEND_EMMC){
+        return emmc_write_block(lba, buffer);
+    }
+
+    /*
+     * SDHOST write support is intentionally not wired yet. The EMMC path is
+     * the stable storage path on the boards we are actively using.
+     */
+    return -1;
+}
+
 int blockdev_read_block(unsigned int lba, unsigned char *buffer){
     unsigned long irq = blockdev_lock();
     int rc = blockdev_read_block_unlocked(lba, buffer);
@@ -215,6 +227,32 @@ int blockdev_read_blocks(unsigned int lba, unsigned int count, unsigned char *bu
 
     for (unsigned int i = 0u; i < count; i++){
         if (blockdev_read_block_unlocked(lba + i, buffer + (i * 512u)) != 0){
+            rc = -1;
+            break;
+        }
+    }
+    blockdev_unlock(irq);
+    return rc;
+}
+
+int blockdev_write_block(unsigned int lba, const unsigned char *buffer){
+    unsigned long irq = blockdev_lock();
+    int rc = blockdev_write_block_unlocked(lba, buffer);
+    blockdev_unlock(irq);
+    return rc;
+}
+
+int blockdev_write_blocks(unsigned int lba, unsigned int count, const unsigned char *buffer){
+    unsigned long irq;
+    int rc = 0;
+
+    if (!buffer || count == 0u){
+        return -1;
+    }
+
+    irq = blockdev_lock();
+    for (unsigned int i = 0u; i < count; i++){
+        if (blockdev_write_block_unlocked(lba + i, buffer + (i * 512u)) != 0){
             rc = -1;
             break;
         }

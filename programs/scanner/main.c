@@ -272,12 +272,14 @@ static void print_log_sizes(void){
     int counts = qos_file_size(SCAN_LOG_COUNTS);
     int aps = qos_file_size(SCAN_LOG_APS);
     int handshakes = qos_file_size(SCAN_LOG_HANDSHAKES);
-    qos_puts("scanner log bytes: counts=");
+    qos_puts("scanner log bytes: counts_log=");
     put_i32(counts);
-    qos_puts(" aps=");
+    qos_puts(" aps_log=");
     put_i32(aps);
-    qos_puts(" handshakes=");
+    qos_puts(" handshakes_log=");
     put_i32(handshakes);
+    qos_puts(" key_events_ram=");
+    put_u32(g_key_event_count);
     qos_puts("\n");
 }
 

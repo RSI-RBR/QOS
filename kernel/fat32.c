@@ -14,6 +14,9 @@
 static unsigned int fat_start;
 static unsigned int data_start;
 static unsigned int sectors_per_cluster;
+static unsigned int sectors_per_fat_global;
+static unsigned int fat_count_global;
+static unsigned int total_clusters_global;
 static unsigned int root_cluster;
 static int fat_initialized;
 
@@ -28,6 +31,12 @@ typedef struct fat_sector_cache_entry {
 } fat_sector_cache_entry_t;
 
 static fat_sector_cache_entry_t sector_cache[FAT_SECTOR_CACHE_ENTRIES] __attribute__((aligned(64)));
+
+typedef struct {
+    unsigned char entry[32];
+    unsigned int sector_lba;
+    unsigned int sector_offset;
+} fat_dirent_ref_t;
 
 static unsigned long fat_lock(void){
     /*
@@ -84,6 +93,28 @@ static int fat_read_sector_cached(unsigned int lba, unsigned char* out){
     return 0;
 }
 
+static void fat_cache_invalidate_lba(unsigned int lba){
+    for (unsigned int i = 0u; i < FAT_SECTOR_CACHE_ENTRIES; i++){
+        if (sector_cache[i].valid && sector_cache[i].lba == lba){
+            sector_cache[i].valid = 0u;
+            sector_cache[i].lba = 0u;
+        }
+    }
+}
+
+static int fat_write_sector_uncached(unsigned int lba, const unsigned char* data){
+    if (!data){
+        return -1;
+    }
+    fat_cache_invalidate_lba(lba);
+    if (blockdev_write_block(lba, data) != 0){
+        fat_cache_reset();
+        return -1;
+    }
+    fat_cache_invalidate_lba(lba);
+    return 0;
+}
+
 static void fat_spin_delay(unsigned int count){
     while (count--){
         asm volatile("nop");
@@ -94,8 +125,20 @@ static unsigned int read32(unsigned char *p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1]<<8) | ((unsigned int)p[2]<<16) | ((unsigned int)p[3]<<24);
 }
 
+static void write32(unsigned char *p, unsigned int v){
+    p[0] = (unsigned char)(v & 0xFFu);
+    p[1] = (unsigned char)((v >> 8) & 0xFFu);
+    p[2] = (unsigned char)((v >> 16) & 0xFFu);
+    p[3] = (unsigned char)((v >> 24) & 0xFFu);
+}
+
 static unsigned short read16(unsigned char *p){
     return ((unsigned short)p[0]) | ((unsigned short)p[1]<<8);
+}
+
+static void write16(unsigned char *p, unsigned int v){
+    p[0] = (unsigned char)(v & 0xFFu);
+    p[1] = (unsigned char)((v >> 8) & 0xFFu);
 }
 
 static int fat32_init_locked(void){
@@ -174,6 +217,11 @@ static int fat32_init_locked(void){
         unsigned int fats = v_sector[16];
         unsigned int sectors_per_fat = v_sector[36] | (v_sector[37] << 8) | (v_sector[38] << 16) | (v_sector[39] << 24);
         root_cluster = v_sector[44] | (v_sector[45] << 8) | (v_sector[46] << 16) | (v_sector[47] << 24);
+        unsigned int total_sectors = v_sector[32] | (v_sector[33] << 8) |
+                                     (v_sector[34] << 16) | (v_sector[35] << 24);
+        if (total_sectors == 0u){
+            total_sectors = v_sector[19] | (v_sector[20] << 8);
+        }
 
         int spc_pow2 = sectors_per_cluster &&
             ((sectors_per_cluster & (sectors_per_cluster - 1)) == 0);
@@ -182,7 +230,8 @@ static int fat32_init_locked(void){
             reserved == 0 ||
             fats == 0 || fats > 2 ||
             sectors_per_fat == 0 ||
-            root_cluster < 2){
+            root_cluster < 2 ||
+            total_sectors <= reserved + (fats * sectors_per_fat)){
             if (attempt == 3){
                 uart_puts("FAT: boot sector sanity failed\n");
                 return -1;
@@ -193,6 +242,9 @@ static int fat32_init_locked(void){
 
         fat_start = partition_lba + reserved;
         data_start = fat_start + (fats * sectors_per_fat);
+        sectors_per_fat_global = sectors_per_fat;
+        fat_count_global = fats;
+        total_clusters_global = (total_sectors - reserved - (fats * sectors_per_fat)) / sectors_per_cluster;
         fat_initialized = 1;
         return 0;
     }
@@ -445,6 +497,8 @@ static int read_cluster(unsigned int cluster, unsigned char *buffer){
     return 0;
 }
 
+static unsigned int cluster_lba(unsigned int cluster);
+
 static unsigned int fat_next(unsigned int cluster){
     unsigned int fat_offset = cluster * 4;
     unsigned int fat_sector = fat_start + (fat_offset / SECTOR_SIZE);
@@ -460,6 +514,59 @@ static unsigned int fat_next(unsigned int cluster){
     }
 
     return read32(&sector[offset]) & 0x0FFFFFFF;
+}
+
+static int fat_write_entry(unsigned int cluster, unsigned int value){
+    unsigned int fat_offset = cluster * 4u;
+    unsigned int fat_sector = fat_offset / SECTOR_SIZE;
+    unsigned int offset = fat_offset % SECTOR_SIZE;
+
+    if (cluster < 2u || cluster >= total_clusters_global + 2u ||
+        sectors_per_fat_global == 0u || fat_count_global == 0u){
+        return -1;
+    }
+
+    value &= 0x0FFFFFFFu;
+    for (unsigned int f = 0u; f < fat_count_global; f++){
+        unsigned int lba = fat_start + (f * sectors_per_fat_global) + fat_sector;
+        if (fat_read_sector_cached(lba, sector) != 0){
+            return -1;
+        }
+        write32(&sector[offset], value);
+        if (fat_write_sector_uncached(lba, sector) != 0){
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int fat_find_free_cluster(unsigned int* out_cluster){
+    if (!out_cluster || total_clusters_global == 0u){
+        return -1;
+    }
+    for (unsigned int c = 2u; c < total_clusters_global + 2u; c++){
+        if (fat_next(c) == 0u){
+            *out_cluster = c;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int zero_cluster(unsigned int cluster){
+    if (cluster < 2u || sectors_per_cluster == 0u || sectors_per_cluster * SECTOR_SIZE > MAX_CLUSTER_SIZE){
+        return -1;
+    }
+    for (unsigned int i = 0u; i < SECTOR_SIZE; i++){
+        sector[i] = 0u;
+    }
+    unsigned int lba = cluster_lba(cluster);
+    for (unsigned int s = 0u; s < sectors_per_cluster; s++){
+        if (fat_write_sector_uncached(lba + s, sector) != 0){
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static unsigned int cluster_lba(unsigned int cluster){
@@ -563,6 +670,195 @@ static int read_file_cluster_chain(unsigned int first_cluster,
     return (copied == size) ? (int)copied : -1;
 }
 
+static int read_file_cluster_chain_at(unsigned int first_cluster,
+                                      unsigned int size,
+                                      unsigned int offset,
+                                      unsigned char* buffer,
+                                      unsigned int max_size){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = first_cluster;
+    unsigned int file_pos = 0u;
+    unsigned int copied = 0u;
+
+    if (!buffer || max_size == 0u || first_cluster < 2u){
+        return -1;
+    }
+    if (offset >= size){
+        return 0;
+    }
+    if (cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        uart_puts("Cluster too big.\n");
+        return -1;
+    }
+
+    while (cluster < 0x0FFFFFF8u && file_pos + cluster_size <= offset){
+        file_pos += cluster_size;
+        cluster = fat_next(cluster);
+    }
+
+    while (cluster < 0x0FFFFFF8u && copied < max_size && offset + copied < size){
+        unsigned int lba = cluster_lba(cluster);
+        for (unsigned int s = 0u; s < sectors_per_cluster; s++){
+            unsigned int sector_file_pos = file_pos + (s * SECTOR_SIZE);
+            unsigned int sector_end = sector_file_pos + SECTOR_SIZE;
+            unsigned int start_in_sector = 0u;
+            unsigned int chunk;
+
+            if (sector_end <= offset){
+                continue;
+            }
+            if (sector_file_pos >= size){
+                break;
+            }
+
+            if (fat_read_sector_cached(lba + s, sector) != 0){
+                return -1;
+            }
+            if (offset > sector_file_pos){
+                start_in_sector = offset - sector_file_pos;
+            }
+            chunk = SECTOR_SIZE - start_in_sector;
+            if (sector_file_pos + start_in_sector + chunk > size){
+                chunk = size - (sector_file_pos + start_in_sector);
+            }
+            if (chunk > max_size - copied){
+                chunk = max_size - copied;
+            }
+            fat_copy(buffer + copied, sector + start_in_sector, chunk);
+            copied += chunk;
+            if (copied >= max_size || offset + copied >= size){
+                break;
+            }
+        }
+        file_pos += cluster_size;
+        if (copied >= max_size || offset + copied >= size){
+            break;
+        }
+        cluster = fat_next(cluster);
+    }
+
+    return (int)copied;
+}
+
+static unsigned int file_chain_capacity(unsigned int first_cluster){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = first_cluster;
+    unsigned int clusters = 0u;
+
+    if (first_cluster < 2u || cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        return 0u;
+    }
+
+    while (cluster < 0x0FFFFFF8u && clusters < 0x100000u){
+        clusters++;
+        cluster = fat_next(cluster);
+    }
+
+    return clusters * cluster_size;
+}
+
+static unsigned int file_chain_cluster_count(unsigned int first_cluster, unsigned int* out_last){
+    unsigned int cluster = first_cluster;
+    unsigned int clusters = 0u;
+    unsigned int last = 0u;
+
+    while (cluster >= 2u && cluster < 0x0FFFFFF8u && clusters < 0x100000u){
+        last = cluster;
+        clusters++;
+        cluster = fat_next(cluster);
+    }
+    if (out_last){
+        *out_last = last;
+    }
+    return clusters;
+}
+
+static int ensure_file_chain_capacity(unsigned int* io_first_cluster,
+                                      unsigned int desired_size){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int first;
+    unsigned int last = 0u;
+    unsigned int have_clusters;
+    unsigned int need_clusters;
+
+    if (!io_first_cluster || cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        return -1;
+    }
+    if (desired_size == 0u){
+        return 0;
+    }
+
+    first = *io_first_cluster;
+    have_clusters = (first >= 2u) ? file_chain_cluster_count(first, &last) : 0u;
+    need_clusters = (desired_size + cluster_size - 1u) / cluster_size;
+
+    while (have_clusters < need_clusters){
+        unsigned int new_cluster = 0u;
+        if (fat_find_free_cluster(&new_cluster) != 0){
+            return -1;
+        }
+        if (fat_write_entry(new_cluster, 0x0FFFFFFFu) != 0 ||
+            zero_cluster(new_cluster) != 0){
+            return -1;
+        }
+        if (have_clusters == 0u){
+            *io_first_cluster = new_cluster;
+        } else if (fat_write_entry(last, new_cluster) != 0){
+            return -1;
+        }
+        last = new_cluster;
+        have_clusters++;
+    }
+
+    return 0;
+}
+
+static int write_file_cluster_chain_existing(unsigned int first_cluster,
+                                             const unsigned char* data,
+                                             unsigned int size){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = first_cluster;
+    unsigned int written = 0u;
+
+    if (!data && size != 0u){
+        return -1;
+    }
+    if (first_cluster < 2u || cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        return -1;
+    }
+
+    while (cluster < 0x0FFFFFF8u && written < size){
+        unsigned int lba = cluster_lba(cluster);
+        for (unsigned int s = 0u; s < sectors_per_cluster && written < size; s++){
+            unsigned int chunk = size - written;
+            if (chunk > SECTOR_SIZE){
+                chunk = SECTOR_SIZE;
+            }
+
+            if (chunk == SECTOR_SIZE){
+                if (fat_write_sector_uncached(lba + s, data + written) != 0){
+                    return -1;
+                }
+            } else{
+                if (fat_read_sector_cached(lba + s, sector) != 0){
+                    return -1;
+                }
+                fat_copy(sector, data + written, chunk);
+                if (fat_write_sector_uncached(lba + s, sector) != 0){
+                    return -1;
+                }
+            }
+            written += chunk;
+        }
+        if (written >= size){
+            break;
+        }
+        cluster = fat_next(cluster);
+    }
+
+    return (written == size) ? 0 : -1;
+}
+
 static int find_entry_in_dir(unsigned int start_cluster,
                              const char name83[11],
                              unsigned char out_entry[32]){
@@ -599,10 +895,10 @@ static int find_entry_in_dir(unsigned int start_cluster,
     return -1;
 }
 
-static int find_entry_in_dir_by_component(unsigned int start_cluster,
-                                          const char* name,
-                                          int name_len,
-                                          unsigned char out_entry[32]){
+static int find_entry_in_dir_by_component_ref(unsigned int start_cluster,
+                                              const char* name,
+                                              int name_len,
+                                              fat_dirent_ref_t* out_ref){
     unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
     unsigned int cluster = start_cluster;
     char short83[11];
@@ -610,7 +906,7 @@ static int find_entry_in_dir_by_component(unsigned int start_cluster,
     char lfn[FAT_LFN_MAX_CHARS];
     int lfn_valid = 0;
 
-    if (!name || name_len <= 0 || !out_entry || start_cluster < 2){
+    if (!name || name_len <= 0 || !out_ref || start_cluster < 2){
         return -1;
     }
     if (path_component_is_dot_or_dotdot(name, name_len)){
@@ -649,7 +945,9 @@ static int find_entry_in_dir_by_component(unsigned int start_cluster,
 
             if ((short_valid && name_match(entry, short83)) ||
                 (lfn_valid && ascii_equal_ci_n(name, name_len, lfn))){
-                copy_entry(out_entry, entry);
+                copy_entry(out_ref->entry, entry);
+                out_ref->sector_lba = cluster_lba(cluster) + ((unsigned int)i / SECTOR_SIZE);
+                out_ref->sector_offset = ((unsigned int)i % SECTOR_SIZE);
                 return 0;
             }
             lfn_reset(lfn, &lfn_valid);
@@ -657,6 +955,18 @@ static int find_entry_in_dir_by_component(unsigned int start_cluster,
         cluster = fat_next(cluster);
     }
     return -1;
+}
+
+static int find_entry_in_dir_by_component(unsigned int start_cluster,
+                                          const char* name,
+                                          int name_len,
+                                          unsigned char out_entry[32]){
+    fat_dirent_ref_t ref;
+    if (find_entry_in_dir_by_component_ref(start_cluster, name, name_len, &ref) != 0){
+        return -1;
+    }
+    copy_entry(out_entry, ref.entry);
+    return 0;
 }
 
 static int fat32_read_file_locked(const char *name, unsigned char *buffer, int max_size){
@@ -756,16 +1066,17 @@ int fat32_read_file(const char *name, unsigned char *buffer, int max_size){
     return rc;
 }
 
-static int fat32_read_file_in_dir_path_locked(const char root_dir_83[11],
-                                              const char *relative_path,
-                                              unsigned char *buffer,
-                                              int max_size){
+static int fat32_find_path_entry_locked(const char root_dir_83[11],
+                                        const char *relative_path,
+                                        fat_dirent_ref_t* out_ref,
+                                        const char** out_last_comp,
+                                        int* out_last_len){
     unsigned char entry[32];
     unsigned int dir_cluster;
     const char* p = relative_path;
     int path_len = 0;
 
-    if (!root_dir_83 || !relative_path || !buffer || max_size <= 0){
+    if (!root_dir_83 || !relative_path || !out_ref){
         return -1;
     }
     if (relative_path[0] == '/' || relative_path[0] == '\\'){
@@ -813,11 +1124,23 @@ static int fat32_read_file_in_dir_path_locked(const char root_dir_83[11],
         }
         last = (*p == 0) ? 1 : 0;
 
+        if (last){
+            if (find_entry_in_dir_by_component_ref(dir_cluster, comp, comp_len, out_ref) != 0){
+                return -1;
+            }
+            if (out_last_comp){
+                *out_last_comp = comp;
+            }
+            if (out_last_len){
+                *out_last_len = comp_len;
+            }
+            return 0;
+        }
+
         if (find_entry_in_dir_by_component(dir_cluster, comp, comp_len, entry) != 0){
             return -1;
         }
-
-        if (!last){
+        {
             if (!entry_is_directory(entry)){
                 return -1;
             }
@@ -827,28 +1150,50 @@ static int fat32_read_file_in_dir_path_locked(const char root_dir_83[11],
             }
             continue;
         }
-
-        if (entry_is_directory(entry)){
-            return -1;
-        }
-        if (!path_component_has_ext_ci(comp, comp_len, "BMP")){
-            return -1;
-        }
-
-        unsigned int size = read32(&entry[28]);
-        if (size > (unsigned int)max_size){
-            uart_puts("FAT sandbox file exceeds buffer\n");
-            return -1;
-        }
-
-        unsigned int file_cluster = entry_first_cluster(entry);
-        if (file_cluster < 2){
-            return -1;
-        }
-        return read_file_cluster_chain(file_cluster, size, buffer, max_size);
     }
 
     return -1;
+}
+
+static int fat32_read_file_in_dir_path_locked_ex(const char root_dir_83[11],
+                                                 const char *relative_path,
+                                                 unsigned int offset,
+                                                 unsigned char *buffer,
+                                                 unsigned int max_size,
+                                                 int require_bmp,
+                                                 int allow_partial){
+    fat_dirent_ref_t ref;
+    const char* last_comp = 0;
+    int last_len = 0;
+
+    if (!buffer || max_size == 0u){
+        return -1;
+    }
+    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, &last_comp, &last_len) != 0){
+        return -1;
+    }
+    if (entry_is_directory(ref.entry)){
+        return -1;
+    }
+    if (require_bmp && !path_component_has_ext_ci(last_comp, last_len, "BMP")){
+        return -1;
+    }
+
+    {
+        unsigned int size = read32(&ref.entry[28]);
+        unsigned int file_cluster = entry_first_cluster(ref.entry);
+        if (!allow_partial && offset == 0u && size > max_size){
+            uart_puts("FAT sandbox file exceeds buffer\n");
+            return -1;
+        }
+        if (file_cluster < 2){
+            return -1;
+        }
+        if (!allow_partial && offset == 0u && size <= max_size){
+            return read_file_cluster_chain(file_cluster, size, buffer, (int)max_size);
+        }
+        return read_file_cluster_chain_at(file_cluster, size, offset, buffer, max_size);
+    }
 }
 
 int fat32_read_file_in_dir_path(const char root_dir_83[11],
@@ -861,11 +1206,117 @@ int fat32_read_file_in_dir_path(const char root_dir_83[11],
         fat_unlock(irq);
         return -1;
     }
-    rc = fat32_read_file_in_dir_path_locked(root_dir_83,
-                                            relative_path,
-                                            buffer,
-                                            max_size);
+    rc = fat32_read_file_in_dir_path_locked_ex(root_dir_83,
+                                               relative_path,
+                                               0u,
+                                               buffer,
+                                               (unsigned int)max_size,
+                                               1,
+                                               0);
     if (rc < 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+int fat32_read_file_in_dir_path_any(const char root_dir_83[11],
+                                    const char *relative_path,
+                                    unsigned char *buffer,
+                                    int max_size){
+    unsigned long irq = fat_lock();
+    int rc;
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+    rc = fat32_read_file_in_dir_path_locked_ex(root_dir_83,
+                                               relative_path,
+                                               0u,
+                                               buffer,
+                                               (unsigned int)max_size,
+                                               0,
+                                               0);
+    if (rc < 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+int fat32_read_file_in_dir_path_any_at(const char root_dir_83[11],
+                                       const char *relative_path,
+                                       unsigned int offset,
+                                       unsigned char *buffer,
+                                       unsigned int max_size){
+    unsigned long irq = fat_lock();
+    int rc;
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+    rc = fat32_read_file_in_dir_path_locked_ex(root_dir_83,
+                                               relative_path,
+                                               offset,
+                                               buffer,
+                                               max_size,
+                                               0,
+                                               1);
+    if (rc < 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+int fat32_write_file_in_dir_path_existing(const char root_dir_83[11],
+                                          const char *relative_path,
+                                          const unsigned char *data,
+                                          unsigned int size){
+    unsigned long irq = fat_lock();
+    fat_dirent_ref_t ref;
+    unsigned int file_cluster;
+    unsigned int capacity;
+    int rc = -1;
+
+    if (size != 0u && !data){
+        return -1;
+    }
+
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+
+    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, 0, 0) != 0 ||
+        entry_is_directory(ref.entry)){
+        fat_cache_reset();
+        fat_unlock(irq);
+        return -1;
+    }
+
+    file_cluster = entry_first_cluster(ref.entry);
+    if (ensure_file_chain_capacity(&file_cluster, size) != 0){
+        uart_puts("FAT write cluster allocation failed\n");
+        fat_unlock(irq);
+        return -1;
+    }
+    capacity = file_chain_capacity(file_cluster);
+    if ((size > 0u && file_cluster < 2u) || size > capacity){
+        uart_puts("FAT write exceeds existing file allocation\n");
+        fat_unlock(irq);
+        return -1;
+    }
+
+    if ((size == 0u || write_file_cluster_chain_existing(file_cluster, data, size) == 0) &&
+        fat_read_sector_cached(ref.sector_lba, sector) == 0){
+        write16(&sector[ref.sector_offset + 20u], (file_cluster >> 16) & 0xFFFFu);
+        write16(&sector[ref.sector_offset + 26u], file_cluster & 0xFFFFu);
+        write32(&sector[ref.sector_offset + 28u], size);
+        rc = fat_write_sector_uncached(ref.sector_lba, sector);
+    }
+
+    if (rc != 0){
         fat_cache_reset();
     }
     fat_unlock(irq);

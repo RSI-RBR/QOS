@@ -22,6 +22,7 @@
 #include "dma.h"
 #include "klog.h"
 #include "display.h"
+#include "blockdev.h"
 #include "fat32.h"
 #include "mmu.h"
 #include "mailbox.h"
@@ -583,6 +584,8 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_NET_SET_GATEWAY_IP:
         case SYS_REMOTE_LOGIN_STATE:
         case SYS_SCANNER_LOG_READ:
+        case SYS_SCANNER_LOG_FLUSH:
+        case SYS_SCANNER_LOG_READ_FAT:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -2608,6 +2611,88 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             n = sandbox_file_read_at(scanner83, path, offset, kbuf, out_cap);
+            if (n > 0 && process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                kfree_secure(kbuf, out_cap);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kfree_secure(kbuf, out_cap);
+            frame[TF_X0] = (n >= 0) ? (unsigned long)n : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_SCANNER_LOG_FLUSH:
+        {
+            static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+            char path[USER_BMP_PATH_MAX];
+            int rc = -1;
+
+            if (!frame[TF_X0]){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kernel_preempt_enter();
+            /*
+             * Scanner monitor mode can reserve the shared EMMC/SDIO path.
+             * Try the current storage path first, then reclaim storage if the
+             * WiFi side currently owns the shared host.
+             */
+            if (fat32_init() == 0){
+                rc = sandbox_file_flush_to_fat(scanner83, path);
+            }
+            if (rc != 0 && blockdev_reinit() == 0 && fat32_init() == 0){
+                rc = sandbox_file_flush_to_fat(scanner83, path);
+            }
+            kernel_preempt_exit();
+
+            frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_SCANNER_LOG_READ_FAT:
+        {
+            static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+            char path[USER_BMP_PATH_MAX];
+            unsigned int offset = (unsigned int)frame[TF_X1];
+            unsigned char* user_out = (unsigned char*)frame[TF_X2];
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X3], USER_FILE_RW_MAX);
+            unsigned char* kbuf = 0;
+            int n = -1;
+
+            if (!frame[TF_X0] || !user_out || out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kbuf = (unsigned char*)kmalloc((unsigned long)out_cap);
+            if (!kbuf){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+
+            kernel_preempt_enter();
+            if (fat32_init() == 0){
+                n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
+            }
+            if (n < 0 && blockdev_reinit() == 0 && fat32_init() == 0){
+                n = fat32_read_file_in_dir_path_any_at(scanner83, path, offset, kbuf, out_cap);
+            }
+            kernel_preempt_exit();
+
             if (n > 0 && process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
                 kfree_secure(kbuf, out_cap);
                 frame[TF_X0] = (unsigned long)-1;

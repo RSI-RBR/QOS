@@ -183,7 +183,9 @@ enum {
     SYS_FILE_SIZE = 157,
     SYS_FILE_CLEAR = 158,
     SYS_HEADLESS_OPEN_HIT = 159,
-    SYS_SCANNER_LOG_READ = 160
+    SYS_SCANNER_LOG_READ = 160,
+    SYS_SCANNER_LOG_FLUSH = 161,
+    SYS_SCANNER_LOG_READ_FAT = 162
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -435,6 +437,21 @@ static inline int qos_scanner_log_read(const char* relative_path,
                                        unsigned char* out,
                                        unsigned int out_cap){
     return (int)qos_syscall4(SYS_SCANNER_LOG_READ,
+                             (unsigned long)relative_path,
+                             (unsigned long)offset,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_scanner_log_flush(const char* relative_path){
+    return (int)qos_syscall1(SYS_SCANNER_LOG_FLUSH, (unsigned long)relative_path);
+}
+
+static inline int qos_scanner_log_read_fat(const char* relative_path,
+                                           unsigned int offset,
+                                           unsigned char* out,
+                                           unsigned int out_cap){
+    return (int)qos_syscall4(SYS_SCANNER_LOG_READ_FAT,
                              (unsigned long)relative_path,
                              (unsigned long)offset,
                              (unsigned long)out,

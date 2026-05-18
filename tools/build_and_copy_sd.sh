@@ -282,6 +282,10 @@ if [[ -f "$CA_REPORT_SRC" && -n "$CA_REPORT_SIG" && -f "$CA_REPORT_SIG" ]]; then
 elif [[ -f "$CA_REPORT_SRC" ]]; then
   echo "CA report exists but is unsigned; not copying: $CA_REPORT_SRC"
 fi
+mkdir -p "$SD_MOUNT/SCANNER"
+touch "$SD_MOUNT/SCANNER/COUNTS.LOG" \
+      "$SD_MOUNT/SCANNER/APS.LOG" \
+      "$SD_MOUNT/SCANNER/HANDSHAKES.LOG"
 
 echo "[5/5] Sync..."
 sync
@@ -320,3 +324,6 @@ if [[ -f "$SD_MOUNT/CA_RPT.JSN" ]]; then
   if [[ -f "$SD_MOUNT/CA_RPT.SIG" ]]; then echo "  $SD_MOUNT/CA_RPT.SIG"; fi
   if [[ -f "$SD_MOUNT/CA_RPT.PQS" ]]; then echo "  $SD_MOUNT/CA_RPT.PQS"; fi
 fi
+echo "  $SD_MOUNT/SCANNER/COUNTS.LOG"
+echo "  $SD_MOUNT/SCANNER/APS.LOG"
+echo "  $SD_MOUNT/SCANNER/HANDSHAKES.LOG"

@@ -1,4 +1,5 @@
 #include "sandbox_file.h"
+#include "fat32.h"
 #include "memory.h"
 #include "spinlock.h"
 
@@ -330,4 +331,43 @@ int sandbox_file_clear(const char sandbox83[11], const char* relative_path){
     e->size = 0u;
     spin_unlock(&g_files_lock);
     return 0;
+}
+
+int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_path){
+    sandbox_file_entry_t* e;
+    unsigned char* copy = 0;
+    unsigned int size = 0u;
+    int rc;
+
+    if (!g_files_inited){
+        sandbox_file_init();
+    }
+    if (!sandbox83 || !relative_path || !path_valid(relative_path)){
+        return -1;
+    }
+
+    spin_lock(&g_files_lock);
+    e = find_entry_locked(sandbox83, relative_path);
+    if (!e){
+        spin_unlock(&g_files_lock);
+        return -1;
+    }
+    size = e->size;
+    if (size > 0u){
+        copy = (unsigned char*)kmalloc(size);
+        if (!copy){
+            spin_unlock(&g_files_lock);
+            return -1;
+        }
+        for (unsigned int i = 0u; i < size; i++){
+            copy[i] = e->data[i];
+        }
+    }
+    spin_unlock(&g_files_lock);
+
+    rc = fat32_write_file_in_dir_path_existing(sandbox83, relative_path, copy, size);
+    if (copy){
+        kfree_secure(copy, size);
+    }
+    return rc;
 }
