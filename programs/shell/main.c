@@ -508,9 +508,10 @@ static void cmd_help(void){
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
-    qos_puts(" scanlog counts|aps|handshakes\n");
+    qos_puts(" scanlog [overview|counts|aps|handshakes]  (reads FAT files)\n");
+    qos_puts(" scanram [counts|aps|handshakes]           (reads RAM log view)\n");
+    qos_puts(" scanfat [counts|aps|handshakes]           (alias of scanlog)\n");
     qos_puts(" scanflush [counts|aps|handshakes|all]\n");
-    qos_puts(" scanfat counts|aps|handshakes\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -656,14 +657,33 @@ static const char* scanlog_path_for_arg(const char* arg){
     return 0;
 }
 
+static const char* str_find(const char* s, const char* needle){
+    if (!s || !needle || !*needle){
+        return 0;
+    }
+    while (*s){
+        const char* a = s;
+        const char* b = needle;
+        while (*a && *b && *a == *b){
+            a++;
+            b++;
+        }
+        if (!*b){
+            return s;
+        }
+        s++;
+    }
+    return 0;
+}
+
 static void cmd_scanlog_common(const char* arg, int from_fat){
     const char* path = scanlog_path_for_arg(arg);
     unsigned int off = 0u;
     unsigned int total = 0u;
     char last = '\n';
     if (!path){
-        qos_puts(from_fat ? "Usage: scanfat counts|aps|handshakes\n"
-                          : "Usage: scanlog counts|aps|handshakes\n");
+        qos_puts(from_fat ? "Usage: scanlog counts|aps|handshakes\n"
+                          : "Usage: scanram counts|aps|handshakes\n");
         return;
     }
     qos_puts(from_fat ? "Scanner FAT log " : "Scanner RAM log ");
@@ -674,7 +694,7 @@ static void cmd_scanlog_common(const char* arg, int from_fat){
             ? qos_scanner_log_read_fat(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u)
             : qos_scanner_log_read(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u);
         if (n < 0){
-            qos_puts(from_fat ? "scanfat read failed.\n" : "scanlog read failed.\n");
+            qos_puts(from_fat ? "scanlog FAT read failed.\n" : "scanram read failed.\n");
             return;
         }
         if (n == 0){
@@ -697,12 +717,206 @@ static void cmd_scanlog_common(const char* arg, int from_fat){
     }
 }
 
+typedef struct {
+    unsigned int bytes;
+    unsigned int lines;
+    unsigned int hs_lines;
+    unsigned int hs_msg1;
+    unsigned int hs_msg2;
+    unsigned int hs_msg3;
+    unsigned int hs_msg4;
+    unsigned int ap_lines;
+    unsigned int ap_open;
+    char last_total[256];
+} scan_file_overview_t;
+
+static void copy_line_text(char* dst, unsigned int cap, const char* src){
+    unsigned int i = 0u;
+    if (!dst || cap == 0u){
+        return;
+    }
+    dst[0] = 0;
+    if (!src){
+        return;
+    }
+    while (src[i] && i + 1u < cap){
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
+static void scanlog_overview_line(scan_file_overview_t* ov,
+                                  const char* path,
+                                  const char* line){
+    if (!ov || !path || !line){
+        return;
+    }
+    if (str_eq(path, "counts.log")){
+        if (str_starts_with(line, "total ")){
+            copy_line_text(ov->last_total, sizeof(ov->last_total), line);
+        }
+        return;
+    }
+    if (str_eq(path, "aps.log")){
+        if (str_find(line, " bssid=")){
+            ov->ap_lines++;
+            if (str_find(line, " enc=OPEN")){
+                ov->ap_open++;
+            }
+        }
+        return;
+    }
+    if (str_eq(path, "handshakes.log")){
+        const char* p = 0;
+        if (!str_starts_with(line, "hs ")){
+            return;
+        }
+        ov->hs_lines++;
+        p = str_find(line, " msg=");
+        if (!p || !p[5]){
+            return;
+        }
+        if (p[5] == '1'){
+            ov->hs_msg1++;
+        } else if (p[5] == '2'){
+            ov->hs_msg2++;
+        } else if (p[5] == '3'){
+            ov->hs_msg3++;
+        } else if (p[5] == '4'){
+            ov->hs_msg4++;
+        }
+    }
+}
+
+static int scanlog_collect_overview_for_path(const char* path, scan_file_overview_t* ov){
+    unsigned int off = 0u;
+    char line[512];
+    unsigned int line_len = 0u;
+    int saw_any = 0;
+    if (!path || !ov){
+        return -1;
+    }
+    while (1){
+        int n = qos_scanner_log_read_fat(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u);
+        if (n < 0){
+            return -1;
+        }
+        if (n == 0){
+            break;
+        }
+        saw_any = 1;
+        for (int i = 0; i < n; i++){
+            char c = g_log_buf[(unsigned int)i];
+            ov->bytes++;
+            if (c == '\r'){
+                continue;
+            }
+            if (c == '\n'){
+                line[line_len] = 0;
+                ov->lines++;
+                scanlog_overview_line(ov, path, line);
+                line_len = 0u;
+                continue;
+            }
+            if (line_len + 1u < sizeof(line)){
+                line[line_len++] = c;
+            }
+        }
+        off += (unsigned int)n;
+    }
+    if (line_len > 0u){
+        line[line_len] = 0;
+        ov->lines++;
+        scanlog_overview_line(ov, path, line);
+    }
+    return saw_any ? 0 : 1;
+}
+
+static void cmd_scanlog_overview(void){
+    scan_file_overview_t counts;
+    scan_file_overview_t aps;
+    scan_file_overview_t hs;
+    int rc_counts = 0;
+    int rc_aps = 0;
+    int rc_hs = 0;
+
+    for (unsigned int i = 0u; i < sizeof(counts); i++){
+        ((volatile unsigned char*)&counts)[i] = 0u;
+    }
+    for (unsigned int i = 0u; i < sizeof(aps); i++){
+        ((volatile unsigned char*)&aps)[i] = 0u;
+    }
+    for (unsigned int i = 0u; i < sizeof(hs); i++){
+        ((volatile unsigned char*)&hs)[i] = 0u;
+    }
+
+    rc_counts = scanlog_collect_overview_for_path("counts.log", &counts);
+    rc_aps = scanlog_collect_overview_for_path("aps.log", &aps);
+    rc_hs = scanlog_collect_overview_for_path("handshakes.log", &hs);
+
+    qos_puts("scan overview (FAT files):\n");
+    qos_puts(" counts.log rc=");
+    print_int(rc_counts);
+    qos_puts(" bytes=");
+    print_uint(counts.bytes);
+    qos_puts(" lines=");
+    print_uint(counts.lines);
+    qos_puts("\n");
+    if (counts.last_total[0]){
+        qos_puts("  latest total: ");
+        qos_puts(counts.last_total);
+        qos_puts("\n");
+    }
+
+    qos_puts(" aps.log rc=");
+    print_int(rc_aps);
+    qos_puts(" bytes=");
+    print_uint(aps.bytes);
+    qos_puts(" lines=");
+    print_uint(aps.lines);
+    qos_puts(" ap_entries=");
+    print_uint(aps.ap_lines);
+    qos_puts(" open_entries=");
+    print_uint(aps.ap_open);
+    qos_puts("\n");
+
+    qos_puts(" handshakes.log rc=");
+    print_int(rc_hs);
+    qos_puts(" bytes=");
+    print_uint(hs.bytes);
+    qos_puts(" lines=");
+    print_uint(hs.lines);
+    qos_puts(" hs_entries=");
+    print_uint(hs.hs_lines);
+    qos_puts(" msg1/2/3/4=");
+    print_uint(hs.hs_msg1);
+    qos_puts("/");
+    print_uint(hs.hs_msg2);
+    qos_puts("/");
+    print_uint(hs.hs_msg3);
+    qos_puts("/");
+    print_uint(hs.hs_msg4);
+    qos_puts("\n");
+}
+
 static void cmd_scanlog(const char* arg){
-    cmd_scanlog_common(arg, 0);
+    if (!arg || !*arg || str_eq(arg, "overview")){
+        cmd_scanlog_overview();
+        return;
+    }
+    cmd_scanlog_common(arg, 1);
 }
 
 static void cmd_scanfat(const char* arg){
     cmd_scanlog_common(arg, 1);
+}
+
+static void cmd_scanram(const char* arg){
+    if (!arg || !*arg){
+        arg = "handshakes";
+    }
+    cmd_scanlog_common(arg, 0);
 }
 
 static int flush_one_scanlog(const char* label){
@@ -725,12 +939,18 @@ static void cmd_scanflush(const char* arg){
         p++;
     }
     if (!p || !*p || str_eq(p, "all")){
-        int ok = 1;
-        if (flush_one_scanlog("counts") != 0) ok = 0;
-        if (flush_one_scanlog("aps") != 0) ok = 0;
-        if (flush_one_scanlog("handshakes") != 0) ok = 0;
-        if (!ok){
-            qos_puts("scanflush note: files must already exist in /SCANNER.\n");
+        int rc = qos_scanner_log_flush_all();
+        if (rc == 0){
+            qos_puts("scanflush all: OK\n");
+        } else{
+            int ok = 1;
+            qos_puts("scanflush all: batch failed; trying per-file\n");
+            if (flush_one_scanlog("counts") != 0) ok = 0;
+            if (flush_one_scanlog("aps") != 0) ok = 0;
+            if (flush_one_scanlog("handshakes") != 0) ok = 0;
+            if (!ok){
+                qos_puts("scanflush note: files must already exist in /SCANNER.\n");
+            }
         }
         return;
     }
@@ -2448,13 +2668,21 @@ static void execute_line(void){
     } else if (str_eq(g_buf, "scanner")){
         cmd_scanner();
     } else if (str_eq(g_buf, "scanlog")){
-        cmd_scanlog("handshakes");
+        cmd_scanlog("overview");
     } else if (str_starts_with(g_buf, "scanlog ")){
         const char* p = g_buf + 8;
         while (*p == ' '){
             p++;
         }
         cmd_scanlog(p);
+    } else if (str_eq(g_buf, "scanram")){
+        cmd_scanram("handshakes");
+    } else if (str_starts_with(g_buf, "scanram ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_scanram(p);
     } else if (str_eq(g_buf, "scanflush")){
         cmd_scanflush("all");
     } else if (str_starts_with(g_buf, "scanflush ")){
