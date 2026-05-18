@@ -3,6 +3,7 @@
 #include "uart.h"
 #include "debug.h"
 #include "spinlock.h"
+#include "crypto.h"
 
 #define SECTOR_SIZE 512
 #define MAX_CLUSTER_SIZE (64 * 1024)
@@ -581,6 +582,48 @@ static int zero_cluster(unsigned int cluster){
         }
     }
     return 0;
+}
+
+static int overwrite_cluster_chain_random(unsigned int first_cluster){
+    unsigned int cluster = first_cluster;
+    unsigned int guard = 0u;
+
+    if (first_cluster < 2u || sectors_per_cluster == 0u ||
+        sectors_per_cluster * SECTOR_SIZE > MAX_CLUSTER_SIZE){
+        return 0;
+    }
+
+    while (cluster >= 2u && cluster < 0x0FFFFFF8u && guard++ < 0x100000u){
+        unsigned int lba = cluster_lba(cluster);
+        for (unsigned int s = 0u; s < sectors_per_cluster; s++){
+            if (crypto_random_bytes(sector, SECTOR_SIZE) != 0){
+                return -1;
+            }
+            if (fat_write_sector_uncached(lba + s, sector) != 0){
+                return -1;
+            }
+        }
+        cluster = fat_next(cluster);
+    }
+    return (guard < 0x100000u) ? 0 : -1;
+}
+
+static int free_cluster_chain(unsigned int first_cluster){
+    unsigned int cluster = first_cluster;
+    unsigned int guard = 0u;
+
+    if (first_cluster < 2u){
+        return 0;
+    }
+
+    while (cluster >= 2u && cluster < 0x0FFFFFF8u && guard++ < 0x100000u){
+        unsigned int next = fat_next(cluster);
+        if (fat_write_entry(cluster, 0u) != 0){
+            return -1;
+        }
+        cluster = next;
+    }
+    return (guard < 0x100000u) ? 0 : -1;
 }
 
 static unsigned int cluster_lba(unsigned int cluster){
@@ -1462,6 +1505,54 @@ int fat32_append_file_in_dir_path_existing(const char root_dir_83[11],
         write16(&sector[ref.sector_offset + 20u], (file_cluster >> 16) & 0xFFFFu);
         write16(&sector[ref.sector_offset + 26u], file_cluster & 0xFFFFu);
         write32(&sector[ref.sector_offset + 28u], new_size);
+        rc = fat_write_sector_uncached(ref.sector_lba, sector);
+    }
+
+    if (rc != 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+int fat32_secure_wipe_file_in_dir_path_existing(const char root_dir_83[11],
+                                                const char *relative_path){
+    unsigned long irq = fat_lock();
+    fat_dirent_ref_t ref;
+    unsigned int file_cluster;
+    int rc = -1;
+
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+
+    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, 0, 0) != 0 ||
+        entry_is_directory(ref.entry)){
+        fat_cache_reset();
+        fat_unlock(irq);
+        return -1;
+    }
+
+    file_cluster = entry_first_cluster(ref.entry);
+    if (file_cluster >= 2u){
+        if (overwrite_cluster_chain_random(file_cluster) != 0 ||
+            free_cluster_chain(file_cluster) != 0){
+            fat_cache_reset();
+            fat_unlock(irq);
+            return -1;
+        }
+    }
+
+    if (fat_read_sector_cached(ref.sector_lba, sector) == 0){
+        /*
+         * Keep the directory entry as a zero-length placeholder. The cluster
+         * chain is removed from FAT, so future writes can allocate fresh
+         * clusters while old contents have already been overwritten.
+         */
+        write16(&sector[ref.sector_offset + 20u], 0u);
+        write16(&sector[ref.sector_offset + 26u], 0u);
+        write32(&sector[ref.sector_offset + 28u], 0u);
         rc = fat_write_sector_uncached(ref.sector_lba, sector);
     }
 

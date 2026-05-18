@@ -9,6 +9,9 @@
 #include "cyw43.h"
 #include "net.h"
 #include "tcp.h"
+#include "blockdev.h"
+#include "fat32.h"
+#include "sandbox_file.h"
 #include "uart.h"
 #include "spinlock.h"
 
@@ -32,6 +35,11 @@
 
 static const char g_scanner_program_83[] = "SCANNER BIN";
 static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+static const char* const g_scanner_log_paths[] = {
+    "counts.log",
+    "aps.log",
+    "handshakes.log"
+};
 
 static unsigned int g_inited = 0u;
 static unsigned int g_led_state = 0u;
@@ -247,11 +255,43 @@ static void scanner_toggle(unsigned long now){
 }
 
 static void scanner_secure_stop(unsigned long now){
+    int wiped = 0;
+    int failed = 0;
+
     scanner_stop();
     (void)cyw43_raw_capture_set_enabled(0u);
     (void)cyw43_ioctl_monitor(0u, 0u);
+
+    if (!blockdev_is_emmc()){
+        (void)blockdev_reinit_emmc_from_wifi();
+    }
+    if (blockdev_is_emmc()){
+        fat32_reset();
+        if (fat32_init() == 0){
+            for (unsigned int i = 0u;
+                 i < sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]);
+                 i++){
+                const char* path = g_scanner_log_paths[i];
+                (void)sandbox_file_clear(g_scanner_sandbox_83, path);
+                if (fat32_secure_wipe_file_in_dir_path_existing(g_scanner_sandbox_83, path) == 0){
+                    wiped++;
+                } else{
+                    failed++;
+                }
+            }
+        } else{
+            failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
+        }
+    } else{
+        failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
+    }
+
     led_burst(4u, now);
-    uart_puts("Headless: scanner secure-stop\n");
+    uart_puts("Headless: scanner secure-stop, logs wiped=");
+    uart_putdec((unsigned long)wiped);
+    uart_puts(" failed=");
+    uart_putdec((unsigned long)failed);
+    uart_puts("\n");
 }
 
 static unsigned int count_open_aps(void){
@@ -308,20 +348,15 @@ static unsigned int handle_button_actions(unsigned long now){
     }
 
     if (g_btn_clicks > 0u && (long)(now - g_btn_click_deadline) >= 0){
-        unsigned int clicks = g_btn_clicks;
         g_btn_clicks = 0u;
-        if (clicks >= 2u){
-            return BTN_ACTION_TOGGLE;
-        } else{
-            return BTN_ACTION_SINGLE_CHECK;
-        }
+        return BTN_ACTION_NONE;
     }
     return BTN_ACTION_NONE;
 }
 
 static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_TOGGLE){
-        scanner_toggle(now);
+        (void)now;
         return;
     }
     if (action == BTN_ACTION_SECURE_STOP){
@@ -329,7 +364,7 @@ static void perform_button_action(unsigned int action, unsigned long now){
         return;
     }
     if (action == BTN_ACTION_SINGLE_CHECK){
-        scanner_single_press_check(now);
+        (void)now;
         return;
     }
 }

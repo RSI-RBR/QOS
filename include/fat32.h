@@ -25,5 +25,7 @@ int fat32_append_file_in_dir_path_existing(const char root_dir_83[11],
                                            const char *relative_path,
                                            const unsigned char *data,
                                            unsigned int len);
+int fat32_secure_wipe_file_in_dir_path_existing(const char root_dir_83[11],
+                                                const char *relative_path);
 
 #endif
