@@ -3005,8 +3005,10 @@ static int cyw43_wl_legacy_scan_submit(const char* ssid){
 }
 
 static int cyw43_wl_set_pmk(const char* password){
-    unsigned char pmk[68];
+    unsigned char pmk[72];
+    unsigned char bsscfg_pmk[76];
     unsigned int len = 0;
+    int rc = 0;
 
     if (!password){
         return -1;
@@ -3021,14 +3023,35 @@ static int cyw43_wl_set_pmk(const char* password){
     put_le16(pmk + 0u, len);
     /*
      * Follow known-good CYW43 station join paths: always mark this as a
-     * passphrase payload when using WLC_SET_WSEC_PMK.
+     * passphrase payload. Use the full aligned Broadcom PMK structure size;
+     * some firmware rejects the shorter command payload but accepts the iovar.
      */
     put_le16(pmk + 2u, CYW43_WSEC_PASSPHRASE);
     for (unsigned int i = 0; i < len; i++){
         pmk[4u + i] = (unsigned char)password[i];
     }
 
-    return cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+    rc = cyw43_wl_cmd(1, CYW43_WLC_SET_WSEC_PMK, pmk, sizeof(pmk), 0, 0, 0);
+    if (rc == 0){
+        return 0;
+    }
+
+    /*
+     * Pi0/Nexmon firmware can report WLC_SET_WSEC_PMK unsupported while still
+     * accepting the same payload through the wsec_pmk iovar, which is what
+     * Linux brcmfmac-style drivers use on many CYW43 firmware builds.
+     */
+    uart_puts("CYW43: PMK command failed; trying wsec_pmk iovar\n");
+    rc = cyw43_wl_set_var("wsec_pmk", pmk, sizeof(pmk));
+    if (rc == 0){
+        return 0;
+    }
+
+    mem_zero_local(bsscfg_pmk, sizeof(bsscfg_pmk));
+    put_le32(bsscfg_pmk + 0u, 0u);
+    mem_copy_local(bsscfg_pmk + 4u, pmk, sizeof(pmk));
+    uart_puts("CYW43: PMK iovar failed; trying bsscfg:wsec_pmk\n");
+    return cyw43_wl_set_var("bsscfg:wsec_pmk", bsscfg_pmk, sizeof(bsscfg_pmk));
 }
 
 static int cyw43_wl_prepare_sta_supplicant(void){
