@@ -582,6 +582,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_NET_SET_LOCAL_IP:
         case SYS_NET_SET_GATEWAY_IP:
         case SYS_REMOTE_LOGIN_STATE:
+        case SYS_SCANNER_LOG_READ:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -2577,6 +2578,43 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
             headless_control_note_open_network_packet();
             frame[TF_X0] = 0;
+            return frame_sp;
+        }
+
+        case SYS_SCANNER_LOG_READ:
+        {
+            static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+            char path[USER_BMP_PATH_MAX];
+            unsigned int offset = (unsigned int)frame[TF_X1];
+            unsigned char* user_out = (unsigned char*)frame[TF_X2];
+            unsigned int out_cap = clamp_u32((unsigned int)frame[TF_X3], USER_FILE_RW_MAX);
+            unsigned char* kbuf = 0;
+            int n = -1;
+
+            if (!frame[TF_X0] || !user_out || out_cap == 0u){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            for (unsigned int i = 0; i < sizeof(path); i++){
+                path[i] = 0;
+            }
+            if (process_copy_cstr_from_user(path, sizeof(path), (const char*)frame[TF_X0]) != 0){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kbuf = (unsigned char*)kmalloc((unsigned long)out_cap);
+            if (!kbuf){
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            n = sandbox_file_read_at(scanner83, path, offset, kbuf, out_cap);
+            if (n > 0 && process_copy_to_user(user_out, kbuf, (unsigned long)n) != 0){
+                kfree_secure(kbuf, out_cap);
+                frame[TF_X0] = (unsigned long)-1;
+                return frame_sp;
+            }
+            kfree_secure(kbuf, out_cap);
+            frame[TF_X0] = (n >= 0) ? (unsigned long)n : (unsigned long)-1;
             return frame_sp;
         }
 

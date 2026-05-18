@@ -18,10 +18,10 @@
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
 #define LED_OPEN_ALERT_WINDOW_MS 5000u
-#define LED_OPEN_ALERT_ON1_MS 200u
-#define LED_OPEN_ALERT_GAP1_MS 100u
-#define LED_OPEN_ALERT_ON2_MS 200u
-#define LED_OPEN_ALERT_GAP2_MS 500u
+#define LED_OPEN_ALERT_ON1_MS 350u
+#define LED_OPEN_ALERT_GAP1_MS 180u
+#define LED_OPEN_ALERT_ON2_MS 350u
+#define LED_OPEN_ALERT_GAP2_MS 1120u
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
@@ -418,22 +418,18 @@ static void render_led(unsigned long now){
     }
 
     if (g_led_open_hit_valid){
-        static const unsigned int alert_step_ms[4] = {
-            LED_OPEN_ALERT_ON1_MS, LED_OPEN_ALERT_GAP1_MS,
-            LED_OPEN_ALERT_ON2_MS, LED_OPEN_ALERT_GAP2_MS
-        };
-        static const unsigned int alert_step_on[4] = {1u, 0u, 1u, 0u};
-
         if ((long)(g_led_open_hit_expire - now) > 0){
-            if (g_led_open_step >= 4u){
-                g_led_open_step = 0u;
-                g_led_open_next_tick = now + alert_step_ms[0];
-            }
-            while ((long)(now - g_led_open_next_tick) >= 0){
-                g_led_open_step = (g_led_open_step + 1u) & 3u;
-                g_led_open_next_tick += alert_step_ms[g_led_open_step];
-            }
-            led_apply(alert_step_on[g_led_open_step]);
+            unsigned long elapsed = now - g_led_open_next_tick;
+            unsigned long cycle = LED_OPEN_ALERT_ON1_MS +
+                                  LED_OPEN_ALERT_GAP1_MS +
+                                  LED_OPEN_ALERT_ON2_MS +
+                                  LED_OPEN_ALERT_GAP2_MS;
+            unsigned long phase = cycle ? (elapsed % cycle) : 0u;
+            unsigned int on =
+                (phase < LED_OPEN_ALERT_ON1_MS) ||
+                (phase >= (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS) &&
+                 phase < (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS + LED_OPEN_ALERT_ON2_MS));
+            led_apply(on ? 1u : 0u);
             return;
         }
         g_led_open_hit_valid = 0u;
@@ -575,12 +571,13 @@ void headless_control_note_open_network_packet(void){
         g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
         g_led_open_hit_valid = 1u;
         /*
-         * Start with the off gap so the alert creates a visible edge even if
-         * the normal scanner blink was already on when the open AP arrived.
+         * Start the obvious double-blink pattern immediately:
+         * long-on, short-off, long-on, long-off. This is intentionally more
+         * distinct than the normal scanner 500/500 blink.
          */
-        g_led_open_step = 1u;
-        g_led_open_next_tick = now + LED_OPEN_ALERT_GAP1_MS;
-        led_apply(0u);
+        g_led_open_step = 0u;
+        g_led_open_next_tick = now;
+        led_apply(1u);
     } else{
         unsigned long ext = now + LED_OPEN_ALERT_WINDOW_MS;
         if ((long)(ext - g_led_open_hit_expire) > 0){

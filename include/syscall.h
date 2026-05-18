@@ -182,7 +182,8 @@ enum {
     SYS_FILE_READ_DATA = 156,
     SYS_FILE_SIZE = 157,
     SYS_FILE_CLEAR = 158,
-    SYS_HEADLESS_OPEN_HIT = 159
+    SYS_HEADLESS_OPEN_HIT = 159,
+    SYS_SCANNER_LOG_READ = 160
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -425,6 +426,17 @@ static inline int qos_file_append_data(const char* relative_path, const unsigned
 static inline int qos_file_read_data(const char* relative_path, unsigned char* out, unsigned int out_cap){
     return (int)qos_syscall3(SYS_FILE_READ_DATA,
                              (unsigned long)relative_path,
+                             (unsigned long)out,
+                             (unsigned long)out_cap);
+}
+
+static inline int qos_scanner_log_read(const char* relative_path,
+                                       unsigned int offset,
+                                       unsigned char* out,
+                                       unsigned int out_cap){
+    return (int)qos_syscall4(SYS_SCANNER_LOG_READ,
+                             (unsigned long)relative_path,
+                             (unsigned long)offset,
                              (unsigned long)out,
                              (unsigned long)out_cap);
 }

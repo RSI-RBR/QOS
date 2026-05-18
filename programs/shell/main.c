@@ -508,6 +508,7 @@ static void cmd_help(void){
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
+    qos_puts(" scanlog counts|aps|handshakes\n");
     qos_puts(" web\n");
     qos_puts(" tty\n");
     qos_puts(" chvt <0-3>\n");
@@ -638,6 +639,57 @@ static void cmd_scanner(void){
     qos_puts("Scanner running as PID ");
     print_uint((unsigned int)pid);
     qos_puts(" (live output in this shell)\n");
+}
+
+static const char* scanlog_path_for_arg(const char* arg){
+    if (!arg || !*arg || str_eq(arg, "handshakes")){
+        return "handshakes.log";
+    }
+    if (str_eq(arg, "counts")){
+        return "counts.log";
+    }
+    if (str_eq(arg, "aps")){
+        return "aps.log";
+    }
+    return 0;
+}
+
+static void cmd_scanlog(const char* arg){
+    const char* path = scanlog_path_for_arg(arg);
+    unsigned int off = 0u;
+    unsigned int total = 0u;
+    char last = '\n';
+    if (!path){
+        qos_puts("Usage: scanlog counts|aps|handshakes\n");
+        return;
+    }
+    qos_puts("Scanner log ");
+    qos_puts(path);
+    qos_puts(":\n");
+    while (1){
+        int n = qos_scanner_log_read(path, off, (unsigned char*)g_log_buf, sizeof(g_log_buf) - 1u);
+        if (n < 0){
+            qos_puts("scanlog read failed.\n");
+            return;
+        }
+        if (n == 0){
+            break;
+        }
+        g_log_buf[(unsigned int)n] = 0;
+        last = g_log_buf[(unsigned int)n - 1u];
+        qos_puts(g_log_buf);
+        off += (unsigned int)n;
+        total += (unsigned int)n;
+        if (total >= 65536u){
+            qos_puts("\nscanlog output truncated at 65536 bytes.\n");
+            break;
+        }
+    }
+    if (total == 0u){
+        qos_puts("(empty)\n");
+    } else if (last != '\n'){
+        qos_puts("\n");
+    }
 }
 
 static void cmd_fbinfo(void){
@@ -2347,6 +2399,14 @@ static void execute_line(void){
         cmd_game();
     } else if (str_eq(g_buf, "scanner")){
         cmd_scanner();
+    } else if (str_eq(g_buf, "scanlog")){
+        cmd_scanlog("handshakes");
+    } else if (str_starts_with(g_buf, "scanlog ")){
+        const char* p = g_buf + 8;
+        while (*p == ' '){
+            p++;
+        }
+        cmd_scanlog(p);
     } else if (str_eq(g_buf, "web")){
         cmd_web();
     } else if (str_eq(g_buf, "tty")){

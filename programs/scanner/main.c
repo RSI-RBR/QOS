@@ -70,9 +70,11 @@ typedef struct {
     unsigned char valid;
     unsigned char channel;
     unsigned char msg;
+    unsigned char from_ap;
     unsigned short key_info;
     unsigned short key_data_len;
     unsigned char bssid[6];
+    unsigned char receiver[6];
     unsigned char transmitter[6];
     unsigned char mic[16];
     unsigned char nonce[32];
@@ -84,7 +86,7 @@ static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 static unsigned long long g_last_open_hit_notify_us = 0ull;
 
-#define SCAN_LOG_LINE_MAX 768u
+#define SCAN_LOG_LINE_MAX 8192u
 static const char SCAN_LOG_COUNTS[] = "counts.log";
 static const char SCAN_LOG_APS[] = "aps.log";
 static const char SCAN_LOG_HANDSHAKES[] = "handshakes.log";
@@ -433,7 +435,18 @@ static const char* ap_security_label(const ap_info_t* ap){
 }
 
 static int is_open_ap(const ap_info_t* ap){
-    return ap && ap->seen && !ap->privacy && !ap->rsn && !ap->wpa;
+    if (!ap || !ap->seen){
+        return 0;
+    }
+    /*
+     * Data-only frames do not prove an AP is open; they only prove traffic.
+     * Require at least one beacon/probe-response classification before using
+     * the absence of privacy/RSN/WPA as an "open" signal.
+     */
+    if ((ap->cat_counts[CAT_BEACON] + ap->cat_counts[CAT_PROBE_RESPONSE]) == 0u){
+        return 0;
+    }
+    return (!ap->privacy && !ap->rsn && !ap->wpa) ? 1 : 0;
 }
 
 static void maybe_notify_open_hit(const ap_info_t* ap){
@@ -596,7 +609,12 @@ static void log_ap_snapshot(void){
     }
 }
 
-static void log_key_event_line(const key_event_t* ev){
+static void log_key_event_line(const key_event_t* ev,
+                               const unsigned char* key_data,
+                               const unsigned char* eapol,
+                               unsigned int eapol_len,
+                               const unsigned char* raw,
+                               unsigned int raw_len){
     scan_log_line_t l;
     if (!ev || !ev->valid){
         return;
@@ -608,18 +626,32 @@ static void log_key_event_line(const key_event_t* ev){
     log_u32(&l, ev->channel);
     log_str(&l, " msg=");
     log_u32(&l, ev->msg);
+    log_str(&l, " dir=");
+    log_str(&l, ev->from_ap ? "ap_to_client" : "client_to_ap");
     log_str(&l, " key_info=0x");
     log_hex16(&l, ev->key_info);
     log_str(&l, " key_data_len=");
     log_u32(&l, ev->key_data_len);
     log_str(&l, " bssid=");
     log_mac(&l, ev->bssid);
+    log_str(&l, " rx=");
+    log_mac(&l, ev->receiver);
     log_str(&l, " tx=");
     log_mac(&l, ev->transmitter);
     log_str(&l, " mic=");
     log_hex_bytes(&l, ev->mic, 16u);
     log_str(&l, " nonce=");
     log_hex_bytes(&l, ev->nonce, 32u);
+    log_str(&l, " key_data=");
+    log_hex_bytes(&l, key_data, ev->key_data_len);
+    log_str(&l, " eapol_len=");
+    log_u32(&l, eapol_len);
+    log_str(&l, " eapol=");
+    log_hex_bytes(&l, eapol, eapol_len);
+    log_str(&l, " raw_len=");
+    log_u32(&l, raw_len);
+    log_str(&l, " raw=");
+    log_hex_bytes(&l, raw, raw_len);
     log_ch(&l, '\n');
     log_append_line(SCAN_LOG_HANDSHAKES, &l);
 }
@@ -637,16 +669,24 @@ static void key_event_push(unsigned int channel,
                            unsigned int key_info,
                            unsigned int key_data_len,
                            const unsigned char bssid[6],
+                           const unsigned char rx[6],
                            const unsigned char tx[6],
                            const unsigned char* mic,
-                           const unsigned char* nonce){
+                           const unsigned char* nonce,
+                           const unsigned char* key_data,
+                           const unsigned char* eapol,
+                           unsigned int eapol_len,
+                           const unsigned char* raw,
+                           unsigned int raw_len){
     key_event_t* ev = &g_key_events[g_key_event_head];
     ev->valid = 1u;
     ev->channel = (unsigned char)channel;
     ev->msg = (unsigned char)msg;
+    ev->from_ap = (bssid && tx && mac_eq(bssid, tx)) ? 1u : 0u;
     ev->key_info = (unsigned short)(key_info & 0xFFFFu);
     ev->key_data_len = (unsigned short)(key_data_len & 0xFFFFu);
     copy_bytes(ev->bssid, bssid, 6u);
+    copy_bytes(ev->receiver, rx, 6u);
     copy_bytes(ev->transmitter, tx, 6u);
     if (mic){
         copy_bytes(ev->mic, mic, 16u);
@@ -667,7 +707,7 @@ static void key_event_push(unsigned int channel,
     if (g_key_event_count < KEY_EVENT_RING){
         g_key_event_count++;
     }
-    log_key_event_line(ev);
+    log_key_event_line(ev, key_data, eapol, eapol_len, raw, raw_len);
 }
 
 static unsigned int eapol_guess_msg(unsigned int key_info){
@@ -695,6 +735,7 @@ static unsigned int parse_eapol_key(const unsigned char* eap,
                                     unsigned int eap_len,
                                     unsigned int* out_key_info,
                                     unsigned int* out_key_data_len,
+                                    const unsigned char** out_key_data,
                                     const unsigned char** out_nonce,
                                     const unsigned char** out_mic){
     if (!eap || eap_len < 4u){
@@ -710,11 +751,18 @@ static unsigned int parse_eapol_key(const unsigned char* eap,
     const unsigned char* desc = eap + 4u;
     unsigned int key_info = be16(desc + 1u);
     unsigned int key_data_len = be16(desc + 93u);
+    unsigned int key_data_avail = (eap_len > 99u) ? (eap_len - 99u) : 0u;
+    if (key_data_len > key_data_avail){
+        key_data_len = key_data_avail;
+    }
     if (out_key_info){
         *out_key_info = key_info;
     }
     if (out_key_data_len){
         *out_key_data_len = key_data_len;
+    }
+    if (out_key_data){
+        *out_key_data = desc + 95u;
     }
     if (out_nonce){
         *out_nonce = desc + 13u;
@@ -924,8 +972,12 @@ static void print_recent_key_events(void){
         put_hex16(ev->key_info);
         qos_puts(" klen=");
         put_u32(ev->key_data_len);
+        qos_puts(" dir=");
+        qos_puts(ev->from_ap ? "ap" : "client");
         qos_puts(" bssid=");
         put_mac(ev->bssid);
+        qos_puts(" rx=");
+        put_mac(ev->receiver);
         qos_puts(" tx=");
         put_mac(ev->transmitter);
         qos_puts(" mic=");
@@ -1263,6 +1315,7 @@ static void parse_frame(const unsigned char* buf,
                 ap_info_t* ap = &g_aps[ap_idx];
                 ap->key_frames++;
                 ap_note_cat(ap, CAT_KEY, len);
+                maybe_notify_open_hit(ap);
             }
 
             if (dot_len > llc + 8u){
@@ -1270,12 +1323,16 @@ static void parse_frame(const unsigned char* buf,
                 unsigned int eap_len = dot_len - (llc + 8u);
                 unsigned int key_info = 0u;
                 unsigned int key_data_len = 0u;
+                const unsigned char* key_data = 0;
                 const unsigned char* nonce = 0;
                 const unsigned char* mic = 0;
+                const unsigned char* eapol = dot + llc;
+                unsigned int eapol_len = dot_len - llc;
                 unsigned int msg = parse_eapol_key(eap,
                                                    eap_len,
                                                    &key_info,
                                                    &key_data_len,
+                                                   &key_data,
                                                    &nonce,
                                                    &mic);
                 if (ap_idx >= 0 && msg > 0u){
@@ -1286,9 +1343,15 @@ static void parse_frame(const unsigned char* buf,
                                key_info,
                                key_data_len,
                                bssid,
+                               addr1,
                                addr2,
                                mic,
-                               nonce);
+                               nonce,
+                               key_data,
+                               eapol,
+                               eapol_len,
+                               buf,
+                               len);
             }
             return;
         }
@@ -1296,7 +1359,9 @@ static void parse_frame(const unsigned char* buf,
         if (subtype == 12u){
             note_cat(stats, CAT_QOS_NULL, len);
             if (ap_idx >= 0){
-                ap_note_cat(&g_aps[ap_idx], CAT_QOS_NULL, len);
+                ap_info_t* ap = &g_aps[ap_idx];
+                ap_note_cat(ap, CAT_QOS_NULL, len);
+                maybe_notify_open_hit(ap);
             }
             return;
         }
@@ -1306,6 +1371,7 @@ static void parse_frame(const unsigned char* buf,
             ap_info_t* ap = &g_aps[ap_idx];
             ap->data_frames++;
             ap_note_cat(ap, CAT_DATA, len);
+            maybe_notify_open_hit(ap);
         }
         return;
     }

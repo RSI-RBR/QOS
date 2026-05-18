@@ -252,6 +252,14 @@ int sandbox_file_read(const char sandbox83[11],
                       const char* relative_path,
                       unsigned char* out,
                       unsigned int out_cap){
+    return sandbox_file_read_at(sandbox83, relative_path, 0u, out, out_cap);
+}
+
+int sandbox_file_read_at(const char sandbox83[11],
+                         const char* relative_path,
+                         unsigned int offset,
+                         unsigned char* out,
+                         unsigned int out_cap){
     sandbox_file_entry_t* e;
     unsigned int n;
 
@@ -268,10 +276,14 @@ int sandbox_file_read(const char sandbox83[11],
         spin_unlock(&g_files_lock);
         return -1;
     }
+    if (offset >= e->size){
+        spin_unlock(&g_files_lock);
+        return 0;
+    }
 
-    n = (e->size < out_cap) ? e->size : out_cap;
+    n = ((e->size - offset) < out_cap) ? (e->size - offset) : out_cap;
     for (unsigned int i = 0u; i < n; i++){
-        out[i] = e->data[i];
+        out[i] = e->data[offset + i];
     }
     spin_unlock(&g_files_lock);
     return (int)n;
