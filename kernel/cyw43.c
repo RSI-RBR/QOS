@@ -1697,7 +1697,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
             uart_puts("CYW43: retrying SDIO firmware stage attempt=");
             uart_putdec(attempt + 1u);
             uart_puts("\n");
-            delay(50000000);
+            cyw43_delay(50000000u);
         }
         io_rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
                                                    (const char*)nv_buf, (unsigned int)nv_len);
