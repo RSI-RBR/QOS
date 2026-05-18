@@ -13,6 +13,7 @@
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
 #define RECV_ERR_FORCE_REARM 8u
+#define RECOVERY_SETTLE_MS 30u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -831,6 +832,47 @@ static void print_monitor_status_line(void){
     qos_puts("\n");
 }
 
+static int scanner_note_raw_progress(const cyw43_raw_capture_status_t* st,
+                                     unsigned int* last_rx_frames){
+    int progressed = 0;
+    if (!st || !last_rx_frames){
+        return 0;
+    }
+
+    /*
+     * Raw capture reset clears the firmware-side counter to zero. Treat only a
+     * forward-moving counter or queued frames as progress; a backward jump just
+     * means the recovery path reset the queue, not that RX came back.
+     */
+    if (st->rx_frames > *last_rx_frames || st->queued > 0u){
+        progressed = 1;
+    }
+    *last_rx_frames = st->rx_frames;
+    return progressed;
+}
+
+static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
+                                         unsigned int total_wait_ms){
+    cyw43_raw_capture_status_t st;
+    unsigned int waited = 0u;
+    unsigned int step = RECOVERY_SETTLE_MS;
+    if (step == 0u){
+        step = 1u;
+    }
+    while (waited <= total_wait_ms){
+        if (qos_wifi_raw_status(&st) == 0 &&
+            scanner_note_raw_progress(&st, last_rx_frames)){
+            return 1;
+        }
+        if (waited >= total_wait_ms){
+            break;
+        }
+        qos_sleep(step);
+        waited += step;
+    }
+    return 0;
+}
+
 static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts("AP ");
     put_u32(idx);
@@ -987,45 +1029,68 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
     (void)qos_wifi_raw_set_enabled(1u);
 }
 
-static void scanner_recover_rx_stall(unsigned int active_channel, unsigned int* stage){
+static int scanner_recover_rx_stall(unsigned int active_channel,
+                                    unsigned int* stage,
+                                    unsigned int* last_rx_frames){
     unsigned int ch = active_channel ? active_channel : DEFAULT_SCAN_CHANNEL;
     unsigned int s = stage ? *stage : 0u;
+    int recovered = 0;
 
     if (s == 0u){
         qos_puts("scanner: rx stalled; raw/monitor rearm\n");
         (void)qos_wifi_raw_set_enabled(0u);
-        qos_sleep(5u);
+        qos_sleep(RECOVERY_SETTLE_MS);
         (void)qos_wifi_monitor_set(2u, ch);
         (void)qos_wifi_raw_set_enabled(1u);
+        recovered = scanner_wait_for_raw_progress(last_rx_frames, 250u);
         if (stage){
-            *stage = 1u;
+            *stage = recovered ? 0u : 1u;
         }
-        return;
+        return recovered;
     }
 
     if (s == 1u){
-        qos_puts("scanner: rx stalled; full monitor up\n");
-        (void)qos_wifi_up_monitor();
+        qos_puts("scanner: rx stalled; force monitor reapply\n");
+        (void)qos_wifi_raw_set_enabled(0u);
+        (void)qos_wifi_monitor_set(0u, 0u);
+        qos_sleep(RECOVERY_SETTLE_MS);
         (void)qos_wifi_monitor_set(2u, ch);
-        qos_sleep(5u);
         (void)qos_wifi_raw_set_enabled(1u);
+        recovered = scanner_wait_for_raw_progress(last_rx_frames, 400u);
         if (stage){
-            *stage = 2u;
+            *stage = recovered ? 0u : 2u;
         }
-        return;
+        return recovered;
     }
 
-    qos_puts("scanner: rx stalled; monitor retune cycle\n");
-    (void)qos_wifi_raw_set_enabled(0u);
-    (void)qos_wifi_up_monitor();
-    (void)qos_wifi_monitor_set(2u, 0u);
-    qos_sleep(20u);
-    (void)qos_wifi_monitor_set(2u, ch);
-    qos_sleep(5u);
-    (void)qos_wifi_raw_set_enabled(1u);
-    if (stage){
-        *stage = 0u;
+    if (s == 2u){
+        qos_puts("scanner: rx stalled; full monitor up/reapply\n");
+        (void)qos_wifi_raw_set_enabled(0u);
+        (void)qos_wifi_up_monitor();
+        (void)qos_wifi_monitor_set(0u, 0u);
+        qos_sleep(RECOVERY_SETTLE_MS);
+        (void)qos_wifi_monitor_set(2u, ch);
+        (void)qos_wifi_raw_set_enabled(1u);
+        recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
+        if (stage){
+            *stage = recovered ? 0u : 3u;
+        }
+        return recovered;
     }
+
+    qos_puts("scanner: rx stalled; radio down/up monitor reset\n");
+    (void)qos_wifi_raw_set_enabled(0u);
+    (void)qos_wifi_monitor_set(0u, 0u);
+    (void)qos_wifi_down();
+    qos_sleep(100u);
+    (void)qos_wifi_up_monitor();
+    (void)qos_wifi_monitor_set(2u, ch);
+    (void)qos_wifi_raw_set_enabled(1u);
+    recovered = scanner_wait_for_raw_progress(last_rx_frames, 1000u);
+    if (stage){
+        *stage = recovered ? 0u : 1u;
+    }
+    return recovered;
 }
 
 static void maybe_hop_channel(unsigned int* active_channel,
@@ -1357,8 +1422,7 @@ void program_main(void){
             }
 
             if (qos_wifi_raw_status(&st1) == 0){
-                if (st1.rx_frames != last_rx_frames){
-                    last_rx_frames = st1.rx_frames;
+                if (scanner_note_raw_progress(&st1, &last_rx_frames)){
                     last_rx_progress_us = now;
                     rearm_stage = 0u;
                 }
@@ -1390,13 +1454,19 @@ void program_main(void){
         }
 
         if ((long long)(now - last_rx_progress_us) >= ((long long)STALE_RECOVER_SECS * 1000000ll)){
+            int recovered;
             qos_puts("scanner: rx idle window hit; recovering monitor path\n");
-            scanner_recover_rx_stall(active_channel, &rearm_stage);
+            recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
             if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
                 active_channel = mon.channel;
             }
             next_hop = now + 1000000ull;
-            last_rx_progress_us = now;
+            /*
+             * Give each recovery attempt its own settle window, but only reset
+             * the stage to zero after actual raw RX progress. Counter resets
+             * alone no longer count as health.
+             */
+            last_rx_progress_us = recovered ? qos_get_time_us() : now;
         }
 
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
