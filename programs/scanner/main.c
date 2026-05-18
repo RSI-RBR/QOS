@@ -956,28 +956,6 @@ void program_main(void){
 
     while (1){
         now = qos_get_time_us();
-        if ((long long)(now - next_hop) >= 0){
-            maybe_hop_channel(&active_channel, &hop_idx, &stats);
-            next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
-        }
-
-        int n = qos_wifi_raw_recv(buf, sizeof(buf));
-        if (n < 0){
-            recv_err_streak++;
-            if ((recv_err_streak & 0x7u) == 1u){
-                qos_puts("scanner: raw recv error; rearming monitor\n");
-            }
-            scanner_ensure_monitor_ready(active_channel);
-            qos_sleep(5u);
-        } else if (n > 0){
-            recv_err_streak = 0u;
-            parse_frame(buf, (unsigned int)n, active_channel, &stats);
-        } else{
-            recv_err_streak = 0u;
-            qos_sleep(1u);
-        }
-
-        now = qos_get_time_us();
         if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
             unsigned int non_beacon = 0u;
@@ -1032,13 +1010,45 @@ void program_main(void){
                     rearm_attempts++;
                 }
             }
-            next_print = now + 2000000ull;
+            next_print += 2000000ull;
+            if ((long long)(now - next_print) >= 0){
+                next_print = now + 2000000ull;
+            }
         }
 
         if ((long long)(now - next_detail) >= 0){
             print_overview();
-            next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+            next_detail += ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+            if ((long long)(now - next_detail) >= 0){
+                next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
+            }
         }
+
+        if ((long long)(now - next_hop) >= 0){
+            maybe_hop_channel(&active_channel, &hop_idx, &stats);
+            next_hop += ((unsigned long long)hop_dwell_ms * 1000ull);
+            if ((long long)(now - next_hop) >= 0){
+                next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
+            }
+        }
+
+        int n = qos_wifi_raw_recv(buf, sizeof(buf));
+        if (n < 0){
+            recv_err_streak++;
+            if ((recv_err_streak & 0x7u) == 1u){
+                qos_puts("scanner: raw recv error; rearming monitor\n");
+            }
+            scanner_ensure_monitor_ready(active_channel);
+            qos_sleep(5u);
+        } else if (n > 0){
+            recv_err_streak = 0u;
+            parse_frame(buf, (unsigned int)n, active_channel, &stats);
+        } else{
+            recv_err_streak = 0u;
+            qos_sleep(1u);
+        }
+
+        now = qos_get_time_us();
     }
 
     print_summary(&stats, active_channel);

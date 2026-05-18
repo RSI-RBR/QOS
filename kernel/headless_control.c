@@ -54,7 +54,8 @@ static unsigned int g_led_test_on_ms = 500u;
 static unsigned int g_led_test_off_ms = 500u;
 static unsigned long g_led_test_next_tick = 0u;
 static unsigned int g_led_open_hit_valid = 0u;
-static unsigned long g_led_open_hit_tick = 0u;
+static unsigned long g_led_open_hit_anchor = 0u;
+static unsigned long g_led_open_hit_expire = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -387,9 +388,10 @@ static void render_led(unsigned long now){
     }
 
     if (g_led_open_hit_valid){
-        unsigned long since = now - g_led_open_hit_tick;
-        if (since < LED_OPEN_ALERT_WINDOW_MS){
-            unsigned long phase = since % LED_OPEN_ALERT_PERIOD_MS;
+        unsigned long remain = g_led_open_hit_expire - now;
+        if ((long)remain > 0){
+            unsigned long since_anchor = now - g_led_open_hit_anchor;
+            unsigned long phase = since_anchor % LED_OPEN_ALERT_PERIOD_MS;
             if (phase < LED_OPEN_ALERT_ON1_MS ||
                 (phase >= (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS) &&
                  phase < (LED_OPEN_ALERT_ON1_MS + LED_OPEN_ALERT_GAP1_MS + LED_OPEN_ALERT_ON2_MS))){
@@ -448,7 +450,8 @@ void headless_control_init(void){
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
     g_led_open_hit_valid = 0u;
-    g_led_open_hit_tick = 0u;
+    g_led_open_hit_anchor = 0u;
+    g_led_open_hit_expire = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -502,12 +505,22 @@ void headless_control_led_tick(void){
 }
 
 void headless_control_note_open_network_packet(void){
+    unsigned long now;
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
         return;
     }
+    now = system_ticks;
     spin_lock(&g_headless_lock);
-    g_led_open_hit_tick = system_ticks;
-    g_led_open_hit_valid = 1u;
+    if (!g_led_open_hit_valid || (long)(g_led_open_hit_expire - now) <= 0){
+        g_led_open_hit_anchor = now;
+        g_led_open_hit_expire = now + LED_OPEN_ALERT_WINDOW_MS;
+        g_led_open_hit_valid = 1u;
+    } else{
+        unsigned long ext = now + LED_OPEN_ALERT_WINDOW_MS;
+        if ((long)(ext - g_led_open_hit_expire) > 0){
+            g_led_open_hit_expire = ext;
+        }
+    }
     spin_unlock(&g_headless_lock);
 }
 
