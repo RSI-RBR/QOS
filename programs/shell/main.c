@@ -457,12 +457,15 @@ static int parse_ip4(const char* s, unsigned char out[4]){
 }
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
+#if defined(QOS_BOARD_PI_ZERO2W)
+static const char g_wifi_fw_83[] = "P0NEXMONBIN";
+static const char g_wifi_nv_83[] = "P0NEXMONTXT";
+static const char g_wifi_clm_83[] = "P0NEXMONCLM";
+#else
 static const char g_wifi_fw_83[] = "4343WIFIBIN";
 static const char g_wifi_nv_83[] = "4343NVRMTXT";
 static const char g_wifi_clm_83[] = "";
-static const char g_wifi_p0_fw_83[] = "P0NEXMONBIN";
-static const char g_wifi_p0_nv_83[] = "P0NEXMONTXT";
-static const char g_wifi_p0_clm_83[] = "P0NEXMONCLM";
+#endif
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
     int rc = qos_dns_resolve_a_secure_socket(host, out_ip, 4500u);
@@ -1715,24 +1718,7 @@ static void cmd_wifiload(const char* fw83, const char* nv83, const char* clm83){
     const char* fw = (fw83 && *fw83) ? fw83 : g_wifi_fw_83;
     const char* nv = (nv83 && *nv83) ? nv83 : g_wifi_nv_83;
     const char* clm = (clm83 && *clm83) ? clm83 : g_wifi_clm_83;
-    int rc = -1;
-    int auto_defaults = (!fw83 || !*fw83) && (!nv83 || !*nv83) && (!clm83 || !*clm83);
-
-    /*
-     * Pi Zero 2 W convenience default:
-     * try P0 Nexmon names first when user calls plain `wifiload`.
-     * If those files are not present (e.g. Pi 3 image), fall back to legacy
-     * 4343* names automatically.
-     */
-    if (auto_defaults){
-        rc = qos_wifi_load_fw(g_wifi_p0_fw_83, g_wifi_p0_nv_83, g_wifi_p0_clm_83);
-        if (rc == 0){
-            qos_puts("WiFi firmware staged (P0 Nexmon defaults)\n");
-            return;
-        }
-    }
-
-    rc = qos_wifi_load_fw(fw, nv, (clm && *clm) ? clm : 0);
+    int rc = qos_wifi_load_fw(fw, nv, (clm && *clm) ? clm : 0);
     if (rc == 0){
         qos_puts("WiFi firmware staged\n");
     } else{

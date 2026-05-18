@@ -9,6 +9,15 @@ USER_LIB_OBJS = qos_user_heap.o qos_mem.o
 SIGN_KEY ?=
 PQ_SIGN_KEY ?=
 OPENSSL_BIN ?= openssl
+BOARD ?= pi3
+
+ifeq ($(BOARD),pi_zero2w)
+CFLAGS += -DQOS_BOARD_PI_ZERO2W=1
+else ifeq ($(BOARD),pi5)
+CFLAGS += -DQOS_BOARD_PI5=1
+else
+CFLAGS += -DQOS_BOARD_PI3=1
+endif
 
 all: shell.bin
 
