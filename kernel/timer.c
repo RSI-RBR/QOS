@@ -2,6 +2,7 @@
 #include "process.h"
 #include "cpu.h"
 #include "crypto.h"
+#include "headless_control.h"
 #include "platform/mmio.h"
 
 #define TIMER_INTERVAL 200000
@@ -48,6 +49,7 @@ volatile unsigned long system_ticks = 0;
 
 void timer_handler(void){
     system_ticks ++;
+    headless_control_led_tick();
     if ((system_ticks & 0x3Fu) == 0u){
         unsigned long mix[3];
         unsigned long c = 0;

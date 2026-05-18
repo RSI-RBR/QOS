@@ -50,6 +50,13 @@ static unsigned int g_led_test_off_ms = 500u;
 static unsigned long g_led_test_next_tick = 0u;
 static spinlock_t g_headless_lock;
 
+enum {
+    BTN_ACTION_NONE = 0u,
+    BTN_ACTION_SINGLE_CHECK = 1u,
+    BTN_ACTION_TOGGLE = 2u,
+    BTN_ACTION_SECURE_STOP = 3u
+};
+
 static int str83_eq(const char a[11], const char b[11]){
     if (!a || !b){
         return 0;
@@ -246,12 +253,12 @@ static void scanner_single_press_check(unsigned long now){
     }
 }
 
-static void handle_button_actions(unsigned long now){
+static unsigned int handle_button_actions(unsigned long now){
     if (g_btn_stable && !g_btn_long_fired){
         if ((unsigned long)(now - g_btn_press_tick) >= BTN_LONG_PRESS_MS){
             g_btn_long_fired = 1u;
             g_btn_clicks = 0u;
-            scanner_secure_stop(now);
+            return BTN_ACTION_SECURE_STOP;
         }
     }
 
@@ -259,10 +266,26 @@ static void handle_button_actions(unsigned long now){
         unsigned int clicks = g_btn_clicks;
         g_btn_clicks = 0u;
         if (clicks >= 2u){
-            scanner_toggle(now);
+            return BTN_ACTION_TOGGLE;
         } else{
-            scanner_single_press_check(now);
+            return BTN_ACTION_SINGLE_CHECK;
         }
+    }
+    return BTN_ACTION_NONE;
+}
+
+static void perform_button_action(unsigned int action, unsigned long now){
+    if (action == BTN_ACTION_TOGGLE){
+        scanner_toggle(now);
+        return;
+    }
+    if (action == BTN_ACTION_SECURE_STOP){
+        scanner_secure_stop(now);
+        return;
+    }
+    if (action == BTN_ACTION_SINGLE_CHECK){
+        scanner_single_press_check(now);
+        return;
     }
 }
 
@@ -415,22 +438,42 @@ void headless_control_init(void){
 
 void headless_control_poll(void){
     unsigned long now;
+    unsigned int action = BTN_ACTION_NONE;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
     }
+    now = system_ticks;
+    if (spin_trylock(&g_headless_lock)){
+        if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
+            poll_button_state(now);
+            action = handle_button_actions(now);
+        }
+        if (QOS_HEADLESS_LED_ENABLED){
+            render_led(now);
+        }
+        spin_unlock(&g_headless_lock);
+    }
+
+    /*
+     * Run potentially heavy button actions outside the lock so LED cadence
+     * remains stable even when an action does network/scan work.
+     */
+    if (action != BTN_ACTION_NONE){
+        perform_button_action(action, now);
+    }
+}
+
+void headless_control_led_tick(void){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = system_ticks;
     if (!spin_trylock(&g_headless_lock)){
         return;
     }
-
-    now = system_ticks;
-    if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
-        poll_button_state(now);
-        handle_button_actions(now);
-    }
-    if (QOS_HEADLESS_LED_ENABLED){
-        render_led(now);
-    }
+    render_led(now);
     spin_unlock(&g_headless_lock);
 }
 
