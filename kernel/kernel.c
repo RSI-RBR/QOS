@@ -176,18 +176,164 @@ static void cfg_copy_value(char* dst, unsigned int cap, const char* src){
     dst[i] = 0;
 }
 
+static char cfg_upper(char c){
+    if (c >= 'a' && c <= 'z'){
+        return (char)(c - ('a' - 'A'));
+    }
+    return c;
+}
+
+static int cfg_value_is_none(const char* s){
+    return cfg_key_eq(s, "none") ||
+           cfg_key_eq(s, "off") ||
+           cfg_key_eq(s, "skip") ||
+           (s[0] == '-' && s[1] == 0);
+}
+
+static int cfg_fat83_from_value(char out[12], const char* src){
+    char base[8];
+    char ext[3];
+    char token[24];
+    unsigned int bi = 0u;
+    unsigned int ei = 0u;
+    unsigned int saw_dot = 0u;
+    unsigned int len = 0u;
+    char quote = 0;
+
+    if (!out || !src){
+        return -1;
+    }
+    for (unsigned int i = 0u; i < 11u; i++){
+        out[i] = ' ';
+    }
+    out[11] = 0;
+
+    while (*src && cfg_is_space(*src)){
+        src++;
+    }
+    if (*src == '"' || *src == '\''){
+        quote = *src++;
+    }
+    while (*src){
+        char c = *src++;
+        if (quote && c == quote){
+            break;
+        }
+        if (!quote && cfg_is_space(c)){
+            const char* rest = src;
+            while (*rest){
+                if (!cfg_is_space(*rest++)){
+                    return -1;
+                }
+            }
+            break;
+        }
+        if (len + 1u >= sizeof(token)){
+            return -1;
+        }
+        token[len++] = c;
+    }
+    token[len] = 0;
+
+    if (!token[0] || cfg_value_is_none(token)){
+        out[0] = 0;
+        return 0;
+    }
+
+    if (quote){
+        while (*src){
+            if (!cfg_is_space(*src++)){
+                return -1;
+            }
+        }
+    }
+
+    for (unsigned int i = 0u; i < len; i++){
+        if (token[i] == '.'){
+            saw_dot = 1u;
+            break;
+        }
+    }
+    if (!saw_dot && len == 11u){
+        for (unsigned int i = 0u; i < 11u; i++){
+            char c = token[i];
+            if (c == '/' || c == '\\' || c == ':' ||
+                (unsigned char)c < 33u || (unsigned char)c > 126u){
+                return -1;
+            }
+            out[i] = cfg_upper(c);
+        }
+        return 0;
+    }
+
+    for (unsigned int i = 0u; i < 8u; i++) base[i] = ' ';
+    for (unsigned int i = 0u; i < 3u; i++) ext[i] = ' ';
+    saw_dot = 0u;
+
+    for (const char* p = token; *p; p++){
+        char c = *p;
+        if (cfg_is_space(c)){
+            return -1;
+        }
+        if (c == '.'){
+            if (saw_dot){
+                return -1;
+            }
+            saw_dot = 1u;
+            continue;
+        }
+        if (c == '/' || c == '\\' || c == ':' || (unsigned char)c < 33u || (unsigned char)c > 126u){
+            return -1;
+        }
+        c = cfg_upper(c);
+        if (saw_dot){
+            if (ei >= 3u){
+                return -1;
+            }
+            ext[ei++] = c;
+        } else{
+            if (bi >= 8u){
+                return -1;
+            }
+            base[bi++] = c;
+        }
+    }
+
+    if (bi == 0u){
+        return -1;
+    }
+
+    for (unsigned int i = 0u; i < 8u; i++){
+        out[i] = base[i];
+    }
+    for (unsigned int i = 0u; i < 3u; i++){
+        out[8u + i] = ext[i];
+    }
+    return 0;
+}
+
 static int pi0_read_wifi_cfg(char* ssid, unsigned int ssid_cap,
-                             char* password, unsigned int password_cap){
+                             char* password, unsigned int password_cap,
+                             char fw83[12], char nv83[12], char clm83[12]){
     static char cfg[1024];
     static const char wifi_cfg_83[] = "WIFI    CFG";
     int n;
     char* p;
 
-    if (!ssid || ssid_cap == 0 || !password || password_cap == 0){
+    if (!ssid || ssid_cap == 0 || !password || password_cap == 0 ||
+        !fw83 || !nv83 || !clm83){
         return -1;
     }
     ssid[0] = 0;
     password[0] = 0;
+    for (unsigned int i = 0u; i < 12u; i++){
+        fw83[i] = 0;
+        nv83[i] = 0;
+        clm83[i] = 0;
+    }
+    (void)cfg_fat83_from_value(fw83, PI0_AUTO_WIFI_FW_83);
+    (void)cfg_fat83_from_value(nv83, PI0_AUTO_WIFI_NV_83);
+    (void)cfg_fat83_from_value(clm83, PI0_AUTO_WIFI_CLM_83);
 
     n = fat32_read_file(wifi_cfg_83, (unsigned char*)cfg, (int)sizeof(cfg) - 1);
     if (n <= 0){
@@ -230,6 +376,29 @@ static int pi0_read_wifi_cfg(char* ssid, unsigned int ssid_cap,
                    cfg_key_eq(key, "psk") ||
                    cfg_key_eq(key, "wifi_password")){
             cfg_copy_value(password, password_cap, val);
+        } else if (cfg_key_eq(key, "fw") ||
+                   cfg_key_eq(key, "firmware") ||
+                   cfg_key_eq(key, "bin") ||
+                   cfg_key_eq(key, "wifi_fw")){
+            if (cfg_fat83_from_value(fw83, val) != 0 || !fw83[0]){
+                memzero((unsigned long)cfg, sizeof(cfg));
+                return -1;
+            }
+        } else if (cfg_key_eq(key, "nvram") ||
+                   cfg_key_eq(key, "nv") ||
+                   cfg_key_eq(key, "txt") ||
+                   cfg_key_eq(key, "wifi_nvram")){
+            if (cfg_fat83_from_value(nv83, val) != 0 || !nv83[0]){
+                memzero((unsigned long)cfg, sizeof(cfg));
+                return -1;
+            }
+        } else if (cfg_key_eq(key, "clm") ||
+                   cfg_key_eq(key, "clm_blob") ||
+                   cfg_key_eq(key, "wifi_clm")){
+            if (cfg_fat83_from_value(clm83, val) != 0){
+                memzero((unsigned long)cfg, sizeof(cfg));
+                return -1;
+            }
         }
     }
 
@@ -240,6 +409,9 @@ static int pi0_read_wifi_cfg(char* ssid, unsigned int ssid_cap,
 static void pi0_headless_wifi_autojoin(void){
     char ssid[33];
     char password[96];
+    char fw83[12];
+    char nv83[12];
+    char clm83[12];
     int rc;
     int up_ok = 0;
     int join_ok = 0;
@@ -247,9 +419,12 @@ static void pi0_headless_wifi_autojoin(void){
     pi0_headless_write("Pi0 headless WiFi: autojoin enabled\n");
     memzero((unsigned long)ssid, sizeof(ssid));
     memzero((unsigned long)password, sizeof(password));
+    memzero((unsigned long)fw83, sizeof(fw83));
+    memzero((unsigned long)nv83, sizeof(nv83));
+    memzero((unsigned long)clm83, sizeof(clm83));
 
     headless_control_note_boot_stage(4u, 0u);
-    if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password)) != 0){
+    if (pi0_read_wifi_cfg(ssid, sizeof(ssid), password, sizeof(password), fw83, nv83, clm83) != 0){
         pi0_headless_write("Pi0 headless WiFi: WIFI.CFG missing/invalid; skipped.\n");
         headless_control_note_boot_stage(4u, 1u);
         return;
@@ -257,15 +432,13 @@ static void pi0_headless_wifi_autojoin(void){
 
     headless_control_note_boot_stage(5u, 0u);
     pi0_headless_write("Pi0 headless WiFi: loading station firmware ");
-    pi0_headless_write(PI0_AUTO_WIFI_FW_83);
+    pi0_headless_write(fw83);
     pi0_headless_write(" / ");
-    pi0_headless_write(PI0_AUTO_WIFI_NV_83);
+    pi0_headless_write(nv83);
     pi0_headless_write(" / ");
-    pi0_headless_write(PI0_AUTO_WIFI_CLM_83);
+    pi0_headless_write(clm83[0] ? clm83 : "<no-clm>");
     pi0_headless_write("...\n");
-    rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83,
-                                        PI0_AUTO_WIFI_NV_83,
-                                        PI0_AUTO_WIFI_CLM_83);
+    rc = cyw43_upload_firmware_from_fat(fw83, nv83, clm83);
     if (rc != 0){
         pi0_headless_write("Pi0 headless WiFi: firmware load failed rc=");
         pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
@@ -291,9 +464,7 @@ static void pi0_headless_wifi_autojoin(void){
     }
     if (!up_ok){
         pi0_headless_write("Pi0 headless WiFi: restaging firmware after wifiup failure...\n");
-        rc = cyw43_upload_firmware_from_fat(PI0_AUTO_WIFI_FW_83,
-                                            PI0_AUTO_WIFI_NV_83,
-                                            PI0_AUTO_WIFI_CLM_83);
+        rc = cyw43_upload_firmware_from_fat(fw83, nv83, clm83);
         if (rc == 0){
             for (unsigned int attempt = 0u; attempt < 3u; attempt++){
                 rc = cyw43_ioctl_up();
@@ -359,6 +530,9 @@ static void pi0_headless_wifi_autojoin(void){
 out:
     memzero((unsigned long)ssid, sizeof(ssid));
     memzero((unsigned long)password, sizeof(password));
+    memzero((unsigned long)fw83, sizeof(fw83));
+    memzero((unsigned long)nv83, sizeof(nv83));
+    memzero((unsigned long)clm83, sizeof(clm83));
 }
 #else
 static void pi0_headless_wifi_autojoin(void){

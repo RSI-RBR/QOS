@@ -1591,7 +1591,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
 #endif
     const char* fw_name = fw_bin_83 ? fw_bin_83 : default_fw_name;
     const char* nv_name = nvram_txt_83 ? nvram_txt_83 : default_nv_name;
-    const char* clm_name = (clm_blob_83 && *clm_blob_83) ? clm_blob_83 : default_clm_name;
+    const char* clm_name = clm_blob_83 ? (*clm_blob_83 ? clm_blob_83 : 0) : default_clm_name;
     unsigned char* fw_buf = 0;
     unsigned char* nv_buf = 0;
     unsigned char* clm_buf = 0;
