@@ -74,6 +74,10 @@ typedef struct {
     unsigned char hs_m3;
     unsigned int cat_counts[CAT_COUNT];
     unsigned int cat_bytes[CAT_COUNT];
+    unsigned long long first_seen_rel_ms;
+    unsigned long long last_seen_rel_ms;
+    unsigned long long strongest_rel_ms;
+    unsigned int strongest_channel;
 } ap_info_t;
 
 typedef struct {
@@ -95,6 +99,7 @@ static key_event_t g_key_events[KEY_EVENT_RING];
 static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 static unsigned long long g_last_open_hit_notify_us = 0ull;
+static unsigned long long g_scan_start_us = 0ull;
 static unsigned char g_scan_load_buf[SCAN_LOAD_BUF_BYTES];
 
 #define SCAN_LOG_LINE_MAX 8192u
@@ -125,6 +130,22 @@ static void put_u32(unsigned int v){
     while (v > 0u && n < (int)sizeof(tmp)){
         tmp[n++] = (char)('0' + (v % 10u));
         v /= 10u;
+    }
+    while (n > 0){
+        qos_putc(tmp[--n]);
+    }
+}
+
+static void put_u64(unsigned long long v){
+    char tmp[24];
+    int n = 0;
+    if (v == 0ull){
+        qos_putc('0');
+        return;
+    }
+    while (v > 0ull && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (unsigned int)(v % 10ull));
+        v /= 10ull;
     }
     while (n > 0){
         qos_putc(tmp[--n]);
@@ -380,6 +401,14 @@ static void note_cat(scan_stats_t* stats, frame_cat_t cat, unsigned int bytes){
     stats->frame_bytes[cat] += bytes;
 }
 
+static unsigned long long scanner_rel_ms_now(void){
+    unsigned long long now = qos_get_time_us();
+    if (g_scan_start_us == 0ull || now < g_scan_start_us){
+        return 0ull;
+    }
+    return (now - g_scan_start_us) / 1000ull;
+}
+
 static int find_ap(const unsigned char bssid[6]){
     for (unsigned int i = 0; i < MAX_APS; i++){
         if (g_aps[i].seen && mac_eq(g_aps[i].bssid, bssid)){
@@ -392,14 +421,27 @@ static int find_ap(const unsigned char bssid[6]){
             mac_copy(g_aps[i].bssid, bssid);
             g_aps[i].sig_min = 127;
             g_aps[i].sig_max = -127;
+            g_aps[i].first_seen_rel_ms = scanner_rel_ms_now();
+            g_aps[i].last_seen_rel_ms = g_aps[i].first_seen_rel_ms;
+            g_aps[i].strongest_rel_ms = g_aps[i].first_seen_rel_ms;
+            g_aps[i].strongest_channel = 0u;
             return (int)i;
         }
     }
     return -1;
 }
 
-static void note_signal(ap_info_t* ap, int sig){
+static void note_signal(ap_info_t* ap, int sig, unsigned int active_channel){
+    unsigned long long rel_ms;
     if (!ap){
+        return;
+    }
+    rel_ms = scanner_rel_ms_now();
+    if (ap->first_seen_rel_ms == 0ull){
+        ap->first_seen_rel_ms = rel_ms;
+    }
+    ap->last_seen_rel_ms = rel_ms;
+    if (sig <= -128){
         return;
     }
     if (sig < ap->sig_min){
@@ -407,6 +449,8 @@ static void note_signal(ap_info_t* ap, int sig){
     }
     if (sig > ap->sig_max){
         ap->sig_max = sig;
+        ap->strongest_rel_ms = rel_ms;
+        ap->strongest_channel = active_channel;
     }
 }
 
@@ -620,6 +664,14 @@ static void log_ap_line(const ap_info_t* ap){
     log_i32(&l, ap->sig_min);
     log_str(&l, " sig_max=");
     log_i32(&l, ap->sig_max);
+    log_str(&l, " first_ms=");
+    log_u64(&l, ap->first_seen_rel_ms);
+    log_str(&l, " last_ms=");
+    log_u64(&l, ap->last_seen_rel_ms);
+    log_str(&l, " strongest_ms=");
+    log_u64(&l, ap->strongest_rel_ms);
+    log_str(&l, " strongest_ch=");
+    log_u32(&l, ap->strongest_channel);
     log_str(&l, " enc=");
     log_str(&l, ap_security_label(ap));
     log_str(&l, " ssid=");
@@ -717,6 +769,28 @@ static int parse_u32_at(const char* p, unsigned int* out){
     return 1;
 }
 
+static int parse_u64_at(const char* p, unsigned long long* out){
+    unsigned long long v = 0ull;
+    unsigned int any = 0u;
+    if (!p || !out){
+        return 0;
+    }
+    while (*p >= '0' && *p <= '9'){
+        unsigned long long d = (unsigned long long)(*p - '0');
+        if (v > (0xFFFFFFFFFFFFFFFFull - d) / 10ull){
+            return 0;
+        }
+        v = (v * 10ull) + d;
+        any = 1u;
+        p++;
+    }
+    if (!any){
+        return 0;
+    }
+    *out = v;
+    return 1;
+}
+
 static int parse_i32_at(const char* p, int* out){
     unsigned int neg = 0u;
     unsigned int uv = 0u;
@@ -750,6 +824,14 @@ static int line_get_u32(const char* line, const char* key, unsigned int* out){
         return 0;
     }
     return parse_u32_at(p + text_len(key), out);
+}
+
+static int line_get_u64(const char* line, const char* key, unsigned long long* out){
+    const char* p = find_text(line, key);
+    if (!p){
+        return 0;
+    }
+    return parse_u64_at(p + text_len(key), out);
 }
 
 static int line_get_i32(const char* line, const char* key, int* out){
@@ -861,6 +943,7 @@ static unsigned int load_counts_from_fat(scan_stats_t* st){
 static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
     unsigned char mac[6];
     unsigned int uv;
+    unsigned long long ullv;
     int iv;
     char ssid[SSID_MAX + 1u];
     if (!line || !line_get_mac(line, "bssid=", mac)){
@@ -883,6 +966,18 @@ static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
         if (ap->sig_max == -127 || iv > ap->sig_max){
             ap->sig_max = iv;
         }
+    }
+    if (line_get_u64(line, "first_ms=", &ullv) && (ap->first_seen_rel_ms == 0ull || ullv < ap->first_seen_rel_ms)){
+        ap->first_seen_rel_ms = ullv;
+    }
+    if (line_get_u64(line, "last_ms=", &ullv) && ullv > ap->last_seen_rel_ms){
+        ap->last_seen_rel_ms = ullv;
+    }
+    if (line_get_u64(line, "strongest_ms=", &ullv) && ap->strongest_rel_ms == 0ull){
+        ap->strongest_rel_ms = ullv;
+    }
+    if (line_get_u32(line, "strongest_ch=", &uv) && uv <= 255u && ap->strongest_channel == 0u){
+        ap->strongest_channel = uv;
     }
     if (find_text(line, "enc=RSN")){
         ap->privacy = 1u;
@@ -1283,6 +1378,12 @@ static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     put_i32(ap->sig_min);
     qos_puts("..");
     put_i32(ap->sig_max);
+    qos_puts(" strong_ms=");
+    put_u64(ap->strongest_rel_ms);
+    qos_puts(" seen_ms=");
+    put_u64(ap->first_seen_rel_ms);
+    qos_puts("..");
+    put_u64(ap->last_seen_rel_ms);
     qos_puts(" enc=");
     qos_puts(ap_security_label(ap));
     qos_puts(" ssid=\"");
@@ -1600,7 +1701,7 @@ static void parse_frame(const unsigned char* buf,
     const unsigned char* dot = buf;
     unsigned int dot_len = len;
     unsigned int rt_len = 0u;
-    int signal = 0;
+    int signal = -128;
     unsigned int fc = 0u;
     unsigned int type = 0u;
     unsigned int subtype = 0u;
@@ -1657,7 +1758,7 @@ static void parse_frame(const unsigned char* buf,
             if (idx >= 0 && dot_len >= 36u){
                 ap_info_t* ap = &g_aps[idx];
                 ap_note_cat(ap, (subtype == 8u) ? CAT_BEACON : CAT_PROBE_RESPONSE, len);
-                note_signal(ap, signal);
+                note_signal(ap, signal, active_channel);
                 ap->channel = (unsigned char)active_channel;
                 ap->privacy = (le16(dot + 34u) & 0x0010u) ? 1u : ap->privacy;
                 parse_tags(ap, dot + 36u, dot_len - 36u);
@@ -1727,7 +1828,7 @@ static void parse_frame(const unsigned char* buf,
             if (ap_idx >= 0){
                 ap_info_t* ap = &g_aps[ap_idx];
                 note_client(ap, client);
-                note_signal(ap, signal);
+                note_signal(ap, signal, active_channel);
                 ap->channel = (unsigned char)active_channel;
             }
         }
@@ -1835,9 +1936,10 @@ void program_main(void){
     stats.hop_fail = 0u;
     stats.handshake_hits = 0u;
 
+    unsigned long long now = qos_get_time_us();
+    g_scan_start_us = now;
     load_persistent_scanner_state(&stats);
 
-    unsigned long long now = qos_get_time_us();
     last_rx_progress_us = now;
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
