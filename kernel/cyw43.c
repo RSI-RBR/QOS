@@ -3280,6 +3280,7 @@ static int cyw43_wl_set_pmk(const char* password, const char* ssid, unsigned int
     unsigned char bin_pmk[32];
     unsigned int len = 0;
     int rc = 0;
+    int have_bin_pmk = 0;
 
     if (!password){
         return -1;
@@ -3295,20 +3296,46 @@ static int cyw43_wl_set_pmk(const char* password, const char* ssid, unsigned int
     }
 
     if (cyw43_wpa2_psk_from_passphrase(password, ssid, ssid_len, bin_pmk) == 0){
-        uart_puts("CYW43: using host-derived WPA2 PMK\n");
-        rc = cyw43_wl_set_pmk_payload(bin_pmk, sizeof(bin_pmk), 0u);
-        mem_zero_local(bin_pmk, sizeof(bin_pmk));
-        if (rc == 0){
-            return 0;
-        }
-        uart_puts("CYW43: binary PMK rejected; trying passphrase payload\n");
+        have_bin_pmk = 1;
     }
-
     mem_zero_local(passbuf, sizeof(passbuf));
     for (unsigned int i = 0; i < len; i++){
         passbuf[i] = (unsigned char)password[i];
     }
-    rc = cyw43_wl_set_pmk_payload(passbuf, len, CYW43_WSEC_PASSPHRASE);
+
+    for (unsigned int attempt = 0u; attempt < 4u; attempt++){
+        if (attempt != 0u){
+            uart_puts("CYW43: retrying PMK program attempt=");
+            uart_putdec(attempt + 1u);
+            uart_puts("\n");
+            cyw43_drain_pending_packets(16u);
+            cyw43_delay(250000u + (attempt * 200000u));
+            (void)cyw43_sdio_keep_awake();
+            (void)cyw43_wl_set_int(CYW43_WLC_SET_WSEC, CYW43_WSEC_AES);
+            (void)cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA2_AUTH_PSK);
+            cyw43_delay(100000u);
+        }
+
+        if (have_bin_pmk){
+            uart_puts("CYW43: using host-derived WPA2 PMK\n");
+            rc = cyw43_wl_set_pmk_payload(bin_pmk, sizeof(bin_pmk), 0u);
+            if (rc == 0){
+                mem_zero_local(bin_pmk, sizeof(bin_pmk));
+                mem_zero_local(passbuf, sizeof(passbuf));
+                return 0;
+            }
+            uart_puts("CYW43: binary PMK rejected; trying passphrase payload\n");
+        }
+
+        rc = cyw43_wl_set_pmk_payload(passbuf, len, CYW43_WSEC_PASSPHRASE);
+        if (rc == 0){
+            mem_zero_local(bin_pmk, sizeof(bin_pmk));
+            mem_zero_local(passbuf, sizeof(passbuf));
+            return 0;
+        }
+    }
+
+    mem_zero_local(bin_pmk, sizeof(bin_pmk));
     mem_zero_local(passbuf, sizeof(passbuf));
     return rc;
 }
