@@ -509,6 +509,7 @@ static void cmd_help(void){
     qos_puts(" gfx <pid>\n");
     qos_puts(" game\n");
     qos_puts(" scanner        - start continuous WiFi scanner (live shell output)\n");
+    qos_puts(" scanstart [ch] - one-shot remote handoff: Nexmon monitor + scanner\n");
     qos_puts(" scanlog [overview|counts|aps|handshakes]  (reads FAT summaries)\n");
     qos_puts(" scanram [counts|aps|handshakes]           (reads RAM log view)\n");
     qos_puts(" scanfat [counts|aps|handshakes]           (raw FAT log dump)\n");
@@ -644,6 +645,75 @@ static void cmd_scanner(void){
     qos_puts("Scanner running as PID ");
     print_uint((unsigned int)pid);
     qos_puts(" (live output in this shell)\n");
+}
+
+static void cmd_scanstart(unsigned int channel){
+    int rc;
+    const char* clm = (g_wifi_clm_83 && *g_wifi_clm_83) ? g_wifi_clm_83 : 0;
+    if (channel == 0u || channel > 13u){
+        channel = 6u;
+    }
+
+    qos_puts("Scanstart: switching WiFi from station/remote-shell mode to monitor scanner mode.\n");
+    qos_puts("Scanstart: remote shell may disconnect after this command; scanner should continue.\n");
+
+    (void)qos_wifi_raw_set_enabled(0u);
+    (void)qos_wifi_monitor_set(0u, 0u);
+    (void)qos_wifi_down();
+    qos_sleep(250u);
+
+    qos_puts("Scanstart: loading monitor firmware ");
+    qos_puts(g_wifi_fw_83);
+    qos_puts(" / ");
+    qos_puts(g_wifi_nv_83);
+    if (clm){
+        qos_puts(" / ");
+        qos_puts(clm);
+    }
+    qos_puts("\n");
+    rc = qos_wifi_load_fw(g_wifi_fw_83, g_wifi_nv_83, clm);
+    if (rc != 0){
+        qos_puts("Scanstart: wifiload failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+
+    rc = qos_wifi_randomize_mac();
+    if (rc != 0){
+        qos_puts("Scanstart: MAC randomize warning rc=");
+        print_int(rc);
+        qos_puts("\n");
+    }
+
+    rc = qos_wifi_up_monitor();
+    if (rc != 0){
+        qos_puts("Scanstart: wifiupmon failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+
+    rc = qos_wifi_monitor_set(2u, channel);
+    if (rc != 0){
+        qos_puts("Scanstart: wifimon failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+
+    rc = qos_wifi_raw_set_enabled(1u);
+    if (rc != 0){
+        qos_puts("Scanstart: raw enable failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+
+    qos_puts("Scanstart: monitor ready on channel ");
+    print_uint(channel);
+    qos_puts("; launching scanner.\n");
+    cmd_scanner();
 }
 
 static const char* scanlog_path_for_arg(const char* arg){
@@ -3132,6 +3202,19 @@ static void execute_line(void){
         qos_puts("Usage: httpget <host> [path]\n");
     } else if (str_eq(g_buf, "tlstest")){
         cmd_tlstest();
+    } else if (str_starts_with(g_buf, "scanstart ")){
+        const char* p = g_buf + 10;
+        unsigned int channel = 0u;
+        while (*p == ' '){
+            p++;
+        }
+        if (parse_uint(p, &channel) != 0 || channel == 0u || channel > 13u){
+            qos_puts("Usage: scanstart [1-13]\n");
+        } else{
+            cmd_scanstart(channel);
+        }
+    } else if (str_eq(g_buf, "scanstart")){
+        cmd_scanstart(6u);
     } else if (str_eq(g_buf, "wifiinit")){
         cmd_wifiinit();
     } else if (str_starts_with(g_buf, "wifiload ")){
