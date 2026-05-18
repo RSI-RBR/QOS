@@ -1555,14 +1555,20 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
     }
 
     if (g_cyw43.enabled || sdio_bus_is_ready()){
-        uart_puts("CYW43: wifiload must run before wifiinit; reboot first\n");
-        goto out;
+        uart_puts("CYW43: wifiload while WiFi active; releasing for restage\n");
+        (void)cyw43_release_emmc_for_storage();
+        /*
+         * Recovery path: if SDIO readiness latched through a failed monitor
+         * cycle, force a clean state before reclaiming EMMC for FAT reads.
+         */
+        cyw43_drop_sdio_state();
     }
 
     if (blockdev_reinit_emmc() != 0){
         uart_puts("CYW43: EMMC storage reinit failed\n");
         goto out;
     }
+    fat32_reset();
     if (fat32_init() != 0){
         uart_puts("CYW43: FAT init failed\n");
         goto out;

@@ -1407,9 +1407,15 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
 static int scanner_restore_monitor_path(unsigned int channel){
     cyw43_monitor_status_t st;
     unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
-    int rc = qos_wifi_up_monitor();
-    if (rc == 0){
-        scanner_ensure_monitor_ready(ch, 1u);
+    for (unsigned int attempt = 0u; attempt < 2u; attempt++){
+        int rc = qos_wifi_up_monitor();
+        if (rc == 0){
+            scanner_ensure_monitor_ready(ch, 1u);
+            if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+                return 1;
+            }
+        }
+        qos_sleep(40u);
         if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
             return 1;
         }
