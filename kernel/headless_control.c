@@ -62,6 +62,8 @@ static unsigned long g_led_open_next_tick = 0u;
 static unsigned long g_led_last_render_tick = 0u;
 static unsigned int g_led_scanner_running_cached = 0u;
 static unsigned long g_led_scanner_next_check = 0u;
+static unsigned int g_led_scanner_recovery = 0u;
+static unsigned long g_led_scanner_recovery_expire = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -417,6 +419,15 @@ static void render_led(unsigned long now){
         return;
     }
 
+    if (g_led_scanner_recovery){
+        if ((long)(g_led_scanner_recovery_expire - now) > 0){
+            g_led_prev_scanner_running = 0u;
+            led_apply(1u);
+            return;
+        }
+        g_led_scanner_recovery = 0u;
+    }
+
     if (g_led_open_hit_valid){
         if ((long)(g_led_open_hit_expire - now) > 0){
             unsigned long elapsed = now - g_led_open_next_tick;
@@ -492,6 +503,8 @@ void headless_control_init(void){
     g_led_last_render_tick = now;
     g_led_scanner_running_cached = 0u;
     g_led_scanner_next_check = now;
+    g_led_scanner_recovery = 0u;
+    g_led_scanner_recovery_expire = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_BUTTON_ENABLED && QOS_HEADLESS_LED_ENABLED){
@@ -583,6 +596,30 @@ void headless_control_note_open_network_packet(void){
         if ((long)(ext - g_led_open_hit_expire) > 0){
             g_led_open_hit_expire = ext;
         }
+    }
+    spin_unlock(&g_headless_lock);
+}
+
+void headless_control_note_scanner_recovery(unsigned int active){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = headless_now_ms();
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    if (active){
+        g_led_scanner_running_cached = 1u;
+        g_led_scanner_recovery = 1u;
+        g_led_scanner_recovery_expire = now + 60000u;
+        g_led_open_hit_valid = 0u;
+        led_apply(1u);
+    } else{
+        g_led_scanner_recovery = 0u;
+        g_led_scanner_recovery_expire = 0u;
+        g_led_base_anchor = now;
+        g_led_prev_scanner_running = 0u;
     }
     spin_unlock(&g_headless_lock);
 }

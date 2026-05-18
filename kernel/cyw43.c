@@ -2435,17 +2435,42 @@ int cyw43_monitor_hard_recover(unsigned int channel){
     uart_puts("CYW43: hard monitor recovery start ch=");
     uart_putdec(ch);
     uart_puts("\n");
+    headless_control_note_scanner_recovery(1u);
 
     /*
      * Backplane read failures mean the SDIO/control path is unhealthy, not
-     * merely that monitor mode drifted. Release the shared EMMC host, reload
-     * the board-default Nexmon firmware from FAT, then rebuild monitor/raw
-     * capture from a clean firmware state.
+     * merely that monitor mode drifted. Try progressively stronger recovery:
+     * control reset, SDIO firmware reattach, then full board-default Nexmon
+     * firmware reload from FAT as the last resort.
      */
     (void)cyw43_raw_capture_set_enabled(0u);
     g_cyw43_monitor_mode = 0u;
     g_cyw43_monitor_channel = 0u;
     g_cyw43_monitor_last_rc = 0;
+
+    (void)cyw43_ioctl_monitor(0u, 0u);
+    (void)cyw43_drain_pending_packets(32u);
+    rc = cyw43_ioctl_up_monitor();
+    if (rc == 0 && cyw43_ioctl_monitor(2u, ch) == 0){
+        (void)cyw43_raw_capture_set_enabled(1u);
+        uart_puts("CYW43: hard monitor recovery OK (control reset)\n");
+        headless_control_note_scanner_recovery(0u);
+        return 0;
+    }
+
+    if (g_cyw43.fw_loaded || g_cyw43.fw_running){
+        cyw43_drop_sdio_state();
+        rc = cyw43_init();
+        if (rc == 0){
+            rc = cyw43_ioctl_up_monitor();
+            if (rc == 0 && cyw43_ioctl_monitor(2u, ch) == 0){
+                (void)cyw43_raw_capture_set_enabled(1u);
+                uart_puts("CYW43: hard monitor recovery OK (reattach)\n");
+                headless_control_note_scanner_recovery(0u);
+                return 0;
+            }
+        }
+    }
 
     (void)cyw43_release_emmc_for_storage();
 
@@ -2454,6 +2479,7 @@ int cyw43_monitor_hard_recover(unsigned int channel){
         uart_puts("CYW43: hard recovery firmware reload failed rc=");
         uart_putdec((unsigned int)(-rc));
         uart_puts("\n");
+        headless_control_note_scanner_recovery(0u);
         return -10 + rc;
     }
 
@@ -2462,6 +2488,7 @@ int cyw43_monitor_hard_recover(unsigned int channel){
         uart_puts("CYW43: hard recovery monitor up failed rc=");
         uart_putdec((unsigned int)(-rc));
         uart_puts("\n");
+        headless_control_note_scanner_recovery(0u);
         return -20 + rc;
     }
 
@@ -2470,11 +2497,13 @@ int cyw43_monitor_hard_recover(unsigned int channel){
         uart_puts("CYW43: hard recovery monitor set failed rc=");
         uart_putdec((unsigned int)(-rc));
         uart_puts("\n");
+        headless_control_note_scanner_recovery(0u);
         return -30 + rc;
     }
 
     (void)cyw43_raw_capture_set_enabled(1u);
     uart_puts("CYW43: hard monitor recovery OK\n");
+    headless_control_note_scanner_recovery(0u);
     return 0;
 }
 

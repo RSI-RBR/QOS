@@ -1404,6 +1404,25 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
     (void)qos_wifi_raw_set_enabled(1u);
 }
 
+static int scanner_restore_monitor_path(unsigned int channel){
+    cyw43_monitor_status_t st;
+    unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
+    int rc = qos_wifi_up_monitor();
+    if (rc == 0){
+        scanner_ensure_monitor_ready(ch, 1u);
+        if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+            return 1;
+        }
+    }
+
+    qos_puts("scanner: monitor restore failed; hard recovery\n");
+    if (qos_wifi_monitor_recover(ch) == 0 &&
+        qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+        return 1;
+    }
+    return 0;
+}
+
 static int scanner_recover_rx_stall(unsigned int active_channel,
                                     unsigned int* stage,
                                     unsigned int* last_rx_frames){
@@ -1441,12 +1460,8 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     if (s == 2u){
         qos_puts("scanner: rx stalled; full monitor up/reapply\n");
         (void)qos_wifi_raw_set_enabled(0u);
-        (void)qos_wifi_up_monitor();
-        (void)qos_wifi_monitor_set(0u, 0u);
-        qos_sleep(RECOVERY_SETTLE_MS);
-        (void)qos_wifi_monitor_set(2u, ch);
-        (void)qos_wifi_raw_set_enabled(1u);
-        recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
+    (void)scanner_restore_monitor_path(ch);
+    recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
         if (stage){
             *stage = recovered ? 0u : 3u;
         }
@@ -1458,7 +1473,7 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     if (last_rx_frames){
         *last_rx_frames = 0u;
     }
-    if (qos_wifi_monitor_recover(ch) != 0){
+    if (!scanner_restore_monitor_path(ch)){
         if (stage){
             *stage = 3u;
         }
@@ -1749,8 +1764,7 @@ void program_main(void){
      * start from a clean capture state even if station-mode commands were run
      * earlier in this boot.
      */
-    (void)qos_wifi_up_monitor();
-    scanner_ensure_monitor_ready(DEFAULT_SCAN_CHANNEL, 0u);
+    (void)scanner_restore_monitor_path(DEFAULT_SCAN_CHANNEL);
     cyw43_monitor_status_t mon;
     int have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
     if (have_mon && mon.channel != 0u){
@@ -1854,8 +1868,7 @@ void program_main(void){
             log_summary_line(&stats, active_channel);
             log_ap_snapshot();
             (void)flush_scanner_logs(1);
-            (void)qos_wifi_up_monitor();
-            scanner_ensure_monitor_ready(active_channel, 1u);
+            (void)scanner_restore_monitor_path(active_channel);
             next_flush += ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
             if ((long long)(now - next_flush) >= 0){
                 next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
