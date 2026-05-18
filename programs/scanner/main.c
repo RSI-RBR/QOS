@@ -83,6 +83,16 @@ static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 static unsigned long long g_last_open_hit_notify_us = 0ull;
 
+#define SCAN_LOG_LINE_MAX 768u
+static const char SCAN_LOG_COUNTS[] = "counts.log";
+static const char SCAN_LOG_APS[] = "aps.log";
+static const char SCAN_LOG_HANDSHAKES[] = "handshakes.log";
+
+typedef struct {
+    char s[SCAN_LOG_LINE_MAX];
+    unsigned int len;
+} scan_log_line_t;
+
 /*
  * Include 12/13 so scanners in regions using those channels can still detect
  * local APs. Channel 14 is intentionally excluded (Japan-only, 11b specific).
@@ -134,6 +144,138 @@ static void put_mac(const unsigned char mac[6]){
         }
         put_hex8(mac[i]);
     }
+}
+
+static void log_init(scan_log_line_t* l){
+    if (l){
+        l->len = 0u;
+    }
+}
+
+static void log_ch(scan_log_line_t* l, char c){
+    if (!l || l->len + 1u >= SCAN_LOG_LINE_MAX){
+        return;
+    }
+    l->s[l->len++] = c;
+}
+
+static void log_str(scan_log_line_t* l, const char* s){
+    if (!l || !s){
+        return;
+    }
+    while (*s){
+        log_ch(l, *s++);
+    }
+}
+
+static void log_u32(scan_log_line_t* l, unsigned int v){
+    char tmp[16];
+    int n = 0;
+    if (v == 0u){
+        log_ch(l, '0');
+        return;
+    }
+    while (v > 0u && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    }
+    while (n > 0){
+        log_ch(l, tmp[--n]);
+    }
+}
+
+static void log_u64(scan_log_line_t* l, unsigned long long v){
+    char tmp[24];
+    int n = 0;
+    if (v == 0ull){
+        log_ch(l, '0');
+        return;
+    }
+    while (v > 0ull && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (unsigned int)(v % 10ull));
+        v /= 10ull;
+    }
+    while (n > 0){
+        log_ch(l, tmp[--n]);
+    }
+}
+
+static void log_i32(scan_log_line_t* l, int v){
+    if (v < 0){
+        log_ch(l, '-');
+        log_u32(l, (unsigned int)(-(long long)v));
+        return;
+    }
+    log_u32(l, (unsigned int)v);
+}
+
+static void log_hex8(scan_log_line_t* l, unsigned int v){
+    static const char h[] = "0123456789ABCDEF";
+    log_ch(l, h[(v >> 4u) & 0xFu]);
+    log_ch(l, h[v & 0xFu]);
+}
+
+static void log_hex16(scan_log_line_t* l, unsigned int v){
+    log_hex8(l, (v >> 8u) & 0xFFu);
+    log_hex8(l, v & 0xFFu);
+}
+
+static void log_mac(scan_log_line_t* l, const unsigned char mac[6]){
+    for (unsigned int i = 0; i < 6u; i++){
+        if (i){
+            log_ch(l, ':');
+        }
+        log_hex8(l, mac[i]);
+    }
+}
+
+static void log_hex_bytes(scan_log_line_t* l, const unsigned char* p, unsigned int n){
+    if (!p){
+        return;
+    }
+    for (unsigned int i = 0u; i < n; i++){
+        log_hex8(l, p[i]);
+    }
+}
+
+static void log_ssid(scan_log_line_t* l, const ap_info_t* ap){
+    log_ch(l, '"');
+    if (!ap || ap->ssid_len == 0u){
+        log_str(l, "<hidden>");
+    } else{
+        for (unsigned int i = 0u; i < ap->ssid_len; i++){
+            char c = ap->ssid[i];
+            if (c == '"' || c == '\\'){
+                log_ch(l, '\\');
+                log_ch(l, c);
+            } else if ((unsigned char)c >= 32u && (unsigned char)c <= 126u){
+                log_ch(l, c);
+            } else{
+                log_ch(l, '?');
+            }
+        }
+    }
+    log_ch(l, '"');
+}
+
+static void log_append_line(const char* path, scan_log_line_t* l){
+    if (!path || !l || l->len == 0u){
+        return;
+    }
+    (void)qos_file_append_data(path, (const unsigned char*)l->s, l->len);
+}
+
+static void print_log_sizes(void){
+    int counts = qos_file_size(SCAN_LOG_COUNTS);
+    int aps = qos_file_size(SCAN_LOG_APS);
+    int handshakes = qos_file_size(SCAN_LOG_HANDSHAKES);
+    qos_puts("scanner log bytes: counts=");
+    put_i32(counts);
+    qos_puts(" aps=");
+    put_i32(aps);
+    qos_puts(" handshakes=");
+    put_i32(handshakes);
+    qos_puts("\n");
 }
 
 static unsigned int le16(const unsigned char* p){
@@ -307,6 +449,180 @@ static void maybe_notify_open_hit(const ap_info_t* ap){
     (void)qos_headless_open_hit();
 }
 
+static void count_aps(unsigned int* out_aps, unsigned int* out_open){
+    unsigned int aps = 0u;
+    unsigned int open = 0u;
+    for (unsigned int i = 0; i < MAX_APS; i++){
+        if (g_aps[i].seen){
+            aps++;
+            if (is_open_ap(&g_aps[i])){
+                open++;
+            }
+        }
+    }
+    if (out_aps){
+        *out_aps = aps;
+    }
+    if (out_open){
+        *out_open = open;
+    }
+}
+
+static void log_scanner_start(void){
+    scan_log_line_t l;
+    unsigned long long now = qos_get_time_us();
+    log_init(&l);
+    log_str(&l, "start t_us=");
+    log_u64(&l, now);
+    log_str(&l, " mode=monitor-hop counts=");
+    log_str(&l, SCAN_LOG_COUNTS);
+    log_str(&l, " aps=");
+    log_str(&l, SCAN_LOG_APS);
+    log_str(&l, " handshakes=");
+    log_str(&l, SCAN_LOG_HANDSHAKES);
+    log_ch(&l, '\n');
+    log_append_line(SCAN_LOG_COUNTS, &l);
+
+    log_init(&l);
+    log_str(&l, "start t_us=");
+    log_u64(&l, now);
+    log_str(&l, " ap_snapshot_log=1\n");
+    log_append_line(SCAN_LOG_APS, &l);
+
+    log_init(&l);
+    log_str(&l, "start t_us=");
+    log_u64(&l, now);
+    log_str(&l, " handshake_log=1\n");
+    log_append_line(SCAN_LOG_HANDSHAKES, &l);
+}
+
+static void log_summary_line(const scan_stats_t* st, unsigned int active_channel){
+    unsigned int aps = 0u;
+    unsigned int open = 0u;
+    scan_log_line_t l;
+    if (!st){
+        return;
+    }
+    count_aps(&aps, &open);
+    log_init(&l);
+    log_str(&l, "t_us=");
+    log_u64(&l, qos_get_time_us());
+    log_str(&l, " ch=");
+    log_u32(&l, active_channel);
+    log_str(&l, " frames=");
+    log_u32(&l, st->frames);
+    log_str(&l, " rt=");
+    log_u32(&l, st->rt);
+    log_str(&l, " aps=");
+    log_u32(&l, aps);
+    log_str(&l, " open=");
+    log_u32(&l, open);
+    log_str(&l, " hs=");
+    log_u32(&l, st->handshake_hits);
+    log_str(&l, " bad=");
+    log_u32(&l, st->bad);
+    log_str(&l, " hop_ok=");
+    log_u32(&l, st->hop_ok);
+    log_str(&l, " hop_fail=");
+    log_u32(&l, st->hop_fail);
+    log_str(&l, " bcn=");
+    log_u32(&l, st->frame_counts[CAT_BEACON]);
+    log_str(&l, " data=");
+    log_u32(&l, st->frame_counts[CAT_DATA]);
+    log_str(&l, " preq=");
+    log_u32(&l, st->frame_counts[CAT_PROBE_REQUEST]);
+    log_str(&l, " presp=");
+    log_u32(&l, st->frame_counts[CAT_PROBE_RESPONSE]);
+    log_str(&l, " key=");
+    log_u32(&l, st->frame_counts[CAT_KEY]);
+    log_str(&l, " action=");
+    log_u32(&l, st->frame_counts[CAT_ACTION]);
+    log_str(&l, " block_ack=");
+    log_u32(&l, st->frame_counts[CAT_BLOCK_ACK]);
+    log_str(&l, " auth=");
+    log_u32(&l, st->frame_counts[CAT_AUTH_REQUEST]);
+    log_str(&l, " qos_null=");
+    log_u32(&l, st->frame_counts[CAT_QOS_NULL]);
+    log_str(&l, " cts=");
+    log_u32(&l, st->frame_counts[CAT_CLEAR_TO_SEND]);
+    log_str(&l, " ack=");
+    log_u32(&l, st->frame_counts[CAT_ACKNOWLEDGEMENT]);
+    log_str(&l, " unk=");
+    log_u32(&l, st->frame_counts[CAT_UNKNOWN]);
+    log_ch(&l, '\n');
+    log_append_line(SCAN_LOG_COUNTS, &l);
+}
+
+static void log_ap_line(const ap_info_t* ap){
+    scan_log_line_t l;
+    if (!ap || !ap->seen){
+        return;
+    }
+    log_init(&l);
+    log_str(&l, "t_us=");
+    log_u64(&l, qos_get_time_us());
+    log_str(&l, " bssid=");
+    log_mac(&l, ap->bssid);
+    log_str(&l, " ch=");
+    log_u32(&l, ap->channel);
+    log_str(&l, " sig_min=");
+    log_i32(&l, ap->sig_min);
+    log_str(&l, " sig_max=");
+    log_i32(&l, ap->sig_max);
+    log_str(&l, " enc=");
+    log_str(&l, ap_security_label(ap));
+    log_str(&l, " ssid=");
+    log_ssid(&l, ap);
+    log_str(&l, " clients=");
+    log_u32(&l, ap->clients);
+    log_str(&l, " bcn=");
+    log_u32(&l, ap->cat_counts[CAT_BEACON]);
+    log_str(&l, " data=");
+    log_u32(&l, ap->data_frames);
+    log_str(&l, " key=");
+    log_u32(&l, ap->key_frames);
+    log_str(&l, " hs=");
+    log_u32(&l, ap->handshake_hits);
+    log_ch(&l, '\n');
+    log_append_line(SCAN_LOG_APS, &l);
+}
+
+static void log_ap_snapshot(void){
+    for (unsigned int i = 0u; i < MAX_APS; i++){
+        if (g_aps[i].seen){
+            log_ap_line(&g_aps[i]);
+        }
+    }
+}
+
+static void log_key_event_line(const key_event_t* ev){
+    scan_log_line_t l;
+    if (!ev || !ev->valid){
+        return;
+    }
+    log_init(&l);
+    log_str(&l, "t_us=");
+    log_u64(&l, qos_get_time_us());
+    log_str(&l, " ch=");
+    log_u32(&l, ev->channel);
+    log_str(&l, " msg=");
+    log_u32(&l, ev->msg);
+    log_str(&l, " key_info=0x");
+    log_hex16(&l, ev->key_info);
+    log_str(&l, " key_data_len=");
+    log_u32(&l, ev->key_data_len);
+    log_str(&l, " bssid=");
+    log_mac(&l, ev->bssid);
+    log_str(&l, " tx=");
+    log_mac(&l, ev->transmitter);
+    log_str(&l, " mic=");
+    log_hex_bytes(&l, ev->mic, 16u);
+    log_str(&l, " nonce=");
+    log_hex_bytes(&l, ev->nonce, 32u);
+    log_ch(&l, '\n');
+    log_append_line(SCAN_LOG_HANDSHAKES, &l);
+}
+
 static void ap_note_cat(ap_info_t* ap, frame_cat_t cat, unsigned int bytes){
     if (!ap || cat >= CAT_COUNT){
         return;
@@ -350,6 +666,7 @@ static void key_event_push(unsigned int channel,
     if (g_key_event_count < KEY_EVENT_RING){
         g_key_event_count++;
     }
+    log_key_event_line(ev);
 }
 
 static unsigned int eapol_guess_msg(unsigned int key_info){
@@ -581,14 +898,7 @@ static void print_recent_key_events(void){
 static void print_summary(const scan_stats_t* st, unsigned int active_channel){
     unsigned int aps = 0u;
     unsigned int open = 0u;
-    for (unsigned int i = 0; i < MAX_APS; i++){
-        if (g_aps[i].seen){
-            aps++;
-            if (is_open_ap(&g_aps[i])){
-                open++;
-            }
-        }
-    }
+    count_aps(&aps, &open);
     qos_puts("scan ch=");
     put_u32(active_channel);
     qos_puts(" frames=");
@@ -636,6 +946,8 @@ static void print_overview(void){
         qos_puts(" none\n");
     }
     print_recent_key_events();
+    log_ap_snapshot();
+    print_log_sizes();
 }
 
 static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int force_rearm){
@@ -968,6 +1280,8 @@ void program_main(void){
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
+    qos_puts("scanner logs: counts.log aps.log handshakes.log (sandbox append)\n");
+    log_scanner_start();
     /*
      * Always (re)enter monitor minimal-up first for scanner sessions so we
      * start from a clean capture state even if station-mode commands were run
@@ -1012,6 +1326,7 @@ void program_main(void){
             unsigned int non_beacon = 0u;
 
             print_summary(&stats, active_channel);
+            log_summary_line(&stats, active_channel);
             print_raw_status_line("scanner raw");
 
             non_beacon = (stats.frames >= stats.frame_counts[CAT_BEACON])
