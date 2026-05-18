@@ -3058,6 +3058,38 @@ static int cyw43_wl_prepare_sta_supplicant(void){
     return 0;
 }
 
+static int cyw43_join_prepare_station_state(void){
+    /*
+     * A join can be attempted after scans, monitor experiments, or a previous
+     * failed association. Put the firmware back into a boring STA baseline
+     * before programming WPA/SSID so retries are not just replaying stale state.
+     */
+    cyw43_drain_pending_packets(16u);
+
+    if (cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u) != 0){
+        uart_puts("CYW43: join prep scansuppress clear failed; continuing\n");
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u) != 0){
+        uart_puts("CYW43: join prep promisc clear failed; continuing\n");
+    }
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u);
+    (void)cyw43_wl_set_int(CYW43_WLC_SET_PM, 0u);
+    (void)cyw43_wl_set_var_u32("mpc", 0u);
+
+    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0){
+        uart_puts("CYW43: join prep infra failed\n");
+        return -1;
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
+        uart_puts("CYW43: join prep auth-open failed\n");
+        return -2;
+    }
+
+    cyw43_drain_pending_packets(8u);
+    return 0;
+}
+
 static void cyw43_event_mask_set(unsigned char* mask, unsigned int event_id){
     mask[event_id >> 3u] |= (unsigned char)(1u << (event_id & 7u));
 }
@@ -3826,25 +3858,36 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
     unsigned int n = 0;
     unsigned int wpa_auth = CYW43_WPA_AUTH_DISABLED;
     unsigned char gateway_ip[4];
+    int prep_rc = 0;
 
     if (!ssid || !*ssid || !g_cyw43.iface_up){
-        return -1;
+        uart_puts("CYW43: join rejected; interface not up\n");
+        return -10;
     }
     n = strn_len_local(ssid, 32u);
     if (n == 0u || n > CYW43_WL_MAX_SSID_LEN){
-        return -1;
+        uart_puts("CYW43: join rejected; bad ssid length\n");
+        return -11;
+    }
+
+    prep_rc = cyw43_join_prepare_station_state();
+    if (prep_rc != 0){
+        return -20 + prep_rc;
     }
 
     if (password && *password){
         wpa_auth = CYW43_WPA2_AUTH_PSK;
-        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, CYW43_WSEC_AES) != 0 ||
-            cyw43_wl_prepare_sta_supplicant() != 0){
-            uart_puts("CYW43: join WPA setup failed\n");
-            return -1;
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, CYW43_WSEC_AES) != 0){
+            uart_puts("CYW43: join WPA wsec AES failed\n");
+            return -30;
+        }
+        if (cyw43_wl_prepare_sta_supplicant() != 0){
+            uart_puts("CYW43: join WPA supplicant setup failed\n");
+            return -31;
         }
         if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
             uart_puts("CYW43: join WPA auth mode setup failed\n");
-            return -1;
+            return -32;
         }
         /*
          * CYW43 firmware can reject PMK writes if we push too soon after
@@ -3859,32 +3902,41 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
             wpa_auth = CYW43_WPA_AUTH_PSK | CYW43_WPA2_AUTH_PSK;
             if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
                 uart_puts("CYW43: join WPA auth fallback setup failed\n");
-                return -1;
+                return -33;
             }
             cyw43_delay(200000u);
             if (cyw43_wl_set_pmk(password) != 0){
-                uart_puts("CYW43: join WPA setup failed\n");
-                return -1;
+                uart_puts("CYW43: join WPA PMK setup failed\n");
+                return -34;
             }
         }
     } else{
-        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, 0u) != 0 ||
-            cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA_AUTH_DISABLED) != 0){
-            uart_puts("CYW43: join open setup failed\n");
-            return -1;
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, 0u) != 0){
+            uart_puts("CYW43: join open wsec clear failed\n");
+            return -40;
+        }
+        if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA_AUTH_DISABLED) != 0){
+            uart_puts("CYW43: join open auth clear failed\n");
+            return -41;
         }
     }
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0 ||
-        cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0 ||
-        cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
-        uart_puts("CYW43: join basic mode setup failed\n");
-        return -1;
+    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0){
+        uart_puts("CYW43: join infra set failed\n");
+        return -50;
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
+        uart_puts("CYW43: join auth-open set failed\n");
+        return -51;
+    }
+    if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
+        uart_puts("CYW43: join final WPA auth set failed\n");
+        return -52;
     }
 
     if (cyw43_wl_set_ssid_cmd(CYW43_WLC_SET_SSID, ssid) != 0){
         uart_puts("CYW43: set ssid failed\n");
-        return -1;
+        return -60;
     }
 
     for (unsigned int i = 0; i < n; i++){
@@ -3905,7 +3957,7 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         g_cyw43.joined = 0;
         g_cyw43.joined_ssid[0] = 0;
         uart_puts("CYW43: join backend switch failed\n");
-        return -1;
+        return -70;
     }
 
     /*
