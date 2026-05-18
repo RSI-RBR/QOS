@@ -6,9 +6,10 @@
 #define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
 #define STALE_RECOVER_SECS 10u
+#define SUMMARY_PRINT_SECS 4u
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
-#define DETAIL_PRINT_SECS 10u
+#define DETAIL_PRINT_SECS 20u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
 
@@ -954,7 +955,7 @@ void program_main(void){
     stats.handshake_hits = 0u;
 
     unsigned long long now = qos_get_time_us();
-    unsigned long long next_print = now + 2000000ull;
+    unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
 
@@ -1051,9 +1052,9 @@ void program_main(void){
                     rearm_stage = 0u;
                 }
             }
-            next_print += 2000000ull;
+            next_print += ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
             if ((long long)(now - next_print) >= 0){
-                next_print = now + 2000000ull;
+                next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
             }
         }
 

@@ -213,6 +213,8 @@ static unsigned int g_cyw43_wl_cmd_tries = 48u;
 static unsigned int g_cyw43_wl_cmd_timeout_ms = 250u;
 static unsigned long g_cyw43_bp_fail_last_tick;
 static unsigned int g_cyw43_bp_fail_suppressed;
+static unsigned int g_cyw43_pending_mac_valid;
+static unsigned char g_cyw43_pending_mac[6];
 
 static void cyw43_drain_pending_packets(unsigned int max_frames);
 static int cyw43_wl_cmd(int write, unsigned int op,
@@ -2213,6 +2215,30 @@ static int cyw43_control_ready(void){
     return g_cyw43.fw_running && g_cyw43.iface_up && g_cyw43.func2_ready;
 }
 
+static void cyw43_set_pending_mac(const unsigned char mac[6]){
+    if (!mac){
+        return;
+    }
+    for (unsigned int i = 0u; i < 6u; i++){
+        g_cyw43_pending_mac[i] = mac[i];
+    }
+    g_cyw43_pending_mac_valid = 1u;
+}
+
+static int cyw43_apply_pending_mac_if_ready(void){
+    if (!g_cyw43_pending_mac_valid){
+        return 0;
+    }
+    if (!cyw43_control_ready()){
+        return -1;
+    }
+    if (cyw43_wl_set_var("cur_etheraddr", g_cyw43_pending_mac, 6u) != 0){
+        return -1;
+    }
+    g_cyw43_pending_mac_valid = 0u;
+    return 0;
+}
+
 int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     unsigned char local_mac[6];
     unsigned char gateway_ip[4];
@@ -2279,8 +2305,18 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
             }
 
             if (!set_ok){
-                uart_puts("CYW43: set cur_etheraddr failed\n");
-                return -2;
+                if (g_cyw43_monitor_mode != 0u){
+                    /*
+                     * In monitor mode, firmware may reject cur_etheraddr while
+                     * capture hooks are active. Keep the randomized MAC as
+                     * pending and apply it on the next stable control window.
+                     */
+                    cyw43_set_pending_mac(local_mac);
+                    uart_puts("CYW43: cur_etheraddr deferred (monitor mode)\n");
+                } else{
+                    uart_puts("CYW43: set cur_etheraddr failed\n");
+                    return -2;
+                }
             }
         }
     }
@@ -3423,6 +3459,7 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
     }
     if (monitor_minimal){
         g_cyw43.iface_up = 1;
+        (void)cyw43_apply_pending_mac_if_ready();
         return 0;
     }
     if (!g_cyw43.iface_up &&
@@ -3435,6 +3472,7 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
+    (void)cyw43_apply_pending_mac_if_ready();
     cyw43_log_radio_status("after-up");
     // Latency-oriented defaults for bring-up: keep radio awake and disable
     // minimum power consumption mode while we prioritize responsiveness.
