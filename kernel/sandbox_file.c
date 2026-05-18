@@ -14,6 +14,7 @@ typedef struct sandbox_file_entry {
     unsigned char* data;
     unsigned int size;
     unsigned int cap;
+    unsigned int fat_flushed_size;
 } sandbox_file_entry_t;
 
 static sandbox_file_entry_t g_files[SANDBOX_FILE_ENTRIES];
@@ -141,6 +142,7 @@ static sandbox_file_entry_t* alloc_entry_locked(void){
             g_files[i].used = 1u;
             g_files[i].size = 0u;
             g_files[i].cap = 0u;
+            g_files[i].fat_flushed_size = 0u;
             g_files[i].data = 0;
             for (unsigned int k = 0; k < 11u; k++){
                 g_files[i].sandbox83[k] = ' ';
@@ -162,6 +164,7 @@ void sandbox_file_init(void){
         g_files[i].data = 0;
         g_files[i].size = 0u;
         g_files[i].cap = 0u;
+        g_files[i].fat_flushed_size = 0u;
         g_files[i].path[0] = 0;
     }
     g_files_inited = 1u;
@@ -329,6 +332,7 @@ int sandbox_file_clear(const char sandbox83[11], const char* relative_path){
         }
     }
     e->size = 0u;
+    e->fat_flushed_size = 0u;
     spin_unlock(&g_files_lock);
     return 0;
 }
@@ -336,7 +340,8 @@ int sandbox_file_clear(const char sandbox83[11], const char* relative_path){
 int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_path){
     sandbox_file_entry_t* e;
     unsigned char* copy = 0;
-    unsigned int size = 0u;
+    unsigned int offset = 0u;
+    unsigned int len = 0u;
     int rc;
 
     if (!g_files_inited){
@@ -352,22 +357,39 @@ int sandbox_file_flush_to_fat(const char sandbox83[11], const char* relative_pat
         spin_unlock(&g_files_lock);
         return -1;
     }
-    size = e->size;
-    if (size > 0u){
-        copy = (unsigned char*)kmalloc(size);
+    if (e->fat_flushed_size > e->size){
+        e->fat_flushed_size = e->size;
+    }
+    offset = e->fat_flushed_size;
+    len = e->size - offset;
+    if (len > 0u){
+        copy = (unsigned char*)kmalloc(len);
         if (!copy){
             spin_unlock(&g_files_lock);
             return -1;
         }
-        for (unsigned int i = 0u; i < size; i++){
-            copy[i] = e->data[i];
+        for (unsigned int i = 0u; i < len; i++){
+            copy[i] = e->data[offset + i];
         }
     }
     spin_unlock(&g_files_lock);
 
-    rc = fat32_write_file_in_dir_path_existing(sandbox83, relative_path, copy, size);
+    if (len == 0u){
+        return 0;
+    }
+
+    rc = fat32_append_file_in_dir_path_existing(sandbox83, relative_path, copy, len);
     if (copy){
-        kfree_secure(copy, size);
+        kfree_secure(copy, len);
+    }
+
+    if (rc == 0){
+        spin_lock(&g_files_lock);
+        e = find_entry_locked(sandbox83, relative_path);
+        if (e && e->fat_flushed_size == offset){
+            e->fat_flushed_size = offset + len;
+        }
+        spin_unlock(&g_files_lock);
     }
     return rc;
 }

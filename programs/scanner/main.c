@@ -10,6 +10,7 @@
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
 #define DETAIL_PRINT_SECS 20u
+#define AUTO_FLUSH_SECS 60u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
 #define RECV_ERR_FORCE_REARM 8u
@@ -266,6 +267,27 @@ static void log_append_line(const char* path, scan_log_line_t* l){
         return;
     }
     (void)qos_file_append_data(path, (const unsigned char*)l->s, l->len);
+}
+
+static int flush_scanner_logs(int verbose){
+    int ok = 1;
+    int rc_counts = qos_scanner_log_flush(SCAN_LOG_COUNTS);
+    int rc_aps = qos_scanner_log_flush(SCAN_LOG_APS);
+    int rc_hs = qos_scanner_log_flush(SCAN_LOG_HANDSHAKES);
+
+    if (rc_counts != 0 || rc_aps != 0 || rc_hs != 0){
+        ok = 0;
+    }
+    if (verbose || !ok){
+        qos_puts("scanner autosave: counts=");
+        put_i32(rc_counts);
+        qos_puts(" aps=");
+        put_i32(rc_aps);
+        qos_puts(" handshakes=");
+        put_i32(rc_hs);
+        qos_puts(ok ? " OK\n" : " failed\n");
+    }
+    return ok ? 0 : -1;
 }
 
 static void print_log_sizes(void){
@@ -1411,9 +1433,10 @@ void program_main(void){
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
+    unsigned long long next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
-    qos_puts("scanner logs: counts.log aps.log handshakes.log (sandbox append)\n");
+    qos_puts("scanner logs: counts.log aps.log handshakes.log (RAM append, FAT autosave 60s)\n");
     log_scanner_start();
     /*
      * Always (re)enter monitor minimal-up first for scanner sessions so we
@@ -1518,6 +1541,16 @@ void program_main(void){
             next_hop += ((unsigned long long)hop_dwell_ms * 1000ull);
             if ((long long)(now - next_hop) >= 0){
                 next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
+            }
+        }
+
+        if ((long long)(now - next_flush) >= 0){
+            (void)flush_scanner_logs(1);
+            (void)qos_wifi_up_monitor();
+            scanner_ensure_monitor_ready(active_channel, 1u);
+            next_flush += ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
+            if ((long long)(now - next_flush) >= 0){
+                next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
             }
         }
 

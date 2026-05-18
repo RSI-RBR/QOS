@@ -859,6 +859,75 @@ static int write_file_cluster_chain_existing(unsigned int first_cluster,
     return (written == size) ? 0 : -1;
 }
 
+static int write_file_cluster_chain_at(unsigned int first_cluster,
+                                       unsigned int offset,
+                                       const unsigned char* data,
+                                       unsigned int size){
+    unsigned int cluster_size = sectors_per_cluster * SECTOR_SIZE;
+    unsigned int cluster = first_cluster;
+    unsigned int file_pos = 0u;
+    unsigned int written = 0u;
+
+    if (!data && size != 0u){
+        return -1;
+    }
+    if (size == 0u){
+        return 0;
+    }
+    if (first_cluster < 2u || cluster_size == 0u || cluster_size > MAX_CLUSTER_SIZE){
+        return -1;
+    }
+
+    while (cluster < 0x0FFFFFF8u && file_pos + cluster_size <= offset){
+        file_pos += cluster_size;
+        cluster = fat_next(cluster);
+    }
+
+    while (cluster < 0x0FFFFFF8u && written < size){
+        unsigned int lba = cluster_lba(cluster);
+        for (unsigned int s = 0u; s < sectors_per_cluster && written < size; s++){
+            unsigned int sector_file_pos = file_pos + (s * SECTOR_SIZE);
+            unsigned int sector_end = sector_file_pos + SECTOR_SIZE;
+            unsigned int start_in_sector = 0u;
+            unsigned int chunk;
+
+            if (sector_end <= offset){
+                continue;
+            }
+
+            if (offset > sector_file_pos){
+                start_in_sector = offset - sector_file_pos;
+            }
+            chunk = SECTOR_SIZE - start_in_sector;
+            if (chunk > size - written){
+                chunk = size - written;
+            }
+
+            if (start_in_sector == 0u && chunk == SECTOR_SIZE){
+                if (fat_write_sector_uncached(lba + s, data + written) != 0){
+                    return -1;
+                }
+            } else{
+                if (fat_read_sector_cached(lba + s, sector) != 0){
+                    return -1;
+                }
+                fat_copy(sector + start_in_sector, data + written, chunk);
+                if (fat_write_sector_uncached(lba + s, sector) != 0){
+                    return -1;
+                }
+            }
+            written += chunk;
+        }
+        if (written >= size){
+            break;
+        }
+        file_pos += cluster_size;
+        cluster = fat_next(cluster);
+    }
+
+    return (written == size) ? 0 : -1;
+}
+
 static int find_entry_in_dir(unsigned int start_cluster,
                              const char name83[11],
                              unsigned char out_entry[32]){
@@ -1313,6 +1382,72 @@ int fat32_write_file_in_dir_path_existing(const char root_dir_83[11],
         write16(&sector[ref.sector_offset + 20u], (file_cluster >> 16) & 0xFFFFu);
         write16(&sector[ref.sector_offset + 26u], file_cluster & 0xFFFFu);
         write32(&sector[ref.sector_offset + 28u], size);
+        rc = fat_write_sector_uncached(ref.sector_lba, sector);
+    }
+
+    if (rc != 0){
+        fat_cache_reset();
+    }
+    fat_unlock(irq);
+    return rc;
+}
+
+int fat32_append_file_in_dir_path_existing(const char root_dir_83[11],
+                                           const char *relative_path,
+                                           const unsigned char *data,
+                                           unsigned int len){
+    unsigned long irq = fat_lock();
+    fat_dirent_ref_t ref;
+    unsigned int file_cluster;
+    unsigned int old_size;
+    unsigned int new_size;
+    unsigned int capacity;
+    int rc = -1;
+
+    if (len == 0u){
+        return 0;
+    }
+    if (!data){
+        return -1;
+    }
+
+    if (!fat_initialized && fat32_init_locked() != 0){
+        fat_unlock(irq);
+        return -1;
+    }
+
+    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, 0, 0) != 0 ||
+        entry_is_directory(ref.entry)){
+        fat_cache_reset();
+        fat_unlock(irq);
+        return -1;
+    }
+
+    old_size = read32(&ref.entry[28]);
+    if (old_size > 0xFFFFFFFFu - len){
+        fat_unlock(irq);
+        return -1;
+    }
+    new_size = old_size + len;
+
+    file_cluster = entry_first_cluster(ref.entry);
+    if (ensure_file_chain_capacity(&file_cluster, new_size) != 0){
+        uart_puts("FAT append cluster allocation failed\n");
+        fat_unlock(irq);
+        return -1;
+    }
+    capacity = file_chain_capacity(file_cluster);
+    if (file_cluster < 2u || new_size > capacity){
+        uart_puts("FAT append exceeds file allocation\n");
+        fat_unlock(irq);
+        return -1;
+    }
+
+    if (write_file_cluster_chain_at(file_cluster, old_size, data, len) == 0 &&
+        fat_read_sector_cached(ref.sector_lba, sector) == 0){
+        write16(&sector[ref.sector_offset + 20u], (file_cluster >> 16) & 0xFFFFu);
+        write16(&sector[ref.sector_offset + 26u], file_cluster & 0xFFFFu);
+        write32(&sector[ref.sector_offset + 28u], new_size);
         rc = fat_write_sector_uncached(ref.sector_lba, sector);
     }
 

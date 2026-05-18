@@ -730,13 +730,13 @@ static void cmd_scanflush(const char* arg){
         if (flush_one_scanlog("aps") != 0) ok = 0;
         if (flush_one_scanlog("handshakes") != 0) ok = 0;
         if (!ok){
-            qos_puts("scanflush note: files must already exist in /SCANNER with enough allocated space.\n");
+            qos_puts("scanflush note: files must already exist in /SCANNER.\n");
         }
         return;
     }
     if (flush_one_scanlog(p) != 0){
         qos_puts("Usage: scanflush [counts|aps|handshakes|all]\n");
-        qos_puts("Files must already exist in /SCANNER with enough allocated space.\n");
+        qos_puts("Files must already exist in /SCANNER.\n");
     }
 }
 
