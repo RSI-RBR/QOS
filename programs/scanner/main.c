@@ -274,20 +274,14 @@ static void log_append_line(const char* path, scan_log_line_t* l){
 
 static int flush_scanner_logs(int verbose){
     int ok = 1;
-    int rc_counts = qos_scanner_log_flush(SCAN_LOG_COUNTS);
-    int rc_aps = qos_scanner_log_flush(SCAN_LOG_APS);
-    int rc_hs = qos_scanner_log_flush(SCAN_LOG_HANDSHAKES);
+    int rc_batch = qos_scanner_log_flush_all();
 
-    if (rc_counts != 0 || rc_aps != 0 || rc_hs != 0){
+    if (rc_batch != 0){
         ok = 0;
     }
     if (verbose || !ok){
-        qos_puts("scanner autosave: counts=");
-        put_i32(rc_counts);
-        qos_puts(" aps=");
-        put_i32(rc_aps);
-        qos_puts(" handshakes=");
-        put_i32(rc_hs);
+        qos_puts("scanner autosave: batch=");
+        put_i32(rc_batch);
         qos_puts(ok ? " OK\n" : " failed\n");
     }
     return ok ? 0 : -1;
@@ -1880,10 +1874,31 @@ void program_main(void){
         }
 
         if ((long long)(now - next_flush) >= 0){
+            unsigned long long flush_start_us = qos_get_time_us();
+            unsigned long long flush_elapsed_us;
+            int flush_rc;
+            int restore_ok;
             log_summary_line(&stats, active_channel);
             log_ap_snapshot();
-            (void)flush_scanner_logs(1);
-            (void)scanner_restore_monitor_path(active_channel);
+            flush_rc = flush_scanner_logs(1);
+            restore_ok = scanner_restore_monitor_path(active_channel);
+            flush_elapsed_us = qos_get_time_us() - flush_start_us;
+            qos_puts("scanner autosave+restore ms=");
+            put_u32((unsigned int)(flush_elapsed_us / 1000ull));
+            qos_puts(" flush_rc=");
+            put_i32(flush_rc);
+            qos_puts(" restore=");
+            put_u32((unsigned int)(restore_ok ? 1u : 0u));
+            qos_puts("\n");
+            /*
+             * FAT autosave temporarily reclaims shared EMMC/SDIO. Give monitor
+             * path a fresh idle window after restore to avoid false stale-RX
+             * escalation immediately after a successful autosave cycle.
+             */
+            last_rx_progress_us = qos_get_time_us();
+            recv_err_streak = 0u;
+            rearm_stage = 0u;
+            idle_quiet_windows = 0u;
             next_flush += ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
             if ((long long)(now - next_flush) >= 0){
                 next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);

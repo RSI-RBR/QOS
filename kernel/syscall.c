@@ -118,6 +118,14 @@ static int scanner_log_is_replace_file(const char* path){
     return (cstr_eq_lit(path, "counts.log") || cstr_eq_lit(path, "aps.log")) ? 1 : 0;
 }
 
+static int scanner_log_flush_all_files(void){
+    static const char scanner83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
+    int rc_counts = sandbox_file_flush_to_fat_replace(scanner83, "counts.log");
+    int rc_aps = sandbox_file_flush_to_fat_replace(scanner83, "aps.log");
+    int rc_hs = sandbox_file_flush_to_fat(scanner83, "handshakes.log");
+    return (rc_counts == 0 && rc_aps == 0 && rc_hs == 0) ? 0 : -1;
+}
+
 static int copy_cstr_out(char* out, unsigned int out_cap, const char* in){
     unsigned int i = 0;
     if (!out || out_cap == 0u || !in){
@@ -623,6 +631,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_SCANNER_LOG_READ:
         case SYS_SCANNER_LOG_FLUSH:
         case SYS_SCANNER_LOG_READ_FAT:
+        case SYS_SCANNER_LOG_FLUSH_ALL:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -2696,6 +2705,22 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
             kernel_preempt_exit();
 
+            frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
+            return frame_sp;
+        }
+
+        case SYS_SCANNER_LOG_FLUSH_ALL:
+        {
+            int rc = -1;
+            kernel_preempt_enter();
+            if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
+                rc = scanner_log_flush_all_files();
+            }
+            if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
+                blockdev_is_emmc() && fat32_init() == 0){
+                rc = scanner_log_flush_all_files();
+            }
+            kernel_preempt_exit();
             frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
             return frame_sp;
         }

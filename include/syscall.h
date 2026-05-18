@@ -186,7 +186,8 @@ enum {
     SYS_SCANNER_LOG_READ = 160,
     SYS_SCANNER_LOG_FLUSH = 161,
     SYS_SCANNER_LOG_READ_FAT = 162,
-    SYS_WIFI_MONITOR_RECOVER = 163
+    SYS_WIFI_MONITOR_RECOVER = 163,
+    SYS_SCANNER_LOG_FLUSH_ALL = 164
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -446,6 +447,10 @@ static inline int qos_scanner_log_read(const char* relative_path,
 
 static inline int qos_scanner_log_flush(const char* relative_path){
     return (int)qos_syscall1(SYS_SCANNER_LOG_FLUSH, (unsigned long)relative_path);
+}
+
+static inline int qos_scanner_log_flush_all(void){
+    return (int)qos_syscall0(SYS_SCANNER_LOG_FLUSH_ALL);
 }
 
 static inline int qos_scanner_log_read_fat(const char* relative_path,
