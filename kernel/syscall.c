@@ -638,6 +638,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_WIFI_RAW_STATUS:
         case SYS_WIFI_MONITOR_SET:
         case SYS_WIFI_MONITOR_STATUS:
+        case SYS_WIFI_MONITOR_RECOVER:
         case SYS_WIFI_UP_MONITOR:
         case SYS_WIFI_RANDOMIZE_MAC:
         case SYS_LED_TEST:
@@ -2889,6 +2890,12 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             frame[TF_X0] = 0;
             return frame_sp;
         }
+
+        case SYS_WIFI_MONITOR_RECOVER:
+            kernel_preempt_enter();
+            frame[TF_X0] = (unsigned long)cyw43_monitor_hard_recover((unsigned int)frame[TF_X0]);
+            kernel_preempt_exit();
+            return frame_sp;
 
         case SYS_WIFI_JOIN:
         {

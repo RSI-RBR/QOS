@@ -185,7 +185,8 @@ enum {
     SYS_HEADLESS_OPEN_HIT = 159,
     SYS_SCANNER_LOG_READ = 160,
     SYS_SCANNER_LOG_FLUSH = 161,
-    SYS_SCANNER_LOG_READ_FAT = 162
+    SYS_SCANNER_LOG_READ_FAT = 162,
+    SYS_WIFI_MONITOR_RECOVER = 163
 };
 
 #define QOS_SYSTEM_STATUS_TEMP_OK       0x01u
@@ -1130,6 +1131,10 @@ static inline int qos_wifi_monitor_set(unsigned int mode, unsigned int channel){
 
 static inline int qos_wifi_monitor_status(cyw43_monitor_status_t* out){
     return (int)qos_syscall1(SYS_WIFI_MONITOR_STATUS, (unsigned long)out);
+}
+
+static inline int qos_wifi_monitor_recover(unsigned int channel){
+    return (int)qos_syscall1(SYS_WIFI_MONITOR_RECOVER, (unsigned long)channel);
 }
 
 static inline int qos_wifi_join(const char* ssid, const char* password){

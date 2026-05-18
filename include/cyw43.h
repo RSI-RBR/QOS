@@ -113,5 +113,6 @@ int cyw43_raw_capture_recv(unsigned char* out, unsigned int out_cap);
 int cyw43_raw_capture_get_status(cyw43_raw_capture_status_t* out);
 int cyw43_ioctl_monitor(unsigned int mode, unsigned int channel);
 int cyw43_ioctl_monitor_status(cyw43_monitor_status_t* out);
+int cyw43_monitor_hard_recover(unsigned int channel);
 
 #endif

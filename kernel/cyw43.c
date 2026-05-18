@@ -1527,9 +1527,18 @@ int cyw43_upload_firmware_from_buffers(const unsigned char* fw_bin,
 int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
                                    const char* nvram_txt_83,
                                    const char* clm_blob_83){
-    const char* fw_name = fw_bin_83 ? fw_bin_83 : "4343WIFIBIN";
-    const char* nv_name = nvram_txt_83 ? nvram_txt_83 : "4343NVRMTXT";
-    const char* clm_name = (clm_blob_83 && *clm_blob_83) ? clm_blob_83 : 0;
+#if defined(QOS_BOARD_PI_ZERO2W)
+    const char* default_fw_name = "P0NEXMONBIN";
+    const char* default_nv_name = "P0NEXMONTXT";
+    const char* default_clm_name = "P0NEXMONCLM";
+#else
+    const char* default_fw_name = "4343WIFIBIN";
+    const char* default_nv_name = "4343NVRMTXT";
+    const char* default_clm_name = 0;
+#endif
+    const char* fw_name = fw_bin_83 ? fw_bin_83 : default_fw_name;
+    const char* nv_name = nvram_txt_83 ? nvram_txt_83 : default_nv_name;
+    const char* clm_name = (clm_blob_83 && *clm_blob_83) ? clm_blob_83 : default_clm_name;
     unsigned char* fw_buf = 0;
     unsigned char* nv_buf = 0;
     unsigned char* clm_buf = 0;
@@ -2416,6 +2425,56 @@ int cyw43_ioctl_monitor_status(cyw43_monitor_status_t* out){
     out->channel = g_cyw43_monitor_channel;
     out->raw_enabled = g_cyw43_raw_enabled ? 1u : 0u;
     out->last_rc = g_cyw43_monitor_last_rc;
+    return 0;
+}
+
+int cyw43_monitor_hard_recover(unsigned int channel){
+    unsigned int ch = channel ? channel : 6u;
+    int rc;
+
+    uart_puts("CYW43: hard monitor recovery start ch=");
+    uart_putdec(ch);
+    uart_puts("\n");
+
+    /*
+     * Backplane read failures mean the SDIO/control path is unhealthy, not
+     * merely that monitor mode drifted. Release the shared EMMC host, reload
+     * the board-default Nexmon firmware from FAT, then rebuild monitor/raw
+     * capture from a clean firmware state.
+     */
+    (void)cyw43_raw_capture_set_enabled(0u);
+    g_cyw43_monitor_mode = 0u;
+    g_cyw43_monitor_channel = 0u;
+    g_cyw43_monitor_last_rc = 0;
+
+    (void)cyw43_release_emmc_for_storage();
+
+    rc = cyw43_upload_firmware_from_fat(0, 0, 0);
+    if (rc != 0){
+        uart_puts("CYW43: hard recovery firmware reload failed rc=");
+        uart_putdec((unsigned int)(-rc));
+        uart_puts("\n");
+        return -10 + rc;
+    }
+
+    rc = cyw43_ioctl_up_monitor();
+    if (rc != 0){
+        uart_puts("CYW43: hard recovery monitor up failed rc=");
+        uart_putdec((unsigned int)(-rc));
+        uart_puts("\n");
+        return -20 + rc;
+    }
+
+    rc = cyw43_ioctl_monitor(2u, ch);
+    if (rc != 0){
+        uart_puts("CYW43: hard recovery monitor set failed rc=");
+        uart_putdec((unsigned int)(-rc));
+        uart_puts("\n");
+        return -30 + rc;
+    }
+
+    (void)cyw43_raw_capture_set_enabled(1u);
+    uart_puts("CYW43: hard monitor recovery OK\n");
     return 0;
 }
 

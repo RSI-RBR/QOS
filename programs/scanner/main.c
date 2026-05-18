@@ -1453,15 +1453,18 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
         return recovered;
     }
 
-    qos_puts("scanner: rx stalled; radio down/up monitor reset\n");
+    qos_puts("scanner: rx stalled; hard WiFi monitor recovery\n");
     (void)qos_wifi_raw_set_enabled(0u);
-    (void)qos_wifi_monitor_set(0u, 0u);
-    (void)qos_wifi_down();
-    qos_sleep(100u);
-    (void)qos_wifi_up_monitor();
-    (void)qos_wifi_monitor_set(2u, ch);
-    (void)qos_wifi_raw_set_enabled(1u);
-    recovered = scanner_wait_for_raw_progress(last_rx_frames, 1000u);
+    if (last_rx_frames){
+        *last_rx_frames = 0u;
+    }
+    if (qos_wifi_monitor_recover(ch) != 0){
+        if (stage){
+            *stage = 3u;
+        }
+        return 0;
+    }
+    recovered = scanner_wait_for_raw_progress(last_rx_frames, 2000u);
     if (stage){
         *stage = recovered ? 0u : 1u;
     }
