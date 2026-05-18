@@ -18,9 +18,9 @@
 #define FULL_REARM_COOLDOWN_SECS 5u
 #define RECV_ERR_FORCE_REARM 8u
 #define RECOVERY_SETTLE_MS 30u
-#define SCAN_LOAD_BUF_BYTES (64u * 1024u)
+#define SCAN_LOAD_BUF_BYTES (256u * 1024u)
 #define IDLE_RECOVER_CONSEC_WINDOWS 3u
-#define LOAD_PERSISTENT_STATE_ON_START 0u
+#define LOAD_PERSISTENT_STATE_ON_START 1u
 #define AUTO_FLUSH_DURING_CAPTURE 0u
 #define CHANNEL_HOP_DURING_CAPTURE 1u
 #define SCANNER_DESTRUCTIVE_RECOVERY 0u
@@ -1846,7 +1846,7 @@ void program_main(void){
     unsigned long long next_flush = now + ((unsigned long long)AUTO_FLUSH_SECS * 1000000ull);
 
     qos_puts("QOS WiFi scanner starting (continuous + channel hop).\n");
-    qos_puts("scanner logs: RAM live; stop scanner then scanflush all to persist FAT logs\n");
+    qos_puts("scanner logs: prior counts/APs loaded when storage is available; scanflush all persists latest snapshot\n");
     (void)qos_headless_scanner_idle(0u);
     log_scanner_start();
     log_summary_line(&stats, active_channel);
