@@ -297,7 +297,7 @@ void sdio_bus_suspend_state(void){
     g_ready = 0;
 }
 
-static int sdio_bus_init_common(int pulse_wl_on, int live_reattach){
+static int sdio_bus_init_common(int pulse_wl_on, int hard_reset_wl_on, int live_reattach){
     unsigned int resp = 0;
     unsigned int c1 = 0;
     unsigned int irpt = 0;
@@ -309,13 +309,28 @@ static int sdio_bus_init_common(int pulse_wl_on, int live_reattach){
         g_ocr = 0;
     }
 
+    if (hard_reset_wl_on){
+        /*
+         * When switching from station firmware to Nexmon monitor firmware,
+         * make sure the CYW43 is electrically reset before we present the
+         * host again. Otherwise CMD5 can see no SDIO card on the second load.
+         */
+        gpio_wifi_wl_on_set(0);
+        sdio_short_delay(5000000u);
+    }
+
     // Circle's ether4330 first disconnects EMMC from the SD-card pins
     // (GPIO48..53 ALT0), then connects EMMC to WiFi SDIO on GPIO34..39 ALT3.
     gpio_init_sd();
     gpio_init_wifi_sdio();
     clock_init_wifi_lpo();
-    if (pulse_wl_on){
+    if (hard_reset_wl_on){
+        gpio_wifi_wl_on_hard_reset();
+    } else if (pulse_wl_on){
         gpio_wifi_wl_on_pulse();
+    }
+    if (hard_reset_wl_on){
+        sdio_short_delay(5000000u);
     }
     mailbox_set_emmc_clock(25000000);
     uart_puts("SDIO: stage host reset\n");
@@ -465,11 +480,15 @@ static int sdio_bus_init_common(int pulse_wl_on, int live_reattach){
 }
 
 int sdio_bus_init(void){
-    return sdio_bus_init_common(1, 0);
+    return sdio_bus_init_common(1, 0, 0);
+}
+
+int sdio_bus_init_restage(void){
+    return sdio_bus_init_common(1, 1, 0);
 }
 
 int sdio_bus_reattach(void){
-    return sdio_bus_init_common(0, 1);
+    return sdio_bus_init_common(0, 0, 1);
 }
 
 int sdio_bus_cmd52_read(unsigned int fn, unsigned int addr, unsigned char* out_val){

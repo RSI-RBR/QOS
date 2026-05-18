@@ -218,22 +218,37 @@ void gpio_init_wifi_sdio(void){
     uart_puts("GPIO: WiFi SDIO pins configured\n");
 }
 
-void gpio_wifi_wl_on_pulse(void){
+void gpio_wifi_wl_on_set(int on){
     static const unsigned int wl_on_candidates[] = {129u, 1u};
 
-    uart_puts("GPIO: WiFi WL_ON pulse\n");
     for (unsigned int i = 0; i < (sizeof(wl_on_candidates) / sizeof(wl_on_candidates[0])); i++){
         unsigned int pin = wl_on_candidates[i];
         uart_puts("GPIO: WL_ON mailbox pin ");
         uart_putdec(pin);
-        uart_puts("\n");
-        if (mailbox_set_gpio_state(pin, 0) != 0){
-            uart_puts("GPIO: WL_ON low failed\n");
+        uart_puts(on ? " high\n" : " low\n");
+        if (mailbox_set_gpio_state(pin, on ? 1 : 0) != 0){
+            uart_puts("GPIO: WL_ON set failed\n");
         }
-        delay(5000000);
-        if (mailbox_set_gpio_state(pin, 1) != 0){
-            uart_puts("GPIO: WL_ON high failed\n");
-        }
-        delay(50000000);
     }
+}
+
+void gpio_wifi_wl_on_pulse(void){
+    uart_puts("GPIO: WiFi WL_ON pulse\n");
+    gpio_wifi_wl_on_set(0);
+    delay(5000000);
+    gpio_wifi_wl_on_set(1);
+    delay(50000000);
+}
+
+void gpio_wifi_wl_on_hard_reset(void){
+    uart_puts("GPIO: WiFi WL_ON hard reset\n");
+    gpio_wifi_wl_on_set(0);
+    /*
+     * Second firmware-profile loads are more fragile than cold boot because
+     * the chip can still be internally alive. Hold WL_ON low long enough for a
+     * full CYW43 core reset, then give the PMU/SDIO core time to reappear.
+     */
+    delay(50000000);
+    gpio_wifi_wl_on_set(1);
+    delay(120000000);
 }

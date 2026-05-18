@@ -9,7 +9,9 @@ void gpio_init_sd(void);
 void gpio_init_emmc(void);
 void gpio_init_wifi_sdio(void);
 void gpio_disconnect_wifi_sdio(void);
+void gpio_wifi_wl_on_set(int on);
 void gpio_wifi_wl_on_pulse(void);
+void gpio_wifi_wl_on_hard_reset(void);
 
 void gpio_set_input(unsigned int pin);
 void gpio_set_output(unsigned int pin);

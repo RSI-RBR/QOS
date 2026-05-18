@@ -226,6 +226,7 @@ static unsigned long g_cyw43_bp_fail_last_tick;
 static unsigned int g_cyw43_bp_fail_suppressed;
 static unsigned int g_cyw43_pending_mac_valid;
 static unsigned char g_cyw43_pending_mac[6];
+static unsigned int g_cyw43_force_restage_init;
 
 static void cyw43_clear_monitor_raw_state(int last_rc){
     /*
@@ -1326,6 +1327,7 @@ static void cyw43_drop_sdio_state_common(int forget_loaded_firmware){
     g_cyw43.func2_ready = 0;
     if (forget_loaded_firmware){
         g_cyw43.fw_loaded = 0;
+        g_cyw43_force_restage_init = 1u;
     }
     g_cyw43.fw_running = 0;
     g_cyw43.iface_up = 0;
@@ -1412,10 +1414,12 @@ int cyw43_init(void){
         return 0;
     }
 
-    if ((preserve_fw ? sdio_bus_reattach() : sdio_bus_init()) != 0){
+    if ((preserve_fw ? sdio_bus_reattach()
+                     : (g_cyw43_force_restage_init ? sdio_bus_init_restage() : sdio_bus_init())) != 0){
         uart_puts("CYW43: SDIO init failed\n");
         return -1;
     }
+    g_cyw43_force_restage_init = 0u;
     blockdev_reserve_emmc_for_wifi(1);
 
     uart_puts("CYW43: enabling SDIO function 1\n");
