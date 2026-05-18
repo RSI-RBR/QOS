@@ -8,7 +8,7 @@
 #define STALE_RECOVER_SECS 8u
 #define SUMMARY_PRINT_SECS 2u
 #define HOP_DWELL_MS 1000u
-#define HOP_DWELL_BEACON_ONLY_MS 2000u
+#define HOP_DWELL_BEACON_ONLY_MS 1000u
 #define DETAIL_PRINT_SECS 20u
 #define ALL_AP_PRINT_SECS 30u
 #define AUTO_FLUSH_SECS 60u
@@ -21,6 +21,7 @@
 #define LOAD_PERSISTENT_STATE_ON_START 0u
 #define AUTO_FLUSH_DURING_CAPTURE 0u
 #define CHANNEL_HOP_DURING_CAPTURE 1u
+#define SCANNER_DESTRUCTIVE_RECOVERY 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1890,21 +1891,8 @@ void program_main(void){
             prev_frames = stats.frames;
             prev_non_beacon = non_beacon;
 
-            /*
-             * If we only see beacons while hopping, widen dwell time so we can
-             * catch probe/data/EAPOL bursts between beacon intervals.
-             */
-            if (beacon_only_secs >= 5u && hop_dwell_ms < HOP_DWELL_BEACON_ONLY_MS){
-                hop_dwell_ms = HOP_DWELL_BEACON_ONLY_MS;
-                qos_puts("scanner: beacon-only traffic; using slower hop dwell ");
-                put_u32(hop_dwell_ms);
-                qos_puts("ms\n");
-            } else if (beacon_only_secs == 0u && hop_dwell_ms != HOP_DWELL_MS){
-                hop_dwell_ms = HOP_DWELL_MS;
-                qos_puts("scanner: non-beacon traffic seen; restoring hop dwell ");
-                put_u32(hop_dwell_ms);
-                qos_puts("ms\n");
-            }
+            (void)beacon_only_secs;
+            hop_dwell_ms = HOP_DWELL_MS;
 
             if (qos_wifi_raw_status(&st1) == 0){
                 if (scanner_note_raw_progress(&st1, &last_rx_frames)){
@@ -2018,8 +2006,14 @@ void program_main(void){
             }
 
             if (!skip_rx_poll){
-                qos_puts("scanner: rx idle window hit; recovering monitor path\n");
+                qos_puts("scanner: rx idle window hit; ");
+#if SCANNER_DESTRUCTIVE_RECOVERY
+                qos_puts("recovering monitor path\n");
                 recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
+#else
+                qos_puts("recovery disabled to preserve monitor path\n");
+                recovered = 0;
+#endif
                 if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
                     active_channel = mon.channel;
                 }
