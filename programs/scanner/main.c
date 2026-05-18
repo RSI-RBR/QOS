@@ -5,13 +5,14 @@
 #define SSID_MAX 32u
 #define MAX_CLIENTS_TRACKED 16u
 #define DEFAULT_SCAN_CHANNEL 6u
-#define STALE_RECOVER_SECS 10u
-#define SUMMARY_PRINT_SECS 4u
+#define STALE_RECOVER_SECS 8u
+#define SUMMARY_PRINT_SECS 2u
 #define HOP_DWELL_MS 100u
 #define HOP_DWELL_BEACON_ONLY_MS 350u
 #define DETAIL_PRINT_SECS 20u
 #define KEY_EVENT_RING 96u
 #define FULL_REARM_COOLDOWN_SECS 5u
+#define RECV_ERR_FORCE_REARM 8u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -932,7 +933,6 @@ static void parse_frame(const unsigned char* buf,
 void program_main(void){
     unsigned char buf[RAW_BUF_BYTES];
     scan_stats_t stats;
-    unsigned int stale_secs = 0u;
     unsigned int recv_err_streak = 0u;
     unsigned int last_rx_frames = 0u;
     unsigned int active_channel = DEFAULT_SCAN_CHANNEL;
@@ -942,6 +942,7 @@ void program_main(void){
     unsigned int prev_frames = 0u;
     unsigned int prev_non_beacon = 0u;
     unsigned int rearm_stage = 0u;
+    unsigned long long last_rx_progress_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -955,6 +956,7 @@ void program_main(void){
     stats.handshake_hits = 0u;
 
     unsigned long long now = qos_get_time_us();
+    last_rx_progress_us = now;
     unsigned long long next_print = now + ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
     unsigned long long next_detail = now + ((unsigned long long)DETAIL_PRINT_SECS * 1000000ull);
     unsigned long long next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
@@ -1034,22 +1036,14 @@ void program_main(void){
             }
 
             if (qos_wifi_raw_status(&st1) == 0){
-                if (st1.rx_frames == last_rx_frames){
-                    stale_secs++;
-                } else{
-                    stale_secs = 0u;
+                if (st1.rx_frames != last_rx_frames){
                     last_rx_frames = st1.rx_frames;
+                    last_rx_progress_us = now;
                     rearm_stage = 0u;
                 }
-                if (stale_secs >= STALE_RECOVER_SECS){
-                    qos_puts("scanner: rx stalled\n");
-                    scanner_recover_rx_stall(active_channel, &rearm_stage);
-                    if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
-                        active_channel = mon.channel;
-                    }
-                    stale_secs = 0u;
-                } else{
-                    rearm_stage = 0u;
+                if (!st1.enabled){
+                    qos_puts("scanner: raw capture disabled; rearming monitor\n");
+                    scanner_ensure_monitor_ready(active_channel, 1u);
                 }
             }
             next_print += ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
@@ -1074,6 +1068,15 @@ void program_main(void){
             }
         }
 
+        if ((long long)(now - last_rx_progress_us) >= ((long long)STALE_RECOVER_SECS * 1000000ll)){
+            qos_puts("scanner: rx idle window hit; recovering monitor path\n");
+            scanner_recover_rx_stall(active_channel, &rearm_stage);
+            if (qos_wifi_monitor_status(&mon) == 0 && mon.channel != 0u){
+                active_channel = mon.channel;
+            }
+            last_rx_progress_us = now;
+        }
+
         int n = qos_wifi_raw_recv(buf, sizeof(buf));
         if (n < 0){
             recv_err_streak++;
@@ -1084,10 +1087,12 @@ void program_main(void){
              * Avoid hammering full firmware rearm on transient SDIO misses.
              * Escalate only if errors persist for a while.
              */
-            scanner_ensure_monitor_ready(active_channel, (recv_err_streak > 32u) ? 1u : 0u);
+            scanner_ensure_monitor_ready(active_channel,
+                                         (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
             qos_sleep(2u);
         } else if (n > 0){
             recv_err_streak = 0u;
+            last_rx_progress_us = now;
             parse_frame(buf, (unsigned int)n, active_channel, &stats);
         } else{
             recv_err_streak = 0u;

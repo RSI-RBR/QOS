@@ -2243,6 +2243,10 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     unsigned char local_mac[6];
     unsigned char gateway_ip[4];
     int set_ok = 0;
+    int monitor_active = (g_cyw43_monitor_mode != 0u) ? 1 : 0;
+    unsigned int saved_mode = 0u;
+    unsigned int saved_channel = 0u;
+    unsigned int saved_raw_enabled = g_cyw43_raw_enabled;
 
     if (!mac){
         return -1;
@@ -2253,6 +2257,11 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     // Enforce locally administered unicast source MAC.
     local_mac[0] = (unsigned char)((local_mac[0] & 0xFEu) | 0x02u);
 
+    if (monitor_active){
+        saved_mode = g_cyw43_monitor_mode;
+        saved_channel = g_cyw43_monitor_channel;
+    }
+
     if (cyw43_control_ready()){
         if (cyw43_wl_set_var("cur_etheraddr", local_mac, 6u) == 0){
             set_ok = 1;
@@ -2262,9 +2271,7 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
              * updates while monitor/promisc/scansuppress are active. Try a
              * safe fallback: briefly drop monitor flags, set MAC, then restore.
              */
-            if (g_cyw43_monitor_mode != 0u){
-                unsigned int saved_mode = g_cyw43_monitor_mode;
-                unsigned int saved_channel = g_cyw43_monitor_channel;
+            if (monitor_active){
                 int restore_rc = 0;
 
                 (void)cyw43_wl_set_int_noresp(CYW43_WLC_SET_MONITOR, 0u);
@@ -2291,7 +2298,21 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
 
                 restore_rc = cyw43_ioctl_monitor(saved_mode, saved_channel);
                 if (restore_rc != 0 && saved_channel != 0u){
-                    (void)cyw43_ioctl_monitor(saved_mode, 0u);
+                    restore_rc = cyw43_ioctl_monitor(saved_mode, 0u);
+                }
+                if (restore_rc != 0){
+                    (void)cyw43_ioctl_up_monitor();
+                    restore_rc = cyw43_ioctl_monitor(saved_mode, saved_channel);
+                    if (restore_rc != 0 && saved_channel != 0u){
+                        restore_rc = cyw43_ioctl_monitor(saved_mode, 0u);
+                    }
+                }
+                if (restore_rc == 0 && saved_raw_enabled){
+                    (void)cyw43_raw_capture_set_enabled(1u);
+                }
+                if (restore_rc != 0){
+                    uart_puts("CYW43: monitor restore failed after MAC set attempt\n");
+                    return -2;
                 }
             } else{
                 /*
@@ -2305,7 +2326,7 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
             }
 
             if (!set_ok){
-                if (g_cyw43_monitor_mode != 0u){
+                if (monitor_active){
                     /*
                      * In monitor mode, firmware may reject cur_etheraddr while
                      * capture hooks are active. Keep the randomized MAC as
