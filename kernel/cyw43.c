@@ -1691,9 +1691,23 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
 
     // The firmware blobs are now buffered in RAM. Reinitialize EMMC as WiFi
     // SDIO before touching the CYW43 backplane.
-    cyw43_drop_sdio_state_for_restage();
-    io_rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
-                                               (const char*)nv_buf, (unsigned int)nv_len);
+    for (unsigned int attempt = 0u; attempt < 3u; attempt++){
+        cyw43_drop_sdio_state_for_restage();
+        if (attempt != 0u){
+            uart_puts("CYW43: retrying SDIO firmware stage attempt=");
+            uart_putdec(attempt + 1u);
+            uart_puts("\n");
+            delay(50000000);
+        }
+        io_rc = cyw43_upload_firmware_from_buffers(fw_buf, (unsigned int)fw_len,
+                                                   (const char*)nv_buf, (unsigned int)nv_len);
+        if (io_rc == 0){
+            break;
+        }
+        uart_puts("CYW43: SDIO firmware stage attempt failed rc=");
+        uart_putdec((unsigned int)((io_rc < 0) ? -io_rc : io_rc));
+        uart_puts("\n");
+    }
     if (io_rc != 0){
         uart_puts("CYW43: SDIO firmware stage failed rc=");
         uart_putdec((unsigned int)((io_rc < 0) ? -io_rc : io_rc));

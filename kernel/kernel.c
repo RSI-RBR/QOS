@@ -69,9 +69,9 @@ void memzero(unsigned long start, unsigned long size){
 }
 
 #if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
-#define PI0_AUTO_WIFI_FW_83  "P0NEXMONBIN"
-#define PI0_AUTO_WIFI_NV_83  "P0NEXMONTXT"
-#define PI0_AUTO_WIFI_CLM_83 "P0NEXMONCLM"
+#define PI0_AUTO_WIFI_FW_83  "P0WIFI36BIN"
+#define PI0_AUTO_WIFI_NV_83  "P0WIFI36TXT"
+#define PI0_AUTO_WIFI_CLM_83 "P0WIFI36CLM"
 
 static void pi0_wifi_wait_ms(unsigned int ms){
     unsigned long start = system_ticks;
@@ -221,7 +221,7 @@ static void pi0_headless_wifi_autojoin(void){
         return;
     }
 
-    uart_puts("Pi0 headless WiFi: loading Nexmon station firmware ");
+    uart_puts("Pi0 headless WiFi: loading station firmware ");
     uart_puts(PI0_AUTO_WIFI_FW_83);
     uart_puts(" / ");
     uart_puts(PI0_AUTO_WIFI_NV_83);

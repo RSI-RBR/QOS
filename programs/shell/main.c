@@ -459,13 +459,19 @@ static int parse_ip4(const char* s, unsigned char out[4]){
 
 static const unsigned char g_dns_server[4] = {10, 0, 0, 1};
 #if defined(QOS_BOARD_PI_ZERO2W)
-static const char g_wifi_fw_83[] = "P0NEXMONBIN";
-static const char g_wifi_nv_83[] = "P0NEXMONTXT";
-static const char g_wifi_clm_83[] = "P0NEXMONCLM";
+static const char g_wifi_fw_83[] = "P0WIFI36BIN";
+static const char g_wifi_nv_83[] = "P0WIFI36TXT";
+static const char g_wifi_clm_83[] = "P0WIFI36CLM";
+static const char g_mon_fw_83[] = "P0NEXMONBIN";
+static const char g_mon_nv_83[] = "P0NEXMONTXT";
+static const char g_mon_clm_83[] = "P0NEXMONCLM";
 #else
 static const char g_wifi_fw_83[] = "4343WIFIBIN";
 static const char g_wifi_nv_83[] = "4343NVRMTXT";
 static const char g_wifi_clm_83[] = "";
+static const char g_mon_fw_83[] = "4343WIFIBIN";
+static const char g_mon_nv_83[] = "4343NVRMTXT";
+static const char g_mon_clm_83[] = "";
 #endif
 
 static int dns_resolve_a(const char* host, unsigned char out_ip[4], int verbose){
@@ -696,9 +702,9 @@ static void cmd_scanstart(unsigned int channel, char* password){
     (void)qos_wifi_monitor_set(0u, 0u);
 
     /*
-     * Preferred Pi0/headless path: boot and join using Nexmon firmware, then
-     * flip the already-running firmware into monitor mode. Reloading firmware
-     * after station mode can leave the CYW43 absent at SDIO CMD5 on Pi0.
+     * Fast path: if the running firmware already supports monitor mode, avoid
+     * a reload. Otherwise this command intentionally performs a one-way handoff
+     * from station/remote-shell firmware to Nexmon monitor firmware.
      */
     qos_puts("Scanstart: trying existing firmware monitor switch...\n");
     rc = qos_wifi_up_monitor();
@@ -726,7 +732,40 @@ static void cmd_scanstart(unsigned int channel, char* password){
         print_int(rc);
         qos_puts("\n");
     }
-    qos_puts("Scanstart: not reloading firmware. Boot/join with Nexmon firmware first.\n");
+
+    qos_puts("Scanstart: loading Nexmon monitor firmware; remote shell will disconnect now.\n");
+    rc = qos_wifi_load_fw(g_mon_fw_83, g_mon_nv_83, (g_mon_clm_83[0] ? g_mon_clm_83 : 0));
+    if (rc != 0){
+        qos_puts("Scanstart: Nexmon firmware load failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+    rc = qos_wifi_up_monitor();
+    if (rc != 0){
+        qos_puts("Scanstart: Nexmon monitor up failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+    rc = qos_wifi_monitor_set(2u, channel);
+    if (rc != 0){
+        qos_puts("Scanstart: Nexmon monitor switch failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+    rc = qos_wifi_raw_set_enabled(1u);
+    if (rc != 0){
+        qos_puts("Scanstart: Nexmon raw enable failed rc=");
+        print_int(rc);
+        qos_puts("\n");
+        return;
+    }
+    qos_puts("Scanstart: Nexmon monitor ready on channel ");
+    print_uint(channel);
+    qos_puts("; launching scanner.\n");
+    cmd_scanner_launch();
 }
 
 static const char* scanlog_path_for_arg(const char* arg){
