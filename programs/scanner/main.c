@@ -356,6 +356,75 @@ static unsigned int le16(const unsigned char* p){
     return ((unsigned int)p[0]) | ((unsigned int)p[1] << 8);
 }
 
+static unsigned int le32(const unsigned char* p){
+    return ((unsigned int)p[0]) |
+           ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) |
+           ((unsigned int)p[3] << 24);
+}
+
+static int radiotap_align(int off, unsigned int align, unsigned int rt_len){
+    unsigned int mask;
+    if (align <= 1u){
+        return off;
+    }
+    mask = align - 1u;
+    off = (int)(((unsigned int)off + mask) & ~mask);
+    return ((unsigned int)off <= rt_len) ? off : -1;
+}
+
+static int radiotap_parse_signal_dbm(const unsigned char* rt,
+                                     unsigned int rt_len,
+                                     int* out_signal){
+    unsigned int present;
+    unsigned int off = 8u;
+
+    if (!rt || rt_len < 8u || !out_signal){
+        return -1;
+    }
+    present = le32(rt + 4u);
+
+    for (unsigned int bit = 0u; bit < 31u; bit++){
+        unsigned int align = 1u;
+        unsigned int size = 0u;
+        if ((present & (1u << bit)) == 0u){
+            continue;
+        }
+        switch (bit){
+            case 0u: align = 8u; size = 8u; break; /* TSFT */
+            case 1u: align = 1u; size = 1u; break; /* flags */
+            case 2u: align = 1u; size = 1u; break; /* rate */
+            case 3u: align = 2u; size = 4u; break; /* channel */
+            case 4u: align = 2u; size = 2u; break; /* FHSS */
+            case 5u:
+                off = (unsigned int)radiotap_align((int)off, 1u, rt_len);
+                if (off + 1u > rt_len){
+                    return -1;
+                }
+                *out_signal = (signed char)rt[off];
+                return 0;
+            case 6u: align = 1u; size = 1u; break; /* noise */
+            case 7u: align = 2u; size = 2u; break; /* lock quality */
+            case 8u: align = 2u; size = 2u; break; /* tx attenuation */
+            case 9u: align = 2u; size = 2u; break; /* db tx attenuation */
+            case 10u: align = 1u; size = 1u; break; /* tx power */
+            case 11u: align = 1u; size = 1u; break; /* antenna */
+            case 12u: align = 1u; size = 1u; break; /* db signal */
+            case 13u: align = 1u; size = 1u; break; /* db noise */
+            case 14u: align = 2u; size = 2u; break; /* rx flags */
+            case 19u: align = 1u; size = 3u; break; /* mcs */
+            default:
+                return -1;
+        }
+        off = (unsigned int)radiotap_align((int)off, align, rt_len);
+        if (off + size > rt_len){
+            return -1;
+        }
+        off += size;
+    }
+    return -1;
+}
+
 static unsigned int be16(const unsigned char* p){
     return ((unsigned int)p[0] << 8) | ((unsigned int)p[1]);
 }
@@ -681,6 +750,11 @@ static void log_ap_line(const ap_info_t* ap){
     if (!ap || !ap->seen){
         return;
     }
+    /*
+     * 127/-127 are scanner sentinels meaning "no valid RSSI parsed yet".
+     * Do not persist them as if they were real radio measurements.
+     */
+    int have_signal = (ap->sig_min != 127 || ap->sig_max != -127) ? 1 : 0;
     log_init(&l);
     log_str(&l, "t_us=");
     log_u64(&l, qos_get_time_us());
@@ -688,10 +762,14 @@ static void log_ap_line(const ap_info_t* ap){
     log_mac(&l, ap->bssid);
     log_str(&l, " ch=");
     log_u32(&l, ap->channel);
-    log_str(&l, " sig_min=");
-    log_i32(&l, ap->sig_min);
-    log_str(&l, " sig_max=");
-    log_i32(&l, ap->sig_max);
+    if (have_signal){
+        log_str(&l, " sig_min=");
+        log_i32(&l, ap->sig_min);
+        log_str(&l, " sig_max=");
+        log_i32(&l, ap->sig_max);
+    } else{
+        log_str(&l, " sig=unknown");
+    }
     log_str(&l, " first_ms=");
     log_u64(&l, ap->first_seen_rel_ms);
     log_str(&l, " last_ms=");
@@ -985,12 +1063,12 @@ static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
     if (line_get_u32(line, "ch=", &uv) && uv <= 255u){
         ap->channel = (unsigned char)uv;
     }
-    if (line_get_i32(line, "sig_min=", &iv)){
+    if (line_get_i32(line, "sig_min=", &iv) && iv > -128 && iv < 127){
         if (ap->sig_min == 127 || iv < ap->sig_min){
             ap->sig_min = iv;
         }
     }
-    if (line_get_i32(line, "sig_max=", &iv)){
+    if (line_get_i32(line, "sig_max=", &iv) && iv > -128 && iv < 127){
         if (ap->sig_max == -127 || iv > ap->sig_max){
             ap->sig_max = iv;
         }
@@ -1403,9 +1481,13 @@ static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts(" ch=");
     put_u32(ap->channel);
     qos_puts(" sig=");
-    put_i32(ap->sig_min);
-    qos_puts("..");
-    put_i32(ap->sig_max);
+    if (ap->sig_min == 127 && ap->sig_max == -127){
+        qos_puts("unknown");
+    } else{
+        put_i32(ap->sig_min);
+        qos_puts("..");
+        put_i32(ap->sig_max);
+    }
     qos_puts(" strong_ms=");
     put_u64(ap->strongest_rel_ms);
     qos_puts(" seen_ms=");
@@ -1752,7 +1834,7 @@ static void parse_frame(const unsigned char* buf,
         rt_len = le16(buf + 2u);
         if (rt_len >= 8u && rt_len < len){
             stats->rt++;
-            if (rt_len > 22u){
+            if (radiotap_parse_signal_dbm(buf, rt_len, &signal) != 0 && rt_len > 22u){
                 signal = (signed char)buf[22];
             }
             dot = buf + rt_len;
