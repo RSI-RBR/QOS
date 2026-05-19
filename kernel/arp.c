@@ -571,3 +571,31 @@ int arp_resolve_gateway(unsigned int timeout_ms){
     }
     return -1;
 }
+
+void arp_get_diag(unsigned long* rx,
+                  unsigned long* tx_req,
+                  unsigned long* tx_rep,
+                  unsigned int* cache_count,
+                  int* gateway_resolved){
+    if (rx){
+        *rx = g_arp_stats.rx_total;
+    }
+    if (tx_req){
+        *tx_req = g_tx_req;
+    }
+    if (tx_rep){
+        *tx_rep = g_tx_rep;
+    }
+    if (cache_count){
+        unsigned int n = 0u;
+        for (unsigned int i = 0; i < ARP_CACHE_LEN; i++){
+            if (g_arp_cache[i].valid){
+                n++;
+            }
+        }
+        *cache_count = n;
+    }
+    if (gateway_resolved){
+        *gateway_resolved = g_gateway_resolved ? 1 : 0;
+    }
+}

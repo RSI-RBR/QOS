@@ -372,6 +372,42 @@ void net_wait_for_io_idle(void){
     spin_unlock(&g_net_io_lock);
 }
 
+void net_get_diag(unsigned long* rx_ok,
+                  unsigned long* rx_drop,
+                  unsigned long* tx_ok,
+                  unsigned long* tx_fail,
+                  unsigned int* rxq_count,
+                  const char** driver,
+                  int* link_up){
+    unsigned long irq = spin_lock_irqsave(&g_net_state_lock);
+    if (rx_ok){
+        *rx_ok = g_stats.rx_ok;
+    }
+    if (rx_drop){
+        *rx_drop = g_stats.rx_drop;
+    }
+    if (tx_ok){
+        *tx_ok = g_stats.tx_ok;
+    }
+    if (tx_fail){
+        *tx_fail = g_stats.tx_fail;
+    }
+    if (driver){
+        *driver = (!g_nic || !g_nic->name) ? "none" : g_nic->name;
+    }
+    spin_unlock_irqrestore(&g_net_state_lock, irq);
+
+    irq = spin_lock_irqsave(&g_net_rxq_lock);
+    if (rxq_count){
+        *rxq_count = g_rxq.count;
+    }
+    spin_unlock_irqrestore(&g_net_rxq_lock, irq);
+
+    if (link_up){
+        *link_up = net_link_up();
+    }
+}
+
 void net_dump_stats(void){
     unsigned long rx_ok, rx_drop, tx_ok, tx_fail;
     unsigned int rxq_count;

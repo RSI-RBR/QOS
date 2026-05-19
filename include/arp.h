@@ -36,5 +36,10 @@ int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]);
 int arp_resolve_gateway(unsigned int timeout_ms);
 int arp_get_mac_for_ip(const unsigned char ip[4], unsigned char out_mac[ETH_ADDR_LEN]);
 int arp_resolve_ip(const unsigned char ip[4], unsigned int timeout_ms);
+void arp_get_diag(unsigned long* rx,
+                  unsigned long* tx_req,
+                  unsigned long* tx_rep,
+                  unsigned int* cache_count,
+                  int* gateway_resolved);
 
 #endif

@@ -18,6 +18,13 @@ int net_ping_gateway(unsigned int timeout_ms);
 
 void net_set_rx_callback(net_rx_callback_t cb);
 void net_dump_stats(void);
+void net_get_diag(unsigned long* rx_ok,
+                  unsigned long* rx_drop,
+                  unsigned long* tx_ok,
+                  unsigned long* tx_fail,
+                  unsigned int* rxq_count,
+                  const char** driver,
+                  int* link_up);
 
 // Runtime NIC backend switching helpers.
 int net_try_select_wifi_backend(void);

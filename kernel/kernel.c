@@ -147,6 +147,70 @@ static void pi0_headless_putdec(unsigned long v){
     pi0_headless_write(out);
 }
 
+static void pi0_headless_remote_diag(void){
+    unsigned long rlogin_rx = 0;
+    unsigned long rlogin_tx = 0;
+    unsigned long rlogin_bad_hdr = 0;
+    unsigned long rlogin_bad_crypto = 0;
+    unsigned long net_rx = 0;
+    unsigned long net_drop = 0;
+    unsigned long net_tx = 0;
+    unsigned long net_txfail = 0;
+    unsigned int net_rxq = 0;
+    const char* driver = "none";
+    int link = 0;
+    unsigned long arp_rx = 0;
+    unsigned long arp_tx_req = 0;
+    unsigned long arp_tx_rep = 0;
+    unsigned int arp_cache = 0;
+    int arp_gw = 0;
+    unsigned int rstate = remote_login_state_bits();
+
+    remote_login_get_diag(&rlogin_rx, &rlogin_tx, &rlogin_bad_hdr, &rlogin_bad_crypto);
+    net_get_diag(&net_rx, &net_drop, &net_tx, &net_txfail, &net_rxq, &driver, &link);
+    arp_get_diag(&arp_rx, &arp_tx_req, &arp_tx_rep, &arp_cache, &arp_gw);
+
+    pi0_headless_write("Pi0 diag: rstate=");
+    pi0_headless_putdec(rstate);
+    pi0_headless_write(" rrx=");
+    pi0_headless_putdec(rlogin_rx);
+    pi0_headless_write(" rtx=");
+    pi0_headless_putdec(rlogin_tx);
+    pi0_headless_write(" bh=");
+    pi0_headless_putdec(rlogin_bad_hdr);
+    pi0_headless_write(" bc=");
+    pi0_headless_putdec(rlogin_bad_crypto);
+    pi0_headless_write("\n");
+
+    pi0_headless_write("Pi0 net: drv=");
+    pi0_headless_write(driver ? driver : "none");
+    pi0_headless_write(" link=");
+    pi0_headless_putdec((unsigned long)(link ? 1 : 0));
+    pi0_headless_write(" rx=");
+    pi0_headless_putdec(net_rx);
+    pi0_headless_write(" drop=");
+    pi0_headless_putdec(net_drop);
+    pi0_headless_write(" tx=");
+    pi0_headless_putdec(net_tx);
+    pi0_headless_write(" txf=");
+    pi0_headless_putdec(net_txfail);
+    pi0_headless_write(" rxq=");
+    pi0_headless_putdec(net_rxq);
+    pi0_headless_write("\n");
+
+    pi0_headless_write("Pi0 arp: rx=");
+    pi0_headless_putdec(arp_rx);
+    pi0_headless_write(" txreq=");
+    pi0_headless_putdec(arp_tx_req);
+    pi0_headless_write(" txrep=");
+    pi0_headless_putdec(arp_tx_rep);
+    pi0_headless_write(" cache=");
+    pi0_headless_putdec(arp_cache);
+    pi0_headless_write(" gw=");
+    pi0_headless_putdec((unsigned long)(arp_gw ? 1 : 0));
+    pi0_headless_write("\n");
+}
+
 static int cfg_is_space(char c){
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
@@ -635,8 +699,7 @@ static void kernel_poll_background_io(void){
         next_remote_diag_tick = now + 5000u;
         unsigned int st = remote_login_state_bits();
         if ((st & 1u) && !(st & (1u << 2))){
-            remote_login_dump_stats();
-            net_dump_stats();
+            pi0_headless_remote_diag();
         }
     }
 #endif

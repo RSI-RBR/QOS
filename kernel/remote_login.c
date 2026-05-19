@@ -1225,3 +1225,21 @@ unsigned int remote_login_state_bits(void){
     }
     return bits;
 }
+
+void remote_login_get_diag(unsigned long* rx,
+                           unsigned long* tx,
+                           unsigned long* bad_header,
+                           unsigned long* bad_crypto){
+    if (rx){
+        *rx = g_stats.rx_total;
+    }
+    if (tx){
+        *tx = g_stats.tx_total;
+    }
+    if (bad_header){
+        *bad_header = g_stats.bad_header;
+    }
+    if (bad_crypto){
+        *bad_crypto = g_stats.bad_crypto;
+    }
+}
