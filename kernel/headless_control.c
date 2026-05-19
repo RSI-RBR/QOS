@@ -28,12 +28,6 @@
 #define LED_PULSE_GAP_MS      220u
 #define LED_PULSE_PRE_OFF_MS  120u
 #define LED_SCANNER_REFRESH_MS 100u
-#define LED_BOOT_ON_MS        120u
-#define LED_BOOT_OFF_MS       120u
-#define LED_BOOT_GAP_MS       1200u
-#define LED_BOOT_FAIL_ON_MS   260u
-#define LED_BOOT_FAIL_OFF_MS  160u
-#define LED_BOOT_FAIL_GAP_MS  1800u
 
 static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
 static const char* const g_scanner_log_paths[] = {
@@ -268,6 +262,7 @@ static void scanner_secure_stop(unsigned long now){
     uart_puts(" failed=");
     uart_putdec((unsigned long)failed);
     uart_puts("\n");
+    (void)now;
 }
 
 static void button_feedback_burst(unsigned int pulses, unsigned long now){
@@ -319,6 +314,7 @@ static void perform_button_action(unsigned int action, unsigned long now){
     }
     if (action == BTN_ACTION_SECURE_STOP){
         uart_puts("Headless: button long press secure stop\n");
+        button_feedback_burst(6u, now);
         scanner_secure_stop(now);
         return;
     }
@@ -435,30 +431,6 @@ static void render_led(unsigned long now){
             unsigned long elapsed = now - g_led_login_wait_anchor;
             unsigned long phase = elapsed % LED_LOGIN_WAIT_PERIOD_MS;
             led_apply((phase < LED_LOGIN_WAIT_ON_MS) ? 1u : 0u);
-            return;
-        }
-        if (g_led_boot_stage != 0u){
-            unsigned int code = g_led_boot_stage;
-            unsigned long on_ms = g_led_boot_failed ? LED_BOOT_FAIL_ON_MS : LED_BOOT_ON_MS;
-            unsigned long off_ms = g_led_boot_failed ? LED_BOOT_FAIL_OFF_MS : LED_BOOT_OFF_MS;
-            unsigned long gap_ms = g_led_boot_failed ? LED_BOOT_FAIL_GAP_MS : LED_BOOT_GAP_MS;
-            unsigned long pulse_ms;
-            unsigned long active_ms;
-            unsigned long cycle;
-            unsigned long phase;
-
-            if (code > 12u){
-                code = 12u;
-            }
-            pulse_ms = on_ms + off_ms;
-            active_ms = pulse_ms * code;
-            cycle = active_ms + gap_ms;
-            phase = cycle ? ((now - g_led_boot_anchor) % cycle) : 0u;
-            if (phase < active_ms && (phase % pulse_ms) < on_ms){
-                led_apply(1u);
-            } else{
-                led_apply(0u);
-            }
             return;
         }
         /*
@@ -585,15 +557,18 @@ void headless_control_init(void){
 }
 
 void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
-    unsigned long now;
+    (void)stage;
+    (void)failed;
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
         return;
     }
-    now = headless_now_ms();
+    /*
+     * Keep boot visually quiet for headless field use. The LED should be
+     * solid by default and only fast-blink when remote login is ready.
+     */
     spin_lock(&g_headless_lock);
-    g_led_boot_stage = stage;
-    g_led_boot_failed = failed ? 1u : 0u;
-    g_led_boot_anchor = now;
+    g_led_boot_stage = 0u;
+    g_led_boot_failed = 0u;
     g_led_wifi_joined_waiting_login = 0u;
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
