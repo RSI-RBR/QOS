@@ -2373,6 +2373,15 @@ void program_main(void){
             int flush_rc;
             int restore_ok;
             int post_flush_rx_ok = 0;
+            /*
+             * Shared SDIO host path: pause visible scanner activity while
+             * autosave/restore is in progress so LED and polling state reflect
+             * that capture is temporarily paused.
+             */
+            if (!idle_led_active){
+                (void)qos_headless_scanner_idle(1u);
+                idle_led_active = 1u;
+            }
             log_summary_line(&stats, active_channel);
             log_ap_snapshot();
             flush_rc = flush_scanner_logs(1);
@@ -2414,6 +2423,8 @@ void program_main(void){
                 recv_err_streak = 0u;
                 rearm_stage = 0u;
                 idle_quiet_windows = 0u;
+                (void)qos_headless_scanner_idle(0u);
+                idle_led_active = 0u;
             } else{
                 /*
                  * Keep recovery hot: don't pretend progress happened when it
@@ -2422,6 +2433,10 @@ void program_main(void){
                 last_rx_progress_us = now - ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
                 recv_err_streak = RECV_ERR_FORCE_REARM;
                 idle_quiet_windows = 0u;
+                if (!idle_led_active){
+                    (void)qos_headless_scanner_idle(1u);
+                    idle_led_active = 1u;
+                }
             }
 #else
             /*
@@ -2469,6 +2484,10 @@ void program_main(void){
             }
 
             if (!skip_rx_poll){
+                if (!idle_led_active){
+                    (void)qos_headless_scanner_idle(1u);
+                    idle_led_active = 1u;
+                }
                 qos_puts("scanner: rx idle window hit; ");
 #if SCANNER_DESTRUCTIVE_RECOVERY
                 qos_puts("recovering monitor path\n");

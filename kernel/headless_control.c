@@ -77,6 +77,7 @@ static unsigned long g_led_open_next_tick = 0u;
 static unsigned long g_led_last_render_tick = 0u;
 static unsigned int g_led_scanner_running_cached = 0u;
 static unsigned long g_led_scanner_next_check = 0u;
+static unsigned int g_led_scanner_idle_hint = 0u;
 static unsigned int g_led_scanner_recovery = 0u;
 static unsigned long g_led_scanner_recovery_expire = 0u;
 static unsigned int g_led_wifi_joined_waiting_login = 0u;
@@ -293,7 +294,7 @@ static int headless_https_probe_open_ap(void){
     uart_puts(ssid);
     uart_puts("\" sig=");
     if (sig < 0){
-        uart_putc('-');
+        uart_send('-');
         uart_putdec((unsigned long)(-sig));
     } else{
         uart_putdec((unsigned long)sig);
@@ -683,6 +684,7 @@ static void render_led(unsigned long now){
 
     if (!scanner_running){
         g_led_prev_scanner_running = 0u;
+        g_led_scanner_idle_hint = 0u;
         if (g_led_wifi_joined_waiting_login && !g_led_login_seen){
             unsigned long elapsed = now - g_led_login_wait_anchor;
             unsigned long phase = elapsed % LED_LOGIN_WAIT_PERIOD_MS;
@@ -693,6 +695,12 @@ static void render_led(unsigned long now){
          * Default idle behavior requested: LED solid on when scanner is not
          * running.
          */
+        led_apply(1u);
+        return;
+    }
+
+    if (g_led_scanner_idle_hint){
+        g_led_prev_scanner_running = 0u;
         led_apply(1u);
         return;
     }
@@ -790,6 +798,7 @@ void headless_control_init(void){
     g_led_last_render_tick = now;
     g_led_scanner_running_cached = 0u;
     g_led_scanner_next_check = now;
+    g_led_scanner_idle_hint = 0u;
     g_led_scanner_recovery = 0u;
     g_led_scanner_recovery_expire = 0u;
     g_led_wifi_joined_waiting_login = 0u;
@@ -982,6 +991,30 @@ void headless_control_note_open_network_packet(void){
     spin_unlock(&g_headless_lock);
 }
 
+void headless_control_note_scanner_idle(unsigned int active){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = headless_now_ms();
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    if (active){
+        g_led_scanner_running_cached = 1u;
+        g_led_scanner_idle_hint = 1u;
+        g_led_open_hit_valid = 0u;
+        g_led_base_anchor = now;
+        g_led_prev_scanner_running = 0u;
+        led_apply(1u);
+    } else{
+        g_led_scanner_idle_hint = 0u;
+        g_led_base_anchor = now;
+        g_led_prev_scanner_running = 0u;
+    }
+    spin_unlock(&g_headless_lock);
+}
+
 void headless_control_note_scanner_recovery(unsigned int active){
     unsigned long now;
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
@@ -993,6 +1026,7 @@ void headless_control_note_scanner_recovery(unsigned int active){
     }
     if (active){
         g_led_scanner_running_cached = 1u;
+        g_led_scanner_idle_hint = 1u;
         g_led_scanner_recovery = 1u;
         g_led_scanner_recovery_expire = now + 60000u;
         g_led_open_hit_valid = 0u;

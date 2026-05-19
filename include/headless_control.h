@@ -11,6 +11,7 @@ void headless_control_note_remote_login_rx(void);
 void headless_control_note_remote_login_tx(void);
 void headless_control_note_remote_login_tx_fail(void);
 void headless_control_note_open_network_packet(void);
+void headless_control_note_scanner_idle(unsigned int active);
 void headless_control_note_scanner_recovery(unsigned int active);
 int headless_led_test(unsigned int blinks, unsigned int on_ms, unsigned int off_ms);
 int headless_led_force(unsigned int on);

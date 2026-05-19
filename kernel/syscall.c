@@ -3029,7 +3029,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 frame[TF_X0] = (unsigned long)-1;
                 return frame_sp;
             }
-            headless_control_note_scanner_recovery((unsigned int)frame[TF_X0] ? 1u : 0u);
+            headless_control_note_scanner_idle((unsigned int)frame[TF_X0] ? 1u : 0u);
             frame[TF_X0] = 0;
             return frame_sp;
         }
