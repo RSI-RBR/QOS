@@ -2363,10 +2363,28 @@ void program_main(void){
             unsigned long long flush_elapsed_us;
             int flush_rc;
             int restore_ok;
+            int post_flush_rx_ok = 0;
             log_summary_line(&stats, active_channel);
             log_ap_snapshot();
             flush_rc = flush_scanner_logs(1);
             restore_ok = scanner_restore_monitor_path(active_channel);
+            if (restore_ok){
+                /*
+                 * Restore can report "up" before frames flow again. Verify real
+                 * RX progress so autosave doesn't silently leave scanner stalled.
+                 */
+                post_flush_rx_ok = scanner_wait_for_raw_progress(&last_rx_frames, 500u);
+            }
+            if (!post_flush_rx_ok){
+                qos_puts("scanner autosave: post-restore RX stalled; forcing hard recovery\n");
+                rearm_stage = 3u;
+                post_flush_rx_ok = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
+                if (!post_flush_rx_ok){
+                    qos_puts("scanner autosave: hard recovery failed after flush\n");
+                } else{
+                    restore_ok = 1;
+                }
+            }
             flush_elapsed_us = qos_get_time_us() - flush_start_us;
             qos_puts("scanner autosave+restore ms=");
             put_u32((unsigned int)(flush_elapsed_us / 1000ull));
@@ -2374,16 +2392,28 @@ void program_main(void){
             put_i32(flush_rc);
             qos_puts(" restore=");
             put_u32((unsigned int)(restore_ok ? 1u : 0u));
+            qos_puts(" rx=");
+            put_u32((unsigned int)(post_flush_rx_ok ? 1u : 0u));
             qos_puts("\n");
             /*
              * FAT autosave temporarily reclaims shared EMMC/SDIO. Give monitor
              * path a fresh idle window after restore to avoid false stale-RX
              * escalation immediately after a successful autosave cycle.
              */
-            last_rx_progress_us = qos_get_time_us();
-            recv_err_streak = 0u;
-            rearm_stage = 0u;
-            idle_quiet_windows = 0u;
+            if (post_flush_rx_ok){
+                last_rx_progress_us = qos_get_time_us();
+                recv_err_streak = 0u;
+                rearm_stage = 0u;
+                idle_quiet_windows = 0u;
+            } else{
+                /*
+                 * Keep recovery hot: don't pretend progress happened when it
+                 * didn't, so retry logic can continue immediately.
+                 */
+                last_rx_progress_us = now - ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
+                recv_err_streak = RECV_ERR_FORCE_REARM;
+                idle_quiet_windows = 0u;
+            }
 #else
             /*
              * Storage and CYW43 monitor mode share the EMMC/SDIO host on the
