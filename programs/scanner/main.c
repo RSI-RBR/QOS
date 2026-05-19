@@ -11,7 +11,7 @@
 #define HOP_DWELL_BEACON_ONLY_MS 500u
 #define HOP_RAW_QUIET_MS 20u
 #define HOP_CHANNEL_SETTLE_MS 60u
-#define DETAIL_PRINT_SECS 20u
+#define DETAIL_PRINT_SECS 30u
 #define ALL_AP_PRINT_SECS 30u
 #define AUTO_FLUSH_SECS 60u
 #define KEY_EVENT_RING 96u
@@ -106,6 +106,7 @@ static unsigned int g_key_event_head = 0u;
 static unsigned int g_key_event_count = 0u;
 static unsigned long long g_last_open_hit_notify_us = 0ull;
 static unsigned long long g_scan_start_us = 0ull;
+static unsigned int g_signal_fallback_reported = 0u;
 static unsigned char g_scan_load_buf[SCAN_LOAD_BUF_BYTES];
 
 #define SCAN_LOG_LINE_MAX 8192u
@@ -382,6 +383,33 @@ static int signal_is_plausible_dbm(int sig){
      * missing metadata or a guessed byte from the wrong header layout.
      */
     return (sig >= -110 && sig <= -1) ? 1 : 0;
+}
+
+static int signal_try_offset_fallback(const unsigned char* buf,
+                                      unsigned int len,
+                                      int* out_signal,
+                                      unsigned int* out_offset){
+    static const unsigned char k_candidates[] = {
+        22u, 23u, 21u, 24u, 20u, 25u, 19u, 26u,
+        18u, 27u, 17u, 28u, 16u, 29u, 30u, 31u
+    };
+    if (!buf || !out_signal || !out_offset){
+        return 0;
+    }
+    for (unsigned int i = 0u; i < (unsigned int)sizeof(k_candidates); i++){
+        unsigned int off = (unsigned int)k_candidates[i];
+        int s;
+        if (off >= len){
+            continue;
+        }
+        s = (signed char)buf[off];
+        if (signal_is_plausible_dbm(s)){
+            *out_signal = s;
+            *out_offset = off;
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int radiotap_parse_signal_dbm(const unsigned char* rt,
@@ -1932,6 +1960,7 @@ static void parse_frame(const unsigned char* buf,
     const unsigned char* addr2 = 0;
     const unsigned char* addr3 = 0;
     unsigned int signal_known = 0u;
+    unsigned int signal_off = 0u;
 
     if (!buf || !stats || len < 8u){
         if (stats){
@@ -1960,11 +1989,16 @@ static void parse_frame(const unsigned char* buf,
                 signal = (signed char)buf[22];
                 if (signal_is_plausible_dbm(signal)){
                     signal_known = 1u;
+                    signal_off = 22u;
                 }
             }
             dot = buf + rt_len;
             dot_len = len - rt_len;
         }
+    }
+
+    if (!signal_known && signal_try_offset_fallback(buf, len, &signal, &signal_off)){
+        signal_known = 1u;
     }
 
     if (dot_len < 24u){
@@ -1982,6 +2016,14 @@ static void parse_frame(const unsigned char* buf,
 
     if (signal_known){
         stats->sig_ok++;
+        if (!g_signal_fallback_reported && signal_off != 0u){
+            qos_puts("scanner signal fallback offset=");
+            put_u32(signal_off);
+            qos_puts(" sig=");
+            put_i32(signal);
+            qos_puts("\n");
+            g_signal_fallback_reported = 1u;
+        }
     } else{
         stats->sig_unknown++;
         if (!stats->rt_sample_printed){
