@@ -376,6 +376,14 @@ static int radiotap_align(int off, unsigned int align, unsigned int rt_len){
     return ((unsigned int)off <= rt_len) ? off : -1;
 }
 
+static int signal_is_plausible_dbm(int sig){
+    /*
+     * Real Wi-Fi RSSI is negative dBm. Values outside this range are usually
+     * missing metadata or a guessed byte from the wrong header layout.
+     */
+    return (sig >= -110 && sig <= -1) ? 1 : 0;
+}
+
 static int radiotap_parse_signal_dbm(const unsigned char* rt,
                                      unsigned int rt_len,
                                      int* out_signal){
@@ -533,7 +541,7 @@ static int find_ap(const unsigned char bssid[6]){
             g_aps[i].sig_max = -127;
             g_aps[i].first_seen_rel_ms = scanner_rel_ms_now();
             g_aps[i].last_seen_rel_ms = g_aps[i].first_seen_rel_ms;
-            g_aps[i].strongest_rel_ms = g_aps[i].first_seen_rel_ms;
+            g_aps[i].strongest_rel_ms = 0ull;
             g_aps[i].strongest_channel = 0u;
             g_aps[i].session_seen = 0u;
             g_aps[i].session_sig_min = 127;
@@ -785,6 +793,7 @@ static void log_summary_line(const scan_stats_t* st, unsigned int active_channel
 
 static void log_ap_line(const ap_info_t* ap){
     scan_log_line_t l;
+    int have_signal;
     if (!ap || !ap->seen){
         return;
     }
@@ -792,7 +801,7 @@ static void log_ap_line(const ap_info_t* ap){
      * 127/-127 are scanner sentinels meaning "no valid RSSI parsed yet".
      * Do not persist them as if they were real radio measurements.
      */
-    int have_signal = (ap->sig_min != 127 || ap->sig_max != -127) ? 1 : 0;
+    have_signal = (ap->sig_min != 127 || ap->sig_max != -127) ? 1 : 0;
     log_init(&l);
     log_str(&l, "t_us=");
     log_u64(&l, qos_get_time_us());
@@ -812,10 +821,14 @@ static void log_ap_line(const ap_info_t* ap){
     log_u64(&l, ap->first_seen_rel_ms);
     log_str(&l, " last_ms=");
     log_u64(&l, ap->last_seen_rel_ms);
-    log_str(&l, " strongest_ms=");
-    log_u64(&l, ap->strongest_rel_ms);
-    log_str(&l, " strongest_ch=");
-    log_u32(&l, ap->strongest_channel);
+    if (have_signal){
+        log_str(&l, " strongest_ms=");
+        log_u64(&l, ap->strongest_rel_ms);
+        log_str(&l, " strongest_ch=");
+        log_u32(&l, ap->strongest_channel);
+    } else{
+        log_str(&l, " strongest_ms=unknown strongest_ch=0");
+    }
     log_str(&l, " enc=");
     log_str(&l, ap_security_label(ap));
     log_str(&l, " ssid=");
@@ -1089,6 +1102,7 @@ static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
     unsigned int uv;
     unsigned long long ullv;
     int iv;
+    int line_signal_loaded = 0;
     char ssid[SSID_MAX + 1u];
     if (!line || !line_get_mac(line, "bssid=", mac)){
         return;
@@ -1105,11 +1119,13 @@ static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
         if (ap->sig_min == 127 || iv < ap->sig_min){
             ap->sig_min = iv;
         }
+        line_signal_loaded = 1;
     }
     if (line_get_i32(line, "sig_max=", &iv) && iv > -128 && iv < 127){
         if (ap->sig_max == -127 || iv > ap->sig_max){
             ap->sig_max = iv;
         }
+        line_signal_loaded = 1;
     }
     if (line_get_u64(line, "first_ms=", &ullv) && (ap->first_seen_rel_ms == 0ull || ullv < ap->first_seen_rel_ms)){
         ap->first_seen_rel_ms = ullv;
@@ -1117,10 +1133,10 @@ static void parse_ap_line_into_table(const char* line, unsigned int* loaded){
     if (line_get_u64(line, "last_ms=", &ullv) && ullv > ap->last_seen_rel_ms){
         ap->last_seen_rel_ms = ullv;
     }
-    if (line_get_u64(line, "strongest_ms=", &ullv) && ap->strongest_rel_ms == 0ull){
+    if (line_signal_loaded && line_get_u64(line, "strongest_ms=", &ullv) && ap->strongest_rel_ms == 0ull){
         ap->strongest_rel_ms = ullv;
     }
-    if (line_get_u32(line, "strongest_ch=", &uv) && uv <= 255u && ap->strongest_channel == 0u){
+    if (line_signal_loaded && line_get_u32(line, "strongest_ch=", &uv) && uv <= 255u && ap->strongest_channel == 0u){
         ap->strongest_channel = uv;
     }
     if (find_text(line, "enc=RSN")){
@@ -1512,6 +1528,7 @@ static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
 
 static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     unsigned int n;
+    int have_signal;
     qos_puts("AP ");
     put_u32(idx);
     qos_puts(" ");
@@ -1519,7 +1536,8 @@ static void print_ap_line(const ap_info_t* ap, unsigned int idx){
     qos_puts(" ch=");
     put_u32(ap->channel);
     qos_puts(" sig=");
-    if (ap->sig_min == 127 && ap->sig_max == -127){
+    have_signal = (ap->sig_min != 127 || ap->sig_max != -127) ? 1 : 0;
+    if (!have_signal){
         qos_puts("unknown");
     } else{
         put_i32(ap->sig_min);
@@ -1527,7 +1545,11 @@ static void print_ap_line(const ap_info_t* ap, unsigned int idx){
         put_i32(ap->sig_max);
     }
     qos_puts(" strong_ms=");
-    put_u64(ap->strongest_rel_ms);
+    if (have_signal){
+        put_u64(ap->strongest_rel_ms);
+    } else{
+        qos_puts("unknown");
+    }
     qos_puts(" seen_ms=");
     put_u64(ap->first_seen_rel_ms);
     qos_puts("..");
@@ -1877,11 +1899,13 @@ static void parse_frame(const unsigned char* buf,
         rt_len = le16(buf + 2u);
         if (rt_len >= 8u && rt_len < len){
             stats->rt++;
-            if (radiotap_parse_signal_dbm(buf, rt_len, &signal) == 0){
+            if (radiotap_parse_signal_dbm(buf, rt_len, &signal) == 0 &&
+                signal_is_plausible_dbm(signal)){
                 signal_known = 1u;
-            } else if (rt_len > 22u){
+            }
+            if (!signal_known && rt_len > 22u){
                 signal = (signed char)buf[22];
-                if (signal > -128){
+                if (signal_is_plausible_dbm(signal)){
                     signal_known = 1u;
                 }
             }
