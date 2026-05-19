@@ -385,6 +385,15 @@ static int signal_is_plausible_dbm(int sig){
     return (sig >= -110 && sig <= -1) ? 1 : 0;
 }
 
+static int signal_is_plausible_fallback_dbm(int sig){
+    /*
+     * Byte-offset fallback is less trustworthy than parsed radiotap RSSI.
+     * Be conservative and reject "too strong" one-byte spikes that are common
+     * when the offset lands on non-RSSI payload bytes.
+     */
+    return (sig >= -100 && sig <= -12) ? 1 : 0;
+}
+
 static int signal_try_offset_fallback(const unsigned char* buf,
                                       unsigned int len,
                                       int* out_signal,
@@ -403,7 +412,7 @@ static int signal_try_offset_fallback(const unsigned char* buf,
             continue;
         }
         s = (signed char)buf[off];
-        if (signal_is_plausible_dbm(s)){
+        if (signal_is_plausible_fallback_dbm(s)){
             *out_signal = s;
             *out_offset = off;
             return 1;
@@ -1987,7 +1996,7 @@ static void parse_frame(const unsigned char* buf,
              */
             if (!signal_known && len > 22u){
                 signal = (signed char)buf[22];
-                if (signal_is_plausible_dbm(signal)){
+                if (signal_is_plausible_fallback_dbm(signal)){
                     signal_known = 1u;
                     signal_off = 22u;
                 }
