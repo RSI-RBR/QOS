@@ -26,6 +26,7 @@
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
+#define LED_PULSE_PRE_OFF_MS  120u
 #define LED_SCANNER_REFRESH_MS 100u
 #define LED_BOOT_ON_MS        120u
 #define LED_BOOT_OFF_MS       120u
@@ -60,6 +61,7 @@ static unsigned long g_btn_click_deadline = 0u;
 
 static unsigned int g_led_burst_pulses = 0u;
 static unsigned int g_led_burst_on = 0u;
+static unsigned int g_led_burst_pre_off = 0u;
 static unsigned long g_led_burst_next_tick = 0u;
 static unsigned long g_led_base_anchor = 0u;
 static unsigned int g_led_prev_scanner_running = 0u;
@@ -172,7 +174,9 @@ static void refresh_scanner_running(unsigned long now, unsigned int force){
 static void led_burst(unsigned int pulses, unsigned long now){
     g_led_burst_pulses = pulses;
     g_led_burst_on = 0u;
-    g_led_burst_next_tick = now;
+    g_led_burst_pre_off = 1u;
+    g_led_burst_next_tick = now + LED_PULSE_PRE_OFF_MS;
+    led_apply(0u);
 }
 
 static void led_test_stop(void){
@@ -214,6 +218,8 @@ static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int 
     g_led_test_remaining_toggles = blinks * 2u;
     g_led_test_next_tick = now;
     g_led_burst_pulses = 0u;
+    g_led_burst_on = 0u;
+    g_led_burst_pre_off = 0u;
     return 0;
 }
 
@@ -403,6 +409,10 @@ static void render_led(unsigned long now){
 
     if (g_led_burst_pulses > 0u){
         if ((long)(now - g_led_burst_next_tick) >= 0){
+            if (g_led_burst_pre_off){
+                g_led_burst_pre_off = 0u;
+                g_led_burst_on = 0u;
+            }
             if (!g_led_burst_on){
                 led_apply(1u);
                 g_led_burst_on = 1u;
@@ -540,6 +550,7 @@ void headless_control_init(void){
     g_btn_click_deadline = 0u;
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
+    g_led_burst_pre_off = 0u;
     g_led_burst_next_tick = now;
     g_led_base_anchor = now;
     g_led_prev_scanner_running = 0u;
@@ -585,6 +596,8 @@ void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
     g_led_boot_anchor = now;
     g_led_wifi_joined_waiting_login = 0u;
     g_led_burst_pulses = 0u;
+    g_led_burst_on = 0u;
+    g_led_burst_pre_off = 0u;
     g_led_test_active = 0u;
     g_led_manual_mode = 0u;
     spin_unlock(&g_headless_lock);
@@ -780,6 +793,8 @@ int headless_led_force(unsigned int on){
     spin_lock(&g_headless_lock);
     led_test_stop();
     g_led_burst_pulses = 0u;
+    g_led_burst_on = 0u;
+    g_led_burst_pre_off = 0u;
     if (on == 2u){
         g_led_manual_mode = 0u;
         spin_unlock(&g_headless_lock);
