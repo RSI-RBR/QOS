@@ -79,6 +79,10 @@ void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
     }
     if (ethertype == ETH_TYPE_IPV4){
         g_np_stats.eth_ipv4++;
+        if (payload_len >= sizeof(ipv4_header_t)){
+            const ipv4_header_t* ip = (const ipv4_header_t*)payload;
+            arp_note_peer(ip->src, eth->src);
+        }
         ipv4_handle_frame(payload, payload_len);
         return;
     }

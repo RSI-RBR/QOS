@@ -300,6 +300,10 @@ void arp_set_local_interface(const unsigned char mac[ETH_ADDR_LEN], const unsign
     g_iface_ready = 1;
 }
 
+void arp_note_peer(const unsigned char ip[4], const unsigned char mac[ETH_ADDR_LEN]){
+    arp_cache_learn(ip, mac);
+}
+
 int arp_send_request(const unsigned char target_ip[4]){
     unsigned char frame[ETH_MIN_FRAME_LEN];
     arp_packet_t* arp;
