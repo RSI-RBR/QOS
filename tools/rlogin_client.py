@@ -207,6 +207,12 @@ def main():
     ap.add_argument("--password", required=True)
     ap.add_argument("--broadcast", action="store_true", help="send first hello to 255.255.255.255")
     ap.add_argument(
+        "--timeout",
+        type=float,
+        default=15.0,
+        help="seconds to wait for handshake/auth replies (default: 15; Pi Zero 2W can be slower)",
+    )
+    ap.add_argument(
         "--kex",
         choices=["hybrid", "pq", "x25519"],
         default="hybrid",
@@ -268,12 +274,12 @@ def main():
         sock.send(hello)
 
     if args.broadcast:
-        pkt, addr = recv_one_with_addr(sock, 5.0)
+        pkt, addr = recv_one_with_addr(sock, args.timeout)
         server = (addr[0], args.port)
         sock.connect(server)
         print(f"Discovered Quantum OS at {server[0]}:{server[1]}")
     else:
-        pkt = recv_one(sock, 5.0)
+        pkt = recv_one(sock, args.timeout)
     msg_type, session_id, _seq, payload = parse_header(pkt)
     if msg_type != TYPE_SERVER_HELLO:
         raise SystemExit("unexpected server reply")
@@ -375,7 +381,7 @@ def main():
     auth_resp = sha256(pw_hash + client_nonce + server_nonce)
     sock.send(cs.encrypt(TYPE_AUTH_PROOF, session_id, auth_resp))
 
-    pkt = recv_one(sock, 5.0)
+    pkt = recv_one(sock, args.timeout)
     msg_type, sid2, seq2, payload = parse_header(pkt)
     if sid2 != session_id or msg_type != TYPE_AUTH_RESULT:
         raise SystemExit("unexpected auth result packet")

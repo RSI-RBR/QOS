@@ -2,7 +2,6 @@
 #include "net.h"
 #include "timer.h"
 #include "uart.h"
-#include "process.h"
 
 typedef struct {
     unsigned long rx_total;
@@ -12,7 +11,18 @@ typedef struct {
     unsigned long rx_unsupported;
 } arp_stats_t;
 
+typedef struct {
+    int valid;
+    unsigned char ip[4];
+    unsigned char mac[ETH_ADDR_LEN];
+    unsigned long seen_tick;
+} arp_cache_entry_t;
+
+#define ARP_CACHE_LEN 8u
+
 static arp_stats_t g_arp_stats;
+static arp_cache_entry_t g_arp_cache[ARP_CACHE_LEN];
+static unsigned int g_arp_cache_next = 0;
 static unsigned char g_local_mac[ETH_ADDR_LEN];
 static unsigned char g_local_ip[4];
 static int g_iface_ready = 0;
@@ -47,6 +57,78 @@ static int ip4_eq(const unsigned char a[4], const unsigned char b[4]){
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
 
+static int ip4_is_zero(const unsigned char ip[4]){
+    return ip[0] == 0u && ip[1] == 0u && ip[2] == 0u && ip[3] == 0u;
+}
+
+static int mac_is_zero(const unsigned char mac[ETH_ADDR_LEN]){
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        if (mac[i] != 0u){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int mac_is_broadcast(const unsigned char mac[ETH_ADDR_LEN]){
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        if (mac[i] != 0xFFu){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void arp_cache_clear(void){
+    for (unsigned int i = 0; i < ARP_CACHE_LEN; i++){
+        g_arp_cache[i].valid = 0;
+        g_arp_cache[i].seen_tick = 0;
+        for (unsigned int j = 0; j < 4; j++){
+            g_arp_cache[i].ip[j] = 0;
+        }
+        for (unsigned int j = 0; j < ETH_ADDR_LEN; j++){
+            g_arp_cache[i].mac[j] = 0;
+        }
+    }
+    g_arp_cache_next = 0;
+}
+
+static void arp_cache_learn(const unsigned char ip[4], const unsigned char mac[ETH_ADDR_LEN]){
+    unsigned int slot = ARP_CACHE_LEN;
+    if (!ip || !mac || ip4_is_zero(ip) || ip4_eq(ip, g_local_ip) ||
+        mac_is_zero(mac) || mac_is_broadcast(mac)){
+        return;
+    }
+
+    for (unsigned int i = 0; i < ARP_CACHE_LEN; i++){
+        if (g_arp_cache[i].valid && ip4_eq(g_arp_cache[i].ip, ip)){
+            slot = i;
+            break;
+        }
+        if (!g_arp_cache[i].valid && slot == ARP_CACHE_LEN){
+            slot = i;
+        }
+    }
+    if (slot == ARP_CACHE_LEN){
+        slot = g_arp_cache_next++ % ARP_CACHE_LEN;
+    }
+    g_arp_cache[slot].valid = 1;
+    g_arp_cache[slot].seen_tick = system_ticks;
+    for (unsigned int i = 0; i < 4; i++){
+        g_arp_cache[slot].ip[i] = ip[i];
+    }
+    for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
+        g_arp_cache[slot].mac[i] = mac[i];
+    }
+}
+
+static void arp_wait_tick(void){
+    unsigned long start = system_ticks;
+    while ((unsigned long)(system_ticks - start) < 1UL){
+        asm volatile("wfe" : : : "memory");
+    }
+}
+
 static int arp_learn_gateway_from_sender(const unsigned char spa[4],
                                          const unsigned char sha[ETH_ADDR_LEN]){
     if (!spa || !sha){
@@ -61,6 +143,7 @@ static int arp_learn_gateway_from_sender(const unsigned char spa[4],
     for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
         g_gateway_mac[i] = sha[i];
     }
+    arp_cache_learn(spa, sha);
     g_gateway_resolved = 1;
     g_periodic_attempts = 0;
     g_periodic_enabled = 0;
@@ -137,6 +220,7 @@ void arp_init(void){
     g_periodic_attempts = 0;
     g_periodic_enabled = 0;
     g_gateway_resolved = 0;
+    arp_cache_clear();
 }
 
 void arp_handle_frame(const unsigned char* frame, unsigned int len){
@@ -159,6 +243,7 @@ void arp_handle_frame(const unsigned char* frame, unsigned int len){
     }
 
     g_arp_stats.rx_valid++;
+    arp_cache_learn(arp->spa, arp->sha);
     if (oper == ARP_OP_REQUEST){
         g_arp_stats.rx_request++;
         for (unsigned int i = 0; i < 4; i++){
@@ -333,6 +418,14 @@ void arp_dump_stats(void){
     uart_puts(g_gateway_resolved ? "yes" : "no");
     uart_puts(" arp_retry=");
     uart_putdec(g_periodic_attempts);
+    unsigned int cache_count = 0;
+    for (unsigned int i = 0; i < ARP_CACHE_LEN; i++){
+        if (g_arp_cache[i].valid){
+            cache_count++;
+        }
+    }
+    uart_puts(" cache=");
+    uart_putdec(cache_count);
     uart_puts("\n");
     uart_puts("ARP last_req ");
     uart_putdec(g_last_req_spa[0]);
@@ -401,6 +494,52 @@ int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]){
     return 0;
 }
 
+int arp_get_mac_for_ip(const unsigned char ip[4], unsigned char out_mac[ETH_ADDR_LEN]){
+    if (!ip || !out_mac){
+        return -1;
+    }
+    for (unsigned int i = 0; i < ARP_CACHE_LEN; i++){
+        if (g_arp_cache[i].valid && ip4_eq(g_arp_cache[i].ip, ip)){
+            for (unsigned int j = 0; j < ETH_ADDR_LEN; j++){
+                out_mac[j] = g_arp_cache[i].mac[j];
+            }
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int arp_resolve_ip(const unsigned char ip[4], unsigned int timeout_ms){
+    if (!ip){
+        return -1;
+    }
+    unsigned char mac[ETH_ADDR_LEN];
+    if (arp_get_mac_for_ip(ip, mac) == 0){
+        return 0;
+    }
+    if (!g_iface_ready || !net_link_up()){
+        return -1;
+    }
+    if (timeout_ms == 0u){
+        timeout_ms = 500u;
+    }
+
+    unsigned long start = system_ticks;
+    unsigned long next_req = start;
+    while ((unsigned long)(system_ticks - start) < (unsigned long)timeout_ms){
+        if ((long)(system_ticks - next_req) >= 0){
+            (void)arp_send_request(ip);
+            next_req = system_ticks + 200u;
+        }
+        (void)net_poll();
+        if (arp_get_mac_for_ip(ip, mac) == 0){
+            return 0;
+        }
+        arp_wait_tick();
+    }
+    return -1;
+}
+
 int arp_resolve_gateway(unsigned int timeout_ms){
     if (g_gateway_resolved){
         return 0;
@@ -424,7 +563,7 @@ int arp_resolve_gateway(unsigned int timeout_ms){
         if (g_gateway_resolved){
             return 0;
         }
-        process_sleep(1);
+        arp_wait_tick();
     }
     return -1;
 }

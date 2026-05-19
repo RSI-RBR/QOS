@@ -16,6 +16,8 @@
 #include "interrupt.h"
 #include "mmu.h"
 #include "net.h"
+#include "net_proto.h"
+#include "arp.h"
 #include "usb_host.h"
 #include "socket.h"
 #include "console.h"
@@ -81,6 +83,36 @@ static void pi0_wifi_wait_ms(unsigned int ms){
     while ((unsigned long)(system_ticks - start) < (unsigned long)ms){
         asm volatile("wfe" : : : "memory");
     }
+}
+
+static int pi0_wait_for_gateway_arp(unsigned int timeout_ms){
+    unsigned char gateway_ip[4];
+    unsigned long start = system_ticks;
+    unsigned long next_req = start;
+
+    if (arp_gateway_resolved()){
+        return 0;
+    }
+    net_proto_get_gateway_ip(gateway_ip);
+    if (timeout_ms == 0u){
+        timeout_ms = 2500u;
+    }
+
+    while ((unsigned long)(system_ticks - start) < (unsigned long)timeout_ms){
+        if (arp_gateway_resolved()){
+            return 0;
+        }
+        if ((long)(system_ticks - next_req) >= 0){
+            (void)arp_send_request(gateway_ip);
+            next_req = system_ticks + 250u;
+        }
+        (void)net_poll();
+        if (arp_gateway_resolved()){
+            return 0;
+        }
+        pi0_wifi_wait_ms(10u);
+    }
+    return arp_gateway_resolved() ? 0 : -1;
 }
 
 static void pi0_headless_write(const char* s){
@@ -525,6 +557,12 @@ static void pi0_headless_wifi_autojoin(void){
     }
 
     pi0_headless_write("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
+    pi0_headless_write("Pi0 headless WiFi: resolving gateway ARP...\n");
+    if (pi0_wait_for_gateway_arp(2500u) == 0){
+        pi0_headless_write("Pi0 headless WiFi: gateway ARP ready.\n");
+    } else{
+        pi0_headless_write("Pi0 headless WiFi: gateway ARP pending; direct LAN replies still enabled.\n");
+    }
     headless_control_note_wifi_joined_waiting_login();
 
 out:
@@ -576,6 +614,21 @@ static int start_boot_shell_process(loaded_program_t shell_prog){
     }
 
     return -1;
+}
+
+static void kernel_poll_background_io(void){
+    static unsigned long next_net_poll_tick = 0;
+    static unsigned long next_remote_poll_tick = 0;
+    unsigned long now = system_ticks;
+
+    if ((long)(now - next_net_poll_tick) >= 0){
+        next_net_poll_tick = now + 10u;
+        (void)net_poll();
+    }
+    if ((long)(now - next_remote_poll_tick) >= 0){
+        next_remote_poll_tick = now + 10u;
+        remote_login_poll();
+    }
 }
 
 extern unsigned long stack_bottom;
@@ -938,11 +991,13 @@ void kernel_main(void){
     // never reach here normally
     while (1){
         headless_control_poll();
+        kernel_poll_background_io();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
             usb_host_service();
             headless_control_poll();
+            kernel_poll_background_io();
             asm volatile("wfi");
         }
     }

@@ -33,5 +33,7 @@ void arp_periodic_tick(unsigned long now_ticks);
 int arp_gateway_resolved(void);
 int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]);
 int arp_resolve_gateway(unsigned int timeout_ms);
+int arp_get_mac_for_ip(const unsigned char ip[4], unsigned char out_mac[ETH_ADDR_LEN]);
+int arp_resolve_ip(const unsigned char ip[4], unsigned int timeout_ms);
 
 #endif

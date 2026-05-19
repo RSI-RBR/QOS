@@ -60,6 +60,10 @@ static int ip4_is_broadcast(const unsigned char ip[4]){
     return ip[0] == 255u && ip[1] == 255u && ip[2] == 255u && ip[3] == 255u;
 }
 
+static int ip4_same_lan24(const unsigned char a[4], const unsigned char b[4]){
+    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
 void ipv4_init(void){
     g_ipv4_stats.rx_total = 0;
     g_ipv4_stats.rx_valid = 0;
@@ -97,11 +101,12 @@ int ipv4_send_via_gateway(unsigned char protocol,
                           const unsigned char dst_ip[4],
                           const unsigned char* payload,
                           unsigned int payload_len){
-    unsigned char gateway_mac[ETH_ADDR_LEN];
+    unsigned char dst_mac[ETH_ADDR_LEN];
     unsigned char frame[NET_MAX_FRAME_SIZE];
     unsigned char* ip;
     unsigned int frame_len;
     unsigned int ip_total_len = 20u + payload_len;
+    int direct_lan = 0;
 
     if (!g_endpoint_ready || !dst_ip){
         g_ipv4_stats.tx_fail++;
@@ -115,12 +120,38 @@ int ipv4_send_via_gateway(unsigned char protocol,
         g_ipv4_stats.tx_fail++;
         return -1;
     }
-    if (arp_get_gateway_mac(gateway_mac) != 0){
-        (void)arp_resolve_gateway(1200u);
+
+    direct_lan = ip4_same_lan24(dst_ip, g_local_ip) &&
+                 !ip4_eq(dst_ip, g_local_ip) &&
+                 !ip4_is_broadcast(dst_ip);
+    if (direct_lan){
+        if (arp_get_mac_for_ip(dst_ip, dst_mac) != 0){
+            (void)arp_resolve_ip(dst_ip, 400u);
+        }
+        if (arp_get_mac_for_ip(dst_ip, dst_mac) != 0){
+            direct_lan = 0;
+        }
     }
-    if (arp_get_gateway_mac(gateway_mac) != 0){
-        g_ipv4_stats.tx_fail++;
-        return -2;
+    if (!direct_lan){
+        if (arp_get_gateway_mac(dst_mac) != 0){
+            (void)arp_resolve_gateway(1200u);
+        }
+        if (arp_get_gateway_mac(dst_mac) != 0){
+            /*
+             * If no gateway is known yet but the destination is local, make a
+             * final direct attempt. This keeps UDP discovery usable on Wi-Fi
+             * networks where the AP does not hairpin same-subnet frames sent
+             * to the router MAC.
+             */
+            if (ip4_same_lan24(dst_ip, g_local_ip) &&
+                arp_resolve_ip(dst_ip, 400u) == 0 &&
+                arp_get_mac_for_ip(dst_ip, dst_mac) == 0){
+                direct_lan = 1;
+            } else{
+                g_ipv4_stats.tx_fail++;
+                return -2;
+            }
+        }
     }
 
     frame_len = ETH_HEADER_LEN + ip_total_len;
@@ -129,7 +160,7 @@ int ipv4_send_via_gateway(unsigned char protocol,
     }
 
     for (unsigned int i = 0; i < ETH_ADDR_LEN; i++){
-        frame[i] = gateway_mac[i];
+        frame[i] = dst_mac[i];
         frame[6 + i] = g_local_mac[i];
     }
     frame[12] = (unsigned char)(ETH_TYPE_IPV4 >> 8);
