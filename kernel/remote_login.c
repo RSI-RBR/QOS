@@ -10,6 +10,10 @@
 #include "timer.h"
 #include "panic.h"
 #include "headless_control.h"
+#include "terminal.h"
+#include "net.h"
+#include "arp.h"
+#include "platform/board_config.h"
 
 #define uart_puts klog_puts
 #define uart_putdec klog_putdec
@@ -110,6 +114,108 @@ static unsigned int g_tty_out_count = 0;
 static unsigned int g_auth_fail_streak = 0;
 static unsigned long g_auth_delay_until_tick = 0;
 static unsigned long g_auth_lockout_until_tick = 0;
+
+static void rlogin_headless_write(const char* s){
+    unsigned long len = 0;
+    if (!s){
+        return;
+    }
+    while (s[len]){
+        len++;
+    }
+    terminal_write(0, -1, s, len);
+}
+
+static void rlogin_headless_putdec(unsigned long v){
+    char tmp[21];
+    char out[21];
+    int n = 0;
+    int o = 0;
+
+    if (v == 0UL){
+        rlogin_headless_write("0");
+        return;
+    }
+    while (v > 0UL && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10UL));
+        v /= 10UL;
+    }
+    while (n > 0 && o + 1 < (int)sizeof(out)){
+        out[o++] = tmp[--n];
+    }
+    out[o] = 0;
+    rlogin_headless_write(out);
+}
+
+static void rlogin_headless_diag_tick(void){
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+    static unsigned long next_diag_tick = 0;
+    unsigned long now = system_ticks;
+    unsigned long net_rx = 0;
+    unsigned long net_drop = 0;
+    unsigned long net_tx = 0;
+    unsigned long net_txfail = 0;
+    unsigned int net_rxq = 0;
+    const char* driver = "none";
+    int link = 0;
+    unsigned long arp_rx = 0;
+    unsigned long arp_tx_req = 0;
+    unsigned long arp_tx_rep = 0;
+    unsigned int arp_cache = 0;
+    int arp_gw = 0;
+
+    if ((long)(now - next_diag_tick) < 0){
+        return;
+    }
+    next_diag_tick = now + 5000u;
+    if (!g_enabled || g_sess.authed){
+        return;
+    }
+
+    net_get_diag(&net_rx, &net_drop, &net_tx, &net_txfail, &net_rxq, &driver, &link);
+    arp_get_diag(&arp_rx, &arp_tx_req, &arp_tx_rep, &arp_cache, &arp_gw);
+
+    rlogin_headless_write("Pi0 diag: rstate=");
+    rlogin_headless_putdec((unsigned long)remote_login_state_bits());
+    rlogin_headless_write(" rrx=");
+    rlogin_headless_putdec(g_stats.rx_total);
+    rlogin_headless_write(" rtx=");
+    rlogin_headless_putdec(g_stats.tx_total);
+    rlogin_headless_write(" bh=");
+    rlogin_headless_putdec(g_stats.bad_header);
+    rlogin_headless_write(" bc=");
+    rlogin_headless_putdec(g_stats.bad_crypto);
+    rlogin_headless_write("\n");
+
+    rlogin_headless_write("Pi0 net: drv=");
+    rlogin_headless_write(driver ? driver : "none");
+    rlogin_headless_write(" link=");
+    rlogin_headless_putdec((unsigned long)(link ? 1 : 0));
+    rlogin_headless_write(" rx=");
+    rlogin_headless_putdec(net_rx);
+    rlogin_headless_write(" drop=");
+    rlogin_headless_putdec(net_drop);
+    rlogin_headless_write(" tx=");
+    rlogin_headless_putdec(net_tx);
+    rlogin_headless_write(" txf=");
+    rlogin_headless_putdec(net_txfail);
+    rlogin_headless_write(" rxq=");
+    rlogin_headless_putdec((unsigned long)net_rxq);
+    rlogin_headless_write("\n");
+
+    rlogin_headless_write("Pi0 arp: rx=");
+    rlogin_headless_putdec(arp_rx);
+    rlogin_headless_write(" txreq=");
+    rlogin_headless_putdec(arp_tx_req);
+    rlogin_headless_write(" txrep=");
+    rlogin_headless_putdec(arp_tx_rep);
+    rlogin_headless_write(" cache=");
+    rlogin_headless_putdec((unsigned long)arp_cache);
+    rlogin_headless_write(" gw=");
+    rlogin_headless_putdec((unsigned long)(arp_gw ? 1 : 0));
+    rlogin_headless_write("\n");
+#endif
+}
 
 static unsigned short read_be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
@@ -1074,8 +1180,16 @@ int remote_login_init(void){
     uart_puts("Remote login: enabled on UDP port 2222\n");
     uart_puts("Remote login: ML-KEM backend ");
     uart_puts(pq_kem_mlkem768_available() ? "available\n" : "unavailable (X25519 only)\n");
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+    rlogin_headless_write("Pi0 remote login: enabled UDP 2222\n");
+    rlogin_headless_write("Pi0 remote login: ML-KEM ");
+    rlogin_headless_write(pq_kem_mlkem768_available() ? "available\n" : "unavailable; X25519 fallback\n");
+#endif
     if (!g_auth_ready){
         uart_puts("Remote login: AUTH.BIN not ready; auth attempts will be rejected\n");
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+        rlogin_headless_write("Pi0 remote login: AUTH.BIN not ready\n");
+#endif
         return -1;
     }
     return 0;
@@ -1111,6 +1225,7 @@ void remote_login_poll(void){
     if (!g_enabled){
         return;
     }
+    rlogin_headless_diag_tick();
 
     while (loops++ < 6){
         n = udp_recv_filtered(RLOGIN_PORT, 0, 0, 0, frame, sizeof(frame), &meta);
