@@ -5,9 +5,11 @@
 #include "timer.h"
 #include "process.h"
 #include "cyw43.h"
+#include "tcp.h"
 #include "blockdev.h"
 #include "fat32.h"
 #include "sandbox_file.h"
+#include "memory.h"
 #include "uart.h"
 #include "spinlock.h"
 
@@ -28,6 +30,8 @@
 #define LED_PULSE_GAP_MS      220u
 #define LED_PULSE_PRE_OFF_MS  120u
 #define LED_SCANNER_REFRESH_MS 100u
+#define HEADLESS_PROBE_SCANLOG_MAX_BYTES (128u * 1024u)
+#define HEADLESS_PROBE_RETURN_CH 6u
 
 static const char g_scanner_sandbox_83[11] = {'S','C','A','N','N','E','R',' ',' ',' ',' '};
 static const char* const g_scanner_log_paths[] = {
@@ -89,6 +93,254 @@ enum {
     BTN_ACTION_TOGGLE = 2u,
     BTN_ACTION_SECURE_STOP = 3u
 };
+
+static int find_scanner_pid(void);
+
+static int text_eq(const char* a, const char* b){
+    if (!a || !b){
+        return 0;
+    }
+    while (*a && *b){
+        if (*a != *b){
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return (*a == 0 && *b == 0) ? 1 : 0;
+}
+
+static const char* text_find(const char* s, const char* needle){
+    if (!s || !needle || !*needle){
+        return 0;
+    }
+    for (; *s; s++){
+        const char* a = s;
+        const char* b = needle;
+        while (*a && *b && *a == *b){
+            a++;
+            b++;
+        }
+        if (!*b){
+            return s;
+        }
+    }
+    return 0;
+}
+
+static int parse_i32_key(const char* line, const char* key, int* out){
+    const char* p;
+    const char* k;
+    int neg = 0;
+    int v = 0;
+    int seen = 0;
+    if (!line || !key || !out){
+        return -1;
+    }
+    p = text_find(line, key);
+    if (!p){
+        return -1;
+    }
+    k = key;
+    while (*k){
+        k++;
+    }
+    p += (k - key);
+    if (*p == '-'){
+        neg = 1;
+        p++;
+    } else if (*p == '+'){
+        p++;
+    }
+    while (*p >= '0' && *p <= '9'){
+        int d = *p - '0';
+        v = (v * 10) + d;
+        p++;
+        seen = 1;
+    }
+    if (!seen){
+        return -1;
+    }
+    *out = neg ? -v : v;
+    return 0;
+}
+
+static int parse_quoted_ssid(const char* line, char* out, unsigned int out_cap){
+    const char* p;
+    unsigned int n = 0u;
+    if (!line || !out || out_cap < 2u){
+        return -1;
+    }
+    p = text_find(line, " ssid=\"");
+    if (!p){
+        return -1;
+    }
+    p += 7;
+    while (*p && *p != '"' && n + 1u < out_cap){
+        char c = *p++;
+        if (c == '\\' && *p){
+            c = *p++;
+        }
+        out[n++] = c;
+    }
+    out[n] = 0;
+    if (n == 0u || text_eq(out, "<hidden>")){
+        return -1;
+    }
+    return 0;
+}
+
+static int is_plausible_rssi(int sig){
+    return (sig >= -110 && sig <= -1) ? 1 : 0;
+}
+
+static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
+    static const char aps_path[] = "aps.log";
+    int size;
+    unsigned char* buf;
+    int n;
+    int best_sig = -200;
+    char best_ssid[33];
+    int found = 0;
+
+    if (!out_ssid || !out_sig){
+        return -1;
+    }
+    out_ssid[0] = 0;
+    *out_sig = -127;
+    best_ssid[0] = 0;
+
+    size = sandbox_file_size(g_scanner_sandbox_83, aps_path);
+    if (size <= 0){
+        return -1;
+    }
+    if ((unsigned int)size > HEADLESS_PROBE_SCANLOG_MAX_BYTES){
+        size = (int)HEADLESS_PROBE_SCANLOG_MAX_BYTES;
+    }
+
+    buf = (unsigned char*)kmalloc((unsigned long)size + 1u);
+    if (!buf){
+        return -1;
+    }
+    n = sandbox_file_read(g_scanner_sandbox_83, aps_path, buf, (unsigned int)size);
+    if (n <= 0){
+        kfree_secure(buf, (unsigned long)size + 1u);
+        return -1;
+    }
+    buf[n] = 0u;
+
+    {
+        char* line = (char*)buf;
+        for (int i = 0; i <= n; i++){
+            if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == 0u){
+                unsigned char saved = buf[i];
+                int sig_max;
+                char ssid[33];
+                buf[i] = 0u;
+                if (text_find(line, " enc=OPEN") &&
+                    parse_quoted_ssid(line, ssid, sizeof(ssid)) == 0 &&
+                    parse_i32_key(line, " sig_max=", &sig_max) == 0 &&
+                    is_plausible_rssi(sig_max)){
+                    if (!found || sig_max > best_sig){
+                        best_sig = sig_max;
+                        for (unsigned int j = 0u; j < sizeof(best_ssid); j++){
+                            best_ssid[j] = ssid[j];
+                            if (ssid[j] == 0){
+                                break;
+                            }
+                        }
+                        found = 1;
+                    }
+                }
+                if (saved == 0u){
+                    break;
+                }
+                line = (char*)&buf[i + 1];
+            }
+        }
+    }
+
+    kfree_secure(buf, (unsigned long)size + 1u);
+    if (!found){
+        return -1;
+    }
+    for (unsigned int i = 0u; i < 33u; i++){
+        out_ssid[i] = best_ssid[i];
+        if (best_ssid[i] == 0){
+            break;
+        }
+    }
+    *out_sig = best_sig;
+    return 0;
+}
+
+static int headless_https_probe_open_ap(void){
+    unsigned char dst_ip[4] = {1u, 1u, 1u, 1u};
+    static const char host[] = "one.one.one.one";
+    static const char path[] = "/";
+    char ssid[33];
+    int sig = -127;
+    int rc;
+    int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
+    unsigned char resp[1024];
+
+    if (scanner_pick_strongest_open_ssid(ssid, &sig) != 0){
+        uart_puts("Headless: probe no open AP candidate\n");
+        return -10;
+    }
+
+    uart_puts("Headless: probe target open ssid=\"");
+    uart_puts(ssid);
+    uart_puts("\" sig=");
+    if (sig < 0){
+        uart_putc('-');
+        uart_putdec((unsigned long)(-sig));
+    } else{
+        uart_putdec((unsigned long)sig);
+    }
+    uart_puts("\n");
+
+    (void)cyw43_raw_capture_set_enabled(0u);
+    (void)cyw43_ioctl_monitor(0u, 0u);
+
+    rc = cyw43_ioctl_up();
+    if (rc != 0){
+        uart_puts("Headless: probe wifi up failed rc=");
+        uart_putdec((unsigned long)(-rc));
+        uart_puts("\n");
+        goto probe_restore;
+    }
+
+    rc = cyw43_ioctl_join(ssid, "");
+    if (rc != 0){
+        uart_puts("Headless: probe open join failed rc=");
+        uart_putdec((unsigned long)(-rc));
+        uart_puts("\n");
+        goto probe_restore;
+    }
+
+    rc = tcp_https_get(dst_ip, host, path, resp, sizeof(resp));
+    if (rc > 0){
+        uart_puts("Headless: probe HTTPS OK bytes=");
+        uart_putdec((unsigned long)rc);
+        uart_puts("\n");
+        rc = 0;
+    } else{
+        uart_puts("Headless: probe HTTPS failed rc=");
+        uart_putdec((unsigned long)(-rc));
+        uart_puts("\n");
+    }
+
+probe_restore:
+    if (scanner_running){
+        headless_control_note_scanner_recovery(1u);
+        (void)cyw43_ioctl_up_monitor();
+        (void)cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
+        (void)cyw43_raw_capture_set_enabled(1u);
+        headless_control_note_scanner_recovery(0u);
+    }
+    return rc;
+}
 
 static int str83_eq(const char a[11], const char b[11]){
     if (!a || !b){
@@ -319,12 +571,16 @@ static void perform_button_action(unsigned int action, unsigned long now){
         return;
     }
     if (action == BTN_ACTION_SINGLE_CHECK){
-        /*
-         * Future hook: quick HTTPS/internet probe when scanner is running.
-         * For now this is a safe visible ack only.
-         */
-        button_feedback_burst(1u, now);
-        uart_puts("Headless: button single press\n");
+        int rc;
+        uart_puts("Headless: button single press, HTTPS probe start\n");
+        rc = headless_https_probe_open_ap();
+        if (rc == 0){
+            button_feedback_burst(3u, now);
+            uart_puts("Headless: HTTPS probe success\n");
+        } else{
+            button_feedback_burst(5u, now);
+            uart_puts("Headless: HTTPS probe failed\n");
+        }
         return;
     }
 }
