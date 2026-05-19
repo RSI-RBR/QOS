@@ -166,6 +166,36 @@ static int parse_i32_key(const char* line, const char* key, int* out){
     return 0;
 }
 
+static int parse_u64_key(const char* line, const char* key, unsigned long long* out){
+    const char* p;
+    const char* k;
+    unsigned long long v = 0ull;
+    int seen = 0;
+    if (!line || !key || !out){
+        return -1;
+    }
+    p = text_find(line, key);
+    if (!p){
+        return -1;
+    }
+    k = key;
+    while (*k){
+        k++;
+    }
+    p += (k - key);
+    while (*p >= '0' && *p <= '9'){
+        unsigned int d = (unsigned int)(*p - '0');
+        v = (v * 10ull) + (unsigned long long)d;
+        p++;
+        seen = 1;
+    }
+    if (!seen){
+        return -1;
+    }
+    *out = v;
+    return 0;
+}
+
 static int parse_quoted_ssid(const char* line, char* out, unsigned int out_cap){
     const char* p;
     unsigned int n = 0u;
@@ -200,16 +230,21 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
     int size;
     unsigned char* buf;
     int n;
-    int best_sig = -200;
-    char best_ssid[33];
+    int best_live_sig = -200;
+    int best_any_sig = -200;
+    unsigned long long best_live_last_ms = 0ull;
+    char best_live_ssid[33];
+    char best_any_ssid[33];
     int found = 0;
+    int found_live = 0;
 
     if (!out_ssid || !out_sig){
         return -1;
     }
     out_ssid[0] = 0;
     *out_sig = -127;
-    best_ssid[0] = 0;
+    best_live_ssid[0] = 0;
+    best_any_ssid[0] = 0;
 
     size = sandbox_file_size(g_scanner_sandbox_83, aps_path);
     if (size <= 0){
@@ -236,16 +271,35 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
             if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == 0u){
                 unsigned char saved = buf[i];
                 int sig_max;
+                unsigned long long last_ms = 0ull;
+                int have_last_ms = 0;
                 char ssid[33];
                 buf[i] = 0u;
                 if (text_find(line, " enc=OPEN") &&
                     parse_quoted_ssid(line, ssid, sizeof(ssid)) == 0 &&
                     parse_i32_key(line, " sig_max=", &sig_max) == 0 &&
                     is_plausible_rssi(sig_max)){
-                    if (!found || sig_max > best_sig){
-                        best_sig = sig_max;
-                        for (unsigned int j = 0u; j < sizeof(best_ssid); j++){
-                            best_ssid[j] = ssid[j];
+                    if (parse_u64_key(line, " last_ms=", &last_ms) == 0){
+                        have_last_ms = 1;
+                    }
+                    if (have_last_ms && last_ms > 0ull){
+                        if (!found_live ||
+                            last_ms > best_live_last_ms ||
+                            (last_ms == best_live_last_ms && sig_max > best_live_sig)){
+                            best_live_last_ms = last_ms;
+                            best_live_sig = sig_max;
+                            for (unsigned int j = 0u; j < sizeof(best_live_ssid); j++){
+                                best_live_ssid[j] = ssid[j];
+                                if (ssid[j] == 0){
+                                    break;
+                                }
+                            }
+                            found_live = 1;
+                        }
+                    } else if (!found || sig_max > best_any_sig){
+                        best_any_sig = sig_max;
+                        for (unsigned int j = 0u; j < sizeof(best_any_ssid); j++){
+                            best_any_ssid[j] = ssid[j];
                             if (ssid[j] == 0){
                                 break;
                             }
@@ -262,16 +316,26 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
     }
 
     kfree_secure(buf, (unsigned long)size + 1u);
-    if (!found){
+    if (!found_live && !found){
         return -1;
     }
+    if (found_live){
+        for (unsigned int i = 0u; i < 33u; i++){
+            out_ssid[i] = best_live_ssid[i];
+            if (best_live_ssid[i] == 0){
+                break;
+            }
+        }
+        *out_sig = best_live_sig;
+        return 0;
+    }
     for (unsigned int i = 0u; i < 33u; i++){
-        out_ssid[i] = best_ssid[i];
-        if (best_ssid[i] == 0){
+        out_ssid[i] = best_any_ssid[i];
+        if (best_any_ssid[i] == 0){
             break;
         }
     }
-    *out_sig = best_sig;
+    *out_sig = best_any_sig;
     return 0;
 }
 
