@@ -50,6 +50,9 @@ typedef struct {
     unsigned int hop_ok;
     unsigned int hop_fail;
     unsigned int handshake_hits;
+    unsigned int sig_ok;
+    unsigned int sig_unknown;
+    unsigned int rt_sample_printed;
 } scan_stats_t;
 
 typedef struct {
@@ -423,6 +426,41 @@ static int radiotap_parse_signal_dbm(const unsigned char* rt,
         off += size;
     }
     return -1;
+}
+
+static void print_hex_byte(unsigned int v){
+    static const char hx[] = "0123456789ABCDEF";
+    qos_putc(hx[(v >> 4) & 0xFu]);
+    qos_putc(hx[v & 0xFu]);
+}
+
+static void print_radiotap_sample(const unsigned char* buf,
+                                  unsigned int len,
+                                  unsigned int rt_len,
+                                  int signal,
+                                  unsigned int parsed){
+    unsigned int n = len < 32u ? len : 32u;
+    qos_puts("scanner rt sample: len=");
+    put_u32(len);
+    qos_puts(" rtlen=");
+    put_u32(rt_len);
+    qos_puts(" present=");
+    if (rt_len >= 8u){
+        put_u32(le32(buf + 4u));
+    } else{
+        qos_puts("?");
+    }
+    qos_puts(" sig=");
+    if (parsed){
+        put_i32(signal);
+    } else{
+        qos_puts("unknown");
+    }
+    qos_puts(" bytes=");
+    for (unsigned int i = 0u; i < n; i++){
+        print_hex_byte(buf[i]);
+    }
+    qos_puts("\n");
 }
 
 static unsigned int be16(const unsigned char* p){
@@ -1582,6 +1620,10 @@ static void print_summary(const scan_stats_t* st, unsigned int active_channel){
     put_u32(open);
     qos_puts(" hs=");
     put_u32(st->handshake_hits);
+    qos_puts(" sig=");
+    put_u32(st->sig_ok);
+    qos_puts("/");
+    put_u32(st->sig_unknown);
     qos_puts(" bad=");
     put_u32(st->bad);
     qos_puts(" hop=");
@@ -1833,9 +1875,24 @@ static void parse_frame(const unsigned char* buf,
     if (buf[0] == 0u && buf[1] == 0u){
         rt_len = le16(buf + 2u);
         if (rt_len >= 8u && rt_len < len){
+            unsigned int parsed_signal = 0u;
             stats->rt++;
-            if (radiotap_parse_signal_dbm(buf, rt_len, &signal) != 0 && rt_len > 22u){
+            if (radiotap_parse_signal_dbm(buf, rt_len, &signal) == 0){
+                parsed_signal = 1u;
+            } else if (rt_len > 22u){
                 signal = (signed char)buf[22];
+                if (signal > -128){
+                    parsed_signal = 1u;
+                }
+            }
+            if (parsed_signal){
+                stats->sig_ok++;
+            } else{
+                stats->sig_unknown++;
+            }
+            if (!parsed_signal && !stats->rt_sample_printed){
+                print_radiotap_sample(buf, len, rt_len, signal, parsed_signal);
+                stats->rt_sample_printed = 1u;
             }
             dot = buf + rt_len;
             dot_len = len - rt_len;
@@ -2045,6 +2102,9 @@ void program_main(void){
     stats.hop_ok = 0u;
     stats.hop_fail = 0u;
     stats.handshake_hits = 0u;
+    stats.sig_ok = 0u;
+    stats.sig_unknown = 0u;
+    stats.rt_sample_printed = 0u;
 
     unsigned long long now = qos_get_time_us();
     g_scan_start_us = now;
