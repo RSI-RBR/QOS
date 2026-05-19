@@ -440,7 +440,7 @@ static void print_radiotap_sample(const unsigned char* buf,
                                   int signal,
                                   unsigned int parsed){
     unsigned int n = len < 32u ? len : 32u;
-    qos_puts("scanner rt sample: len=");
+    qos_puts("scanner signal sample: len=");
     put_u32(len);
     qos_puts(" rtlen=");
     put_u32(rt_len);
@@ -448,7 +448,7 @@ static void print_radiotap_sample(const unsigned char* buf,
     if (rt_len >= 8u){
         put_u32(le32(buf + 4u));
     } else{
-        qos_puts("?");
+        qos_puts("none");
     }
     qos_puts(" sig=");
     if (parsed){
@@ -1861,6 +1861,7 @@ static void parse_frame(const unsigned char* buf,
     const unsigned char* addr1 = 0;
     const unsigned char* addr2 = 0;
     const unsigned char* addr3 = 0;
+    unsigned int signal_known = 0u;
 
     if (!buf || !stats || len < 8u){
         if (stats){
@@ -1875,24 +1876,14 @@ static void parse_frame(const unsigned char* buf,
     if (buf[0] == 0u && buf[1] == 0u){
         rt_len = le16(buf + 2u);
         if (rt_len >= 8u && rt_len < len){
-            unsigned int parsed_signal = 0u;
             stats->rt++;
             if (radiotap_parse_signal_dbm(buf, rt_len, &signal) == 0){
-                parsed_signal = 1u;
+                signal_known = 1u;
             } else if (rt_len > 22u){
                 signal = (signed char)buf[22];
                 if (signal > -128){
-                    parsed_signal = 1u;
+                    signal_known = 1u;
                 }
-            }
-            if (parsed_signal){
-                stats->sig_ok++;
-            } else{
-                stats->sig_unknown++;
-            }
-            if (!parsed_signal && !stats->rt_sample_printed){
-                print_radiotap_sample(buf, len, rt_len, signal, parsed_signal);
-                stats->rt_sample_printed = 1u;
             }
             dot = buf + rt_len;
             dot_len = len - rt_len;
@@ -1910,6 +1901,16 @@ static void parse_frame(const unsigned char* buf,
         stats->bad++;
         note_cat(stats, CAT_UNKNOWN, len);
         return;
+    }
+
+    if (signal_known){
+        stats->sig_ok++;
+    } else{
+        stats->sig_unknown++;
+        if (!stats->rt_sample_printed){
+            print_radiotap_sample(buf, len, rt_len, signal, signal_known);
+            stats->rt_sample_printed = 1u;
+        }
     }
 
     type = (fc >> 2) & 0x3u;
