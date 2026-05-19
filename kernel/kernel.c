@@ -511,6 +511,7 @@ static void pi0_headless_wifi_autojoin(void){
     int rc;
     int up_ok = 0;
     int join_ok = 0;
+    int arp_ok = 0;
 
     pi0_headless_write("Pi0 headless WiFi: autojoin enabled\n");
     memzero((unsigned long)ssid, sizeof(ssid));
@@ -620,12 +621,47 @@ static void pi0_headless_wifi_autojoin(void){
         goto out;
     }
 
-    pi0_headless_write("Pi0 headless WiFi: joined; remote login can use WiFi.\n");
-    pi0_headless_write("Pi0 headless WiFi: resolving gateway ARP...\n");
-    if (pi0_wait_for_gateway_arp(2500u) == 0){
+    pi0_headless_write("Pi0 headless WiFi: joined; proving RX with gateway ARP...\n");
+    if (pi0_wait_for_gateway_arp(3000u) == 0){
+        arp_ok = 1;
+    }
+
+    /*
+     * A successful SET_SSID is not enough for headless boot: some CYW43
+     * firmwares return success before the data path is really associated.
+     * Gateway ARP is our cheap proof that TX and RX both work.
+     */
+    for (unsigned int attempt = 0u; !arp_ok && attempt < 3u; attempt++){
+        pi0_headless_write("Pi0 headless WiFi: no ARP proof; retrying association ");
+        pi0_headless_putdec(attempt + 1u);
+        pi0_headless_write("\n");
+        (void)cyw43_ioctl_down();
+        pi0_wifi_wait_ms(350u + (attempt * 250u));
+        rc = cyw43_ioctl_up();
+        if (rc != 0){
+            pi0_headless_write("Pi0 headless WiFi: ARP retry wifiup failed rc=");
+            pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+            pi0_headless_write("\n");
+            continue;
+        }
+        pi0_wifi_wait_ms(350u + (attempt * 150u));
+        rc = cyw43_ioctl_join(ssid, password);
+        if (rc != 0){
+            pi0_headless_write("Pi0 headless WiFi: ARP retry join failed rc=");
+            pi0_headless_putdec((unsigned long)(rc < 0 ? -rc : rc));
+            pi0_headless_write("\n");
+            continue;
+        }
+        if (pi0_wait_for_gateway_arp(4000u) == 0){
+            arp_ok = 1;
+        }
+    }
+
+    if (arp_ok){
         pi0_headless_write("Pi0 headless WiFi: gateway ARP ready.\n");
     } else{
-        pi0_headless_write("Pi0 headless WiFi: gateway ARP pending; direct LAN replies still enabled.\n");
+        pi0_headless_write("Pi0 headless WiFi: gateway ARP pending; remote RX/TX may not work yet.\n");
+        pi0_headless_write("Pi0 headless WiFi: direct LAN replies still enabled.\n");
     }
     headless_control_note_wifi_joined_waiting_login();
 

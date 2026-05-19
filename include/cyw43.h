@@ -45,6 +45,24 @@ typedef struct {
 } cyw43_status_t;
 
 typedef struct {
+    unsigned char fw_running;
+    unsigned char iface_up;
+    unsigned char joined;
+    unsigned char func2_ready;
+    unsigned int net_tx_ok;
+    unsigned int net_tx_fail;
+    unsigned int net_rx_data;
+    unsigned int net_rx_event;
+    unsigned int net_rx_control;
+    unsigned int net_rx_other;
+    unsigned int sdpcm_tx_seq;
+    unsigned int tx_window;
+    unsigned int flow_mask;
+    unsigned int rframe_count;
+    unsigned int int_pending;
+} cyw43_net_diag_t;
+
+typedef struct {
     unsigned int enabled;
     unsigned int queued;
     unsigned int rx_frames;
@@ -96,6 +114,7 @@ int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,
                       unsigned int seq);
 
 int cyw43_get_status(cyw43_status_t* out);
+int cyw43_get_net_diag(cyw43_net_diag_t* out);
 void cyw43_dump_status(void);
 int cyw43_release_emmc_for_storage(void);
 int cyw43_shared_emmc_active(void);

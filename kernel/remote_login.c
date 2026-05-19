@@ -13,6 +13,7 @@
 #include "terminal.h"
 #include "net.h"
 #include "arp.h"
+#include "cyw43.h"
 #include "platform/board_config.h"
 
 #define uart_puts klog_puts
@@ -163,6 +164,8 @@ static void rlogin_headless_diag_tick(void){
     unsigned long arp_tx_rep = 0;
     unsigned int arp_cache = 0;
     int arp_gw = 0;
+    cyw43_net_diag_t cyw_diag;
+    int have_cyw_diag = 0;
 
     if ((long)(now - next_diag_tick) < 0){
         return;
@@ -174,6 +177,7 @@ static void rlogin_headless_diag_tick(void){
 
     net_get_diag(&net_rx, &net_drop, &net_tx, &net_txfail, &net_rxq, &driver, &link);
     arp_get_diag(&arp_rx, &arp_tx_req, &arp_tx_rep, &arp_cache, &arp_gw);
+    have_cyw_diag = (cyw43_get_net_diag(&cyw_diag) == 0) ? 1 : 0;
 
     rlogin_headless_write("Pi0 diag: rstate=");
     rlogin_headless_putdec((unsigned long)remote_login_state_bits());
@@ -214,6 +218,41 @@ static void rlogin_headless_diag_tick(void){
     rlogin_headless_write(" gw=");
     rlogin_headless_putdec((unsigned long)(arp_gw ? 1 : 0));
     rlogin_headless_write("\n");
+
+    if (have_cyw_diag){
+        rlogin_headless_write("Pi0 cyw: run=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.fw_running);
+        rlogin_headless_write(" up=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.iface_up);
+        rlogin_headless_write(" join=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.joined);
+        rlogin_headless_write(" f2=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.func2_ready);
+        rlogin_headless_write(" tx=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_tx_ok);
+        rlogin_headless_write(" txf=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_tx_fail);
+        rlogin_headless_write(" rxd=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_rx_data);
+        rlogin_headless_write(" rxe=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_rx_event);
+        rlogin_headless_write(" rxc=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_rx_control);
+        rlogin_headless_write(" rxo=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.net_rx_other);
+        rlogin_headless_write("\n");
+        rlogin_headless_write("Pi0 cyw2: rfc=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.rframe_count);
+        rlogin_headless_write(" pend=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.int_pending);
+        rlogin_headless_write(" seq=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.sdpcm_tx_seq);
+        rlogin_headless_write(" win=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.tx_window);
+        rlogin_headless_write(" flow=");
+        rlogin_headless_putdec((unsigned long)cyw_diag.flow_mask);
+        rlogin_headless_write("\n");
+    }
 #endif
 }
 

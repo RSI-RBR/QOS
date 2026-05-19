@@ -4529,6 +4529,44 @@ int cyw43_get_status(cyw43_status_t* out){
     return 0;
 }
 
+int cyw43_get_net_diag(cyw43_net_diag_t* out){
+    unsigned char rfc0 = 0;
+    unsigned char rfc1 = 0;
+    unsigned char intpend = 0;
+
+    if (!out){
+        return -1;
+    }
+
+    out->fw_running = g_cyw43.fw_running;
+    out->iface_up = g_cyw43.iface_up;
+    out->joined = g_cyw43.joined;
+    out->func2_ready = g_cyw43.func2_ready;
+    out->net_tx_ok = g_cyw43.net_tx_ok;
+    out->net_tx_fail = g_cyw43.net_tx_fail;
+    out->net_rx_data = g_cyw43.net_rx_data;
+    out->net_rx_event = g_cyw43.net_rx_event;
+    out->net_rx_control = g_cyw43.net_rx_control;
+    out->net_rx_other = g_cyw43.net_rx_other;
+    out->sdpcm_tx_seq = g_cyw43.sdpcm_tx_seq & 0xFFu;
+    out->tx_window = g_cyw43.tx_window;
+    out->flow_mask = g_cyw43.flow_mask;
+    out->rframe_count = 0;
+    out->int_pending = 0;
+
+    if (g_cyw43.fw_running && g_cyw43.func2_ready){
+        if (sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG, &rfc0) == 0 &&
+            sdio_bus_cmd52_read(1, CYW43_RFRAME_COUNT_REG + 1u, &rfc1) == 0){
+            out->rframe_count = ((unsigned int)rfc1 << 8) | rfc0;
+        }
+        if (sdio_bus_cmd52_read(0, 0x05u, &intpend) == 0){
+            out->int_pending = intpend;
+        }
+    }
+
+    return 0;
+}
+
 void cyw43_dump_status(void){
     uart_puts("CYW43 enabled=");
     uart_putdec(g_cyw43.enabled);
