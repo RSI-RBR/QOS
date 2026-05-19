@@ -4266,10 +4266,11 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
         g_cyw43.joined_ssid[i] = ssid[i];
     }
     g_cyw43.joined_ssid[n] = 0;
-    if (cyw43_wait_assoc(2500u) != 0){
-        // Keep join non-fatal here; some firmware builds associate slightly
-        // later even after SET_SSID returned success.
-        uart_puts("CYW43: association pending\n");
+    if (cyw43_wait_assoc(8000u) != 0){
+        uart_puts("CYW43: association failed/no BSSID\n");
+        g_cyw43.joined = 0;
+        g_cyw43.joined_ssid[0] = 0;
+        return -61;
     }
     cyw43_drain_pending_packets(64u);
 

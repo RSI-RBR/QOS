@@ -619,6 +619,7 @@ static int start_boot_shell_process(loaded_program_t shell_prog){
 static void kernel_poll_background_io(void){
     static unsigned long next_net_poll_tick = 0;
     static unsigned long next_remote_poll_tick = 0;
+    static unsigned long next_remote_diag_tick = 0;
     unsigned long now = system_ticks;
 
     if ((long)(now - next_net_poll_tick) >= 0){
@@ -629,6 +630,16 @@ static void kernel_poll_background_io(void){
         next_remote_poll_tick = now + 10u;
         remote_login_poll();
     }
+#if defined(QOS_BOARD_PI_ZERO2W) && QOS_BOARD_PI_ZERO2W
+    if ((long)(now - next_remote_diag_tick) >= 0){
+        next_remote_diag_tick = now + 5000u;
+        unsigned int st = remote_login_state_bits();
+        if ((st & 1u) && !(st & (1u << 2))){
+            remote_login_dump_stats();
+            net_dump_stats();
+        }
+    }
+#endif
 }
 
 extern unsigned long stack_bottom;

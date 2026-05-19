@@ -478,9 +478,11 @@ static int send_plain(unsigned char type,
         out[20u + i] = payload ? payload[i] : 0;
     }
     if (udp_send(g_sess.src_ip, RLOGIN_PORT, g_sess.src_port, out, 20u + payload_len) != 0){
+        headless_control_note_remote_login_tx_fail();
         return -1;
     }
     g_stats.tx_total++;
+    headless_control_note_remote_login_tx();
     return 0;
 }
 
@@ -520,9 +522,11 @@ static int send_encrypted(unsigned char type,
         out[20u + plain_len + i] = tag[i];
     }
     if (udp_send(g_sess.src_ip, RLOGIN_PORT, g_sess.src_port, out, 20u + plain_len + RLOGIN_TAG_LEN) != 0){
+        headless_control_note_remote_login_tx_fail();
         return -1;
     }
     g_stats.tx_total++;
+    headless_control_note_remote_login_tx();
     return 0;
 }
 
@@ -1118,6 +1122,7 @@ void remote_login_poll(void){
             continue;
         }
         g_stats.rx_total++;
+        headless_control_note_remote_login_rx();
 
         unsigned char type = 0;
         unsigned int session_id = 0;

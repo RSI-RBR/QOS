@@ -621,6 +621,35 @@ void headless_control_note_login_success(void){
     spin_unlock(&g_headless_lock);
 }
 
+static void headless_note_remote_burst(unsigned int pulses){
+    unsigned long now;
+    if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
+        return;
+    }
+    now = headless_now_ms();
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    g_led_boot_stage = 0u;
+    g_led_boot_failed = 0u;
+    g_led_test_active = 0u;
+    g_led_manual_mode = 0u;
+    led_burst(pulses, now);
+    spin_unlock(&g_headless_lock);
+}
+
+void headless_control_note_remote_login_rx(void){
+    headless_note_remote_burst(1u);
+}
+
+void headless_control_note_remote_login_tx(void){
+    headless_note_remote_burst(2u);
+}
+
+void headless_control_note_remote_login_tx_fail(void){
+    headless_note_remote_burst(5u);
+}
+
 void headless_control_note_open_network_packet(void){
     unsigned long now;
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
