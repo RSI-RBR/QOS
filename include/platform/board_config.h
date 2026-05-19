@@ -25,6 +25,10 @@
 #define QOS_BOARD_HAS_QPU 1
 #define QOS_HEADLESS_LED_ENABLED 1
 #define QOS_HEADLESS_BUTTON_ENABLED 1
+/*
+ * PiSugar S exposes its custom button by pulling GPIO3/SCL low. Its
+ * auto-start switch must be OFF for this to behave like a normal button.
+ */
 #define QOS_HEADLESS_BUTTON_GPIO 3u
 #define QOS_HEADLESS_BUTTON_ACTIVE_LOW 1
 #define QOS_HEADLESS_LED_GPIO 29u

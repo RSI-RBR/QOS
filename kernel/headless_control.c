@@ -47,8 +47,13 @@ static unsigned int g_led_hw_known = 0u;
 
 static unsigned int g_btn_raw = 0u;
 static unsigned int g_btn_stable = 0u;
+static unsigned int g_btn_armed = 0u;
 static unsigned int g_btn_long_fired = 0u;
 static unsigned int g_btn_clicks = 0u;
+static unsigned int g_btn_last_action = 0u;
+static unsigned int g_btn_single_count = 0u;
+static unsigned int g_btn_double_count = 0u;
+static unsigned int g_btn_long_count = 0u;
 static unsigned long g_btn_raw_tick = 0u;
 static unsigned long g_btn_press_tick = 0u;
 static unsigned long g_btn_click_deadline = 0u;
@@ -259,33 +264,65 @@ static void scanner_secure_stop(unsigned long now){
     uart_puts("\n");
 }
 
+static void button_feedback_burst(unsigned int pulses, unsigned long now){
+    if (!QOS_HEADLESS_LED_ENABLED || pulses == 0u){
+        return;
+    }
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    led_burst(pulses, now);
+    spin_unlock(&g_headless_lock);
+}
+
 static unsigned int handle_button_actions(unsigned long now){
-    if (g_btn_stable && !g_btn_long_fired){
+    if (g_btn_armed && g_btn_stable && !g_btn_long_fired){
         if ((unsigned long)(now - g_btn_press_tick) >= BTN_LONG_PRESS_MS){
             g_btn_long_fired = 1u;
             g_btn_clicks = 0u;
+            g_btn_long_count++;
+            g_btn_last_action = BTN_ACTION_SECURE_STOP;
             return BTN_ACTION_SECURE_STOP;
         }
     }
 
     if (g_btn_clicks > 0u && (long)(now - g_btn_click_deadline) >= 0){
+        unsigned int clicks = g_btn_clicks;
         g_btn_clicks = 0u;
-        return BTN_ACTION_NONE;
+        if (clicks == 1u){
+            g_btn_single_count++;
+            g_btn_last_action = BTN_ACTION_SINGLE_CHECK;
+            return BTN_ACTION_SINGLE_CHECK;
+        }
+        g_btn_double_count++;
+        g_btn_last_action = BTN_ACTION_TOGGLE;
+        return BTN_ACTION_TOGGLE;
     }
     return BTN_ACTION_NONE;
 }
 
 static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_TOGGLE){
-        (void)now;
+        /*
+         * Intentional no-op for now. Keep a visible two-pulse ack so the
+         * PiSugar S button can be tested without attaching UART/HDMI.
+         */
+        button_feedback_burst(2u, now);
+        uart_puts("Headless: button double press\n");
         return;
     }
     if (action == BTN_ACTION_SECURE_STOP){
+        uart_puts("Headless: button long press secure stop\n");
         scanner_secure_stop(now);
         return;
     }
     if (action == BTN_ACTION_SINGLE_CHECK){
-        (void)now;
+        /*
+         * Future hook: quick HTTPS/internet probe when scanner is running.
+         * For now this is a safe visible ack only.
+         */
+        button_feedback_burst(1u, now);
+        uart_puts("Headless: button single press\n");
         return;
     }
 }
@@ -305,12 +342,24 @@ static void poll_button_state(unsigned long now){
 
     if (g_btn_stable != g_btn_raw){
         if ((unsigned long)(now - g_btn_raw_tick) >= BTN_DEBOUNCE_MS){
+            unsigned int old_stable = g_btn_stable;
             g_btn_stable = g_btn_raw;
             if (g_btn_stable){
-                g_btn_press_tick = now;
-                g_btn_long_fired = 0u;
+                /*
+                 * PiSugar S uses GPIO3/SCL. If its auto-start switch is ON or
+                 * external power is present, SCL can be low at boot. Do not
+                 * arm button actions until we have observed a released state.
+                 */
+                if (g_btn_armed){
+                    g_btn_press_tick = now;
+                    g_btn_long_fired = 0u;
+                }
             } else{
-                if (!g_btn_long_fired){
+                if (!g_btn_armed){
+                    g_btn_armed = 1u;
+                    g_btn_clicks = 0u;
+                    g_btn_long_fired = 0u;
+                } else if (old_stable && !g_btn_long_fired){
                     g_btn_clicks++;
                     g_btn_click_deadline = now + BTN_DOUBLE_WINDOW_MS;
                 }
@@ -479,8 +528,13 @@ void headless_control_init(void){
     now = headless_now_ms();
     g_btn_raw = 0u;
     g_btn_stable = 0u;
+    g_btn_armed = 0u;
     g_btn_long_fired = 0u;
     g_btn_clicks = 0u;
+    g_btn_last_action = BTN_ACTION_NONE;
+    g_btn_single_count = 0u;
+    g_btn_double_count = 0u;
+    g_btn_long_count = 0u;
     g_btn_raw_tick = now;
     g_btn_press_tick = now;
     g_btn_click_deadline = 0u;
@@ -760,5 +814,18 @@ unsigned int headless_led_status_word(void){
     v |= (g_led_manual_mode & 0x3u) << 4;
     v |= (QOS_HEADLESS_LED_GPIO & 0xFFu) << 8;
     v |= (QOS_HEADLESS_LED_GPIO_ALT & 0xFFu) << 16;
+    if (QOS_HEADLESS_BUTTON_ENABLED){
+        v |= 1u << 24;
+    }
+    if (g_btn_raw){
+        v |= 1u << 25;
+    }
+    if (g_btn_stable){
+        v |= 1u << 26;
+    }
+    if (g_btn_armed){
+        v |= 1u << 27;
+    }
+    v |= (g_btn_last_action & 0xFu) << 28;
     return v;
 }

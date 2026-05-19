@@ -1614,6 +1614,11 @@ static void cmd_ledtest(const char* mode){
         unsigned int manual = (st >> 4) & 0x3u;
         unsigned int pin = (st >> 8) & 0xFFu;
         unsigned int pin_alt = (st >> 16) & 0xFFu;
+        unsigned int btn_enabled = (st & (1u << 24)) ? 1u : 0u;
+        unsigned int btn_raw = (st & (1u << 25)) ? 1u : 0u;
+        unsigned int btn_stable = (st & (1u << 26)) ? 1u : 0u;
+        unsigned int btn_armed = (st & (1u << 27)) ? 1u : 0u;
+        unsigned int btn_last = (st >> 28) & 0xFu;
 
         qos_puts("led: enabled=");
         qos_puts(enabled ? "yes" : "no");
@@ -1637,6 +1642,25 @@ static void cmd_ledtest(const char* mode){
         }
         qos_puts(" polarity=");
         qos_puts(active_high ? "active-high" : "active-low");
+        qos_puts("\n");
+        qos_puts("button: enabled=");
+        qos_puts(btn_enabled ? "yes" : "no");
+        qos_puts(" raw=");
+        print_uint(btn_raw);
+        qos_puts(" stable=");
+        print_uint(btn_stable);
+        qos_puts(" armed=");
+        print_uint(btn_armed);
+        qos_puts(" last=");
+        if (btn_last == 1u){
+            qos_puts("single");
+        } else if (btn_last == 2u){
+            qos_puts("double");
+        } else if (btn_last == 3u){
+            qos_puts("long");
+        } else{
+            qos_puts("none");
+        }
         qos_puts("\n");
         return;
     }
