@@ -387,18 +387,46 @@ static int signal_is_plausible_dbm(int sig){
 static int radiotap_parse_signal_dbm(const unsigned char* rt,
                                      unsigned int rt_len,
                                      int* out_signal){
-    unsigned int present;
-    unsigned int off = 8u;
+    unsigned int present0;
+    unsigned int last_present;
+    unsigned int off = 0u;
+    unsigned int have_ant_sig = 0u;
+    unsigned int have_db_ant_sig = 0u;
+    unsigned int db_sig = 0u;
 
     if (!rt || rt_len < 8u || !out_signal){
         return -1;
     }
-    present = le32(rt + 4u);
 
-    for (unsigned int bit = 0u; bit < 31u; bit++){
+    /*
+     * Radiotap can chain additional "present" words when bit31 is set.
+     * The argument payload starts only after the last chained present word.
+     */
+    present0 = le32(rt + 4u);
+    last_present = present0;
+    off = 8u;
+    while ((last_present & 0x80000000u) != 0u){
+        if (off + 4u > rt_len){
+            return -1;
+        }
+        last_present = le32(rt + off);
+        off += 4u;
+    }
+
+    if ((present0 & (1u << 5)) != 0u){
+        have_ant_sig = 1u;
+    }
+    if ((present0 & (1u << 12)) != 0u){
+        have_db_ant_sig = 1u;
+    }
+    if (!have_ant_sig && !have_db_ant_sig){
+        return -1;
+    }
+
+    for (unsigned int bit = 0u; bit <= 12u; bit++){
         unsigned int align = 1u;
         unsigned int size = 0u;
-        if ((present & (1u << bit)) == 0u){
+        if ((present0 & (1u << bit)) == 0u){
             continue;
         }
         switch (bit){
@@ -420,7 +448,21 @@ static int radiotap_parse_signal_dbm(const unsigned char* rt,
             case 9u: align = 2u; size = 2u; break; /* db tx attenuation */
             case 10u: align = 1u; size = 1u; break; /* tx power */
             case 11u: align = 1u; size = 1u; break; /* antenna */
-            case 12u: align = 1u; size = 1u; break; /* db signal */
+            case 12u:
+                off = (unsigned int)radiotap_align((int)off, 1u, rt_len);
+                if (off + 1u > rt_len){
+                    return -1;
+                }
+                db_sig = rt[off];
+                /* convert dB-relative signal to a conservative dBm-like value */
+                if (db_sig == 0u){
+                    return -1;
+                }
+                if (db_sig > 110u){
+                    db_sig = 110u;
+                }
+                *out_signal = -(int)db_sig;
+                return 0;
             case 13u: align = 1u; size = 1u; break; /* db noise */
             case 14u: align = 2u; size = 2u; break; /* rx flags */
             case 19u: align = 1u; size = 3u; break; /* mcs */
