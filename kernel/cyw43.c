@@ -4267,10 +4267,13 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
     }
     g_cyw43.joined_ssid[n] = 0;
     if (cyw43_wait_assoc(8000u) != 0){
-        uart_puts("CYW43: association failed/no BSSID\n");
-        g_cyw43.joined = 0;
-        g_cyw43.joined_ssid[0] = 0;
-        return -61;
+        /*
+         * Some Pi0/Nexmon/CYW43 firmware combinations accept SET_SSID and
+         * bring data up shortly after, but never answer our bssid iovar
+         * reliably. Treat this as diagnostic only; the ARP/IP datapath check
+         * after join is the real remote-login readiness signal.
+         */
+        uart_puts("CYW43: association/BSSID pending; continuing\n");
     }
     cyw43_drain_pending_packets(64u);
 
