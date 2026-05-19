@@ -458,6 +458,12 @@ static void print_radiotap_sample(const unsigned char* buf,
     } else{
         qos_puts("none");
     }
+    qos_puts(" b22=");
+    if (len > 22u){
+        put_i32((int)((signed char)buf[22]));
+    } else{
+        qos_puts("none");
+    }
     qos_puts(" sig=");
     if (parsed){
         put_i32(signal);
@@ -1903,7 +1909,12 @@ static void parse_frame(const unsigned char* buf,
                 signal_is_plausible_dbm(signal)){
                 signal_known = 1u;
             }
-            if (!signal_known && rt_len > 22u){
+            /*
+             * Nexmon/Linux monitor captures that worked previously exposed RSSI
+             * at byte 22. Some firmware variants report a shorter radiotap-like
+             * header length, so key this fallback off the full frame length.
+             */
+            if (!signal_known && len > 22u){
                 signal = (signed char)buf[22];
                 if (signal_is_plausible_dbm(signal)){
                     signal_known = 1u;
