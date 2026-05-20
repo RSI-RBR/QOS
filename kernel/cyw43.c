@@ -2668,6 +2668,7 @@ static const char* cyw43_fwload_err_text(int rc){
 int cyw43_monitor_hard_recover(unsigned int channel){
     unsigned int ch = channel ? channel : 6u;
     int rc;
+    int reload_rc;
 
     uart_puts("CYW43: hard monitor recovery start ch=");
     uart_putdec(ch);
@@ -2732,10 +2733,31 @@ int cyw43_monitor_hard_recover(unsigned int channel){
             cyw43_drop_sdio_state_for_restage();
         }
     }
-    if (rc != 0){
+    reload_rc = rc;
+    if (reload_rc != 0){
+        /*
+         * FAT/SDIO restage is the strongest recovery path, but it can fail on
+         * noisy shared-host arbitration. Before declaring hard failure, try a
+         * clean SDIO reattach to the existing firmware image.
+         */
+        uart_puts("CYW43: hard recovery firmware reload failed; trying reattach fallback\n");
+        for (unsigned int attempt = 0u; attempt < 3u; attempt++){
+            cyw43_drop_sdio_state();
+            cyw43_delay_ms(20u + (attempt * 30u));
+            rc = cyw43_init();
+            if (rc == 0){
+                rc = cyw43_ioctl_up_monitor();
+                if (rc == 0 && cyw43_ioctl_monitor(2u, ch) == 0){
+                    (void)cyw43_raw_capture_set_enabled(1u);
+                    uart_puts("CYW43: hard monitor recovery OK (reattach fallback)\n");
+                    headless_control_note_scanner_recovery(0u);
+                    return 0;
+                }
+            }
+        }
         uart_puts("CYW43: hard recovery firmware reload failed permanently\n");
         headless_control_note_scanner_recovery(0u);
-        return -10 + rc;
+        return -10 + reload_rc;
     }
 
     rc = cyw43_ioctl_up_monitor();
