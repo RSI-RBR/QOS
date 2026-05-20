@@ -1390,6 +1390,28 @@ int cyw43_release_emmc_for_storage(void){
     return 0;
 }
 
+int cyw43_force_release_emmc_for_storage(void){
+    /*
+     * Emergency path for headless scanner log preservation. This intentionally
+     * skips WLC_DOWN/control traffic; a sick monitor firmware path may never
+     * answer. Reclaim the shared host in software, then blockdev will reinit
+     * the EMMC controller and pins before FAT I/O.
+     */
+    cyw43_clear_monitor_raw_state(-7);
+    g_cyw43.iface_up = 0;
+    g_cyw43.joined = 0;
+    g_cyw43.func2_ready = 0;
+    g_cyw43.joined_ssid[0] = 0;
+    g_cyw43.enabled = 0;
+    g_cyw43.func1_ready = 0;
+    g_cyw43.wifi_configured = 0;
+    sdio_bus_suspend_state();
+    blockdev_reserve_emmc_for_wifi(0);
+    net_wait_for_io_idle();
+    (void)net_try_select_default_backend();
+    return 0;
+}
+
 int cyw43_shared_emmc_active(void){
     return (g_cyw43.enabled ||
             g_cyw43.func1_ready ||
@@ -1400,6 +1422,16 @@ int cyw43_shared_emmc_active(void){
 
 int cyw43_monitor_capture_active(void){
     return (g_cyw43_monitor_mode || g_cyw43_raw_enabled) ? 1 : 0;
+}
+
+void cyw43_force_monitor_off_for_storage(void){
+    /*
+     * Emergency storage handoff path. Do not issue wl monitor/promisc commands
+     * here: after monitor RX stalls those control sends can be the thing that
+     * wedges progress. Clear kernel capture bookkeeping so FAT save can reclaim
+     * EMMC and preserve logs.
+     */
+    cyw43_clear_monitor_raw_state(-7);
 }
 
 int cyw43_init(void){

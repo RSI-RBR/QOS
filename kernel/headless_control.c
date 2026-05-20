@@ -978,14 +978,13 @@ static int scanner_manual_fat_save(unsigned long now){
     (void)now;
     headless_tty0_write("Button: double press scanner FAT save start\n");
     if (scanner_running){
-        headless_tty0_write("Save: pausing scanner monitor path\n");
+        headless_tty0_write("Save: requesting scanner pause\n");
         probe_pause_set(1u);
         headless_control_note_scanner_idle(1u);
-        probe_pause_wait_ticks(250u);
     }
 
-    (void)cyw43_raw_capture_set_enabled(0u);
-    (void)cyw43_ioctl_monitor(0u, 0u);
+    headless_tty0_write("Save: forcing monitor capture off for storage\n");
+    (void)cyw43_force_release_emmc_for_storage();
 
     headless_tty0_write("Save: flushing encrypted scanner logs to FAT\n");
     rc = scanner_log_flush_all_to_fat_kernel();

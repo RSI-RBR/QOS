@@ -19,11 +19,11 @@
 #define RECV_ERR_FORCE_REARM 8u
 #define RECOVERY_SETTLE_MS 30u
 #define SCAN_LOAD_BUF_BYTES (256u * 1024u)
-#define IDLE_RECOVER_CONSEC_WINDOWS 3u
+#define IDLE_RECOVER_CONSEC_WINDOWS 2u
 #define LOAD_PERSISTENT_STATE_ON_START 1u
 #define AUTO_FLUSH_DURING_CAPTURE 0u
 #define CHANNEL_HOP_DURING_CAPTURE 1u
-#define SCANNER_DESTRUCTIVE_RECOVERY 0u
+#define SCANNER_DESTRUCTIVE_RECOVERY 1u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -2543,6 +2543,11 @@ void program_main(void){
                     idle_led_active = 1u;
                 }
                 if (idle_quiet_windows < IDLE_RECOVER_CONSEC_WINDOWS){
+                    qos_puts("scanner: rx quiet window ");
+                    put_u32(idle_quiet_windows);
+                    qos_puts("/");
+                    put_u32(IDLE_RECOVER_CONSEC_WINDOWS);
+                    qos_puts("; waiting before rearm\n");
                     last_rx_progress_us = now;
                     skip_rx_poll = 1;
                 }

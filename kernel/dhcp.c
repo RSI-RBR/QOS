@@ -284,6 +284,15 @@ static void drain_dhcp_rx(void){
     unsigned char buf[UDP_MAX_PAYLOAD];
     udp_meta_t meta;
     int n;
+    /*
+     * DHCP runs while the interface address is being replaced. Any stale UDP
+     * packet can fill the small UDP queue and cause the OFFER/ACK to be
+     * dropped before this client sees it, so clear the whole queue first.
+     */
+    do {
+        n = udp_recv_next(buf, sizeof(buf), &meta);
+    } while (n > 0);
+
     do {
         n = udp_recv_filtered(DHCP_CLIENT_PORT, 0, 0, 0, buf, sizeof(buf), &meta);
     } while (n > 0);
