@@ -27,6 +27,8 @@
 #define IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY 0u
 #define SCANNER_ALLOW_FULL_WIFI_RESTART 0u
 #define SCANNER_REARM_USES_MONITOR_COMMANDS 0u
+#define CONTROL_BLOCKED_RESTART_DELAY_SECS 5u
+#define CONTROL_BLOCKED_RESTART_MAX_ATTEMPTS 2u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1841,15 +1843,56 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
 #endif
 }
 
+static int scanner_restore_monitor_path(unsigned int channel, unsigned int allow_hard_recovery);
+
 static void scanner_control_blocked_notice(unsigned int* printed){
     if (!printed){
         return;
     }
     if (!*printed){
         qos_puts("scanner: WiFi control path blocked; not issuing monitor commands\n");
-        qos_puts("scanner: stop/restart scanner or reload known-good Nexmon firmware\n");
+        qos_puts("scanner: controlled restart will be attempted shortly\n");
         *printed = 1u;
     }
+}
+
+static int scanner_attempt_control_restart(unsigned int channel,
+                                           unsigned int* last_rx_frames){
+    cyw43_monitor_status_t st;
+    unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
+    int rc;
+
+    qos_puts("scanner: controlled monitor restart begin ch=");
+    put_u32(ch);
+    qos_puts("\n");
+
+    rc = scanner_restore_monitor_path(ch, 1u);
+    if (!rc){
+        qos_puts("scanner: controlled restart restore failed\n");
+        return 0;
+    }
+
+    (void)qos_wifi_raw_set_enabled(1u);
+    scanner_set_raw_progress_baseline(last_rx_frames);
+    if (scanner_wait_for_raw_progress(last_rx_frames, 1500u)){
+        qos_puts("scanner: controlled restart RX OK\n");
+        return 1;
+    }
+
+    if (qos_wifi_monitor_status(&st) == 0){
+        qos_puts("scanner: controlled restart no RX mon=");
+        put_u32(st.enabled);
+        qos_puts(" raw=");
+        put_u32(st.raw_enabled);
+        qos_puts(" ch=");
+        put_u32(st.channel);
+        qos_puts(" rc=");
+        put_i32(st.last_rc);
+        qos_puts("\n");
+    } else{
+        qos_puts("scanner: controlled restart no RX; monitor status failed\n");
+    }
+    return 0;
 }
 
 static int scanner_restore_monitor_path(unsigned int channel, unsigned int allow_hard_recovery){
@@ -2311,9 +2354,11 @@ void program_main(void){
     unsigned int probe_pause_seen = 0u;
     unsigned int control_blocked = 0u;
     unsigned int control_blocked_printed = 0u;
+    unsigned int control_restart_attempts = 0u;
     unsigned long long last_rx_progress_us = 0ull;
     unsigned long long probe_pause_start_us = 0ull;
     unsigned long long probe_pause_heartbeat_us = 0ull;
+    unsigned long long next_control_restart_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -2473,6 +2518,8 @@ void program_main(void){
                 last_rx_progress_us = qos_get_time_us();
                 control_blocked = 0u;
                 control_blocked_printed = 0u;
+                control_restart_attempts = 0u;
+                next_control_restart_us = 0ull;
             } else{
                 /*
                  * A button save/probe can leave monitor mode nominally enabled
@@ -2483,6 +2530,9 @@ void program_main(void){
                 last_rx_progress_us = qos_get_time_us() -
                     ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
                 control_blocked = 1u;
+                control_restart_attempts = 0u;
+                next_control_restart_us = qos_get_time_us() +
+                    ((unsigned long long)CONTROL_BLOCKED_RESTART_DELAY_SECS * 1000000ull);
                 scanner_control_blocked_notice(&control_blocked_printed);
             }
             if (resumed_rx && idle_led_active){
@@ -2499,6 +2549,48 @@ void program_main(void){
             qos_puts("\n");
         }
         now = qos_get_time_us();
+
+        if (control_blocked &&
+            next_control_restart_us != 0ull &&
+            (long long)(now - next_control_restart_us) >= 0){
+            int restart_ok = 0;
+            if (control_restart_attempts < CONTROL_BLOCKED_RESTART_MAX_ATTEMPTS){
+                control_restart_attempts++;
+                qos_puts("scanner: controlled restart attempt ");
+                put_u32(control_restart_attempts);
+                qos_puts("/");
+                put_u32(CONTROL_BLOCKED_RESTART_MAX_ATTEMPTS);
+                qos_puts("\n");
+                restart_ok = scanner_attempt_control_restart(active_channel, &last_rx_frames);
+                now = qos_get_time_us();
+                if (restart_ok){
+                    control_blocked = 0u;
+                    control_blocked_printed = 0u;
+                    control_restart_attempts = 0u;
+                    next_control_restart_us = 0ull;
+                    last_rx_progress_us = now;
+                    recv_err_streak = 0u;
+                    idle_quiet_windows = 0u;
+                    rearm_stage = 0u;
+                    next_hop = now + ((unsigned long long)hop_dwell_ms * 1000ull);
+                    if (idle_led_active){
+                        (void)qos_headless_scanner_idle(0u);
+                        idle_led_active = 0u;
+                    }
+                } else if (control_restart_attempts < CONTROL_BLOCKED_RESTART_MAX_ATTEMPTS){
+                    next_control_restart_us = now +
+                        ((unsigned long long)CONTROL_BLOCKED_RESTART_DELAY_SECS * 1000000ull);
+                    last_rx_progress_us = now;
+                } else{
+                    qos_puts("scanner: controlled restart attempts exhausted; staying paused\n");
+                    next_control_restart_us = 0ull;
+                    last_rx_progress_us = now;
+                }
+            } else{
+                next_control_restart_us = 0ull;
+            }
+        }
+
         if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
             unsigned int non_beacon = 0u;
@@ -2535,6 +2627,8 @@ void program_main(void){
                     idle_quiet_windows = 0u;
                     control_blocked = 0u;
                     control_blocked_printed = 0u;
+                    control_restart_attempts = 0u;
+                    next_control_restart_us = 0ull;
                     if (idle_led_active){
                         (void)qos_headless_scanner_idle(0u);
                         idle_led_active = 0u;
@@ -2784,6 +2878,8 @@ void program_main(void){
                 idle_quiet_windows = 0u;
                 control_blocked = 0u;
                 control_blocked_printed = 0u;
+                control_restart_attempts = 0u;
+                next_control_restart_us = 0ull;
                 if (idle_led_active){
                     (void)qos_headless_scanner_idle(0u);
                     idle_led_active = 0u;
