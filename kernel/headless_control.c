@@ -118,6 +118,7 @@ enum {
 static int find_scanner_pid(void);
 static void probe_pause_set(unsigned int active);
 static void probe_pause_wait_ticks(unsigned int wait_ms);
+static void headless_control_poll_internal(unsigned int allow_actions);
 
 static void headless_tty0_write(const char* s){
     unsigned long len = 0;
@@ -623,14 +624,14 @@ static int headless_https_probe_open_ap(void){
 
     if (scanner_running){
         /*
-         * Ask scanner loop to park briefly (no hop/rearm/recv) before we
-         * switch monitor -> station for the probe.
+         * Button dispatch only reaches this path after the scanner has
+         * acknowledged the pause. Do not fake the acknowledgement here or run
+         * monitor/storage work reentrantly from inside the CYW43 driver.
          */
-        headless_tty0_write("Probe: pausing scanner monitor path\n");
-        probe_pause_set(1u);
-        headless_control_note_scanner_idle(1u);
-        probe_pause_wait_ticks(250u);
+        headless_tty0_write("Probe: scanner monitor path parked\n");
     }
+
+    headless_tty0_write("Probe: selecting strongest open AP from RAM log\n");
 
     if (scanner_pick_strongest_open_ssid(ssid, &sig, &return_ch) != 0){
         if (scanner_running){
@@ -1444,7 +1445,7 @@ void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
     spin_unlock(&g_headless_lock);
 }
 
-void headless_control_poll(void){
+static void headless_control_poll_internal(unsigned int allow_actions){
     unsigned long now;
     unsigned int action = BTN_ACTION_NONE;
     unsigned int run_action = BTN_ACTION_NONE;
@@ -1538,7 +1539,8 @@ void headless_control_poll(void){
             g_led_scanner_idle_hint = 0u;
             led_burst(11u, now);
         }
-        if (run_action == BTN_ACTION_NONE &&
+        if (allow_actions &&
+            run_action == BTN_ACTION_NONE &&
             g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
             (g_pending_action == BTN_ACTION_SECURE_STOP ||
@@ -1593,7 +1595,7 @@ void headless_control_poll(void){
      * Waiting for a fully idle CPU made headless button actions time out under
      * continuous scanner/shell load even though the scanner was already parked.
      */
-    if (run_action != BTN_ACTION_NONE){
+    if (allow_actions && run_action != BTN_ACTION_NONE){
         headless_tty0_show();
         if (run_action == BTN_ACTION_SINGLE_CHECK){
             headless_tty0_write("Button: dispatch single-click probe\n");
@@ -1614,6 +1616,14 @@ void headless_control_poll(void){
         }
         spin_unlock(&g_headless_lock);
     }
+}
+
+void headless_control_poll(void){
+    headless_control_poll_internal(0u);
+}
+
+void headless_control_poll_actions(void){
+    headless_control_poll_internal(1u);
 }
 
 void headless_control_led_tick(void){

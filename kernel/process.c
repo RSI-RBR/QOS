@@ -1465,12 +1465,12 @@ __attribute__((noreturn)) void process_enter_idle_loop(void){
     asm volatile("msr daifclr, #2" : : : "memory");
     scheduler_run_once();
     while (1){
-        headless_control_poll();
+        headless_control_poll_actions();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
             usb_host_service();
-            headless_control_poll();
+            headless_control_poll_actions();
             asm volatile("wfi");
         }
     }

@@ -3,6 +3,7 @@
 
 void headless_control_init(void);
 void headless_control_poll(void);
+void headless_control_poll_actions(void);
 void headless_control_led_tick(void);
 void headless_control_note_boot_stage(unsigned int stage, unsigned int failed);
 void headless_control_note_wifi_joined_waiting_login(void);

@@ -1100,13 +1100,13 @@ void kernel_main(void){
 
     // never reach here normally
     while (1){
-        headless_control_poll();
+        headless_control_poll_actions();
         kernel_poll_background_io();
         if (scheduler_has_runnable()){
             scheduler_run_once();
         } else{
             usb_host_service();
-            headless_control_poll();
+            headless_control_poll_actions();
             kernel_poll_background_io();
             asm volatile("wfi");
         }
