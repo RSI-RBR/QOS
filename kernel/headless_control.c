@@ -15,6 +15,7 @@
 #include "memory.h"
 #include "uart.h"
 #include "spinlock.h"
+#include "terminal.h"
 
 #define BTN_DEBOUNCE_MS       35u
 #define BTN_DOUBLE_WINDOW_MS  420u
@@ -112,6 +113,47 @@ enum {
 static int find_scanner_pid(void);
 static void probe_pause_set(unsigned int active);
 static void probe_pause_wait_ticks(unsigned int wait_ms);
+
+static void headless_tty0_write(const char* s){
+    unsigned long len = 0;
+    if (!s){
+        return;
+    }
+    while (s[len]){
+        len++;
+    }
+    terminal_write(0, -1, s, len);
+}
+
+static void headless_tty0_putdec(unsigned long v){
+    char tmp[21];
+    char out[21];
+    int n = 0;
+    int o = 0;
+
+    if (v == 0UL){
+        headless_tty0_write("0");
+        return;
+    }
+    while (v > 0UL && n < (int)sizeof(tmp)){
+        tmp[n++] = (char)('0' + (v % 10UL));
+        v /= 10UL;
+    }
+    while (n > 0 && o + 1 < (int)sizeof(out)){
+        out[o++] = tmp[--n];
+    }
+    out[o] = 0;
+    headless_tty0_write(out);
+}
+
+static void headless_tty0_puti(int v){
+    if (v < 0){
+        headless_tty0_write("-");
+        headless_tty0_putdec((unsigned long)(-v));
+    } else{
+        headless_tty0_putdec((unsigned long)v);
+    }
+}
 
 static int text_eq(const char* a, const char* b){
     if (!a || !b){
@@ -378,6 +420,7 @@ static int headless_https_probe_open_ap(void){
          * Ask scanner loop to park briefly (no hop/rearm/recv) before we
          * switch monitor -> station for the probe.
          */
+        headless_tty0_write("Probe: pausing scanner monitor path\n");
         probe_pause_set(1u);
         headless_control_note_scanner_idle(1u);
         probe_pause_wait_ticks(250u);
@@ -389,6 +432,7 @@ static int headless_https_probe_open_ap(void){
             headless_control_note_scanner_idle(0u);
         }
         uart_puts("Headless: probe no open AP candidate\n");
+        headless_tty0_write("Probe: no open AP candidate found\n");
         return -10;
     }
 
@@ -402,7 +446,13 @@ static int headless_https_probe_open_ap(void){
         uart_putdec((unsigned long)sig);
     }
     uart_puts("\n");
+    headless_tty0_write("Probe: target open SSID \"");
+    headless_tty0_write(ssid);
+    headless_tty0_write("\" signal ");
+    headless_tty0_puti(sig);
+    headless_tty0_write(" dBm\n");
 
+    headless_tty0_write("Probe: switching WiFi monitor -> station\n");
     (void)cyw43_raw_capture_set_enabled(0u);
     (void)cyw43_ioctl_monitor(0u, 0u);
 
@@ -411,38 +461,59 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe wifi up failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        headless_tty0_write("Probe: WiFi up failed rc=");
+        headless_tty0_puti(rc);
+        headless_tty0_write("\n");
         rc = -11;
         goto probe_restore;
     }
+    headless_tty0_write("Probe: WiFi up OK\n");
 
+    headless_tty0_write("Probe: joining open AP\n");
     rc = cyw43_ioctl_join(ssid, "");
     if (rc != 0){
         uart_puts("Headless: probe open join failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        headless_tty0_write("Probe: join failed rc=");
+        headless_tty0_puti(rc);
+        headless_tty0_write("\n");
         rc = -12;
         goto probe_restore;
     }
+    headless_tty0_write("Probe: join OK\n");
 
+    headless_tty0_write("Probe: DHCP request\n");
     dhcp_rc = dhcp_acquire(3500u, &lease);
     if (dhcp_rc == 0){
         restore_net = 1;
+        headless_tty0_write("Probe: DHCP OK; checking gateway ARP\n");
         if (arp_resolve_gateway(1500u) != 0){
             uart_puts("Headless: probe DHCP OK but gateway ARP unresolved\n");
+            headless_tty0_write("Probe: gateway ARP unresolved\n");
+        } else{
+            headless_tty0_write("Probe: gateway ARP OK\n");
         }
     } else{
         uart_puts("Headless: probe DHCP failed rc=");
         uart_putdec((unsigned long)(-dhcp_rc));
         uart_puts("; skipping HTTPS probe\n");
+        headless_tty0_write("Probe: DHCP failed rc=");
+        headless_tty0_puti(dhcp_rc);
+        headless_tty0_write("; HTTPS skipped\n");
         rc = -13;
         goto probe_restore;
     }
 
+    headless_tty0_write("Probe: HTTPS GET https://one.one.one.one/\n");
     rc = tcp_https_stream_start(dst_ip, host, path, resp, sizeof(resp));
     if (rc > 0){
         uart_puts("Headless: probe HTTPS OK bytes=");
         uart_putdec((unsigned long)rc);
         uart_puts("\n");
+        headless_tty0_write("Probe: HTTPS OK bytes=");
+        headless_tty0_putdec((unsigned long)rc);
+        headless_tty0_write("\n");
         tcp_https_stream_close();
         rc = 0;
     } else{
@@ -450,6 +521,9 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe HTTPS failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        headless_tty0_write("Probe: HTTPS failed rc=");
+        headless_tty0_puti(rc);
+        headless_tty0_write("\n");
         rc = -14;
     }
 
@@ -459,6 +533,7 @@ probe_restore:
         net_proto_set_gateway_ip(old_gw);
     }
     if (scanner_running){
+        headless_tty0_write("Probe: restoring monitor scanner path\n");
         headless_control_note_scanner_recovery(1u);
         (void)cyw43_ioctl_up_monitor();
         (void)cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
@@ -466,6 +541,7 @@ probe_restore:
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);
+        headless_tty0_write("Probe: scanner resumed\n");
     }
     return rc;
 }
@@ -755,10 +831,12 @@ static void perform_button_action(unsigned int action, unsigned long now){
         int rc;
         unsigned int pulses = 5u;
         uart_puts("Headless: button single press, HTTPS probe start\n");
+        headless_tty0_write("Probe: button single press, starting HTTPS open-AP check\n");
         rc = headless_https_probe_open_ap();
         if (rc == 0){
             pulses = 3u;
             uart_puts("Headless: HTTPS probe success\n");
+            headless_tty0_write("Probe: success; internet HTTPS reachable\n");
         } else{
             if (rc == -10){
                 pulses = 6u; /* no open AP candidate */
@@ -774,6 +852,9 @@ static void perform_button_action(unsigned int action, unsigned long now){
                 pulses = 5u; /* generic failure */
             }
             uart_puts("Headless: HTTPS probe failed\n");
+            headless_tty0_write("Probe: failed stage rc=");
+            headless_tty0_puti(rc);
+            headless_tty0_write("\n");
         }
         button_result_burst(pulses, now);
         return;
