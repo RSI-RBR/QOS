@@ -226,6 +226,8 @@ static unsigned long g_cyw43_bp_fail_last_tick;
 static unsigned int g_cyw43_bp_fail_suppressed;
 static unsigned int g_cyw43_pending_mac_valid;
 static unsigned char g_cyw43_pending_mac[6];
+static unsigned int g_cyw43_forced_mac_valid;
+static unsigned char g_cyw43_forced_mac[6];
 static unsigned int g_cyw43_force_restage_init;
 
 static void cyw43_clear_monitor_raw_state(int last_rc){
@@ -2381,16 +2383,40 @@ static void cyw43_set_pending_mac(const unsigned char mac[6]){
     g_cyw43_pending_mac_valid = 1u;
 }
 
+static void cyw43_set_forced_mac(const unsigned char mac[6]){
+    if (!mac){
+        return;
+    }
+    for (unsigned int i = 0u; i < 6u; i++){
+        g_cyw43_forced_mac[i] = mac[i];
+    }
+    g_cyw43_forced_mac_valid = 1u;
+    cyw43_set_pending_mac(mac);
+}
+
 static int cyw43_apply_pending_mac_if_ready(void){
-    if (!g_cyw43_pending_mac_valid){
+    const unsigned char* mac = 0;
+    unsigned char gateway_ip[4];
+
+    if (g_cyw43_pending_mac_valid){
+        mac = g_cyw43_pending_mac;
+    } else if (g_cyw43_forced_mac_valid){
+        mac = g_cyw43_forced_mac;
+    } else{
         return 0;
     }
     if (!cyw43_control_ready()){
         return -1;
     }
-    if (cyw43_wl_set_var("cur_etheraddr", g_cyw43_pending_mac, 6u) != 0){
+    if (cyw43_wl_set_var("cur_etheraddr", mac, 6u) != 0){
         return -1;
     }
+    for (unsigned int i = 0u; i < 6u; i++){
+        g_cyw43.mac[i] = mac[i];
+    }
+    net_proto_set_local_mac(g_cyw43.mac);
+    net_proto_get_gateway_ip(gateway_ip);
+    arp_set_periodic_target(gateway_ip, 1000u);
     g_cyw43_pending_mac_valid = 0u;
     return 0;
 }
@@ -2409,6 +2435,7 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     }
     // Enforce locally administered unicast source MAC.
     local_mac[0] = (unsigned char)((local_mac[0] & 0xFEu) | 0x02u);
+    cyw43_set_forced_mac(local_mac);
 
     if (monitor_active){
         /*
@@ -2418,7 +2445,6 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
          * the kernel and apply it next time station mode has a stable control
          * path.
          */
-        cyw43_set_pending_mac(local_mac);
         for (unsigned int i = 0u; i < 6u; i++){
             g_cyw43.mac[i] = local_mac[i];
         }
@@ -2428,7 +2454,6 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
     }
 
     if (!cyw43_control_ready()){
-        cyw43_set_pending_mac(local_mac);
         for (unsigned int i = 0u; i < 6u; i++){
             g_cyw43.mac[i] = local_mac[i];
         }
@@ -2749,6 +2774,13 @@ static int cyw43_upload_clm_blob(void){
 static int cyw43_refresh_cur_etheraddr(void){
     unsigned char mac[8];
     unsigned int actual = 0;
+
+    if (g_cyw43_forced_mac_valid){
+        for (unsigned int i = 0u; i < 6u; i++){
+            g_cyw43.mac[i] = g_cyw43_forced_mac[i];
+        }
+        return 0;
+    }
 
     mem_zero_local(mac, sizeof(mac));
     if (cyw43_wl_get_var("cur_etheraddr", mac, sizeof(mac), &actual) != 0 ||
@@ -3437,6 +3469,12 @@ static int cyw43_join_prepare_station_state(void){
      */
     cyw43_drain_pending_packets(16u);
 
+    if (g_cyw43_forced_mac_valid &&
+        cyw43_apply_pending_mac_if_ready() != 0){
+        uart_puts("CYW43: forced/random MAC apply failed before join\n");
+        return -3;
+    }
+
     if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_SCANSUPPRESS, 0u, "join prep scansuppress clear") != 0){
         uart_puts("CYW43: join prep scansuppress clear failed; continuing\n");
     }
@@ -4062,7 +4100,9 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         uart_puts("CYW43: WLC_UP no reply; continuing\n");
     }
     g_cyw43.iface_up = 1;
-    (void)cyw43_apply_pending_mac_if_ready();
+    if (cyw43_apply_pending_mac_if_ready() != 0){
+        uart_puts("CYW43: pending/random MAC apply failed; will retry on join\n");
+    }
     cyw43_log_radio_status("after-up");
     // Latency-oriented defaults for bring-up: keep radio awake and disable
     // minimum power consumption mode while we prioritize responsiveness.

@@ -396,6 +396,46 @@ static int wait_dhcp_msg(unsigned char want_type,
     return -1;
 }
 
+static int send_wait_dhcp_msg(unsigned char send_type,
+                              unsigned char want_type,
+                              unsigned int xid,
+                              const unsigned char mac[6],
+                              const unsigned char req_ip[4],
+                              const unsigned char server_id[4],
+                              unsigned int total_timeout_ms,
+                              unsigned int send_stage,
+                              unsigned int wait_stage,
+                              dhcp_msg_t* out_msg){
+    unsigned long start = system_ticks;
+    unsigned int slice_ms = 700u;
+
+    if (total_timeout_ms < slice_ms){
+        slice_ms = total_timeout_ms;
+    }
+    if (slice_ms < 250u){
+        slice_ms = 250u;
+    }
+
+    while ((unsigned long)(system_ticks - start) < (unsigned long)total_timeout_ms){
+        unsigned long elapsed = (unsigned long)(system_ticks - start);
+        unsigned int remain = (elapsed >= (unsigned long)total_timeout_ms)
+            ? 0u
+            : (unsigned int)((unsigned long)total_timeout_ms - elapsed);
+        unsigned int wait_ms = (remain < slice_ms) ? remain : slice_ms;
+
+        g_dhcp_diag.stage = send_stage;
+        if (send_dhcp_broadcast(send_type, xid, mac, req_ip, server_id) != 0){
+            return -1;
+        }
+
+        g_dhcp_diag.stage = wait_stage;
+        if (wait_dhcp_msg(want_type, xid, mac, wait_ms, out_msg) == 0){
+            return 0;
+        }
+    }
+    return -1;
+}
+
 void dhcp_get_diag(dhcp_diag_t* out){
     if (!out){
         return;
@@ -427,15 +467,8 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
     drain_dhcp_rx();
 
     uart_puts("DHCP: discover\n");
-    g_dhcp_diag.stage = 1u;
-    if (send_dhcp_broadcast(DHCPDISCOVER, xid, mac, 0, 0) != 0){
-        uart_puts("DHCP: discover send failed\n");
-        net_proto_set_local_ip(old_ip);
-        net_proto_set_gateway_ip(old_gw);
-        return -1;
-    }
-    g_dhcp_diag.stage = 2u;
-    if (wait_dhcp_msg(DHCPOFFER, xid, mac, half_timeout, &offer) != 0){
+    if (send_wait_dhcp_msg(DHCPDISCOVER, DHCPOFFER, xid, mac, 0, 0,
+                           half_timeout, 1u, 2u, &offer) != 0){
         uart_puts("DHCP: offer timeout\n");
         net_proto_set_local_ip(old_ip);
         net_proto_set_gateway_ip(old_gw);
@@ -448,16 +481,9 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
     print_ip(offer.have_router ? offer.router : zero_ip);
     uart_puts("\n");
 
-    g_dhcp_diag.stage = 3u;
-    if (send_dhcp_broadcast(DHCPREQUEST, xid, mac, offer.yiaddr,
-                            offer.have_server_id ? offer.server_id : zero_ip) != 0){
-        uart_puts("DHCP: request send failed\n");
-        net_proto_set_local_ip(old_ip);
-        net_proto_set_gateway_ip(old_gw);
-        return -2;
-    }
-    g_dhcp_diag.stage = 4u;
-    if (wait_dhcp_msg(DHCPACK, xid, mac, half_timeout, &ack) != 0){
+    if (send_wait_dhcp_msg(DHCPREQUEST, DHCPACK, xid, mac, offer.yiaddr,
+                           offer.have_server_id ? offer.server_id : zero_ip,
+                           half_timeout, 3u, 4u, &ack) != 0){
         uart_puts("DHCP: ack timeout\n");
         net_proto_set_local_ip(old_ip);
         net_proto_set_gateway_ip(old_gw);
