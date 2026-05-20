@@ -2329,11 +2329,21 @@ void program_main(void){
         }
         if (probe_pause_seen){
             int raw_rc;
+            cyw43_monitor_status_t pause_st;
+            int pause_have_st;
             probe_pause_seen = 0u;
             probe_pause_start_us = 0ull;
             probe_pause_heartbeat_us = 0ull;
-            raw_rc = qos_wifi_raw_set_enabled(1u);
-            scanner_ensure_monitor_ready(active_channel, 1u);
+            pause_have_st = (qos_wifi_monitor_status(&pause_st) == 0) ? 1 : 0;
+            if (pause_have_st && pause_st.enabled && pause_st.raw_enabled){
+                raw_rc = 0;
+                if (pause_st.channel != 0u){
+                    active_channel = pause_st.channel;
+                }
+            } else{
+                raw_rc = qos_wifi_raw_set_enabled(1u);
+                scanner_ensure_monitor_ready(active_channel, 0u);
+            }
             last_rx_progress_us = qos_get_time_us();
             recv_err_streak = 0u;
             idle_quiet_windows = 0u;

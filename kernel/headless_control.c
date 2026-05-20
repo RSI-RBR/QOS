@@ -9,6 +9,7 @@
 #include "dhcp.h"
 #include "arp.h"
 #include "net_proto.h"
+#include "net.h"
 #include "blockdev.h"
 #include "fat32.h"
 #include "sandbox_file.h"
@@ -437,10 +438,40 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
     return 0;
 }
 
+static void probe_print_net_diag(const char* prefix){
+    unsigned long rx_ok = 0;
+    unsigned long rx_drop = 0;
+    unsigned long tx_ok = 0;
+    unsigned long tx_fail = 0;
+    unsigned int rxq = 0;
+    const char* driver = 0;
+    int link_up = 0;
+
+    net_get_diag(&rx_ok, &rx_drop, &tx_ok, &tx_fail, &rxq, &driver, &link_up);
+    headless_tty0_write(prefix ? prefix : "Probe: net");
+    headless_tty0_write(" drv=");
+    headless_tty0_write(driver ? driver : "none");
+    headless_tty0_write(" link=");
+    headless_tty0_putdec((unsigned long)(link_up ? 1u : 0u));
+    headless_tty0_write(" rx=");
+    headless_tty0_putdec(rx_ok);
+    headless_tty0_write(" drop=");
+    headless_tty0_putdec(rx_drop);
+    headless_tty0_write(" tx=");
+    headless_tty0_putdec(tx_ok);
+    headless_tty0_write(" txfail=");
+    headless_tty0_putdec(tx_fail);
+    headless_tty0_write(" rxq=");
+    headless_tty0_putdec((unsigned long)rxq);
+    headless_tty0_write("\n");
+}
+
 static int headless_https_probe_open_ap(void){
     unsigned char dst_ip[4] = {1u, 1u, 1u, 1u};
     static const char host[] = "one.one.one.one";
     static const char path[] = "/";
+    static const unsigned char nm_fallback_ip[4] = {10u, 42u, 0u, 88u};
+    static const unsigned char nm_fallback_gw[4] = {10u, 42u, 0u, 1u};
     unsigned char old_ip[4];
     unsigned char old_gw[4];
     char ssid[33];
@@ -537,12 +568,21 @@ static int headless_https_probe_open_ap(void){
     } else{
         uart_puts("Headless: probe DHCP failed rc=");
         uart_putdec((unsigned long)(-dhcp_rc));
-        uart_puts("; skipping HTTPS probe\n");
+        uart_puts("; trying NM shared static fallback\n");
         headless_tty0_write("Probe: DHCP failed rc=");
         headless_tty0_puti(dhcp_rc);
-        headless_tty0_write("; HTTPS skipped\n");
-        rc = -13;
-        goto probe_restore;
+        headless_tty0_write("; trying static 10.42.0.88/24 via 10.42.0.1\n");
+        probe_print_net_diag("Probe: after DHCP fail");
+        net_proto_set_local_ip(nm_fallback_ip);
+        net_proto_set_gateway_ip(nm_fallback_gw);
+        restore_net = 1;
+        if (arp_resolve_gateway(1800u) != 0){
+            headless_tty0_write("Probe: static fallback gateway ARP unresolved; HTTPS skipped\n");
+            probe_print_net_diag("Probe: after static ARP fail");
+            rc = -13;
+            goto probe_restore;
+        }
+        headless_tty0_write("Probe: static fallback gateway ARP OK\n");
     }
 
     headless_tty0_write("Probe: HTTPS GET https://one.one.one.one/\n");
@@ -579,6 +619,8 @@ probe_restore:
         int restore_rc = 0;
         headless_tty0_write("Probe: restoring monitor scanner path\n");
         headless_control_note_scanner_recovery(1u);
+        (void)cyw43_raw_capture_set_enabled(0u);
+        (void)cyw43_ioctl_monitor(0u, 0u);
         restore_rc = cyw43_ioctl_up_monitor();
         if (restore_rc == 0){
             restore_rc = cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
