@@ -61,6 +61,7 @@ static unsigned int g_btn_last_action = 0u;
 static unsigned int g_btn_single_count = 0u;
 static unsigned int g_btn_double_count = 0u;
 static unsigned int g_btn_long_count = 0u;
+static unsigned int g_btn_queued_action = 0u;
 static unsigned long g_btn_raw_tick = 0u;
 static unsigned long g_btn_press_tick = 0u;
 static unsigned long g_btn_click_deadline = 0u;
@@ -785,10 +786,17 @@ static void button_result_burst(unsigned int pulses, unsigned long now){
 }
 
 static unsigned int handle_button_actions(unsigned long now){
+    if (g_btn_queued_action != BTN_ACTION_NONE){
+        unsigned int queued = g_btn_queued_action;
+        g_btn_queued_action = BTN_ACTION_NONE;
+        return queued;
+    }
+
     if (g_btn_armed && g_btn_stable && !g_btn_long_fired){
         if ((unsigned long)(now - g_btn_press_tick) >= BTN_LONG_PRESS_MS){
             g_btn_long_fired = 1u;
             g_btn_clicks = 0u;
+            g_btn_click_deadline = 0u;
             g_btn_long_count++;
             g_btn_last_action = BTN_ACTION_SECURE_STOP;
             return BTN_ACTION_SECURE_STOP;
@@ -823,7 +831,13 @@ static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_SECURE_STOP){
         int rc;
         uart_puts("Headless: button long press secure stop\n");
+        headless_tty0_write("Button: long press secure stop/wipe start\n");
         rc = scanner_secure_stop(now);
+        if (rc == 0){
+            headless_tty0_write("Button: secure stop/wipe OK\n");
+        } else{
+            headless_tty0_write("Button: secure stop/wipe failed\n");
+        }
         button_result_burst((rc == 0) ? 3u : 5u, now);
         return;
     }
@@ -893,9 +907,22 @@ static void poll_button_state(unsigned long now){
                     g_btn_armed = 1u;
                     g_btn_clicks = 0u;
                     g_btn_long_fired = 0u;
-                } else if (old_stable && !g_btn_long_fired){
-                    g_btn_clicks++;
-                    g_btn_click_deadline = now + BTN_DOUBLE_WINDOW_MS;
+                } else if (old_stable){
+                    unsigned long held_ms = now - g_btn_press_tick;
+                    if (g_btn_long_fired){
+                        g_btn_clicks = 0u;
+                        g_btn_click_deadline = 0u;
+                    } else if (held_ms >= BTN_LONG_PRESS_MS){
+                        g_btn_clicks = 0u;
+                        g_btn_click_deadline = 0u;
+                        g_btn_long_fired = 1u;
+                        g_btn_long_count++;
+                        g_btn_last_action = BTN_ACTION_SECURE_STOP;
+                        g_btn_queued_action = BTN_ACTION_SECURE_STOP;
+                    } else{
+                        g_btn_clicks++;
+                        g_btn_click_deadline = now + BTN_DOUBLE_WINDOW_MS;
+                    }
                 }
                 g_btn_long_fired = 0u;
             }
@@ -1071,6 +1098,7 @@ void headless_control_init(void){
     g_btn_single_count = 0u;
     g_btn_double_count = 0u;
     g_btn_long_count = 0u;
+    g_btn_queued_action = BTN_ACTION_NONE;
     g_btn_raw_tick = now;
     g_btn_press_tick = now;
     g_btn_click_deadline = 0u;
@@ -1145,6 +1173,7 @@ void headless_control_poll(void){
     unsigned long now;
     unsigned int action = BTN_ACTION_NONE;
     unsigned int run_action = BTN_ACTION_NONE;
+    unsigned int timeout_notice = 0u;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
@@ -1200,22 +1229,29 @@ void headless_control_poll(void){
         if (g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
             (unsigned long)(now - g_pending_action_tick) >= BTN_PENDING_TIMEOUT_MS){
+            timeout_notice = 1u;
             g_pending_action = BTN_ACTION_NONE;
             probe_pause_set(0u);
             g_probe_pause_ack = 0u;
             g_led_scanner_idle_hint = 0u;
-            led_burst(5u, now);
+            led_burst(11u, now);
         }
         if (run_action == BTN_ACTION_NONE &&
             g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
             process_current_pid() < 0 &&
-            (find_scanner_pid() < 0 || g_probe_pause_ack)){
+            (g_pending_action == BTN_ACTION_SECURE_STOP ||
+             find_scanner_pid() < 0 ||
+             g_probe_pause_ack)){
             run_action = g_pending_action;
             g_pending_action = BTN_ACTION_NONE;
             g_action_busy = 1u;
         }
         spin_unlock(&g_headless_lock);
+    }
+
+    if (timeout_notice){
+        headless_tty0_write("Button: action timed out waiting for idle/scanner pause\n");
     }
 
     /*
