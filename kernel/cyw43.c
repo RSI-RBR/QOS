@@ -424,6 +424,32 @@ static int str_eq_literal(const char* a, unsigned int alen, const char* lit){
     return (i == alen && lit[i] == 0);
 }
 
+static char upper_ascii_local(char c){
+    return (c >= 'a' && c <= 'z') ? (char)(c - ('a' - 'A')) : c;
+}
+
+static int str_contains_literal_ci(const char* s, const char* needle){
+    unsigned int nlen = 0u;
+    if (!s || !needle || !needle[0]){
+        return 0;
+    }
+    while (needle[nlen]){
+        nlen++;
+    }
+    for (unsigned int i = 0u; s[i]; i++){
+        unsigned int j = 0u;
+        while (j < nlen &&
+               s[i + j] &&
+               upper_ascii_local(s[i + j]) == upper_ascii_local(needle[j])){
+            j++;
+        }
+        if (j == nlen){
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int parse_mac_text(const char* s, unsigned char out[6]){
     for (unsigned int i = 0; i < 6u; i++){
         int hi = c_hex(*s++);
@@ -1626,7 +1652,7 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
 #if defined(QOS_BOARD_PI_ZERO2W)
     const char* default_fw_name = "P0NEXMONBIN";
     const char* default_nv_name = "P0NEXMONTXT";
-    const char* default_clm_name = "P0NEXMONCLM";
+    const char* default_clm_name = 0;
 #else
     const char* default_fw_name = "4343WIFIBIN";
     const char* default_nv_name = "4343NVRMTXT";
@@ -1643,6 +1669,18 @@ int cyw43_upload_firmware_from_fat(const char* fw_bin_83,
     int clm_len = -1;
     int rc = CYW43_FWLOAD_ERR_NO_MEMORY;
     int io_rc = 0;
+
+    /*
+     * Nexmon monitor firmware is currently tested without CLM. CLM is useful
+     * for station/regulatory operation, but the monitor path is fragile and we
+     * want to remove CLM upload as a variable while debugging RX/control stalls.
+     */
+    if (str_contains_literal_ci(fw_name, "NEXMON")){
+        if (clm_name){
+            uart_puts("CYW43: Nexmon CLM disabled for monitor test\n");
+        }
+        clm_name = 0;
+    }
 
     fw_buf = (unsigned char*)kmalloc(CYW43_FW_MAX_BYTES);
     nv_buf = (unsigned char*)kmalloc(CYW43_NVRAM_MAX_BYTES);

@@ -464,7 +464,7 @@ static const char g_wifi_nv_83[] = "P0WIFI36TXT";
 static const char g_wifi_clm_83[] = "P0WIFI36CLM";
 static const char g_mon_fw_83[] = "P0NEXMONBIN";
 static const char g_mon_nv_83[] = "P0NEXMONTXT";
-static const char g_mon_clm_83[] = "P0NEXMONCLM";
+static const char g_mon_clm_83[] = "";
 #else
 static const char g_wifi_fw_83[] = "4343WIFIBIN";
 static const char g_wifi_nv_83[] = "4343NVRMTXT";
