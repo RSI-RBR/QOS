@@ -10,6 +10,7 @@
 #include "arp.h"
 #include "net_proto.h"
 #include "net.h"
+#include "x509_verify.h"
 #include "blockdev.h"
 #include "fat32.h"
 #include "sandbox_file.h"
@@ -658,7 +659,9 @@ static int headless_https_probe_open_ap(void){
         headless_tty0_puti(rc);
         headless_tty0_write("\n");
         if (rc == -141){
-            headless_tty0_write("Probe: X509 verify failed after reaching HTTPS server\n");
+            headless_tty0_write("Probe: X509 error: ");
+            headless_tty0_write(x509_verify_last_error());
+            headless_tty0_write("\n");
         }
         rc = -14;
     }

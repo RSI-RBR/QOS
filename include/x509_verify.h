@@ -30,6 +30,7 @@ void x509_set_validation_time_unix(long long unix_time);
 void x509_clear_validation_time(void);
 void x509_require_explicit_validation_time(int required);
 void x509_require_revocation_list(int required);
+const char* x509_verify_last_error(void);
 
 // cert_body points to TLS 1.3 Certificate handshake body:
 //   opaque certificate_request_context<0..2^8-1>;

@@ -1959,6 +1959,8 @@ https_retry_connect:
                                                   &x509_res) != 0){
                     uart_puts("HTTPS X509 verify failed for host ");
                     uart_puts(host);
+                    uart_puts(": ");
+                    uart_puts(x509_verify_last_error());
                     uart_puts("\n");
                     g_conn.active = 0;
                     g_conn.state = TCP_ST_CLOSED;

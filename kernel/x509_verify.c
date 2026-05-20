@@ -45,6 +45,47 @@
 #define X509_KEY_ALG_EC 2u
 #define X509_EC_COORD_MAX 48u
 
+static char g_x509_last_error[128];
+
+static void x509_set_last_error(const char* msg){
+    unsigned int i = 0u;
+    if (!msg){
+        msg = "unspecified certificate verification failure";
+    }
+    while (msg[i] && (i + 1u) < sizeof(g_x509_last_error)){
+        g_x509_last_error[i] = msg[i];
+        i++;
+    }
+    g_x509_last_error[i] = 0;
+}
+
+static void x509_set_last_error_alg(const char* msg, unsigned int alg){
+    static const char hex[] = "0123456789ABCDEF";
+    unsigned int i = 0u;
+    x509_set_last_error(msg);
+    while (g_x509_last_error[i]){
+        i++;
+    }
+    if ((i + 14u) >= sizeof(g_x509_last_error)){
+        return;
+    }
+    g_x509_last_error[i++] = ' ';
+    g_x509_last_error[i++] = 'a';
+    g_x509_last_error[i++] = 'l';
+    g_x509_last_error[i++] = 'g';
+    g_x509_last_error[i++] = '=';
+    g_x509_last_error[i++] = '0';
+    g_x509_last_error[i++] = 'x';
+    for (int shift = 28; shift >= 0; shift -= 4){
+        g_x509_last_error[i++] = hex[(alg >> (unsigned int)shift) & 0xFu];
+    }
+    g_x509_last_error[i] = 0;
+}
+
+const char* x509_verify_last_error(void){
+    return g_x509_last_error[0] ? g_x509_last_error : "none";
+}
+
 typedef struct {
     unsigned char tag;
     const unsigned char* hdr;
@@ -1829,11 +1870,13 @@ static int verify_ca_bundle_ed25519(const unsigned char* pem_bytes,
     int sig_n;
 
     if (!key || key->revoked){
+        x509_set_last_error("admin trust key unavailable or revoked for CA_ROOTS.SIG");
         return -1;
     }
 
     sig_n = fat32_read_file(X509_CA_SIG_FAT, g_ca_sig_buf, (int)sizeof(g_ca_sig_buf));
     if (sig_n != 64){
+        x509_set_last_error("CA_ROOTS.SIG read failed or wrong size");
         uart_puts("X509: CA_ROOTS.SIG read failed or wrong size.\n");
         return -1;
     }
@@ -1849,6 +1892,7 @@ static int verify_ca_bundle_ed25519(const unsigned char* pem_bytes,
     for (unsigned int i = 0; i < 32u; i++) msg[o++] = digest[i];
 
     if (!qos_ed25519_verify(g_ca_sig_buf, msg, o, key->ed25519_pubkey)){
+        x509_set_last_error("CA bundle Ed25519 signature verify failed");
         return -1;
     }
     return 0;
@@ -1871,6 +1915,7 @@ static int verify_ca_bundle_pq_optional(const unsigned char* pem_bytes,
     };
 
     if (!key || key->revoked){
+        x509_set_last_error("admin trust key unavailable or revoked for CA_ROOTS.PQS");
         return -1;
     }
 
@@ -1880,6 +1925,7 @@ static int verify_ca_bundle_pq_optional(const unsigned char* pem_bytes,
         return 0; // optional
     }
     if (n < (int)QOS_PQ_SIG_HEADER_BYTES){
+        x509_set_last_error("CA_ROOTS.PQS malformed header");
         return -1;
     }
 
@@ -1889,15 +1935,19 @@ static int verify_ca_bundle_pq_optional(const unsigned char* pem_bytes,
     sig_alg = get_u32_le(&g_ca_pqs_buf[12]);
     sig_len = get_u32_le(&g_ca_pqs_buf[16]);
     if (magic != QOS_PQ_SIG_MAGIC || version != QOS_PQ_SIG_VERSION){
+        x509_set_last_error("CA_ROOTS.PQS bad magic/version");
         return -1;
     }
     if (signer_key_id != TRUST_KEY_ID_ADMIN_MAIN){
+        x509_set_last_error("CA_ROOTS.PQS signer is not admin key");
         return -1;
     }
     if ((QOS_PQ_SIG_HEADER_BYTES + sig_len) > (unsigned int)n){
+        x509_set_last_error("CA_ROOTS.PQS truncated signature");
         return -1;
     }
     if (key->pq_pubkey_len == 0u){
+        x509_set_last_error("admin key has no PQ public key for CA_ROOTS.PQS");
         return -1;
     }
 
@@ -1917,6 +1967,7 @@ static int verify_ca_bundle_pq_optional(const unsigned char* pem_bytes,
                                     &g_ca_pqs_buf[QOS_PQ_SIG_HEADER_BYTES],
                                     sig_len,
                                     key->pq_pubkey, key->pq_pubkey_len) != 0){
+        x509_set_last_error("CA bundle PQ signature verify failed");
         return -1;
     }
     return 0;
@@ -1934,11 +1985,13 @@ static int verify_revocation_ed25519(const unsigned char* rev_bytes,
     int sig_n;
 
     if (!key || key->revoked){
+        x509_set_last_error("admin trust key unavailable or revoked for revocation .SIG");
         return -1;
     }
 
     sig_n = fat32_read_file(X509_REVOKE_SIG_FAT, g_revoke_sig_buf, (int)sizeof(g_revoke_sig_buf));
     if (sig_n != 64){
+        x509_set_last_error("revocation .SIG missing or wrong size");
         uart_puts("X509: revocation .SIG missing or wrong size.\n");
         return -1;
     }
@@ -1954,6 +2007,7 @@ static int verify_revocation_ed25519(const unsigned char* rev_bytes,
     for (unsigned int i = 0; i < 32u; i++) msg[o++] = digest[i];
 
     if (!qos_ed25519_verify(g_revoke_sig_buf, msg, o, key->ed25519_pubkey)){
+        x509_set_last_error("revocation Ed25519 signature verify failed");
         return -1;
     }
     return 0;
@@ -1976,6 +2030,7 @@ static int verify_revocation_pq_optional(const unsigned char* rev_bytes,
     };
 
     if (!key || key->revoked){
+        x509_set_last_error("admin trust key unavailable or revoked for revocation .PQS");
         return -1;
     }
 
@@ -1984,6 +2039,7 @@ static int verify_revocation_pq_optional(const unsigned char* rev_bytes,
         return 0; // optional
     }
     if (n < (int)QOS_PQ_SIG_HEADER_BYTES){
+        x509_set_last_error("revocation .PQS malformed header");
         return -1;
     }
 
@@ -1993,15 +2049,19 @@ static int verify_revocation_pq_optional(const unsigned char* rev_bytes,
     sig_alg = get_u32_le(&g_revoke_pqs_buf[12]);
     sig_len = get_u32_le(&g_revoke_pqs_buf[16]);
     if (magic != QOS_PQ_SIG_MAGIC || version != QOS_PQ_SIG_VERSION){
+        x509_set_last_error("revocation .PQS bad magic/version");
         return -1;
     }
     if (signer_key_id != TRUST_KEY_ID_ADMIN_MAIN){
+        x509_set_last_error("revocation .PQS signer is not admin key");
         return -1;
     }
     if ((QOS_PQ_SIG_HEADER_BYTES + sig_len) > (unsigned int)n){
+        x509_set_last_error("revocation .PQS truncated signature");
         return -1;
     }
     if (key->pq_pubkey_len == 0u){
+        x509_set_last_error("admin key has no PQ public key for revocation .PQS");
         return -1;
     }
 
@@ -2021,6 +2081,7 @@ static int verify_revocation_pq_optional(const unsigned char* rev_bytes,
                                     &g_revoke_pqs_buf[QOS_PQ_SIG_HEADER_BYTES],
                                     sig_len,
                                     key->pq_pubkey, key->pq_pubkey_len) != 0){
+        x509_set_last_error("revocation PQ signature verify failed");
         return -1;
     }
     return 0;
@@ -2040,19 +2101,23 @@ static int parse_revocation_table(const unsigned char* rev_bytes,
     unsigned int count;
     unsigned int need;
     if (!rev_bytes || rev_len < hdr_len){
+        x509_set_last_error("revocation table missing header");
         return -1;
     }
     magic = get_u32_le(&rev_bytes[0]);
     version = get_u32_le(&rev_bytes[4]);
     count = get_u32_le(&rev_bytes[8]);
     if (magic != ((unsigned int)'Q' | ((unsigned int)'R' << 8) | ((unsigned int)'E' << 16) | ((unsigned int)'V' << 24))){
+        x509_set_last_error("revocation table bad magic");
         return -1;
     }
     if (version != 1u || count > X509_REVOKE_MAX_ENTRIES){
+        x509_set_last_error("revocation table unsupported version/count");
         return -1;
     }
     need = hdr_len + (count * 64u);
     if (need > rev_len){
+        x509_set_last_error("revocation table truncated");
         return -1;
     }
     g_revoked_count = 0u;
@@ -2073,9 +2138,15 @@ static int ensure_revocation_loaded(void){
         return 0;
     }
     if (g_revoke_cache_state == 2){
+        if (g_require_revocation_list){
+            x509_set_last_error("revocation list required but missing");
+        }
         return g_require_revocation_list ? -1 : 0;
     }
     if (g_revoke_cache_state < 0){
+        if (!g_x509_last_error[0]){
+            x509_set_last_error("revocation cache is in failed state");
+        }
         return -1;
     }
 
@@ -2084,12 +2155,14 @@ static int ensure_revocation_loaded(void){
     if (n <= 0){
         g_revoke_cache_state = 2;
         if (g_require_revocation_list){
+            x509_set_last_error("revocation list required but missing");
             uart_puts("X509: revocation list required but missing.\n");
             return -1;
         }
         return 0;
     }
     if (n >= (int)sizeof(g_revoke_bin_buf)){
+        x509_set_last_error("revocation list exceeds verifier buffer");
         g_revoke_cache_state = -1;
         return -1;
     }
@@ -2121,22 +2194,28 @@ static int ensure_ca_anchors_loaded(void){
         return 0;
     }
     if (g_ca_cache_state < 0){
+        if (!g_x509_last_error[0]){
+            x509_set_last_error("CA roots cache is in failed state");
+        }
         return -1;
     }
 
     g_ca_anchor_count = 0u;
 
     if (fat32_init() != 0){
+        x509_set_last_error("FAT init failed while loading CA_ROOTS.PEM");
         g_ca_cache_state = -1;
         return -1;
     }
     n = fat32_read_file(X509_CA_PEM_FAT, g_ca_pem_buf, X509_CA_PEM_MAX);
     if (n <= 0){
+        x509_set_last_error("CA_ROOTS.PEM read failed");
         uart_puts("X509: CA_ROOTS.PEM read failed.\n");
         g_ca_cache_state = -1;
         return -1;
     }
     if (n >= (int)X509_CA_PEM_MAX){
+        x509_set_last_error("CA_ROOTS.PEM exceeds verifier buffer");
         uart_puts("X509: CA_ROOTS.PEM exceeds verifier buffer.\n");
         g_ca_cache_state = -1;
         return -1;
@@ -2154,6 +2233,7 @@ static int ensure_ca_anchors_loaded(void){
         return -1;
     }
     if (parse_ca_bundle_anchors(g_ca_pem_buf, (unsigned int)n) != 0){
+        x509_set_last_error("CA_ROOTS.PEM parsed no anchors");
         uart_puts("X509: CA_ROOTS.PEM parsed no anchors.\n");
         g_ca_cache_state = -1;
         return -1;
@@ -2430,6 +2510,8 @@ int x509_verify_tls13_certificate(const char* host,
     unsigned int inhibit_any_policy = 0u;
     unsigned int policy_mapping = 0u;
 
+    g_x509_last_error[0] = 0;
+
     if (out_result){
         out_result->chain_certs = 0u;
         out_result->anchor_count = g_ca_anchor_count;
@@ -2444,25 +2526,32 @@ int x509_verify_tls13_certificate(const char* host,
     }
 
     if (!host || !*host || !cert_body || cert_body_len < 4u){
+        x509_set_last_error("invalid TLS certificate message input");
         return -1;
     }
     host_len = (unsigned int)trim_trailing_dot_len(host, (unsigned int)kstrlen(host));
     if (host_len == 0u){
+        x509_set_last_error("empty TLS certificate hostname");
         return -1;
     }
 
     seed_validation_time_from_build_if_unset();
     if (!g_validation_time_set){
+        x509_set_last_error("validation time not set");
         uart_puts("X509: validation time not set.\n");
         return -1;
     }
     if (g_require_explicit_validation_time && g_validation_time_source != 2){
+        x509_set_last_error("explicit validation time required");
         uart_puts("X509: explicit validation time required.\n");
         return -1;
     }
     now_unix = g_validation_time_unix;
 
     if (ensure_ca_anchors_loaded() != 0){
+        if (!g_x509_last_error[0]){
+            x509_set_last_error("CA anchors load failed");
+        }
         return -1;
     }
     // Optional revocation list lookup can be expensive and may touch FAT
@@ -2470,32 +2559,40 @@ int x509_verify_tls13_certificate(const char* host,
     // explicitly enforces revocation presence.
     if (g_require_revocation_list){
         if (ensure_revocation_loaded() != 0){
+            if (!g_x509_last_error[0]){
+                x509_set_last_error("revocation list load failed");
+            }
             return -1;
         }
     }
 
     ctx_len = cert_body[off++];
     if ((off + ctx_len) > cert_body_len){
+        x509_set_last_error("TLS certificate context truncated");
         return -1;
     }
     off += ctx_len;
     if ((off + 3u) > cert_body_len){
+        x509_set_last_error("TLS certificate list length missing");
         return -1;
     }
     list_len = be24_read(&cert_body[off]);
     off += 3u;
     if ((off + list_len) > cert_body_len){
+        x509_set_last_error("TLS certificate list truncated");
         return -1;
     }
     list_end = off + list_len;
 
     while (off < list_end && cert_count < X509_MAX_CHAIN_CERTS){
         if ((off + 3u) > list_end){
+            x509_set_last_error("TLS certificate entry length missing");
             return -1;
         }
         unsigned int dlen = be24_read(&cert_body[off]);
         off += 3u;
         if (dlen == 0u || (off + dlen) > list_end){
+            x509_set_last_error("TLS certificate DER entry truncated");
             return -1;
         }
         cert_der[cert_count] = &cert_body[off];
@@ -2503,17 +2600,20 @@ int x509_verify_tls13_certificate(const char* host,
         off += dlen;
 
         if ((off + 2u) > list_end){
+            x509_set_last_error("TLS certificate extensions length missing");
             return -1;
         }
         unsigned int ext_len = ((unsigned int)cert_body[off] << 8) | (unsigned int)cert_body[off + 1u];
         off += 2u;
         if ((off + ext_len) > list_end){
+            x509_set_last_error("TLS certificate extensions truncated");
             return -1;
         }
         off += ext_len;
         cert_count++;
     }
     if (off != list_end || cert_count == 0u){
+        x509_set_last_error("TLS certificate list malformed or empty");
         return -1;
     }
     explicit_policy = cert_count + 1u;
@@ -2523,23 +2623,28 @@ int x509_verify_tls13_certificate(const char* host,
     for (unsigned int i = 0u; i < cert_count; i++){
         int leaf = (i == 0u) ? 1 : 0;
         if (parse_cert_identity(cert_der[i], cert_der_len[i], host, host_len, leaf, &certs[i]) != 0){
+            x509_set_last_error("X.509 certificate parse failed");
             return -1;
         }
         if (name_hash(certs[i].subject_tlv, certs[i].subject_tlv_len, subject_hashes[i]) != 0 ||
             name_hash(certs[i].issuer_tlv, certs[i].issuer_tlv_len, issuer_hashes[i]) != 0){
+            x509_set_last_error("X.509 subject/issuer hash failed");
             return -1;
         }
         if (certs[i].unknown_critical_ext){
+            x509_set_last_error("unknown critical extension");
             uart_puts("X509: unknown critical extension.\n");
             return -1;
         }
         if (certs[i].name_constraints_present &&
             certs[i].name_constraints_critical &&
             certs[i].name_constraints_parse_error){
+            x509_set_last_error("critical nameConstraints parse failed");
             uart_puts("X509: critical nameConstraints parse failed.\n");
             return -1;
         }
         if (cert_time_valid_now(&certs[i], now_unix) != 0){
+            x509_set_last_error("certificate time invalid");
             uart_puts("X509: certificate time invalid.\n");
             return -1;
         }
@@ -2547,16 +2652,19 @@ int x509_verify_tls13_certificate(const char* host,
     }
 
     if (!certs[0].hostname_match){
+        x509_set_last_error("hostname mismatch");
         uart_puts("X509: hostname mismatch.\n");
         return -1;
     }
     if (certs[0].key_usage_present &&
         (certs[0].key_usage_bits & X509_KU_DIGITAL_SIGNATURE) == 0u){
+        x509_set_last_error("leaf keyUsage missing digitalSignature");
         uart_puts("X509: leaf keyUsage missing digitalSignature.\n");
         return -1;
     }
     if (certs[0].eku_present &&
         !(certs[0].eku_server_auth || certs[0].eku_any)){
+        x509_set_last_error("leaf EKU missing serverAuth");
         uart_puts("X509: leaf EKU missing serverAuth.\n");
         return -1;
     }
@@ -2568,6 +2676,7 @@ int x509_verify_tls13_certificate(const char* host,
     path_idx[path_len++] = cur;
     for (unsigned int depth = 0u; depth < cert_count; depth++){
         if (cert_der_hash(cert_der[cur], cert_der_len[cur], cur_der_hash) != 0){
+            x509_set_last_error("certificate DER hash failed");
             return -1;
         }
         // Trust anchor may be sent directly in the TLS chain.
@@ -2583,6 +2692,7 @@ int x509_verify_tls13_certificate(const char* host,
         if (anchor_idx >= 0){
             unsigned long t0 = system_ticks;
             if (verify_cert_signed_by_anchor(&certs[cur], &g_ca_anchors[(unsigned int)anchor_idx]) != 0){
+                x509_set_last_error_alg("root signature verify failed", (unsigned int)certs[cur].cert_sig_alg);
                 uart_puts("X509: root signature verify failed alg=");
                 uart_puthex((unsigned int)certs[cur].cert_sig_alg);
                 uart_puts("\n");
@@ -2596,6 +2706,7 @@ int x509_verify_tls13_certificate(const char* host,
                 uart_puts("\n");
             }
             if (!anchor_is_ca_usable(&g_ca_anchors[(unsigned int)anchor_idx])){
+                x509_set_last_error("anchor CA constraints invalid");
                 uart_puts("X509: anchor CA constraints invalid.\n");
                 return -1;
             }
@@ -2618,11 +2729,13 @@ int x509_verify_tls13_certificate(const char* host,
             break;
         }
         if (!cert_is_ca_usable(&certs[(unsigned int)next])){
+            x509_set_last_error("intermediate CA constraints invalid");
             uart_puts("X509: intermediate CA constraints invalid.\n");
             return -1;
         }
         unsigned long t0 = system_ticks;
         if (verify_cert_signed_by_cert(&certs[cur], &certs[(unsigned int)next]) != 0){
+            x509_set_last_error_alg("chain signature verify failed", (unsigned int)certs[cur].cert_sig_alg);
             uart_puts("X509: chain signature verify failed alg=");
             uart_puthex((unsigned int)certs[cur].cert_sig_alg);
             uart_puts("\n");
@@ -2638,11 +2751,13 @@ int x509_verify_tls13_certificate(const char* host,
         cur = (unsigned int)next;
         used[cur] = 1;
         if (path_len >= X509_MAX_CHAIN_CERTS){
+            x509_set_last_error("certificate chain path exceeded max depth");
             return -1;
         }
         path_idx[path_len++] = cur;
     }
     if (!anchor_ok){
+        x509_set_last_error("chain not anchored in CA_ROOTS");
         uart_puts("X509: chain not anchored in CA_ROOTS.\n");
         return -1;
     }
@@ -2659,10 +2774,12 @@ int x509_verify_tls13_certificate(const char* host,
             }
         }
         if (leaf_host_allowed_by_name_constraints(ca, host, host_len) != 0){
+            x509_set_last_error("nameConstraints reject leaf host");
             uart_puts("X509: nameConstraints reject leaf host.\n");
             return -1;
         }
         if (ca->path_len_present && ca_below > ca->path_len_constraint){
+            x509_set_last_error("pathLen constraint violated (chain cert)");
             uart_puts("X509: pathLen constraint violated (chain cert).\n");
             return -1;
         }
@@ -2677,6 +2794,7 @@ int x509_verify_tls13_certificate(const char* host,
             }
         }
         if (a->path_len_present && ca_below_anchor > a->path_len_constraint){
+            x509_set_last_error("pathLen constraint violated (anchor)");
             uart_puts("X509: pathLen constraint violated (anchor).\n");
             return -1;
         }
@@ -2686,6 +2804,7 @@ int x509_verify_tls13_certificate(const char* host,
     for (unsigned int i = 0u; i < path_len; i++){
         unsigned int ci = path_idx[i];
         if (cert_is_revoked(issuer_hashes[ci], &certs[ci])){
+            x509_set_last_error("certificate revoked by local policy");
             uart_puts("X509: certificate revoked by local policy.\n");
             return -1;
         }
@@ -2700,16 +2819,19 @@ int x509_verify_tls13_certificate(const char* host,
         int self_issued = cert_is_self_issued(c);
 
         if (policy_mapping == 0u && c->policy_mappings_present){
+            x509_set_last_error("policyMappings inhibited");
             uart_puts("X509: policyMappings inhibited.\n");
             return -1;
         }
         if (explicit_policy == 0u && !c->cert_policies_present){
+            x509_set_last_error("explicit policy required but missing certificatePolicies");
             uart_puts("X509: explicit policy required but missing certificatePolicies.\n");
             return -1;
         }
         if (inhibit_any_policy == 0u &&
             c->cert_policies_present && c->cert_policy_any &&
             !(self_issued && !is_leaf)){
+            x509_set_last_error("anyPolicy inhibited");
             uart_puts("X509: anyPolicy inhibited.\n");
             return -1;
         }
