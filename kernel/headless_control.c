@@ -362,6 +362,7 @@ static int headless_https_probe_open_ap(void){
     int sig = -127;
     int rc;
     int dhcp_rc;
+    int dhcp_failed = 0;
     int restore_net = 0;
     int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
     dhcp_lease_t lease;
@@ -408,6 +409,7 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe wifi up failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        rc = -11;
         goto probe_restore;
     }
 
@@ -416,6 +418,7 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe open join failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        rc = -12;
         goto probe_restore;
     }
 
@@ -426,6 +429,7 @@ static int headless_https_probe_open_ap(void){
             uart_puts("Headless: probe DHCP OK but gateway ARP unresolved\n");
         }
     } else{
+        dhcp_failed = 1;
         uart_puts("Headless: probe DHCP failed rc=");
         uart_putdec((unsigned long)(-dhcp_rc));
         uart_puts("; trying current static net config\n");
@@ -443,6 +447,7 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe HTTPS failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
+        rc = dhcp_failed ? -13 : -14;
     }
 
 probe_restore:
@@ -745,15 +750,29 @@ static void perform_button_action(unsigned int action, unsigned long now){
     }
     if (action == BTN_ACTION_SINGLE_CHECK){
         int rc;
+        unsigned int pulses = 5u;
         uart_puts("Headless: button single press, HTTPS probe start\n");
         rc = headless_https_probe_open_ap();
         if (rc == 0){
-            button_result_burst(3u, now);
+            pulses = 3u;
             uart_puts("Headless: HTTPS probe success\n");
         } else{
-            button_result_burst(5u, now);
+            if (rc == -10){
+                pulses = 6u; /* no open AP candidate */
+            } else if (rc == -11){
+                pulses = 7u; /* WiFi up failed */
+            } else if (rc == -12){
+                pulses = 8u; /* Open AP join failed */
+            } else if (rc == -13){
+                pulses = 9u; /* DHCP failed + HTTPS failed on fallback */
+            } else if (rc == -14){
+                pulses = 10u; /* HTTPS failed after join/network setup */
+            } else{
+                pulses = 5u; /* generic failure */
+            }
             uart_puts("Headless: HTTPS probe failed\n");
         }
+        button_result_burst(pulses, now);
         return;
     }
 }
@@ -1098,7 +1117,7 @@ void headless_control_poll(void){
         if (run_action == BTN_ACTION_NONE &&
             g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
-            process_current_pid() < 0){
+            (process_current_pid() < 0 || g_probe_pause_active)){
             run_action = g_pending_action;
             g_pending_action = BTN_ACTION_NONE;
             g_action_busy = 1u;
