@@ -2219,6 +2219,7 @@ void program_main(void){
     unsigned int rearm_stage = 0u;
     unsigned int idle_quiet_windows = 0u;
     unsigned int idle_led_active = 0u;
+    unsigned int probe_pause_seen = 0u;
     unsigned long long last_rx_progress_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
@@ -2297,6 +2298,11 @@ void program_main(void){
     while (1){
         int skip_rx_poll = 0;
         if (qos_headless_probe_pause_active() > 0){
+            if (!probe_pause_seen){
+                probe_pause_seen = 1u;
+                (void)qos_wifi_raw_set_enabled(0u);
+                qos_puts("scanner: probe pause active; raw capture paused\n");
+            }
             if (!idle_led_active){
                 (void)qos_headless_scanner_idle(1u);
                 idle_led_active = 1u;
@@ -2306,6 +2312,23 @@ void program_main(void){
             idle_quiet_windows = 0u;
             qos_sleep(10u);
             continue;
+        }
+        if (probe_pause_seen){
+            int raw_rc;
+            probe_pause_seen = 0u;
+            raw_rc = qos_wifi_raw_set_enabled(1u);
+            scanner_ensure_monitor_ready(active_channel, 1u);
+            last_rx_progress_us = qos_get_time_us();
+            recv_err_streak = 0u;
+            idle_quiet_windows = 0u;
+            rearm_stage = 0u;
+            if (idle_led_active){
+                (void)qos_headless_scanner_idle(0u);
+                idle_led_active = 0u;
+            }
+            qos_puts("scanner: probe pause done; raw rc=");
+            put_i32(raw_rc);
+            qos_puts("\n");
         }
         now = qos_get_time_us();
         if ((long long)(now - next_print) >= 0){

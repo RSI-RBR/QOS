@@ -361,7 +361,7 @@ static int headless_https_probe_open_ap(void){
          */
         probe_pause_set(1u);
         headless_control_note_scanner_idle(1u);
-        probe_pause_wait_ticks(40u);
+        probe_pause_wait_ticks(250u);
     }
 
     if (scanner_pick_strongest_open_ssid(ssid, &sig) != 0){
