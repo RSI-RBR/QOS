@@ -24,6 +24,7 @@
 #define AUTO_FLUSH_DURING_CAPTURE 0u
 #define CHANNEL_HOP_DURING_CAPTURE 1u
 #define SCANNER_DESTRUCTIVE_RECOVERY 1u
+#define IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1822,7 +1823,7 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
     (void)qos_wifi_raw_set_enabled(1u);
 }
 
-static int scanner_restore_monitor_path(unsigned int channel){
+static int scanner_restore_monitor_path(unsigned int channel, unsigned int allow_hard_recovery){
     cyw43_monitor_status_t st;
     unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
     int recover_rc = -1;
@@ -1840,15 +1841,19 @@ static int scanner_restore_monitor_path(unsigned int channel){
         }
     }
 
-    qos_puts("scanner: monitor restore failed; hard recovery\n");
-    recover_rc = qos_wifi_monitor_recover(ch);
-    if (recover_rc == 0 &&
-        qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
-        return 1;
+    if (allow_hard_recovery){
+        qos_puts("scanner: monitor restore failed; hard recovery\n");
+        recover_rc = qos_wifi_monitor_recover(ch);
+        if (recover_rc == 0 &&
+            qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+            return 1;
+        }
+        qos_puts("scanner: hard recovery rc=");
+        put_i32(recover_rc);
+        qos_puts("\n");
+    } else{
+        qos_puts("scanner: monitor restore failed; hard recovery skipped\n");
     }
-    qos_puts("scanner: hard recovery rc=");
-    put_i32(recover_rc);
-    qos_puts("\n");
     return 0;
 }
 
@@ -1889,7 +1894,7 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     if (s == 2u){
         qos_puts("scanner: rx stalled; full monitor up/reapply\n");
         (void)qos_wifi_raw_set_enabled(0u);
-        (void)scanner_restore_monitor_path(ch);
+        (void)scanner_restore_monitor_path(ch, 0u);
         recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
         if (stage){
             *stage = recovered ? 0u : 3u;
@@ -1898,11 +1903,24 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     }
 
     qos_puts("scanner: rx stalled; hard WiFi monitor recovery\n");
+#if !IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY
+    /*
+     * The hard recovery path can fall through to a FAT firmware reload on the
+     * shared EMMC/SDIO host. That is exactly where long scanner runs have been
+     * failing with -118. During live capture, prefer staying in the soft rearm
+     * cycle rather than destabilizing an otherwise usable monitor session.
+     */
+    qos_puts("scanner: hard recovery disabled during live capture\n");
+    if (stage){
+        *stage = 0u;
+    }
+    return 0;
+#else
     (void)qos_wifi_raw_set_enabled(0u);
     if (last_rx_frames){
         *last_rx_frames = 0u;
     }
-    if (!scanner_restore_monitor_path(ch)){
+    if (!scanner_restore_monitor_path(ch, 1u)){
         if (stage){
             *stage = 3u;
         }
@@ -1913,6 +1931,7 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
         *stage = recovered ? 0u : 1u;
     }
     return recovered;
+#endif
 }
 
 static void maybe_hop_channel(unsigned int* active_channel,
@@ -2264,7 +2283,7 @@ void program_main(void){
      * safer than replaying WLC_UP/monitor commands at scanner startup.
      */
     if (!have_mon || !mon.enabled || !mon.raw_enabled){
-        (void)scanner_restore_monitor_path(DEFAULT_SCAN_CHANNEL);
+        (void)scanner_restore_monitor_path(DEFAULT_SCAN_CHANNEL, 1u);
         have_mon = (qos_wifi_monitor_status(&mon) == 0) ? 1 : 0;
     } else{
         qos_puts("scanner: preserving existing monitor/raw path\n");
@@ -2347,7 +2366,7 @@ void program_main(void){
                  * can reapply monitor/promisc/raw state in the right order.
                  */
                 qos_puts("scanner: button action restoring monitor path\n");
-                if (scanner_restore_monitor_path(active_channel)){
+                if (scanner_restore_monitor_path(active_channel, 0u)){
                     raw_rc = qos_wifi_raw_set_enabled(1u);
                     if (qos_wifi_monitor_status(&pause_st) == 0 && pause_st.channel != 0u){
                         active_channel = pause_st.channel;
@@ -2357,6 +2376,7 @@ void program_main(void){
                 }
             }
             if (raw_rc != 0){
+#if IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY
                 int hard_rc;
                 qos_puts("scanner: pause restore failed; forcing hard monitor recovery\n");
                 hard_rc = qos_wifi_monitor_recover(active_channel);
@@ -2370,6 +2390,9 @@ void program_main(void){
                     put_i32(hard_rc);
                     qos_puts("\n");
                 }
+#else
+                qos_puts("scanner: pause restore failed; hard recovery skipped\n");
+#endif
             }
             last_rx_progress_us = qos_get_time_us();
             recv_err_streak = 0u;
@@ -2479,7 +2502,7 @@ void program_main(void){
             log_summary_line(&stats, active_channel);
             log_ap_snapshot();
             flush_rc = flush_scanner_logs(1);
-            restore_ok = scanner_restore_monitor_path(active_channel);
+            restore_ok = scanner_restore_monitor_path(active_channel, 1u);
             if (restore_ok){
                 /*
                  * Restore can report "up" before frames flow again. Verify real
@@ -2589,8 +2612,20 @@ void program_main(void){
                 }
                 qos_puts("scanner: rx idle window hit; ");
 #if SCANNER_DESTRUCTIVE_RECOVERY
-                qos_puts("recovering monitor path\n");
-                recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
+                if (!IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY && rearm_stage >= 3u){
+                    /*
+                     * Quiet channels can look like RX stalls. Do not turn an
+                     * idle scanner window into a firmware reload; that path is
+                     * disruptive and may fail while the shared SDIO host is in
+                     * monitor mode. Keep cycling the soft rearm stages instead.
+                     */
+                    qos_puts("soft recovery cycle complete; skipping firmware reload\n");
+                    rearm_stage = 0u;
+                    recovered = 0;
+                } else{
+                    qos_puts("recovering monitor path\n");
+                    recovered = scanner_recover_rx_stall(active_channel, &rearm_stage, &last_rx_frames);
+                }
 #else
                 qos_puts("recovery disabled to preserve monitor path\n");
                 recovered = 0;
