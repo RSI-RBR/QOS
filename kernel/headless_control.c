@@ -1274,6 +1274,7 @@ void headless_control_poll(void){
     unsigned int action = BTN_ACTION_NONE;
     unsigned int run_action = BTN_ACTION_NONE;
     unsigned int timeout_notice = 0u;
+    unsigned int timeout_reason = 0u;
     unsigned int queued_notice = BTN_ACTION_NONE;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
@@ -1331,6 +1332,7 @@ void headless_control_poll(void){
         if (g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
             (unsigned long)(now - g_pending_action_tick) >= BTN_PENDING_TIMEOUT_MS){
+            timeout_reason = (find_scanner_pid() >= 0 && !g_probe_pause_ack) ? 1u : 2u;
             timeout_notice = 1u;
             g_pending_action = BTN_ACTION_NONE;
             probe_pause_set(0u);
@@ -1341,7 +1343,6 @@ void headless_control_poll(void){
         if (run_action == BTN_ACTION_NONE &&
             g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
-            process_current_pid() < 0 &&
             (g_pending_action == BTN_ACTION_SECURE_STOP ||
              find_scanner_pid() < 0 ||
              g_probe_pause_ack)){
@@ -1354,7 +1355,11 @@ void headless_control_poll(void){
 
     if (timeout_notice){
         headless_tty0_show();
-        headless_tty0_write("Button: action timed out waiting for idle/scanner pause\n");
+        if (timeout_reason == 1u){
+            headless_tty0_write("Button: action timed out waiting for scanner pause ack\n");
+        } else{
+            headless_tty0_write("Button: action timed out before dispatch\n");
+        }
     }
     if (queued_notice != BTN_ACTION_NONE){
         headless_tty0_show();
@@ -1368,10 +1373,9 @@ void headless_control_poll(void){
     }
 
     /*
-     * Run heavy button actions only from an idle kernel context. Button events
-     * are often detected while a user process is inside a syscall; doing WiFi
-     * handoff/TLS work there can park the process that is meant to observe the
-     * pause flag.
+     * Run heavy button actions after the scanner has acknowledged the pause.
+     * Waiting for a fully idle CPU made headless button actions time out under
+     * continuous scanner/shell load even though the scanner was already parked.
      */
     if (run_action != BTN_ACTION_NONE){
         perform_button_action(run_action, now);
