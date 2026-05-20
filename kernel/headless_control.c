@@ -486,6 +486,59 @@ static void probe_print_net_diag(const char* prefix){
     headless_tty0_write("\n");
 }
 
+static void headless_tty0_putip(const unsigned char ip[4]){
+    if (!ip){
+        headless_tty0_write("0.0.0.0");
+        return;
+    }
+    headless_tty0_putdec((unsigned long)ip[0]);
+    headless_tty0_write(".");
+    headless_tty0_putdec((unsigned long)ip[1]);
+    headless_tty0_write(".");
+    headless_tty0_putdec((unsigned long)ip[2]);
+    headless_tty0_write(".");
+    headless_tty0_putdec((unsigned long)ip[3]);
+}
+
+static void probe_print_dhcp_diag(void){
+    dhcp_diag_t d;
+    dhcp_get_diag(&d);
+
+    headless_tty0_write("Probe: DHCP diag stage=");
+    headless_tty0_putdec((unsigned long)d.stage);
+    headless_tty0_write(" rx68=");
+    headless_tty0_putdec((unsigned long)d.rx_udp68);
+    headless_tty0_write(" ok=");
+    headless_tty0_putdec((unsigned long)d.parse_ok);
+    headless_tty0_write(" type=");
+    headless_tty0_putdec((unsigned long)d.last_msg_type);
+    headless_tty0_write(" offer=");
+    headless_tty0_putip(d.last_offer_ip);
+    headless_tty0_write(" server=");
+    headless_tty0_putip(d.last_server_id);
+    headless_tty0_write("\n");
+
+    headless_tty0_write("Probe: DHCP reject len=");
+    headless_tty0_putdec((unsigned long)d.bad_len);
+    headless_tty0_write(" hdr=");
+    headless_tty0_putdec((unsigned long)d.bad_header);
+    headless_tty0_write(" xid=");
+    headless_tty0_putdec((unsigned long)d.bad_xid);
+    headless_tty0_write(" mac=");
+    headless_tty0_putdec((unsigned long)d.bad_mac);
+    headless_tty0_write(" magic=");
+    headless_tty0_putdec((unsigned long)d.bad_magic);
+    headless_tty0_write(" opt=");
+    headless_tty0_putdec((unsigned long)d.bad_options);
+    headless_tty0_write(" yiaddr=");
+    headless_tty0_putdec((unsigned long)d.bad_yiaddr);
+    headless_tty0_write(" wrong=");
+    headless_tty0_putdec((unsigned long)d.wrong_type);
+    headless_tty0_write(" sendfail=");
+    headless_tty0_putdec((unsigned long)d.send_fail);
+    headless_tty0_write("\n");
+}
+
 static int probe_preload_x509_trust_store(void){
     int rc;
 
@@ -632,6 +685,7 @@ static int headless_https_probe_open_ap(void){
         headless_tty0_write("Probe: DHCP failed rc=");
         headless_tty0_puti(dhcp_rc);
         headless_tty0_write("; trying static 10.42.0.88/24 via 10.42.0.1\n");
+        probe_print_dhcp_diag();
         probe_print_net_diag("Probe: after DHCP fail");
         net_proto_set_local_ip(nm_fallback_ip);
         net_proto_set_gateway_ip(nm_fallback_gw);

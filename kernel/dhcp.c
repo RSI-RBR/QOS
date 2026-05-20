@@ -21,6 +21,9 @@
 #define DHCP_OPT_PARAM_REQ  55u
 #define DHCP_OPT_ROUTER     3u
 #define DHCP_OPT_DNS        6u
+#define DHCP_OPT_HOSTNAME   12u
+#define DHCP_OPT_MAX_MSG    57u
+#define DHCP_OPT_CLIENT_ID  61u
 
 #define DHCPDISCOVER 1u
 #define DHCPOFFER    2u
@@ -38,6 +41,15 @@ typedef struct {
     unsigned int have_server_id;
     unsigned int lease_seconds;
 } dhcp_msg_t;
+
+static dhcp_diag_t g_dhcp_diag;
+
+static void dhcp_diag_reset(void){
+    unsigned char* p = (unsigned char*)&g_dhcp_diag;
+    for (unsigned int i = 0u; i < sizeof(g_dhcp_diag); i++){
+        p[i] = 0u;
+    }
+}
 
 static void be16_write(unsigned char* p, unsigned short v){
     p[0] = (unsigned char)(v >> 8);
@@ -77,6 +89,12 @@ static unsigned short inet_checksum(const unsigned char* data, unsigned int len)
 static void ip_copy(unsigned char dst[4], const unsigned char src[4]){
     for (unsigned int i = 0u; i < 4u; i++){
         dst[i] = src[i];
+    }
+}
+
+static void dhcp_diag_copy_ip(unsigned char dst[4], const unsigned char src[4]){
+    for (unsigned int i = 0u; i < 4u; i++){
+        dst[i] = src ? src[i] : 0u;
     }
 }
 
@@ -151,6 +169,29 @@ static unsigned int build_dhcp_payload(unsigned char* out,
         }
     }
 
+    /*
+     * Some lightweight AP stacks are picky about client identity/options.
+     * These are harmless for normal DHCP servers and make our probe packet
+     * look less like a malformed minimal client.
+     */
+    out[opt++] = DHCP_OPT_CLIENT_ID;
+    out[opt++] = 7u;
+    out[opt++] = 1u; /* Ethernet hardware type */
+    for (unsigned int i = 0u; i < 6u; i++){
+        out[opt++] = mac[i];
+    }
+
+    out[opt++] = DHCP_OPT_HOSTNAME;
+    out[opt++] = 3u;
+    out[opt++] = (unsigned char)'q';
+    out[opt++] = (unsigned char)'o';
+    out[opt++] = (unsigned char)'s';
+
+    out[opt++] = DHCP_OPT_MAX_MSG;
+    out[opt++] = 2u;
+    out[opt++] = 0x05u;
+    out[opt++] = 0xDCu; /* 1500 bytes */
+
     out[opt++] = DHCP_OPT_PARAM_REQ;
     out[opt++] = 3u;
     out[opt++] = DHCP_OPT_ROUTER;
@@ -173,6 +214,7 @@ static int send_dhcp_broadcast(unsigned char msg_type,
     unsigned int dhcp_len;
     unsigned int ip_len;
     unsigned int frame_len;
+    int rc;
 
     dhcp = frame + ETH_HEADER_LEN + 20u + 8u;
     dhcp_len = build_dhcp_payload(dhcp, DHCP_MIN_LEN, msg_type, xid, mac, req_ip, server_id);
@@ -208,7 +250,11 @@ static int send_dhcp_broadcast(unsigned char msg_type,
     be16_write(&udp[4], (unsigned short)(8u + dhcp_len));
     be16_write(&udp[6], 0u); /* IPv4 permits UDP checksum zero. */
 
-    return net_send_raw(frame, frame_len);
+    rc = net_send_raw(frame, frame_len);
+    if (rc != 0){
+        g_dhcp_diag.send_fail++;
+    }
+    return rc;
 }
 
 static int parse_dhcp(const unsigned char* data,
@@ -216,17 +262,25 @@ static int parse_dhcp(const unsigned char* data,
                       unsigned int xid,
                       const unsigned char mac[6],
                       dhcp_msg_t* msg){
-    if (!data || !mac || !msg || len < DHCP_OPTIONS_OFF){
+    if (!data || !mac || !msg){
+        g_dhcp_diag.bad_len++;
+        return -1;
+    }
+    if (len < DHCP_OPTIONS_OFF){
+        g_dhcp_diag.bad_len++;
         return -1;
     }
     if (data[0] != 2u || data[1] != 1u || data[2] != 6u){
+        g_dhcp_diag.bad_header++;
         return -1;
     }
     if (be32_read(&data[4]) != xid){
+        g_dhcp_diag.bad_xid++;
         return -1;
     }
     for (unsigned int i = 0u; i < 6u; i++){
         if (data[28u + i] != mac[i]){
+            g_dhcp_diag.bad_mac++;
             return -1;
         }
     }
@@ -234,6 +288,7 @@ static int parse_dhcp(const unsigned char* data,
         data[DHCP_MAGIC_OFF + 1u] != 130u ||
         data[DHCP_MAGIC_OFF + 2u] != 83u ||
         data[DHCP_MAGIC_OFF + 3u] != 99u){
+        g_dhcp_diag.bad_magic++;
         return -1;
     }
 
@@ -252,11 +307,13 @@ static int parse_dhcp(const unsigned char* data,
             break;
         }
         if (p >= len){
-            break;
+            g_dhcp_diag.bad_options++;
+            return -1;
         }
         unsigned int opt_len = data[p++];
         if (p + opt_len > len){
-            break;
+            g_dhcp_diag.bad_options++;
+            return -1;
         }
         if (opt == DHCP_OPT_MSG_TYPE && opt_len >= 1u){
             msg->msg_type = data[p];
@@ -274,7 +331,12 @@ static int parse_dhcp(const unsigned char* data,
         }
         p += opt_len;
     }
-    if (msg->msg_type == 0u || ip_is_zero(msg->yiaddr)){
+    if (msg->msg_type == 0u){
+        g_dhcp_diag.bad_options++;
+        return -1;
+    }
+    if (ip_is_zero(msg->yiaddr)){
+        g_dhcp_diag.bad_yiaddr++;
         return -1;
     }
     return 0;
@@ -314,15 +376,31 @@ static int wait_dhcp_msg(unsigned char want_type,
                 break;
             }
             dhcp_msg_t msg;
-            if (parse_dhcp(buf, (unsigned int)n, xid, mac, &msg) == 0 &&
-                msg.msg_type == want_type){
-                *out_msg = msg;
-                return 0;
+            g_dhcp_diag.rx_udp68++;
+            if (parse_dhcp(buf, (unsigned int)n, xid, mac, &msg) == 0){
+                g_dhcp_diag.parse_ok++;
+                g_dhcp_diag.last_msg_type = msg.msg_type;
+                dhcp_diag_copy_ip(g_dhcp_diag.last_offer_ip, msg.yiaddr);
+                if (msg.have_server_id){
+                    dhcp_diag_copy_ip(g_dhcp_diag.last_server_id, msg.server_id);
+                }
+                if (msg.msg_type == want_type){
+                    *out_msg = msg;
+                    return 0;
+                }
+                g_dhcp_diag.wrong_type++;
             }
         }
         asm volatile("wfe" : : : "memory");
     }
     return -1;
+}
+
+void dhcp_get_diag(dhcp_diag_t* out){
+    if (!out){
+        return;
+    }
+    *out = g_dhcp_diag;
 }
 
 int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
@@ -342,14 +420,22 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
     net_proto_get_gateway_ip(old_gw);
     net_proto_get_local_mac(mac);
     xid = make_xid(mac);
+    dhcp_diag_reset();
 
     net_proto_set_local_ip(zero_ip);
     net_proto_set_gateway_ip(zero_ip);
     drain_dhcp_rx();
 
     uart_puts("DHCP: discover\n");
-    if (send_dhcp_broadcast(DHCPDISCOVER, xid, mac, 0, 0) != 0 ||
-        wait_dhcp_msg(DHCPOFFER, xid, mac, half_timeout, &offer) != 0){
+    g_dhcp_diag.stage = 1u;
+    if (send_dhcp_broadcast(DHCPDISCOVER, xid, mac, 0, 0) != 0){
+        uart_puts("DHCP: discover send failed\n");
+        net_proto_set_local_ip(old_ip);
+        net_proto_set_gateway_ip(old_gw);
+        return -1;
+    }
+    g_dhcp_diag.stage = 2u;
+    if (wait_dhcp_msg(DHCPOFFER, xid, mac, half_timeout, &offer) != 0){
         uart_puts("DHCP: offer timeout\n");
         net_proto_set_local_ip(old_ip);
         net_proto_set_gateway_ip(old_gw);
@@ -362,9 +448,16 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
     print_ip(offer.have_router ? offer.router : zero_ip);
     uart_puts("\n");
 
+    g_dhcp_diag.stage = 3u;
     if (send_dhcp_broadcast(DHCPREQUEST, xid, mac, offer.yiaddr,
-                            offer.have_server_id ? offer.server_id : zero_ip) != 0 ||
-        wait_dhcp_msg(DHCPACK, xid, mac, half_timeout, &ack) != 0){
+                            offer.have_server_id ? offer.server_id : zero_ip) != 0){
+        uart_puts("DHCP: request send failed\n");
+        net_proto_set_local_ip(old_ip);
+        net_proto_set_gateway_ip(old_gw);
+        return -2;
+    }
+    g_dhcp_diag.stage = 4u;
+    if (wait_dhcp_msg(DHCPACK, xid, mac, half_timeout, &ack) != 0){
         uart_puts("DHCP: ack timeout\n");
         net_proto_set_local_ip(old_ip);
         net_proto_set_gateway_ip(old_gw);
@@ -410,5 +503,6 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
         print_ip(zero_ip);
     }
     uart_puts("\n");
+    g_dhcp_diag.stage = 5u;
     return 0;
 }
