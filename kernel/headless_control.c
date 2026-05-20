@@ -534,15 +534,27 @@ probe_restore:
         net_proto_set_gateway_ip(old_gw);
     }
     if (scanner_running){
+        int restore_rc = 0;
         headless_tty0_write("Probe: restoring monitor scanner path\n");
         headless_control_note_scanner_recovery(1u);
-        (void)cyw43_ioctl_up_monitor();
-        (void)cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
-        (void)cyw43_raw_capture_set_enabled(1u);
+        restore_rc = cyw43_ioctl_up_monitor();
+        if (restore_rc == 0){
+            restore_rc = cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
+        }
+        if (restore_rc == 0){
+            restore_rc = cyw43_raw_capture_set_enabled(1u);
+        }
+        if (restore_rc != 0){
+            headless_tty0_write("Probe: monitor restore failed rc=");
+            headless_tty0_puti(restore_rc);
+            headless_tty0_write("; hard recovery\n");
+            restore_rc = cyw43_monitor_hard_recover(HEADLESS_PROBE_RETURN_CH);
+        }
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);
-        headless_tty0_write("Probe: scanner resumed\n");
+        headless_tty0_write((restore_rc == 0) ? "Probe: scanner resumed\n" :
+                                           "Probe: scanner restore failed\n");
     }
     return rc;
 }
