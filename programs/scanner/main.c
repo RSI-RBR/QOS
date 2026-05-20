@@ -2304,14 +2304,14 @@ void program_main(void){
                 unsigned long long pause_now_us = qos_get_time_us();
                 probe_pause_seen = 1u;
                 (void)qos_wifi_raw_set_enabled(0u);
-                qos_puts("scanner: probe pause active; raw capture paused\n");
+                qos_puts("scanner: button action pause active; raw capture paused\n");
                 probe_pause_start_us = pause_now_us;
                 probe_pause_heartbeat_us = pause_now_us + 1000000ull;
             } else{
                 unsigned long long pause_now_us = qos_get_time_us();
                 if ((long long)(pause_now_us - probe_pause_heartbeat_us) >= 0){
                     unsigned long long elapsed_ms = (pause_now_us - probe_pause_start_us) / 1000ull;
-                    qos_puts("scanner: probe pause waiting ms=");
+                    qos_puts("scanner: button action pause waiting ms=");
                     put_u64(elapsed_ms);
                     qos_puts("\n");
                     probe_pause_heartbeat_us = pause_now_us + 1000000ull;
@@ -2342,7 +2342,7 @@ void program_main(void){
                 (void)qos_headless_scanner_idle(0u);
                 idle_led_active = 0u;
             }
-            qos_puts("scanner: probe pause done; raw rc=");
+            qos_puts("scanner: button action pause done; raw rc=");
             put_i32(raw_rc);
             qos_puts("\n");
         }

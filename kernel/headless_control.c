@@ -1287,7 +1287,27 @@ void headless_control_poll(void){
             poll_button_state(now);
             action = handle_button_actions(now);
             if (action != BTN_ACTION_NONE){
-                if (g_pending_action == BTN_ACTION_NONE && !g_action_busy){
+                if (!g_action_busy &&
+                    ((action == BTN_ACTION_TOGGLE && g_pending_action == BTN_ACTION_SINGLE_CHECK) ||
+                     (action == BTN_ACTION_SECURE_STOP && g_pending_action != BTN_ACTION_NONE))){
+                    /*
+                     * If the second click arrives after a single-click probe
+                     * was queued but before it dispatched, upgrade that pending
+                     * action instead of letting the probe run. Long press has
+                     * the same priority over any queued scanner action.
+                     */
+                    unsigned int ack_pulses = (action == BTN_ACTION_SECURE_STOP) ? 6u : 2u;
+                    g_pending_action = action;
+                    g_pending_action_tick = now;
+                    probe_pause_set(1u);
+                    g_led_scanner_running_cached = 1u;
+                    g_led_scanner_idle_hint = 1u;
+                    g_led_open_hit_valid = 0u;
+                    g_led_base_anchor = now;
+                    g_led_prev_scanner_running = 0u;
+                    queued_notice = action;
+                    led_burst(ack_pulses, now);
+                } else if (g_pending_action == BTN_ACTION_NONE && !g_action_busy){
                     unsigned int ack_pulses = 1u;
                     g_pending_action = action;
                     g_pending_action_tick = now;
@@ -1378,6 +1398,14 @@ void headless_control_poll(void){
      * continuous scanner/shell load even though the scanner was already parked.
      */
     if (run_action != BTN_ACTION_NONE){
+        headless_tty0_show();
+        if (run_action == BTN_ACTION_SINGLE_CHECK){
+            headless_tty0_write("Button: dispatch single-click probe\n");
+        } else if (run_action == BTN_ACTION_TOGGLE){
+            headless_tty0_write("Button: dispatch double-click save\n");
+        } else if (run_action == BTN_ACTION_SECURE_STOP){
+            headless_tty0_write("Button: dispatch long-press secure stop\n");
+        }
         perform_button_action(run_action, now);
         spin_lock(&g_headless_lock);
         g_action_busy = 0u;
