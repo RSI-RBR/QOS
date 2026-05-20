@@ -502,7 +502,11 @@ static void headless_tty0_putip(const unsigned char ip[4]){
 
 static void probe_print_dhcp_diag(void){
     dhcp_diag_t d;
+    unsigned long raw_udp68 = 0;
+    unsigned long raw_udp67 = 0;
+    unsigned long raw_bootp = 0;
     dhcp_get_diag(&d);
+    net_proto_get_dhcp_rx_diag(&raw_udp68, &raw_udp67, &raw_bootp);
 
     headless_tty0_write("Probe: DHCP diag stage=");
     headless_tty0_putdec((unsigned long)d.stage);
@@ -537,6 +541,22 @@ static void probe_print_dhcp_diag(void){
     headless_tty0_write(" sendfail=");
     headless_tty0_putdec((unsigned long)d.send_fail);
     headless_tty0_write("\n");
+
+    headless_tty0_write("Probe: DHCP raw rx udp68=");
+    headless_tty0_putdec(raw_udp68);
+    headless_tty0_write(" udp67=");
+    headless_tty0_putdec(raw_udp67);
+    headless_tty0_write(" bootp=");
+    headless_tty0_putdec(raw_bootp);
+    headless_tty0_write("\n");
+}
+
+static void probe_station_settle(unsigned int ms){
+    unsigned long start = system_ticks;
+    while ((unsigned long)(system_ticks - start) < (unsigned long)ms){
+        (void)net_poll();
+        asm volatile("wfe" : : : "memory");
+    }
 }
 
 static int probe_preload_x509_trust_store(void){
@@ -666,6 +686,8 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
     headless_tty0_write("Probe: join OK\n");
+    headless_tty0_write("Probe: settling station link\n");
+    probe_station_settle(750u);
 
     headless_tty0_write("Probe: DHCP request\n");
     dhcp_rc = dhcp_acquire(3500u, &lease);

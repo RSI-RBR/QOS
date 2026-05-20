@@ -13,5 +13,8 @@ void net_proto_get_local_ip(unsigned char out_ip[4]);
 void net_proto_get_gateway_ip(unsigned char out_ip[4]);
 void net_proto_set_local_ip(const unsigned char ip[4]);
 void net_proto_set_gateway_ip(const unsigned char ip[4]);
+void net_proto_get_dhcp_rx_diag(unsigned long* raw_udp68,
+                                unsigned long* raw_udp67,
+                                unsigned long* raw_bootp);
 
 #endif

@@ -13,6 +13,9 @@ typedef struct {
     unsigned long eth_ipv4;
     unsigned long eth_other;
     unsigned long eth_short;
+    unsigned long raw_udp68;
+    unsigned long raw_udp67;
+    unsigned long raw_bootp;
 } net_proto_stats_t;
 
 static net_proto_stats_t g_np_stats;
@@ -24,12 +27,42 @@ static unsigned short be16(const unsigned char* p){
     return (unsigned short)(((unsigned short)p[0] << 8) | (unsigned short)p[1]);
 }
 
+static void note_raw_dhcp_ipv4(const unsigned char* payload, unsigned int payload_len){
+    if (!payload || payload_len < sizeof(ipv4_header_t)){
+        return;
+    }
+    const ipv4_header_t* ip = (const ipv4_header_t*)payload;
+    unsigned int ihl_bytes = (unsigned int)(ip->ver_ihl & 0x0Fu) * 4u;
+    if (((ip->ver_ihl >> 4) & 0x0Fu) != 4u ||
+        ip->protocol != IPV4_PROTO_UDP ||
+        ihl_bytes < 20u ||
+        payload_len < ihl_bytes + 8u){
+        return;
+    }
+    const unsigned char* udp = payload + ihl_bytes;
+    unsigned short src_port = be16(udp);
+    unsigned short dst_port = be16(udp + 2u);
+    if (dst_port == 68u){
+        g_np_stats.raw_udp68++;
+    }
+    if (src_port == 67u){
+        g_np_stats.raw_udp67++;
+    }
+    if ((src_port == 67u && dst_port == 68u) ||
+        (src_port == 68u && dst_port == 67u)){
+        g_np_stats.raw_bootp++;
+    }
+}
+
 void net_proto_init(void){
     g_np_stats.eth_total = 0;
     g_np_stats.eth_arp = 0;
     g_np_stats.eth_ipv4 = 0;
     g_np_stats.eth_other = 0;
     g_np_stats.eth_short = 0;
+    g_np_stats.raw_udp68 = 0;
+    g_np_stats.raw_udp67 = 0;
+    g_np_stats.raw_bootp = 0;
     arp_init();
     ipv4_init();
     icmp_init();
@@ -79,6 +112,7 @@ void net_proto_handle_frame(const unsigned char* frame, unsigned int len){
     }
     if (ethertype == ETH_TYPE_IPV4){
         g_np_stats.eth_ipv4++;
+        note_raw_dhcp_ipv4(payload, payload_len);
         if (payload_len >= sizeof(ipv4_header_t)){
             const ipv4_header_t* ip = (const ipv4_header_t*)payload;
             arp_note_peer(ip->src, eth->src);
@@ -117,6 +151,10 @@ void net_proto_dump_stats(void){
     uart_putdec(g_np_stats.eth_other);
     uart_puts(" short=");
     uart_putdec(g_np_stats.eth_short);
+    uart_puts(" udp68=");
+    uart_putdec(g_np_stats.raw_udp68);
+    uart_puts(" bootp=");
+    uart_putdec(g_np_stats.raw_bootp);
     uart_puts("\n");
     arp_dump_stats();
     ipv4_dump_stats();
@@ -184,4 +222,18 @@ void net_proto_set_gateway_ip(const unsigned char ip[4]){
     ipv4_set_local_endpoint(g_local_mac, g_local_ip, g_gateway_ip);
     // Re-arm ARP learning for the new gateway target.
     arp_set_periodic_target(g_gateway_ip, 1000u);
+}
+
+void net_proto_get_dhcp_rx_diag(unsigned long* raw_udp68,
+                                unsigned long* raw_udp67,
+                                unsigned long* raw_bootp){
+    if (raw_udp68){
+        *raw_udp68 = g_np_stats.raw_udp68;
+    }
+    if (raw_udp67){
+        *raw_udp67 = g_np_stats.raw_udp67;
+    }
+    if (raw_bootp){
+        *raw_bootp = g_np_stats.raw_bootp;
+    }
 }
