@@ -104,6 +104,7 @@ kernel/arp.c \
 kernel/ipv4.c \
 kernel/icmp.c \
 kernel/udp.c \
+kernel/dhcp.c \
 kernel/tcp.c \
 kernel/x509_verify.c \
 kernel/tls_record.c \

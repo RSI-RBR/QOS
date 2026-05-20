@@ -222,9 +222,21 @@ void ipv4_handle_frame(const unsigned char* frame, unsigned int len){
         g_ipv4_stats.rx_bad_checksum++;
         return;
     }
+    int allow_dhcp_client_reply = 0;
+    if (ip->protocol == IPV4_PROTO_UDP &&
+        total_len >= ihl_bytes + 8u &&
+        be16_read(frame + ihl_bytes + 2u) == 68u){
+        /*
+         * DHCP servers may unicast OFFER/ACK packets to the offered address
+         * before the client has installed that address locally. Accept UDP/68
+         * here so the minimal DHCP client can complete reliably.
+         */
+        allow_dhcp_client_reply = 1;
+    }
     if (g_endpoint_ready &&
         !ip4_eq(ip->dst, g_local_ip) &&
-        !ip4_is_broadcast(ip->dst)){
+        !ip4_is_broadcast(ip->dst) &&
+        !allow_dhcp_client_reply){
         g_ipv4_stats.rx_not_for_us++;
         return;
     }

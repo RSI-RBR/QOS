@@ -6,6 +6,9 @@
 #include "process.h"
 #include "cyw43.h"
 #include "tcp.h"
+#include "dhcp.h"
+#include "arp.h"
+#include "net_proto.h"
 #include "blockdev.h"
 #include "fat32.h"
 #include "sandbox_file.h"
@@ -28,6 +31,7 @@
 #define LED_PULSE_ON_MS       85u
 #define LED_PULSE_OFF_MS      130u
 #define LED_PULSE_GAP_MS      220u
+#define LED_RESULT_FINAL_GAP_MS 500u
 #define LED_PULSE_PRE_OFF_MS  120u
 #define LED_SCANNER_REFRESH_MS 100u
 #define BTN_PENDING_TIMEOUT_MS 15000u
@@ -62,6 +66,8 @@ static unsigned int g_led_burst_pulses = 0u;
 static unsigned int g_led_burst_on = 0u;
 static unsigned int g_led_burst_pre_off = 0u;
 static unsigned long g_led_burst_next_tick = 0u;
+static unsigned long g_led_burst_hold_until = 0u;
+static unsigned int g_led_burst_final_gap_ms = LED_PULSE_GAP_MS;
 static unsigned long g_led_base_anchor = 0u;
 static unsigned int g_led_prev_scanner_running = 0u;
 static unsigned int g_led_manual_mode = 0u; /* 0=auto, 1=force-off, 2=force-on */
@@ -350,11 +356,19 @@ static int headless_https_probe_open_ap(void){
     unsigned char dst_ip[4] = {1u, 1u, 1u, 1u};
     static const char host[] = "one.one.one.one";
     static const char path[] = "/";
+    unsigned char old_ip[4];
+    unsigned char old_gw[4];
     char ssid[33];
     int sig = -127;
     int rc;
+    int dhcp_rc;
+    int restore_net = 0;
     int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
+    dhcp_lease_t lease;
     unsigned char resp[1024];
+
+    net_proto_get_local_ip(old_ip);
+    net_proto_get_gateway_ip(old_gw);
 
     if (scanner_running){
         /*
@@ -405,6 +419,18 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
 
+    dhcp_rc = dhcp_acquire(6000u, &lease);
+    if (dhcp_rc == 0){
+        restore_net = 1;
+        if (arp_resolve_gateway(1500u) != 0){
+            uart_puts("Headless: probe DHCP OK but gateway ARP unresolved\n");
+        }
+    } else{
+        uart_puts("Headless: probe DHCP failed rc=");
+        uart_putdec((unsigned long)(-dhcp_rc));
+        uart_puts("; trying current static net config\n");
+    }
+
     rc = tcp_https_stream_start(dst_ip, host, path, resp, sizeof(resp));
     if (rc > 0){
         uart_puts("Headless: probe HTTPS OK bytes=");
@@ -420,6 +446,10 @@ static int headless_https_probe_open_ap(void){
     }
 
 probe_restore:
+    if (restore_net){
+        net_proto_set_local_ip(old_ip);
+        net_proto_set_gateway_ip(old_gw);
+    }
     if (scanner_running){
         headless_control_note_scanner_recovery(1u);
         (void)cyw43_ioctl_up_monitor();
@@ -507,12 +537,20 @@ static void refresh_scanner_running(unsigned long now, unsigned int force){
     g_led_scanner_next_check = now + LED_SCANNER_REFRESH_MS;
 }
 
-static void led_burst(unsigned int pulses, unsigned long now){
+static void led_burst_with_gap(unsigned int pulses,
+                               unsigned long now,
+                               unsigned int final_gap_ms){
     g_led_burst_pulses = pulses;
     g_led_burst_on = 0u;
     g_led_burst_pre_off = 1u;
     g_led_burst_next_tick = now + LED_PULSE_PRE_OFF_MS;
+    g_led_burst_hold_until = 0u;
+    g_led_burst_final_gap_ms = final_gap_ms ? final_gap_ms : LED_PULSE_GAP_MS;
     led_apply(0u);
+}
+
+static void led_burst(unsigned int pulses, unsigned long now){
+    led_burst_with_gap(pulses, now, LED_PULSE_GAP_MS);
 }
 
 static void led_test_stop(void){
@@ -556,6 +594,7 @@ static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int 
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
     g_led_burst_pre_off = 0u;
+    g_led_burst_hold_until = 0u;
     return 0;
 }
 
@@ -566,7 +605,7 @@ static void scanner_stop(void){
     }
 }
 
-static void scanner_secure_stop(unsigned long now){
+static int scanner_secure_stop(unsigned long now){
     int wiped = 0;
     int failed = 0;
 
@@ -584,12 +623,13 @@ static void scanner_secure_stop(unsigned long now){
                  i < sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]);
                  i++){
                 const char* path = g_scanner_log_paths[i];
-                (void)sandbox_file_clear(g_scanner_sandbox_83, path);
-                if (fat32_secure_wipe_file_in_dir_path_existing(g_scanner_sandbox_83, path) == 0){
+                int wipe_rc = fat32_secure_wipe_file_in_dir_path_existing(g_scanner_sandbox_83, path);
+                if (wipe_rc == 0 || wipe_rc == -2){
                     wiped++;
                 } else{
                     failed++;
                 }
+                (void)sandbox_file_clear(g_scanner_sandbox_83, path);
             }
         } else{
             failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
@@ -597,14 +637,19 @@ static void scanner_secure_stop(unsigned long now){
     } else{
         failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
     }
+    for (unsigned int i = 0u;
+         i < sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]);
+         i++){
+        (void)sandbox_file_clear(g_scanner_sandbox_83, g_scanner_log_paths[i]);
+    }
 
-    led_burst(4u, now);
     uart_puts("Headless: scanner secure-stop, logs wiped=");
     uart_putdec((unsigned long)wiped);
     uart_puts(" failed=");
     uart_putdec((unsigned long)failed);
     uart_puts("\n");
     (void)now;
+    return (failed == 0) ? 0 : -1;
 }
 
 static void button_feedback_burst(unsigned int pulses, unsigned long now){
@@ -615,6 +660,17 @@ static void button_feedback_burst(unsigned int pulses, unsigned long now){
         return;
     }
     led_burst(pulses, now);
+    spin_unlock(&g_headless_lock);
+}
+
+static void button_result_burst(unsigned int pulses, unsigned long now){
+    if (!QOS_HEADLESS_LED_ENABLED || pulses == 0u){
+        return;
+    }
+    if (!spin_trylock(&g_headless_lock)){
+        return;
+    }
+    led_burst_with_gap(pulses, now, LED_RESULT_FINAL_GAP_MS);
     spin_unlock(&g_headless_lock);
 }
 
@@ -655,9 +711,10 @@ static void perform_button_action(unsigned int action, unsigned long now){
         return;
     }
     if (action == BTN_ACTION_SECURE_STOP){
+        int rc;
         uart_puts("Headless: button long press secure stop\n");
-        button_feedback_burst(6u, now);
-        scanner_secure_stop(now);
+        rc = scanner_secure_stop(now);
+        button_result_burst((rc == 0) ? 3u : 5u, now);
         return;
     }
     if (action == BTN_ACTION_SINGLE_CHECK){
@@ -665,10 +722,10 @@ static void perform_button_action(unsigned int action, unsigned long now){
         uart_puts("Headless: button single press, HTTPS probe start\n");
         rc = headless_https_probe_open_ap();
         if (rc == 0){
-            button_feedback_burst(3u, now);
+            button_result_burst(3u, now);
             uart_puts("Headless: HTTPS probe success\n");
         } else{
-            button_feedback_burst(5u, now);
+            button_result_burst(5u, now);
             uart_puts("Headless: HTTPS probe failed\n");
         }
         return;
@@ -763,11 +820,20 @@ static void render_led(unsigned long now){
                 led_apply(0u);
                 g_led_burst_on = 0u;
                 g_led_burst_pulses--;
-                g_led_burst_next_tick = now + (g_led_burst_pulses ? LED_PULSE_OFF_MS : LED_PULSE_GAP_MS);
+                if (g_led_burst_pulses){
+                    g_led_burst_next_tick = now + LED_PULSE_OFF_MS;
+                } else{
+                    g_led_burst_hold_until = now + g_led_burst_final_gap_ms;
+                }
             }
         }
         return;
     }
+    if ((long)(g_led_burst_hold_until - now) > 0){
+        led_apply(0u);
+        return;
+    }
+    g_led_burst_hold_until = 0u;
 
     unsigned int scanner_running = g_led_scanner_running_cached;
 
@@ -877,6 +943,8 @@ void headless_control_init(void){
     g_led_burst_on = 0u;
     g_led_burst_pre_off = 0u;
     g_led_burst_next_tick = now;
+    g_led_burst_hold_until = 0u;
+    g_led_burst_final_gap_ms = LED_PULSE_GAP_MS;
     g_led_base_anchor = now;
     g_led_prev_scanner_running = 0u;
     g_led_manual_mode = 0u;
@@ -931,6 +999,7 @@ void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
     g_led_burst_pre_off = 0u;
+    g_led_burst_hold_until = 0u;
     g_led_test_active = 0u;
     g_led_manual_mode = 0u;
     spin_unlock(&g_headless_lock);
@@ -1061,6 +1130,7 @@ void headless_control_note_wifi_joined_waiting_login(void){
         g_led_burst_pulses = 0u;
         g_led_test_active = 0u;
         g_led_manual_mode = 0u;
+        g_led_burst_hold_until = 0u;
     }
     spin_unlock(&g_headless_lock);
 }
@@ -1215,6 +1285,7 @@ int headless_led_force(unsigned int on){
     g_led_burst_pulses = 0u;
     g_led_burst_on = 0u;
     g_led_burst_pre_off = 0u;
+    g_led_burst_hold_until = 0u;
     if (on == 2u){
         g_led_manual_mode = 0u;
         spin_unlock(&g_headless_lock);

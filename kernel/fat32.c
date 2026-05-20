@@ -1527,8 +1527,12 @@ int fat32_secure_wipe_file_in_dir_path_existing(const char root_dir_83[11],
         return -1;
     }
 
-    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, 0, 0) != 0 ||
-        entry_is_directory(ref.entry)){
+    if (fat32_find_path_entry_locked(root_dir_83, relative_path, &ref, 0, 0) != 0){
+        fat_cache_reset();
+        fat_unlock(irq);
+        return -2;
+    }
+    if (entry_is_directory(ref.entry)){
         fat_cache_reset();
         fat_unlock(irq);
         return -1;
@@ -1546,10 +1550,17 @@ int fat32_secure_wipe_file_in_dir_path_existing(const char root_dir_83[11],
 
     if (fat_read_sector_cached(ref.sector_lba, sector) == 0){
         /*
-         * Keep the directory entry as a zero-length placeholder. The cluster
-         * chain is removed from FAT, so future writes can allocate fresh
-         * clusters while old contents have already been overwritten.
+         * Secure stop is intentionally destructive: overwrite file data,
+         * free the cluster chain, then remove the FAT directory entries.
+         * Delete adjacent LFN entries in the same sector too, so long names
+         * such as handshakes.log do not leave readable filename fragments.
          */
+        unsigned int off = ref.sector_offset;
+        while (off >= 32u && sector[off - 32u + 11u] == FAT_LFN_ATTR){
+            off -= 32u;
+            sector[off] = 0xE5u;
+        }
+        sector[ref.sector_offset] = 0xE5u;
         write16(&sector[ref.sector_offset + 20u], 0u);
         write16(&sector[ref.sector_offset + 26u], 0u);
         write32(&sector[ref.sector_offset + 28u], 0u);
