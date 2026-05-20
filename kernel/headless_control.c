@@ -96,6 +96,7 @@ static unsigned int g_led_boot_stage = 0u;
 static unsigned int g_led_boot_failed = 0u;
 static unsigned long g_led_boot_anchor = 0u;
 static volatile unsigned int g_probe_pause_active = 0u;
+static volatile unsigned int g_probe_pause_ack = 0u;
 static unsigned int g_pending_action = 0u;
 static unsigned long g_pending_action_tick = 0u;
 static unsigned int g_action_busy = 0u;
@@ -1018,6 +1019,7 @@ void headless_control_init(void){
     g_led_boot_failed = 0u;
     g_led_boot_anchor = now;
     g_probe_pause_active = 0u;
+    g_probe_pause_ack = 0u;
     g_pending_action = BTN_ACTION_NONE;
     g_pending_action_tick = now;
     g_action_busy = 0u;
@@ -1119,13 +1121,15 @@ void headless_control_poll(void){
             (unsigned long)(now - g_pending_action_tick) >= BTN_PENDING_TIMEOUT_MS){
             g_pending_action = BTN_ACTION_NONE;
             probe_pause_set(0u);
+            g_probe_pause_ack = 0u;
             g_led_scanner_idle_hint = 0u;
             led_burst(5u, now);
         }
         if (run_action == BTN_ACTION_NONE &&
             g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
-            (process_current_pid() < 0 || g_probe_pause_active)){
+            process_current_pid() < 0 &&
+            (find_scanner_pid() < 0 || g_probe_pause_ack)){
             run_action = g_pending_action;
             g_pending_action = BTN_ACTION_NONE;
             g_action_busy = 1u;
@@ -1146,6 +1150,7 @@ void headless_control_poll(void){
         if (run_action == BTN_ACTION_SINGLE_CHECK ||
             run_action == BTN_ACTION_SECURE_STOP){
             probe_pause_set(0u);
+            g_probe_pause_ack = 0u;
             g_led_scanner_idle_hint = 0u;
         }
         spin_unlock(&g_headless_lock);
@@ -1267,6 +1272,11 @@ void headless_control_note_open_network_packet(void){
 
 void headless_control_note_scanner_idle(unsigned int active){
     unsigned long now;
+    if (active && g_probe_pause_active){
+        g_probe_pause_ack = 1u;
+    } else if (!active){
+        g_probe_pause_ack = 0u;
+    }
     if (!QOS_HEADLESS_LED_ENABLED || !g_inited){
         return;
     }
@@ -1390,6 +1400,9 @@ unsigned int headless_led_status_word(void){
 }
 static void probe_pause_set(unsigned int active){
     g_probe_pause_active = active ? 1u : 0u;
+    if (!active){
+        g_probe_pause_ack = 0u;
+    }
 }
 
 static void probe_pause_wait_ticks(unsigned int wait_ms){
