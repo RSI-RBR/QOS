@@ -486,34 +486,6 @@ static void probe_print_net_diag(const char* prefix){
     headless_tty0_write("\n");
 }
 
-static int probe_wait_raw_rx(unsigned int wait_ms){
-    cyw43_raw_capture_status_t before;
-    cyw43_raw_capture_status_t now_st;
-    unsigned int start_rx = 0u;
-    unsigned long start = system_ticks;
-
-    if (cyw43_raw_capture_get_status(&before) == 0){
-        start_rx = before.rx_frames;
-        if (!before.enabled){
-            return -2;
-        }
-    }
-
-    while ((unsigned long)(system_ticks - start) < (unsigned long)wait_ms){
-        (void)cyw43_raw_capture_poll_lite();
-        if (cyw43_raw_capture_get_status(&now_st) == 0){
-            if (!now_st.enabled){
-                return -2;
-            }
-            if (now_st.queued > 0u || now_st.rx_frames != start_rx){
-                return 0;
-            }
-        }
-        asm volatile("wfe" : : : "memory");
-    }
-    return -1;
-}
-
 static int probe_preload_x509_trust_store(void){
     int rc;
 
@@ -709,47 +681,18 @@ probe_restore:
         net_proto_set_gateway_ip(old_gw);
     }
     if (scanner_running){
-        int restore_rc = 0;
-        int rx_rc = -1;
-        headless_tty0_write("Probe: restoring monitor scanner path\n");
-        headless_control_note_scanner_recovery(1u);
-        (void)cyw43_raw_capture_set_enabled(0u);
-        (void)cyw43_ioctl_monitor(0u, 0u);
-        restore_rc = cyw43_ioctl_up_monitor();
-        if (restore_rc == 0){
-            restore_rc = cyw43_ioctl_monitor(2u, return_ch);
-        }
-        if (restore_rc == 0){
-            restore_rc = cyw43_raw_capture_set_enabled(1u);
-        }
-        if (restore_rc == 0){
-            rx_rc = probe_wait_raw_rx(900u);
-            if (rx_rc != 0){
-                headless_tty0_write("Probe: monitor restored but raw RX not flowing rc=");
-                headless_tty0_puti(rx_rc);
-                headless_tty0_write("; scanner will resume and hop\n");
-            }
-        }
-        if (restore_rc != 0){
-            headless_tty0_write("Probe: monitor restore failed rc=");
-            headless_tty0_puti(restore_rc);
-            headless_tty0_write("; hard recovery\n");
-            restore_rc = cyw43_monitor_hard_recover(return_ch);
-            if (restore_rc == 0){
-                rx_rc = probe_wait_raw_rx(1200u);
-                if (rx_rc != 0){
-                    headless_tty0_write("Probe: hard recovery had no raw RX rc=");
-                    headless_tty0_puti(rx_rc);
-                    headless_tty0_write("\n");
-                    restore_rc = -200 + rx_rc;
-                }
-            }
-        }
+        /*
+         * Do not synchronously rearm monitor mode in the headless button
+         * handler. CYW43 monitor restore can block after station HTTPS, and if
+         * it blocks here then the LED/control loop cannot accept the emergency
+         * double-click save. Leave the scanner process to rearm/recover its
+         * own monitor path after the pause is released.
+         */
+        headless_tty0_write("Probe: releasing scanner; monitor rearm deferred to scanner\n");
+        (void)cyw43_force_release_emmc_for_storage();
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);
-        headless_tty0_write((restore_rc == 0) ? "Probe: scanner resumed\n" :
-                                           "Probe: scanner restore failed\n");
     }
     return rc;
 }
@@ -973,7 +916,6 @@ static int scanner_secure_stop(unsigned long now){
 static int scanner_manual_fat_save(unsigned long now){
     int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
     int rc;
-    int restore_rc = 0;
 
     (void)now;
     headless_tty0_write("Button: double press scanner FAT save start\n");
@@ -993,29 +935,13 @@ static int scanner_manual_fat_save(unsigned long now){
     headless_tty0_write("\n");
 
     if (scanner_running){
-        headless_tty0_write("Save: restoring monitor scanner path\n");
-        headless_control_note_scanner_recovery(1u);
-        restore_rc = cyw43_ioctl_up_monitor();
-        if (restore_rc == 0){
-            restore_rc = cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
-        }
-        if (restore_rc == 0){
-            restore_rc = cyw43_raw_capture_set_enabled(1u);
-        }
-        if (restore_rc != 0){
-            headless_tty0_write("Save: monitor restore failed rc=");
-            headless_tty0_puti(restore_rc);
-            headless_tty0_write("; hard recovery\n");
-            restore_rc = cyw43_monitor_hard_recover(HEADLESS_PROBE_RETURN_CH);
-        }
+        headless_tty0_write("Save: releasing scanner; monitor rearm deferred to scanner\n");
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);
-        headless_tty0_write((restore_rc == 0) ? "Save: scanner resumed\n" :
-                                               "Save: scanner restore failed\n");
     }
 
-    return (rc == 0 && restore_rc == 0) ? 0 : -1;
+    return (rc == 0) ? 0 : -1;
 }
 
 static void button_result_burst(unsigned int pulses, unsigned long now){

@@ -2341,8 +2341,8 @@ void program_main(void){
                     active_channel = pause_st.channel;
                 }
             } else{
+                scanner_ensure_monitor_ready(active_channel, 1u);
                 raw_rc = qos_wifi_raw_set_enabled(1u);
-                scanner_ensure_monitor_ready(active_channel, 0u);
             }
             last_rx_progress_us = qos_get_time_us();
             recv_err_streak = 0u;
