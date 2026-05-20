@@ -1856,6 +1856,37 @@ static void scanner_control_blocked_notice(unsigned int* printed){
     }
 }
 
+static void scanner_schedule_control_restart(unsigned int* control_blocked,
+                                             unsigned int* printed,
+                                             unsigned int* attempts,
+                                             unsigned long long* next_restart_us,
+                                             const char* reason){
+    unsigned long long now = qos_get_time_us();
+
+    if (reason && *reason){
+        qos_puts("scanner: scheduling controlled restart: ");
+        qos_puts(reason);
+        qos_puts("\n");
+    }
+
+    if (control_blocked && !*control_blocked){
+        if (attempts){
+            *attempts = 0u;
+        }
+        if (printed){
+            *printed = 0u;
+        }
+    }
+    if (control_blocked){
+        *control_blocked = 1u;
+    }
+    if (next_restart_us && *next_restart_us == 0ull){
+        *next_restart_us = now +
+            ((unsigned long long)CONTROL_BLOCKED_RESTART_DELAY_SECS * 1000000ull);
+    }
+    scanner_control_blocked_notice(printed);
+}
+
 static int scanner_attempt_control_restart(unsigned int channel,
                                            unsigned int* last_rx_frames){
     cyw43_monitor_status_t st;
@@ -2529,11 +2560,11 @@ void program_main(void){
                  */
                 last_rx_progress_us = qos_get_time_us() -
                     ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
-                control_blocked = 1u;
-                control_restart_attempts = 0u;
-                next_control_restart_us = qos_get_time_us() +
-                    ((unsigned long long)CONTROL_BLOCKED_RESTART_DELAY_SECS * 1000000ull);
-                scanner_control_blocked_notice(&control_blocked_printed);
+                scanner_schedule_control_restart(&control_blocked,
+                                                 &control_blocked_printed,
+                                                 &control_restart_attempts,
+                                                 &next_control_restart_us,
+                                                 "button resume had no RX");
             }
             if (resumed_rx && idle_led_active){
                 (void)qos_headless_scanner_idle(0u);
@@ -2621,6 +2652,9 @@ void program_main(void){
             hop_dwell_ms = HOP_DWELL_MS;
 
             if (qos_wifi_raw_status(&st1) == 0){
+                cyw43_monitor_status_t st_mon_loop;
+                int mon_loop_ok = (qos_wifi_monitor_status(&st_mon_loop) == 0) ? 1 : 0;
+
                 if (scanner_note_raw_progress(&st1, &last_rx_frames)){
                     last_rx_progress_us = now;
                     rearm_stage = 0u;
@@ -2634,10 +2668,18 @@ void program_main(void){
                         idle_led_active = 0u;
                     }
                 }
-                if (!st1.enabled && !control_blocked){
-                    qos_puts("scanner: raw capture disabled; rearming monitor\n");
-                    scanner_ensure_monitor_ready(active_channel, 1u);
-                } else if (!st1.enabled && control_blocked){
+                if (!mon_loop_ok || !st1.enabled ||
+                    !st_mon_loop.enabled || !st_mon_loop.raw_enabled){
+                    scanner_schedule_control_restart(&control_blocked,
+                                                     &control_blocked_printed,
+                                                     &control_restart_attempts,
+                                                     &next_control_restart_us,
+                                                     "monitor/raw disabled");
+                    if (!idle_led_active){
+                        (void)qos_headless_scanner_idle(1u);
+                        idle_led_active = 1u;
+                    }
+                } else if (control_blocked){
                     scanner_control_blocked_notice(&control_blocked_printed);
                 }
             }
@@ -2868,8 +2910,15 @@ void program_main(void){
                 if (control_blocked){
                     scanner_control_blocked_notice(&control_blocked_printed);
                 } else{
-                    scanner_ensure_monitor_ready(active_channel,
-                                                 (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
+                    if (recv_err_streak >= RECV_ERR_FORCE_REARM){
+                        scanner_schedule_control_restart(&control_blocked,
+                                                         &control_blocked_printed,
+                                                         &control_restart_attempts,
+                                                         &next_control_restart_us,
+                                                         "raw recv errors");
+                    } else{
+                        scanner_ensure_monitor_ready(active_channel, 0u);
+                    }
                 }
                 qos_sleep(2u);
             } else if (n > 0){
