@@ -25,6 +25,7 @@
 #define CHANNEL_HOP_DURING_CAPTURE 1u
 #define SCANNER_DESTRUCTIVE_RECOVERY 1u
 #define IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY 0u
+#define SCANNER_ALLOW_FULL_WIFI_RESTART 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1821,7 +1822,8 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
         return;
     }
 
-    // Full firmware-side monitor rearm is expensive; throttle it.
+    // Full firmware-side monitor rearm is expensive and can block when sick.
+#if SCANNER_ALLOW_FULL_WIFI_RESTART
     if (!force_rearm &&
         next_full_rearm_us != 0ull && (long long)(now_us - next_full_rearm_us) < 0){
         return;
@@ -1831,12 +1833,43 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
     (void)qos_wifi_up_monitor();
     (void)qos_wifi_monitor_set(2u, use_ch);
     (void)qos_wifi_raw_set_enabled(1u);
+#else
+    (void)force_rearm;
+    (void)next_full_rearm_us;
+    (void)now_us;
+#endif
 }
 
 static int scanner_restore_monitor_path(unsigned int channel, unsigned int allow_hard_recovery){
     cyw43_monitor_status_t st;
     unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
     int recover_rc = -1;
+
+    if (!allow_hard_recovery){
+        /*
+         * Soft restore must never call wifi_up_monitor(). After a button save
+         * the shared SDIO host may be in storage mode; full WiFi bring-up from
+         * this scanner task can block. Only use already-responsive monitor/raw
+         * paths, then return so the scanner can stay alive and visibly idle.
+         */
+        if (qos_wifi_monitor_status(&st) == 0 && st.enabled){
+            if (!st.raw_enabled){
+                (void)qos_wifi_raw_set_enabled(1u);
+            }
+            if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+                return 1;
+            }
+        }
+        if (qos_wifi_monitor_set(2u, ch) == 0){
+            (void)qos_wifi_raw_set_enabled(1u);
+            if (qos_wifi_monitor_status(&st) == 0 && st.enabled && st.raw_enabled){
+                return 1;
+            }
+        }
+        qos_puts("scanner: soft monitor restore failed; full restart skipped\n");
+        return 0;
+    }
+
     for (unsigned int attempt = 0u; attempt < 2u; attempt++){
         int rc = qos_wifi_up_monitor();
         if (rc == 0){
