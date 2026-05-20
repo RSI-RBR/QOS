@@ -3047,6 +3047,14 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                 return frame_sp;
             }
             headless_control_note_scanner_idle((unsigned int)frame[TF_X0] ? 1u : 0u);
+            if (frame[TF_X0]){
+                /*
+                 * The scanner is now parked inside this syscall. Dispatch any
+                 * pending headless button action immediately instead of waiting
+                 * for a later background poll.
+                 */
+                headless_control_poll();
+            }
             frame[TF_X0] = 0;
             return frame_sp;
         }

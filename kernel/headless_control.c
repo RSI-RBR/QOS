@@ -39,6 +39,7 @@
 #define LED_ACTION_BUSY_ON_MS  100u
 #define LED_SCANNER_REFRESH_MS 100u
 #define BTN_PENDING_TIMEOUT_MS 15000u
+#define BTN_SAVE_ACK_GRACE_MS  1200u
 #define HEADLESS_PROBE_SCANLOG_MAX_BYTES (128u * 1024u)
 #define HEADLESS_PROBE_RETURN_CH 6u
 
@@ -1275,6 +1276,8 @@ void headless_control_poll(void){
     unsigned int run_action = BTN_ACTION_NONE;
     unsigned int timeout_notice = 0u;
     unsigned int timeout_reason = 0u;
+    unsigned int timeout_action = BTN_ACTION_NONE;
+    unsigned int fallback_notice = 0u;
     unsigned int queued_notice = BTN_ACTION_NONE;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
@@ -1353,6 +1356,7 @@ void headless_control_poll(void){
             !g_action_busy &&
             (unsigned long)(now - g_pending_action_tick) >= BTN_PENDING_TIMEOUT_MS){
             timeout_reason = (find_scanner_pid() >= 0 && !g_probe_pause_ack) ? 1u : 2u;
+            timeout_action = g_pending_action;
             timeout_notice = 1u;
             g_pending_action = BTN_ACTION_NONE;
             probe_pause_set(0u);
@@ -1365,7 +1369,12 @@ void headless_control_poll(void){
             !g_action_busy &&
             (g_pending_action == BTN_ACTION_SECURE_STOP ||
              find_scanner_pid() < 0 ||
-             g_probe_pause_ack)){
+             g_probe_pause_ack ||
+             (g_pending_action == BTN_ACTION_TOGGLE &&
+              (unsigned long)(now - g_pending_action_tick) >= BTN_SAVE_ACK_GRACE_MS))){
+            if (g_pending_action == BTN_ACTION_TOGGLE && !g_probe_pause_ack && find_scanner_pid() >= 0){
+                fallback_notice = 1u;
+            }
             run_action = g_pending_action;
             g_pending_action = BTN_ACTION_NONE;
             g_action_busy = 1u;
@@ -1375,10 +1384,19 @@ void headless_control_poll(void){
 
     if (timeout_notice){
         headless_tty0_show();
-        if (timeout_reason == 1u){
-            headless_tty0_write("Button: action timed out waiting for scanner pause ack\n");
+        if (timeout_action == BTN_ACTION_SINGLE_CHECK){
+            headless_tty0_write("Button: single-click probe ");
+        } else if (timeout_action == BTN_ACTION_TOGGLE){
+            headless_tty0_write("Button: double-click save ");
+        } else if (timeout_action == BTN_ACTION_SECURE_STOP){
+            headless_tty0_write("Button: long-press secure stop ");
         } else{
-            headless_tty0_write("Button: action timed out before dispatch\n");
+            headless_tty0_write("Button: action ");
+        }
+        if (timeout_reason == 1u){
+            headless_tty0_write("timed out waiting for scanner pause ack\n");
+        } else{
+            headless_tty0_write("timed out before dispatch\n");
         }
     }
     if (queued_notice != BTN_ACTION_NONE){
@@ -1390,6 +1408,10 @@ void headless_control_poll(void){
         } else if (queued_notice == BTN_ACTION_SECURE_STOP){
             headless_tty0_write("Button: queued long-press secure stop\n");
         }
+    }
+    if (fallback_notice){
+        headless_tty0_show();
+        headless_tty0_write("Button: scanner pause ack missed; forcing double-click save\n");
     }
 
     /*
