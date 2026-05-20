@@ -1008,6 +1008,7 @@ static int syscall_capability_allowed(const process_t* proc, unsigned long nr){
         case SYS_SCANNER_LOG_FLUSH_ALL:
         case SYS_SCANNER_LOG_SET_PASSWORD:
         case SYS_HEADLESS_SCANNER_IDLE:
+        case SYS_HEADLESS_PROBE_PAUSE_ACTIVE:
         case SYS_AUTH_IS_READY:
         case SYS_AUTH_GET_USERNAME:
         case SYS_AUTH_VERIFY_PASSWORD:
@@ -3031,6 +3032,12 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
             }
             headless_control_note_scanner_idle((unsigned int)frame[TF_X0] ? 1u : 0u);
             frame[TF_X0] = 0;
+            return frame_sp;
+        }
+
+        case SYS_HEADLESS_PROBE_PAUSE_ACTIVE:
+        {
+            frame[TF_X0] = (unsigned long)headless_control_probe_pause_active();
             return frame_sp;
         }
 

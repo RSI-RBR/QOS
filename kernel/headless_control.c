@@ -86,6 +86,7 @@ static unsigned long g_led_login_wait_anchor = 0u;
 static unsigned int g_led_boot_stage = 0u;
 static unsigned int g_led_boot_failed = 0u;
 static unsigned long g_led_boot_anchor = 0u;
+static volatile unsigned int g_probe_pause_active = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -96,6 +97,8 @@ enum {
 };
 
 static int find_scanner_pid(void);
+static void probe_pause_set(unsigned int active);
+static void probe_pause_wait_ticks(unsigned int wait_ms);
 
 static int text_eq(const char* a, const char* b){
     if (!a || !b){
@@ -351,15 +354,19 @@ static int headless_https_probe_open_ap(void){
 
     if (scanner_running){
         /*
-         * Scanner keeps CYW43 in monitor/raw mode. Forcing a station join from
-         * this button path races with scanner recovery/hop logic and can stall
-         * foreground responsiveness. Require scanner to be stopped first.
+         * Ask scanner loop to park briefly (no hop/rearm/recv) before we
+         * switch monitor -> station for the probe.
          */
-        uart_puts("Headless: probe blocked while scanner is active; stop scanner first\n");
-        return -21;
+        probe_pause_set(1u);
+        headless_control_note_scanner_idle(1u);
+        probe_pause_wait_ticks(40u);
     }
 
     if (scanner_pick_strongest_open_ssid(ssid, &sig) != 0){
+        if (scanner_running){
+            probe_pause_set(0u);
+            headless_control_note_scanner_idle(0u);
+        }
         uart_puts("Headless: probe no open AP candidate\n");
         return -10;
     }
@@ -415,6 +422,8 @@ probe_restore:
         (void)cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
         (void)cyw43_raw_capture_set_enabled(1u);
         headless_control_note_scanner_recovery(0u);
+        probe_pause_set(0u);
+        headless_control_note_scanner_idle(0u);
     }
     return rc;
 }
@@ -654,9 +663,6 @@ static void perform_button_action(unsigned int action, unsigned long now){
         if (rc == 0){
             button_feedback_burst(3u, now);
             uart_puts("Headless: HTTPS probe success\n");
-        } else if (rc == -21){
-            button_feedback_burst(2u, now);
-            uart_puts("Headless: HTTPS probe skipped (scanner active)\n");
         } else{
             button_feedback_burst(5u, now);
             uart_puts("Headless: HTTPS probe failed\n");
@@ -886,6 +892,7 @@ void headless_control_init(void){
     g_led_boot_stage = 0u;
     g_led_boot_failed = 0u;
     g_led_boot_anchor = now;
+    g_probe_pause_active = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_LED_ENABLED){
@@ -1119,6 +1126,10 @@ void headless_control_note_scanner_recovery(unsigned int active){
     spin_unlock(&g_headless_lock);
 }
 
+int headless_control_probe_pause_active(void){
+    return g_probe_pause_active ? 1 : 0;
+}
+
 int headless_led_test(unsigned int blinks, unsigned int on_ms, unsigned int off_ms){
     int rc = -1;
     if (cpu_get_id() != 0u){
@@ -1187,4 +1198,14 @@ unsigned int headless_led_status_word(void){
     }
     v |= (g_btn_last_action & 0xFu) << 28;
     return v;
+}
+static void probe_pause_set(unsigned int active){
+    g_probe_pause_active = active ? 1u : 0u;
+}
+
+static void probe_pause_wait_ticks(unsigned int wait_ms){
+    unsigned long start = system_ticks;
+    while ((unsigned long)(system_ticks - start) < (unsigned long)wait_ms){
+        asm volatile("wfe" : : : "memory");
+    }
 }

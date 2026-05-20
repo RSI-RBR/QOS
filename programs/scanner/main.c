@@ -2296,6 +2296,17 @@ void program_main(void){
 
     while (1){
         int skip_rx_poll = 0;
+        if (qos_headless_probe_pause_active() > 0){
+            if (!idle_led_active){
+                (void)qos_headless_scanner_idle(1u);
+                idle_led_active = 1u;
+            }
+            last_rx_progress_us = qos_get_time_us();
+            recv_err_streak = 0u;
+            idle_quiet_windows = 0u;
+            qos_sleep(10u);
+            continue;
+        }
         now = qos_get_time_us();
         if ((long long)(now - next_print) >= 0){
             cyw43_raw_capture_status_t st1;
