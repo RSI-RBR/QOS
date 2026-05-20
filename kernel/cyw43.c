@@ -1399,6 +1399,11 @@ int cyw43_force_release_emmc_for_storage(void){
      * skips WLC_DOWN/control traffic; a sick monitor firmware path may never
      * answer. Reclaim the shared host in software, then blockdev will reinit
      * the EMMC controller and pins before FAT I/O.
+     *
+     * Since this skips the firmware's normal DOWN path, do not later reattach
+     * to the old firmware image. If an AP vanished during station probing, the
+     * firmware may be left half-associated and monitor restore becomes flaky.
+     * Force the next monitor bring-up through a clean firmware restage.
      */
     cyw43_clear_monitor_raw_state(-7);
     g_cyw43.iface_up = 0;
@@ -1408,6 +1413,9 @@ int cyw43_force_release_emmc_for_storage(void){
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.wifi_configured = 0;
+    g_cyw43.fw_running = 0;
+    g_cyw43.fw_loaded = 0;
+    g_cyw43_force_restage_init = 1u;
     sdio_bus_suspend_state();
     blockdev_reserve_emmc_for_wifi(0);
     net_wait_for_io_idle();
