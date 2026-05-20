@@ -2341,8 +2341,22 @@ void program_main(void){
                     active_channel = pause_st.channel;
                 }
             } else{
-                scanner_ensure_monitor_ready(active_channel, 1u);
-                raw_rc = qos_wifi_raw_set_enabled(1u);
+                /*
+                 * A PiSugar probe switches monitor firmware into station
+                 * mode, then the kernel may invalidate that firmware instead
+                 * of reusing a half-associated state. Use the full restore
+                 * path here; the cheap monitor rearm is only valid when the
+                 * firmware is still alive.
+                 */
+                qos_puts("scanner: button action restoring monitor path\n");
+                if (scanner_restore_monitor_path(active_channel)){
+                    raw_rc = qos_wifi_raw_set_enabled(1u);
+                    if (qos_wifi_monitor_status(&pause_st) == 0 && pause_st.channel != 0u){
+                        active_channel = pause_st.channel;
+                    }
+                } else{
+                    raw_rc = -1;
+                }
             }
             last_rx_progress_us = qos_get_time_us();
             recv_err_streak = 0u;
