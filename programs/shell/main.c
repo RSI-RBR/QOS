@@ -695,6 +695,15 @@ static void cmd_scanstart(unsigned int channel, char* password){
         return;
     }
 
+    rc = qos_wifi_randomize_mac();
+    if (rc == 0){
+        qos_puts("Scanstart: WiFi MAC randomized for scanner mode.\n");
+    } else{
+        qos_puts("Scanstart: WiFi MAC randomize failed rc=");
+        print_int(rc);
+        qos_puts("; continuing.\n");
+    }
+
     qos_puts("Scanstart: switching WiFi from station/remote-shell mode to monitor scanner mode.\n");
     qos_puts("Scanstart: remote shell may disconnect after this command; scanner should continue.\n");
 
