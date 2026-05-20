@@ -349,6 +349,16 @@ static int headless_https_probe_open_ap(void){
     int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
     unsigned char resp[1024];
 
+    if (scanner_running){
+        /*
+         * Scanner keeps CYW43 in monitor/raw mode. Forcing a station join from
+         * this button path races with scanner recovery/hop logic and can stall
+         * foreground responsiveness. Require scanner to be stopped first.
+         */
+        uart_puts("Headless: probe blocked while scanner is active; stop scanner first\n");
+        return -21;
+    }
+
     if (scanner_pick_strongest_open_ssid(ssid, &sig) != 0){
         uart_puts("Headless: probe no open AP candidate\n");
         return -10;
@@ -384,13 +394,15 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
 
-    rc = tcp_https_get(dst_ip, host, path, resp, sizeof(resp));
+    rc = tcp_https_stream_start(dst_ip, host, path, resp, sizeof(resp));
     if (rc > 0){
         uart_puts("Headless: probe HTTPS OK bytes=");
         uart_putdec((unsigned long)rc);
         uart_puts("\n");
+        tcp_https_stream_close();
         rc = 0;
     } else{
+        tcp_https_stream_close();
         uart_puts("Headless: probe HTTPS failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
@@ -642,6 +654,9 @@ static void perform_button_action(unsigned int action, unsigned long now){
         if (rc == 0){
             button_feedback_burst(3u, now);
             uart_puts("Headless: HTTPS probe success\n");
+        } else if (rc == -21){
+            button_feedback_burst(2u, now);
+            uart_puts("Headless: HTTPS probe skipped (scanner active)\n");
         } else{
             button_feedback_burst(5u, now);
             uart_puts("Headless: HTTPS probe failed\n");
