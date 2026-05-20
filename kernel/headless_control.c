@@ -1045,14 +1045,57 @@ static int scanner_stop_and_wait(void){
 static int scanner_reclaim_storage_for_wipe(void){
     for (unsigned int attempt = 0u; attempt < 4u; attempt++){
         if (blockdev_is_emmc()){
+            fat32_reset();
             return 0;
         }
+        /*
+         * Secure wipe is allowed to be more aggressive than normal save.  The
+         * scanner may have stopped because the monitor path was already sick,
+         * so do not depend on firmware/control replies to hand the shared SDIO
+         * host back to storage.
+         */
+        (void)cyw43_force_release_emmc_for_storage();
         if (blockdev_reinit_emmc_from_wifi() == 0 && blockdev_is_emmc()){
+            fat32_reset();
             return 0;
         }
         probe_pause_wait_ticks(120u);
     }
-    return blockdev_is_emmc() ? 0 : -1;
+    if (blockdev_is_emmc()){
+        fat32_reset();
+        return 0;
+    }
+    return -1;
+}
+
+static int scanner_secure_wipe_fat_file(const char* path){
+    unsigned char verify_byte = 0u;
+    int wipe_rc;
+    int verify_rc;
+
+    if (!path){
+        return -1;
+    }
+
+    wipe_rc = fat32_secure_wipe_file_in_dir_path_existing(g_scanner_sandbox_83, path);
+    if (wipe_rc == -2){
+        /* Already absent on FAT. That is an acceptable final state. */
+        return 0;
+    }
+    if (wipe_rc != 0){
+        return wipe_rc;
+    }
+
+    /*
+     * Verify the destructive delete took effect. This catches cases where the
+     * data overwrite succeeded but a directory entry survived because the card
+     * path was flaky or an LFN/SFN edge case was hit.
+     */
+    verify_rc = fat32_read_file_in_dir_path_any(g_scanner_sandbox_83,
+                                                path,
+                                                &verify_byte,
+                                                sizeof(verify_byte));
+    return (verify_rc < 0) ? 0 : -3;
 }
 
 static int scanner_secure_stop(unsigned long now){
@@ -1065,29 +1108,46 @@ static int scanner_secure_stop(unsigned long now){
         uart_puts("Headless: scanner secure-stop warning: scanner did not stop cleanly\n");
         failed++;
     }
-    (void)cyw43_raw_capture_set_enabled(0u);
-    (void)cyw43_ioctl_monitor(0u, 0u);
+    /*
+     * Do not send firmware monitor-off commands here. Long press is the panic
+     * button, and the monitor/control path may already be wedged. Clear local
+     * capture state and force the shared host back to storage instead.
+     */
+    cyw43_force_monitor_off_for_storage();
+    (void)cyw43_force_release_emmc_for_storage();
 
-    (void)scanner_reclaim_storage_for_wipe();
-    if (blockdev_is_emmc()){
-        fat32_reset();
+    if (scanner_reclaim_storage_for_wipe() == 0 && blockdev_is_emmc()){
         if (fat32_init() == 0){
             for (unsigned int i = 0u;
                  i < sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]);
                  i++){
                 const char* path = g_scanner_log_paths[i];
-                int wipe_rc = fat32_secure_wipe_file_in_dir_path_existing(g_scanner_sandbox_83, path);
-                if (wipe_rc == 0 || wipe_rc == -2){
+                int wipe_rc = scanner_secure_wipe_fat_file(path);
+                if (wipe_rc == 0){
                     wiped++;
                 } else{
+                    uart_puts("Headless: scanner secure-stop wipe failed path=");
+                    uart_puts(path);
+                    uart_puts(" rc=");
+                    uart_putdec((unsigned long)((wipe_rc < 0) ? -wipe_rc : wipe_rc));
+                    uart_puts("\n");
+                    headless_tty0_write("Wipe failed: ");
+                    headless_tty0_write(path);
+                    headless_tty0_write(" rc=");
+                    headless_tty0_puti(wipe_rc);
+                    headless_tty0_write("\n");
                     failed++;
                 }
                 (void)sandbox_file_clear(g_scanner_sandbox_83, path);
             }
         } else{
+            uart_puts("Headless: scanner secure-stop FAT init failed\n");
+            headless_tty0_write("Wipe failed: FAT init failed\n");
             failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
         }
     } else{
+        uart_puts("Headless: scanner secure-stop EMMC reclaim failed\n");
+        headless_tty0_write("Wipe failed: EMMC reclaim failed\n");
         failed = (int)(sizeof(g_scanner_log_paths) / sizeof(g_scanner_log_paths[0]));
     }
     for (unsigned int i = 0u;
@@ -1101,6 +1161,11 @@ static int scanner_secure_stop(unsigned long now){
     uart_puts(" failed=");
     uart_putdec((unsigned long)failed);
     uart_puts("\n");
+    headless_tty0_write("Wipe result: wiped=");
+    headless_tty0_puti(wiped);
+    headless_tty0_write(" failed=");
+    headless_tty0_puti(failed);
+    headless_tty0_write("\n");
     (void)now;
     return (failed == 0) ? 0 : -1;
 }
