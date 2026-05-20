@@ -2396,6 +2396,8 @@ static void cyw43_set_forced_mac(const unsigned char mac[6]){
 
 static int cyw43_apply_pending_mac_if_ready(void){
     const unsigned char* mac = 0;
+    unsigned char verify_mac[8];
+    unsigned int actual = 0;
     unsigned char gateway_ip[4];
 
     if (g_cyw43_pending_mac_valid){
@@ -2410,6 +2412,16 @@ static int cyw43_apply_pending_mac_if_ready(void){
     }
     if (cyw43_wl_set_var("cur_etheraddr", mac, 6u) != 0){
         return -1;
+    }
+    mem_zero_local(verify_mac, sizeof(verify_mac));
+    if (cyw43_wl_get_var("cur_etheraddr", verify_mac, sizeof(verify_mac), &actual) != 0 ||
+        actual < 6u){
+        return -1;
+    }
+    for (unsigned int i = 0u; i < 6u; i++){
+        if (verify_mac[i] != mac[i]){
+            return -1;
+        }
     }
     for (unsigned int i = 0u; i < 6u; i++){
         g_cyw43.mac[i] = mac[i];

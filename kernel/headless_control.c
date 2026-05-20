@@ -500,6 +500,19 @@ static void headless_tty0_putip(const unsigned char ip[4]){
     headless_tty0_putdec((unsigned long)ip[3]);
 }
 
+static void headless_tty0_putmac(const unsigned char mac[6]){
+    if (!mac){
+        headless_tty0_write("00:00:00:00:00:00");
+        return;
+    }
+    for (unsigned int i = 0u; i < 6u; i++){
+        if (i != 0u){
+            headless_tty0_write(":");
+        }
+        headless_tty0_puthex_byte(mac[i]);
+    }
+}
+
 static void probe_print_dhcp_diag(void){
     dhcp_diag_t d;
     unsigned long raw_udp68 = 0;
@@ -686,6 +699,13 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
     headless_tty0_write("Probe: join OK\n");
+    {
+        unsigned char probe_mac[6];
+        net_proto_get_local_mac(probe_mac);
+        headless_tty0_write("Probe: station MAC ");
+        headless_tty0_putmac(probe_mac);
+        headless_tty0_write("\n");
+    }
     headless_tty0_write("Probe: settling station link\n");
     probe_station_settle(750u);
 
