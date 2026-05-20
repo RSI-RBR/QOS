@@ -14,6 +14,7 @@
 #include "tls_record.h"
 #include "x509_verify.h"
 #include "pq_kem.h"
+#include "arp.h"
 
 #define uart_puts klog_puts
 #define uart_puthex klog_puthex
@@ -254,6 +255,29 @@ static int tcp_send_segment(unsigned char flags,
     }
     g_conn.snd_nxt += payload_len;
     return 0;
+}
+
+static int tcp_send_segment_retry(unsigned char flags,
+                                  const unsigned char* payload,
+                                  unsigned int payload_len,
+                                  unsigned int retries){
+    if (payload_len > 1460u){
+        return tcp_send_segment(flags, payload, payload_len);
+    }
+    for (unsigned int attempt = 0u; attempt <= retries; attempt++){
+        if (tcp_send_segment(flags, payload, payload_len) == 0){
+            return 0;
+        }
+        /*
+         * CYW43 station mode can briefly refuse TX after DHCP/ARP or during
+         * TLS handshakes. A failed send does not advance snd_nxt, so a bounded
+         * retry is safe for single-segment handshake records.
+         */
+        (void)net_poll();
+        (void)arp_resolve_gateway(350u);
+        (void)net_poll();
+    }
+    return -1;
 }
 
 void tcp_init(void){
@@ -2080,7 +2104,7 @@ https_retry_connect:
             g_tcp_stats.http_fail++;
             HTTPS_FAIL(-125);
         }
-        if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
+        if (tcp_send_segment_retry((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len, 3u) != 0){
             g_conn.active = 0;
             g_conn.state = TCP_ST_CLOSED;
             g_tcp_stats.http_fail++;
@@ -2106,7 +2130,7 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-128);
     }
-    if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len) != 0){
+    if (tcp_send_segment_retry((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH), g_tls_record_tx, hs_record_len, 3u) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
@@ -2172,8 +2196,8 @@ https_retry_connect:
         g_tcp_stats.http_fail++;
         HTTPS_FAIL(-134);
     }
-    if (tcp_send_segment((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH),
-                         g_tls_record_tx, app_req_record_len) != 0){
+    if (tcp_send_segment_retry((unsigned char)(TCP_FLAG_ACK | TCP_FLAG_PSH),
+                               g_tls_record_tx, app_req_record_len, 3u) != 0){
         g_conn.active = 0;
         g_conn.state = TCP_ST_CLOSED;
         g_tcp_stats.http_fail++;
