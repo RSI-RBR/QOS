@@ -26,6 +26,7 @@
 #define SCANNER_DESTRUCTIVE_RECOVERY 1u
 #define IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY 0u
 #define SCANNER_ALLOW_FULL_WIFI_RESTART 0u
+#define SCANNER_REARM_USES_MONITOR_COMMANDS 0u
 
 typedef enum {
     CAT_BEACON = 0,
@@ -1840,6 +1841,17 @@ static void scanner_ensure_monitor_ready(unsigned int channel, unsigned int forc
 #endif
 }
 
+static void scanner_control_blocked_notice(unsigned int* printed){
+    if (!printed){
+        return;
+    }
+    if (!*printed){
+        qos_puts("scanner: WiFi control path blocked; not issuing monitor commands\n");
+        qos_puts("scanner: stop/restart scanner or reload known-good Nexmon firmware\n");
+        *printed = 1u;
+    }
+}
+
 static int scanner_restore_monitor_path(unsigned int channel, unsigned int allow_hard_recovery){
     cyw43_monitor_status_t st;
     unsigned int ch = channel ? channel : DEFAULT_SCAN_CHANNEL;
@@ -1908,10 +1920,12 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     int recovered = 0;
 
     if (s == 0u){
-        qos_puts("scanner: rx stalled; raw/monitor rearm\n");
+        qos_puts("scanner: rx stalled; raw capture rearm\n");
         (void)qos_wifi_raw_set_enabled(0u);
         qos_sleep(RECOVERY_SETTLE_MS);
+#if SCANNER_REARM_USES_MONITOR_COMMANDS
         (void)qos_wifi_monitor_set(2u, ch);
+#endif
         (void)qos_wifi_raw_set_enabled(1u);
         recovered = scanner_wait_for_raw_progress(last_rx_frames, 250u);
         if (stage){
@@ -1921,11 +1935,15 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     }
 
     if (s == 1u){
-        qos_puts("scanner: rx stalled; force monitor reapply\n");
+        qos_puts("scanner: rx stalled; raw reset/reapply\n");
         (void)qos_wifi_raw_set_enabled(0u);
+#if SCANNER_REARM_USES_MONITOR_COMMANDS
         (void)qos_wifi_monitor_set(0u, 0u);
+#endif
         qos_sleep(RECOVERY_SETTLE_MS);
+#if SCANNER_REARM_USES_MONITOR_COMMANDS
         (void)qos_wifi_monitor_set(2u, ch);
+#endif
         (void)qos_wifi_raw_set_enabled(1u);
         recovered = scanner_wait_for_raw_progress(last_rx_frames, 400u);
         if (stage){
@@ -1935,9 +1953,12 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
     }
 
     if (s == 2u){
-        qos_puts("scanner: rx stalled; full monitor up/reapply\n");
+        qos_puts("scanner: rx stalled; raw settle/reapply\n");
         (void)qos_wifi_raw_set_enabled(0u);
+#if SCANNER_REARM_USES_MONITOR_COMMANDS
         (void)scanner_restore_monitor_path(ch, 0u);
+#endif
+        (void)qos_wifi_raw_set_enabled(1u);
         recovered = scanner_wait_for_raw_progress(last_rx_frames, 650u);
         if (stage){
             *stage = recovered ? 0u : 3u;
@@ -1980,8 +2001,12 @@ static int scanner_recover_rx_stall(unsigned int active_channel,
 static void maybe_hop_channel(unsigned int* active_channel,
                               unsigned int* hop_idx,
                               scan_stats_t* stats,
-                              unsigned int* last_rx_frames){
+                              unsigned int* last_rx_frames,
+                              unsigned int control_blocked){
     if (!active_channel || !hop_idx || !stats){
+        return;
+    }
+    if (control_blocked){
         return;
     }
     unsigned int idx = *hop_idx;
@@ -2284,6 +2309,8 @@ void program_main(void){
     unsigned int idle_quiet_windows = 0u;
     unsigned int idle_led_active = 0u;
     unsigned int probe_pause_seen = 0u;
+    unsigned int control_blocked = 0u;
+    unsigned int control_blocked_printed = 0u;
     unsigned long long last_rx_progress_us = 0ull;
     unsigned long long probe_pause_start_us = 0ull;
     unsigned long long probe_pause_heartbeat_us = 0ull;
@@ -2407,19 +2434,14 @@ void program_main(void){
                 }
             } else{
                 /*
-                 * A PiSugar probe temporarily switches monitor firmware into
-                 * station mode. Restore through the full path so the scanner
-                 * can reapply monitor/promisc/raw state in the right order.
+                 * A PiSugar save/probe can switch the shared SDIO host away
+                 * from monitor mode. Do not try to resurrect firmware/control
+                 * state from inside this scanner loop; that is where the
+                 * headless scanner has been freezing. Report blocked state and
+                 * keep the process alive/printable instead.
                  */
-                qos_puts("scanner: button action restoring monitor path\n");
-                if (scanner_restore_monitor_path(active_channel, 0u)){
-                    raw_rc = qos_wifi_raw_set_enabled(1u);
-                    if (qos_wifi_monitor_status(&pause_st) == 0 && pause_st.channel != 0u){
-                        active_channel = pause_st.channel;
-                    }
-                } else{
-                    raw_rc = -1;
-                }
+                qos_puts("scanner: button action monitor path down; restart required\n");
+                raw_rc = -1;
             }
             if (raw_rc != 0){
 #if IDLE_ALLOW_FIRMWARE_RELOAD_RECOVERY
@@ -2449,6 +2471,8 @@ void program_main(void){
             rearm_stage = 0u;
             if (resumed_rx){
                 last_rx_progress_us = qos_get_time_us();
+                control_blocked = 0u;
+                control_blocked_printed = 0u;
             } else{
                 /*
                  * A button save/probe can leave monitor mode nominally enabled
@@ -2458,6 +2482,8 @@ void program_main(void){
                  */
                 last_rx_progress_us = qos_get_time_us() -
                     ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
+                control_blocked = 1u;
+                scanner_control_blocked_notice(&control_blocked_printed);
             }
             if (resumed_rx && idle_led_active){
                 (void)qos_headless_scanner_idle(0u);
@@ -2507,14 +2533,18 @@ void program_main(void){
                     last_rx_progress_us = now;
                     rearm_stage = 0u;
                     idle_quiet_windows = 0u;
+                    control_blocked = 0u;
+                    control_blocked_printed = 0u;
                     if (idle_led_active){
                         (void)qos_headless_scanner_idle(0u);
                         idle_led_active = 0u;
                     }
                 }
-                if (!st1.enabled){
+                if (!st1.enabled && !control_blocked){
                     qos_puts("scanner: raw capture disabled; rearming monitor\n");
                     scanner_ensure_monitor_ready(active_channel, 1u);
+                } else if (!st1.enabled && control_blocked){
+                    scanner_control_blocked_notice(&control_blocked_printed);
                 }
             }
             next_print += ((unsigned long long)SUMMARY_PRINT_SECS * 1000000ull);
@@ -2541,7 +2571,15 @@ void program_main(void){
 
         if ((long long)(now - next_hop) >= 0){
 #if CHANNEL_HOP_DURING_CAPTURE
-            maybe_hop_channel(&active_channel, &hop_idx, &stats, &last_rx_frames);
+            if (control_blocked){
+                scanner_control_blocked_notice(&control_blocked_printed);
+            } else{
+                maybe_hop_channel(&active_channel,
+                                  &hop_idx,
+                                  &stats,
+                                  &last_rx_frames,
+                                  control_blocked);
+            }
 #endif
             next_hop += ((unsigned long long)hop_dwell_ms * 1000ull);
             if ((long long)(now - next_hop) >= 0){
@@ -2648,11 +2686,21 @@ void program_main(void){
             have_raw = (qos_wifi_raw_status(&st_idle) == 0) ? 1 : 0;
             path_looks_up = (have_mon && have_raw && mon.enabled && mon.raw_enabled && st_idle.enabled) ? 1 : 0;
 
+            if (control_blocked){
+                scanner_control_blocked_notice(&control_blocked_printed);
+                if (!idle_led_active){
+                    (void)qos_headless_scanner_idle(1u);
+                    idle_led_active = 1u;
+                }
+                last_rx_progress_us = now;
+                skip_rx_poll = 1;
+            }
+
             /*
              * A short idle window can be normal while hopping channels.
              * Avoid expensive hard recovery loops unless idle repeats.
              */
-            if (path_looks_up && recv_err_streak == 0u){
+            if (!control_blocked && path_looks_up && recv_err_streak == 0u){
                 idle_quiet_windows++;
                 if (!idle_led_active){
                     (void)qos_headless_scanner_idle(1u);
@@ -2723,13 +2771,19 @@ void program_main(void){
                  * Avoid hammering full firmware rearm on transient SDIO misses.
                  * Escalate only if errors persist for a while.
                  */
-                scanner_ensure_monitor_ready(active_channel,
-                                             (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
+                if (control_blocked){
+                    scanner_control_blocked_notice(&control_blocked_printed);
+                } else{
+                    scanner_ensure_monitor_ready(active_channel,
+                                                 (recv_err_streak >= RECV_ERR_FORCE_REARM) ? 1u : 0u);
+                }
                 qos_sleep(2u);
             } else if (n > 0){
                 recv_err_streak = 0u;
                 last_rx_progress_us = now;
                 idle_quiet_windows = 0u;
+                control_blocked = 0u;
+                control_blocked_printed = 0u;
                 if (idle_led_active){
                     (void)qos_headless_scanner_idle(0u);
                     idle_led_active = 0u;
