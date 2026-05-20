@@ -30,6 +30,7 @@
 #include "v3d.h"
 #include "headless_control.h"
 #include "sandbox_file.h"
+#include "scanner_log.h"
 #include "aes_gcm.h"
 #include "crypto.h"
 #include "spinlock.h"
@@ -445,6 +446,21 @@ static int scanner_log_flush_all_files_encrypted(void){
     int rc_aps = scanner_log_flush_to_fat_encrypted(scanner83, "aps.log", 1);
     int rc_hs = scanner_log_flush_to_fat_encrypted(scanner83, "handshakes.log", 0);
     return (rc_counts == 0 && rc_aps == 0 && rc_hs == 0) ? 0 : -1;
+}
+
+int scanner_log_flush_all_to_fat_kernel(void){
+    int rc = -1;
+
+    kernel_preempt_enter();
+    if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
+        rc = scanner_log_flush_all_files_encrypted();
+    }
+    if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
+        blockdev_is_emmc() && fat32_init() == 0){
+        rc = scanner_log_flush_all_files_encrypted();
+    }
+    kernel_preempt_exit();
+    return rc;
 }
 
 static int scanner_log_read_fat_plaintext(const char scanner83[11],
@@ -3131,16 +3147,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
 
         case SYS_SCANNER_LOG_FLUSH_ALL:
         {
-            int rc = -1;
-            kernel_preempt_enter();
-            if (scanner_fat_prepare_emmc() == 0 && fat32_init() == 0){
-                rc = scanner_log_flush_all_files_encrypted();
-            }
-            if (rc != 0 && blockdev_reinit_emmc_from_wifi() == 0 &&
-                blockdev_is_emmc() && fat32_init() == 0){
-                rc = scanner_log_flush_all_files_encrypted();
-            }
-            kernel_preempt_exit();
+            int rc = scanner_log_flush_all_to_fat_kernel();
             frame[TF_X0] = (rc == 0) ? 0ul : (unsigned long)-1;
             return frame_sp;
         }

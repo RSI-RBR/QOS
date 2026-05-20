@@ -16,6 +16,7 @@
 #include "uart.h"
 #include "spinlock.h"
 #include "terminal.h"
+#include "scanner_log.h"
 
 #define BTN_DEBOUNCE_MS       35u
 #define BTN_DOUBLE_WINDOW_MS  420u
@@ -153,6 +154,39 @@ static void headless_tty0_puti(int v){
         headless_tty0_putdec((unsigned long)(-v));
     } else{
         headless_tty0_putdec((unsigned long)v);
+    }
+}
+
+static void headless_tty0_puthex_byte(unsigned char v){
+    static const char hex[] = "0123456789ABCDEF";
+    char out[3];
+    out[0] = hex[(v >> 4) & 0xFu];
+    out[1] = hex[v & 0xFu];
+    out[2] = 0;
+    headless_tty0_write(out);
+}
+
+static void headless_tty0_write_escaped(const unsigned char* data, unsigned int len){
+    if (!data || len == 0u){
+        return;
+    }
+    for (unsigned int i = 0u; i < len; i++){
+        unsigned char c = data[i];
+        if (c == '\n'){
+            headless_tty0_write("\n");
+        } else if (c == '\r'){
+            headless_tty0_write("\\r");
+        } else if (c == '\t'){
+            headless_tty0_write("\t");
+        } else if (c >= 32u && c <= 126u){
+            char one[2];
+            one[0] = (char)c;
+            one[1] = 0;
+            headless_tty0_write(one);
+        } else{
+            headless_tty0_write("\\x");
+            headless_tty0_puthex_byte(c);
+        }
     }
 }
 
@@ -515,6 +549,9 @@ static int headless_https_probe_open_ap(void){
         headless_tty0_write("Probe: HTTPS OK bytes=");
         headless_tty0_putdec((unsigned long)rc);
         headless_tty0_write("\n");
+        headless_tty0_write("Probe: HTTPS response begin\n");
+        headless_tty0_write_escaped(resp, (unsigned int)rc);
+        headless_tty0_write("\nProbe: HTTPS response end\n");
         tcp_https_stream_close();
         rc = 0;
     } else{
@@ -775,15 +812,53 @@ static int scanner_secure_stop(unsigned long now){
     return (failed == 0) ? 0 : -1;
 }
 
-static void button_feedback_burst(unsigned int pulses, unsigned long now){
-    if (!QOS_HEADLESS_LED_ENABLED || pulses == 0u){
-        return;
+static int scanner_manual_fat_save(unsigned long now){
+    int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
+    int rc;
+    int restore_rc = 0;
+
+    (void)now;
+    headless_tty0_write("Button: double press scanner FAT save start\n");
+    if (scanner_running){
+        headless_tty0_write("Save: pausing scanner monitor path\n");
+        probe_pause_set(1u);
+        headless_control_note_scanner_idle(1u);
+        probe_pause_wait_ticks(250u);
     }
-    if (!spin_trylock(&g_headless_lock)){
-        return;
+
+    (void)cyw43_raw_capture_set_enabled(0u);
+    (void)cyw43_ioctl_monitor(0u, 0u);
+
+    headless_tty0_write("Save: flushing encrypted scanner logs to FAT\n");
+    rc = scanner_log_flush_all_to_fat_kernel();
+    headless_tty0_write("Save: FAT flush rc=");
+    headless_tty0_puti(rc);
+    headless_tty0_write("\n");
+
+    if (scanner_running){
+        headless_tty0_write("Save: restoring monitor scanner path\n");
+        headless_control_note_scanner_recovery(1u);
+        restore_rc = cyw43_ioctl_up_monitor();
+        if (restore_rc == 0){
+            restore_rc = cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
+        }
+        if (restore_rc == 0){
+            restore_rc = cyw43_raw_capture_set_enabled(1u);
+        }
+        if (restore_rc != 0){
+            headless_tty0_write("Save: monitor restore failed rc=");
+            headless_tty0_puti(restore_rc);
+            headless_tty0_write("; hard recovery\n");
+            restore_rc = cyw43_monitor_hard_recover(HEADLESS_PROBE_RETURN_CH);
+        }
+        headless_control_note_scanner_recovery(0u);
+        probe_pause_set(0u);
+        headless_control_note_scanner_idle(0u);
+        headless_tty0_write((restore_rc == 0) ? "Save: scanner resumed\n" :
+                                               "Save: scanner restore failed\n");
     }
-    led_burst(pulses, now);
-    spin_unlock(&g_headless_lock);
+
+    return (rc == 0 && restore_rc == 0) ? 0 : -1;
 }
 
 static void button_result_burst(unsigned int pulses, unsigned long now){
@@ -832,12 +907,10 @@ static unsigned int handle_button_actions(unsigned long now){
 
 static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_TOGGLE){
-        /*
-         * Intentional no-op for now. Keep a visible two-pulse ack so the
-         * PiSugar S button can be tested without attaching UART/HDMI.
-         */
-        button_feedback_burst(2u, now);
+        int rc;
         uart_puts("Headless: button double press\n");
+        rc = scanner_manual_fat_save(now);
+        button_result_burst((rc == 0) ? 4u : 5u, now);
         return;
     }
     if (action == BTN_ACTION_SECURE_STOP){
@@ -1196,18 +1269,13 @@ void headless_control_poll(void){
         if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
             poll_button_state(now);
             action = handle_button_actions(now);
-            if (action == BTN_ACTION_TOGGLE){
-                /*
-                 * Double press is a no-op test action for now, so acknowledge
-                 * it immediately instead of waiting for an idle worker slot.
-                 */
-                run_action = action;
-            } else if (action != BTN_ACTION_NONE){
+            if (action != BTN_ACTION_NONE){
                 if (g_pending_action == BTN_ACTION_NONE && !g_action_busy){
+                    unsigned int ack_pulses = 1u;
                     g_pending_action = action;
                     g_pending_action_tick = now;
                     /*
-                     * Single-check and secure-stop both need the scanner to
+                     * Scanner-facing actions need the scanner to
                      * park before WiFi/FAT work. Start that pause as soon as
                      * the button is recognized so the deferred action can get
                      * an idle slot instead of waiting behind the scanner.
@@ -1218,7 +1286,12 @@ void headless_control_poll(void){
                     g_led_open_hit_valid = 0u;
                     g_led_base_anchor = now;
                     g_led_prev_scanner_running = 0u;
-                    led_burst((action == BTN_ACTION_SECURE_STOP) ? 6u : 1u, now);
+                    if (action == BTN_ACTION_SECURE_STOP){
+                        ack_pulses = 6u;
+                    } else if (action == BTN_ACTION_TOGGLE){
+                        ack_pulses = 2u;
+                    }
+                    led_burst(ack_pulses, now);
                 } else{
                     /*
                      * Acknowledge the press even if a previous action is still
@@ -1277,6 +1350,7 @@ void headless_control_poll(void){
         spin_lock(&g_headless_lock);
         g_action_busy = 0u;
         if (run_action == BTN_ACTION_SINGLE_CHECK ||
+            run_action == BTN_ACTION_TOGGLE ||
             run_action == BTN_ACTION_SECURE_STOP){
             probe_pause_set(0u);
             g_probe_pause_ack = 0u;
