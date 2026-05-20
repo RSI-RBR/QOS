@@ -30,6 +30,7 @@
 #define LED_PULSE_GAP_MS      220u
 #define LED_PULSE_PRE_OFF_MS  120u
 #define LED_SCANNER_REFRESH_MS 100u
+#define BTN_PENDING_TIMEOUT_MS 15000u
 #define HEADLESS_PROBE_SCANLOG_MAX_BYTES (128u * 1024u)
 #define HEADLESS_PROBE_RETURN_CH 6u
 
@@ -88,6 +89,7 @@ static unsigned int g_led_boot_failed = 0u;
 static unsigned long g_led_boot_anchor = 0u;
 static volatile unsigned int g_probe_pause_active = 0u;
 static unsigned int g_pending_action = 0u;
+static unsigned long g_pending_action_tick = 0u;
 static unsigned int g_action_busy = 0u;
 static spinlock_t g_headless_lock;
 
@@ -896,6 +898,7 @@ void headless_control_init(void){
     g_led_boot_anchor = now;
     g_probe_pause_active = 0u;
     g_pending_action = BTN_ACTION_NONE;
+    g_pending_action_tick = now;
     g_action_busy = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
@@ -947,8 +950,36 @@ void headless_control_poll(void){
         if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
             poll_button_state(now);
             action = handle_button_actions(now);
-            if (action != BTN_ACTION_NONE && g_pending_action == BTN_ACTION_NONE){
-                g_pending_action = action;
+            if (action == BTN_ACTION_TOGGLE){
+                /*
+                 * Double press is a no-op test action for now, so acknowledge
+                 * it immediately instead of waiting for an idle worker slot.
+                 */
+                run_action = action;
+            } else if (action != BTN_ACTION_NONE){
+                if (g_pending_action == BTN_ACTION_NONE && !g_action_busy){
+                    g_pending_action = action;
+                    g_pending_action_tick = now;
+                    /*
+                     * Single-check and secure-stop both need the scanner to
+                     * park before WiFi/FAT work. Start that pause as soon as
+                     * the button is recognized so the deferred action can get
+                     * an idle slot instead of waiting behind the scanner.
+                     */
+                    probe_pause_set(1u);
+                    g_led_scanner_running_cached = 1u;
+                    g_led_scanner_idle_hint = 1u;
+                    g_led_open_hit_valid = 0u;
+                    g_led_base_anchor = now;
+                    g_led_prev_scanner_running = 0u;
+                    led_burst((action == BTN_ACTION_SECURE_STOP) ? 6u : 1u, now);
+                } else{
+                    /*
+                     * Acknowledge the press even if a previous action is still
+                     * pending/busy. This keeps the headless button testable.
+                     */
+                    led_burst(1u, now);
+                }
             }
         }
         if (QOS_HEADLESS_LED_ENABLED){
@@ -962,6 +993,15 @@ void headless_control_poll(void){
             }
         }
         if (g_pending_action != BTN_ACTION_NONE &&
+            !g_action_busy &&
+            (unsigned long)(now - g_pending_action_tick) >= BTN_PENDING_TIMEOUT_MS){
+            g_pending_action = BTN_ACTION_NONE;
+            probe_pause_set(0u);
+            g_led_scanner_idle_hint = 0u;
+            led_burst(5u, now);
+        }
+        if (run_action == BTN_ACTION_NONE &&
+            g_pending_action != BTN_ACTION_NONE &&
             !g_action_busy &&
             process_current_pid() < 0){
             run_action = g_pending_action;
@@ -981,6 +1021,11 @@ void headless_control_poll(void){
         perform_button_action(run_action, now);
         spin_lock(&g_headless_lock);
         g_action_busy = 0u;
+        if (run_action == BTN_ACTION_SINGLE_CHECK ||
+            run_action == BTN_ACTION_SECURE_STOP){
+            probe_pause_set(0u);
+            g_led_scanner_idle_hint = 0u;
+        }
         spin_unlock(&g_headless_lock);
     }
 }
