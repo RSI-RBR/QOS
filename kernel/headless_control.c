@@ -297,8 +297,8 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
                     }
                     if (have_last_ms && last_ms > 0ull){
                         if (!found_live ||
-                            last_ms > best_live_last_ms ||
-                            (last_ms == best_live_last_ms && sig_max > best_live_sig)){
+                            sig_max > best_live_sig ||
+                            (sig_max == best_live_sig && last_ms > best_live_last_ms)){
                             best_live_last_ms = last_ms;
                             best_live_sig = sig_max;
                             for (unsigned int j = 0u; j < sizeof(best_live_ssid); j++){
@@ -598,24 +598,50 @@ static int led_test_start(unsigned int blinks, unsigned int on_ms, unsigned int 
     return 0;
 }
 
-static void scanner_stop(void){
+static int scanner_stop_and_wait(void){
+    int had_scanner = 0;
     int pid = find_scanner_pid();
     if (pid >= 0){
+        had_scanner = 1;
         process_exit(pid);
     }
+
+    for (unsigned int i = 0u; i < 200u; i++){
+        if (find_scanner_pid() < 0){
+            return 0;
+        }
+        probe_pause_wait_ticks(10u);
+    }
+    return had_scanner ? -1 : 0;
+}
+
+static int scanner_reclaim_storage_for_wipe(void){
+    for (unsigned int attempt = 0u; attempt < 4u; attempt++){
+        if (blockdev_is_emmc()){
+            return 0;
+        }
+        if (blockdev_reinit_emmc_from_wifi() == 0 && blockdev_is_emmc()){
+            return 0;
+        }
+        probe_pause_wait_ticks(120u);
+    }
+    return blockdev_is_emmc() ? 0 : -1;
 }
 
 static int scanner_secure_stop(unsigned long now){
     int wiped = 0;
     int failed = 0;
 
-    scanner_stop();
+    probe_pause_set(1u);
+    headless_control_note_scanner_idle(1u);
+    if (scanner_stop_and_wait() != 0){
+        uart_puts("Headless: scanner secure-stop warning: scanner did not stop cleanly\n");
+        failed++;
+    }
     (void)cyw43_raw_capture_set_enabled(0u);
     (void)cyw43_ioctl_monitor(0u, 0u);
 
-    if (!blockdev_is_emmc()){
-        (void)blockdev_reinit_emmc_from_wifi();
-    }
+    (void)scanner_reclaim_storage_for_wipe();
     if (blockdev_is_emmc()){
         fat32_reset();
         if (fat32_init() == 0){
