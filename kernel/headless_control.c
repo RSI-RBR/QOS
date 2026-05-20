@@ -376,15 +376,19 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig, uns
             if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == 0u){
                 unsigned char saved = buf[i];
                 int sig_max;
+                int have_sig;
                 int ch_i = 0;
                 unsigned long long last_ms = 0ull;
                 int have_last_ms = 0;
                 char ssid[33];
                 buf[i] = 0u;
                 if (text_find(line, " enc=OPEN") &&
-                    parse_quoted_ssid(line, ssid, sizeof(ssid)) == 0 &&
-                    parse_i32_key(line, " sig_max=", &sig_max) == 0 &&
-                    is_plausible_rssi(sig_max)){
+                    parse_quoted_ssid(line, ssid, sizeof(ssid)) == 0){
+                    have_sig = (parse_i32_key(line, " sig_max=", &sig_max) == 0 &&
+                                is_plausible_rssi(sig_max)) ? 1 : 0;
+                    if (!have_sig){
+                        sig_max = -127;
+                    }
                     if (parse_u64_key(line, " last_ms=", &last_ms) == 0){
                         have_last_ms = 1;
                     }
@@ -510,6 +514,34 @@ static int probe_wait_raw_rx(unsigned int wait_ms){
     return -1;
 }
 
+static int probe_preload_x509_trust_store(void){
+    int rc;
+
+    headless_tty0_write("Probe: preloading HTTPS CA roots from SD\n");
+    /*
+     * Pi 3/Zero-class boards share the EMMC controller between SD storage and
+     * CYW43 SDIO. Cache CA_ROOTS before station networking starts so HTTPS
+     * verification does not try to read FAT while WiFi owns the bus.
+     */
+    (void)cyw43_raw_capture_set_enabled(0u);
+    (void)cyw43_ioctl_monitor(0u, 0u);
+    if (blockdev_reinit_emmc_from_wifi() != 0 || !blockdev_is_emmc()){
+        headless_tty0_write("Probe: CA preload storage reclaim failed\n");
+        return -1;
+    }
+    fat32_reset();
+    x509_verify_reset_cache();
+    rc = x509_verify_preload_trust_store();
+    if (rc != 0){
+        headless_tty0_write("Probe: CA preload failed: ");
+        headless_tty0_write(x509_verify_last_error());
+        headless_tty0_write("\n");
+        return -1;
+    }
+    headless_tty0_write("Probe: HTTPS CA roots ready\n");
+    return 0;
+}
+
 static int headless_https_probe_open_ap(void){
     unsigned char dst_ip[4] = {1u, 1u, 1u, 1u};
     static const char host[] = "one.one.one.one";
@@ -573,6 +605,11 @@ static int headless_https_probe_open_ap(void){
     headless_tty0_write("Probe: restore channel ");
     headless_tty0_putdec((unsigned long)return_ch);
     headless_tty0_write("\n");
+
+    if (probe_preload_x509_trust_store() != 0){
+        rc = -15;
+        goto probe_restore;
+    }
 
     headless_tty0_write("Probe: switching WiFi monitor -> station\n");
     (void)cyw43_raw_capture_set_enabled(0u);
@@ -690,8 +727,7 @@ probe_restore:
             if (rx_rc != 0){
                 headless_tty0_write("Probe: monitor restored but raw RX not flowing rc=");
                 headless_tty0_puti(rx_rc);
-                headless_tty0_write("; hard recovery\n");
-                restore_rc = -100 + rx_rc;
+                headless_tty0_write("; scanner will resume and hop\n");
             }
         }
         if (restore_rc != 0){

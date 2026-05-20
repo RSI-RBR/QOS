@@ -2363,6 +2363,13 @@ void program_main(void){
 
             print_summary(&stats, active_channel);
             log_summary_line(&stats, active_channel);
+            /*
+             * Keep the kernel-visible RAM snapshot fresh for PiSugar single
+             * press HTTPS probes. The verbose AP list still prints every
+             * DETAIL_PRINT_SECS, but the button probe should not have to wait
+             * up to 30 seconds after an open AP appears.
+             */
+            log_ap_snapshot();
             print_raw_status_line("scanner raw");
 
             non_beacon = (stats.frames >= stats.frame_counts[CAT_BEACON])

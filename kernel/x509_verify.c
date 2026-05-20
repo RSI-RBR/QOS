@@ -2459,6 +2459,23 @@ void x509_verify_reset_cache(void){
     crypto_memzero(g_revoked, sizeof(g_revoked));
 }
 
+int x509_verify_preload_trust_store(void){
+    g_x509_last_error[0] = 0;
+    if (ensure_ca_anchors_loaded() != 0){
+        if (!g_x509_last_error[0]){
+            x509_set_last_error("CA anchors load failed");
+        }
+        return -1;
+    }
+    if (g_require_revocation_list && ensure_revocation_loaded() != 0){
+        if (!g_x509_last_error[0]){
+            x509_set_last_error("revocation list load failed");
+        }
+        return -1;
+    }
+    return 0;
+}
+
 void x509_set_validation_time_unix(long long unix_time){
     if (unix_time <= 0){
         return;
