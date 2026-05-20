@@ -19,7 +19,7 @@
 #include "scanner_log.h"
 
 #define BTN_DEBOUNCE_MS       35u
-#define BTN_DOUBLE_WINDOW_MS  420u
+#define BTN_DOUBLE_WINDOW_MS  800u
 #define BTN_LONG_PRESS_MS     1300u
 #define LED_SCAN_PERIOD_MS    1000u
 #define LED_SCAN_ON_MS        500u
@@ -125,6 +125,10 @@ static void headless_tty0_write(const char* s){
         len++;
     }
     terminal_write(0, -1, s, len);
+}
+
+static void headless_tty0_show(void){
+    (void)terminal_set_active(0);
 }
 
 static void headless_tty0_putdec(unsigned long v){
@@ -908,6 +912,7 @@ static unsigned int handle_button_actions(unsigned long now){
 static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_TOGGLE){
         int rc;
+        headless_tty0_show();
         uart_puts("Headless: button double press\n");
         rc = scanner_manual_fat_save(now);
         button_result_burst((rc == 0) ? 4u : 5u, now);
@@ -915,6 +920,7 @@ static void perform_button_action(unsigned int action, unsigned long now){
     }
     if (action == BTN_ACTION_SECURE_STOP){
         int rc;
+        headless_tty0_show();
         uart_puts("Headless: button long press secure stop\n");
         headless_tty0_write("Button: long press secure stop/wipe start\n");
         rc = scanner_secure_stop(now);
@@ -929,6 +935,7 @@ static void perform_button_action(unsigned int action, unsigned long now){
     if (action == BTN_ACTION_SINGLE_CHECK){
         int rc;
         unsigned int pulses = 5u;
+        headless_tty0_show();
         uart_puts("Headless: button single press, HTTPS probe start\n");
         headless_tty0_write("Probe: button single press, starting HTTPS open-AP check\n");
         rc = headless_https_probe_open_ap();
@@ -1005,8 +1012,16 @@ static void poll_button_state(unsigned long now){
                         g_btn_last_action = BTN_ACTION_SECURE_STOP;
                         g_btn_queued_action = BTN_ACTION_SECURE_STOP;
                     } else{
-                        g_btn_clicks++;
-                        g_btn_click_deadline = now + BTN_DOUBLE_WINDOW_MS;
+                        if (g_btn_clicks == 0u){
+                            g_btn_clicks = 1u;
+                            g_btn_click_deadline = now + BTN_DOUBLE_WINDOW_MS;
+                        } else{
+                            g_btn_clicks = 0u;
+                            g_btn_click_deadline = 0u;
+                            g_btn_double_count++;
+                            g_btn_last_action = BTN_ACTION_TOGGLE;
+                            g_btn_queued_action = BTN_ACTION_TOGGLE;
+                        }
                     }
                 }
                 g_btn_long_fired = 0u;
@@ -1259,6 +1274,7 @@ void headless_control_poll(void){
     unsigned int action = BTN_ACTION_NONE;
     unsigned int run_action = BTN_ACTION_NONE;
     unsigned int timeout_notice = 0u;
+    unsigned int queued_notice = BTN_ACTION_NONE;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
@@ -1291,6 +1307,7 @@ void headless_control_poll(void){
                     } else if (action == BTN_ACTION_TOGGLE){
                         ack_pulses = 2u;
                     }
+                    queued_notice = action;
                     led_burst(ack_pulses, now);
                 } else{
                     /*
@@ -1336,7 +1353,18 @@ void headless_control_poll(void){
     }
 
     if (timeout_notice){
+        headless_tty0_show();
         headless_tty0_write("Button: action timed out waiting for idle/scanner pause\n");
+    }
+    if (queued_notice != BTN_ACTION_NONE){
+        headless_tty0_show();
+        if (queued_notice == BTN_ACTION_SINGLE_CHECK){
+            headless_tty0_write("Button: queued single-click probe\n");
+        } else if (queued_notice == BTN_ACTION_TOGGLE){
+            headless_tty0_write("Button: queued double-click save\n");
+        } else if (queued_notice == BTN_ACTION_SECURE_STOP){
+            headless_tty0_write("Button: queued long-press secure stop\n");
+        }
     }
 
     /*
