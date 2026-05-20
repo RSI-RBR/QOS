@@ -2221,6 +2221,8 @@ void program_main(void){
     unsigned int idle_led_active = 0u;
     unsigned int probe_pause_seen = 0u;
     unsigned long long last_rx_progress_us = 0ull;
+    unsigned long long probe_pause_start_us = 0ull;
+    unsigned long long probe_pause_heartbeat_us = 0ull;
 
     for (unsigned int i = 0; i < CAT_COUNT; i++){
         stats.frame_counts[i] = 0u;
@@ -2299,9 +2301,21 @@ void program_main(void){
         int skip_rx_poll = 0;
         if (qos_headless_probe_pause_active() > 0){
             if (!probe_pause_seen){
+                unsigned long long pause_now_us = qos_get_time_us();
                 probe_pause_seen = 1u;
                 (void)qos_wifi_raw_set_enabled(0u);
                 qos_puts("scanner: probe pause active; raw capture paused\n");
+                probe_pause_start_us = pause_now_us;
+                probe_pause_heartbeat_us = pause_now_us + 1000000ull;
+            } else{
+                unsigned long long pause_now_us = qos_get_time_us();
+                if ((long long)(pause_now_us - probe_pause_heartbeat_us) >= 0){
+                    unsigned long long elapsed_ms = (pause_now_us - probe_pause_start_us) / 1000ull;
+                    qos_puts("scanner: probe pause waiting ms=");
+                    put_u64(elapsed_ms);
+                    qos_puts("\n");
+                    probe_pause_heartbeat_us = pause_now_us + 1000000ull;
+                }
             }
             if (!idle_led_active){
                 (void)qos_headless_scanner_idle(1u);
@@ -2316,6 +2330,8 @@ void program_main(void){
         if (probe_pause_seen){
             int raw_rc;
             probe_pause_seen = 0u;
+            probe_pause_start_us = 0ull;
+            probe_pause_heartbeat_us = 0ull;
             raw_rc = qos_wifi_raw_set_enabled(1u);
             scanner_ensure_monitor_ready(active_channel, 1u);
             last_rx_progress_us = qos_get_time_us();

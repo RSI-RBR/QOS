@@ -33,6 +33,8 @@
 #define LED_PULSE_GAP_MS      220u
 #define LED_RESULT_FINAL_GAP_MS 500u
 #define LED_PULSE_PRE_OFF_MS  120u
+#define LED_ACTION_BUSY_PERIOD_MS 200u
+#define LED_ACTION_BUSY_ON_MS  100u
 #define LED_SCANNER_REFRESH_MS 100u
 #define BTN_PENDING_TIMEOUT_MS 15000u
 #define HEADLESS_PROBE_SCANLOG_MAX_BYTES (128u * 1024u)
@@ -362,7 +364,6 @@ static int headless_https_probe_open_ap(void){
     int sig = -127;
     int rc;
     int dhcp_rc;
-    int dhcp_failed = 0;
     int restore_net = 0;
     int scanner_running = (find_scanner_pid() >= 0) ? 1 : 0;
     dhcp_lease_t lease;
@@ -422,17 +423,18 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
 
-    dhcp_rc = dhcp_acquire(6000u, &lease);
+    dhcp_rc = dhcp_acquire(3500u, &lease);
     if (dhcp_rc == 0){
         restore_net = 1;
         if (arp_resolve_gateway(1500u) != 0){
             uart_puts("Headless: probe DHCP OK but gateway ARP unresolved\n");
         }
     } else{
-        dhcp_failed = 1;
         uart_puts("Headless: probe DHCP failed rc=");
         uart_putdec((unsigned long)(-dhcp_rc));
-        uart_puts("; trying current static net config\n");
+        uart_puts("; skipping HTTPS probe\n");
+        rc = -13;
+        goto probe_restore;
     }
 
     rc = tcp_https_stream_start(dst_ip, host, path, resp, sizeof(resp));
@@ -447,7 +449,7 @@ static int headless_https_probe_open_ap(void){
         uart_puts("Headless: probe HTTPS failed rc=");
         uart_putdec((unsigned long)(-rc));
         uart_puts("\n");
-        rc = dhcp_failed ? -13 : -14;
+        rc = -14;
     }
 
 probe_restore:
@@ -879,6 +881,12 @@ static void render_led(unsigned long now){
         return;
     }
     g_led_burst_hold_until = 0u;
+
+    if (g_action_busy){
+        unsigned long phase = now % LED_ACTION_BUSY_PERIOD_MS;
+        led_apply((phase < LED_ACTION_BUSY_ON_MS) ? 1u : 0u);
+        return;
+    }
 
     unsigned int scanner_running = g_led_scanner_running_cached;
 
