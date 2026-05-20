@@ -87,6 +87,8 @@ static unsigned int g_led_boot_stage = 0u;
 static unsigned int g_led_boot_failed = 0u;
 static unsigned long g_led_boot_anchor = 0u;
 static volatile unsigned int g_probe_pause_active = 0u;
+static unsigned int g_pending_action = 0u;
+static unsigned int g_action_busy = 0u;
 static spinlock_t g_headless_lock;
 
 enum {
@@ -893,6 +895,8 @@ void headless_control_init(void){
     g_led_boot_failed = 0u;
     g_led_boot_anchor = now;
     g_probe_pause_active = 0u;
+    g_pending_action = BTN_ACTION_NONE;
+    g_action_busy = 0u;
     spinlock_init(&g_headless_lock);
     led_test_stop();
     if (QOS_HEADLESS_LED_ENABLED){
@@ -932,6 +936,7 @@ void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
 void headless_control_poll(void){
     unsigned long now;
     unsigned int action = BTN_ACTION_NONE;
+    unsigned int run_action = BTN_ACTION_NONE;
 
     if ((!QOS_HEADLESS_BUTTON_ENABLED && !QOS_HEADLESS_LED_ENABLED) || !g_inited){
         return;
@@ -942,6 +947,9 @@ void headless_control_poll(void){
         if (QOS_HEADLESS_BUTTON_ENABLED && cpu_get_id() == 0u){
             poll_button_state(now);
             action = handle_button_actions(now);
+            if (action != BTN_ACTION_NONE && g_pending_action == BTN_ACTION_NONE){
+                g_pending_action = action;
+            }
         }
         if (QOS_HEADLESS_LED_ENABLED){
             /*
@@ -953,15 +961,27 @@ void headless_control_poll(void){
                 g_led_last_render_tick = now;
             }
         }
+        if (g_pending_action != BTN_ACTION_NONE &&
+            !g_action_busy &&
+            process_current_pid() < 0){
+            run_action = g_pending_action;
+            g_pending_action = BTN_ACTION_NONE;
+            g_action_busy = 1u;
+        }
         spin_unlock(&g_headless_lock);
     }
 
     /*
-     * Run potentially heavy button actions outside the lock so LED cadence
-     * remains stable even when an action does network/scan work.
+     * Run heavy button actions only from an idle kernel context. Button events
+     * are often detected while a user process is inside a syscall; doing WiFi
+     * handoff/TLS work there can park the process that is meant to observe the
+     * pause flag.
      */
-    if (action != BTN_ACTION_NONE){
-        perform_button_action(action, now);
+    if (run_action != BTN_ACTION_NONE){
+        perform_button_action(run_action, now);
+        spin_lock(&g_headless_lock);
+        g_action_busy = 0u;
+        spin_unlock(&g_headless_lock);
     }
 }
 
