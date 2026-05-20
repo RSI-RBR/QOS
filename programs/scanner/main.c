@@ -2342,11 +2342,9 @@ void program_main(void){
                 }
             } else{
                 /*
-                 * A PiSugar probe switches monitor firmware into station
-                 * mode, then the kernel may invalidate that firmware instead
-                 * of reusing a half-associated state. Use the full restore
-                 * path here; the cheap monitor rearm is only valid when the
-                 * firmware is still alive.
+                 * A PiSugar probe temporarily switches monitor firmware into
+                 * station mode. Restore through the full path so the scanner
+                 * can reapply monitor/promisc/raw state in the right order.
                  */
                 qos_puts("scanner: button action restoring monitor path\n");
                 if (scanner_restore_monitor_path(active_channel)){

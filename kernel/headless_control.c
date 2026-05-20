@@ -96,6 +96,7 @@ static unsigned long g_led_scanner_next_check = 0u;
 static unsigned int g_led_scanner_idle_hint = 0u;
 static unsigned int g_led_scanner_recovery = 0u;
 static unsigned long g_led_scanner_recovery_expire = 0u;
+static unsigned int g_led_probe_quiet = 0u;
 static unsigned int g_led_wifi_joined_waiting_login = 0u;
 static unsigned int g_led_login_seen = 0u;
 static unsigned long g_led_login_wait_anchor = 0u;
@@ -875,11 +876,11 @@ probe_restore:
          * Do not synchronously rearm monitor mode in the headless button
          * handler. CYW43 monitor restore can block after station HTTPS, and if
          * it blocks here then the LED/control loop cannot accept the emergency
-         * double-click save. Leave the scanner process to rearm/recover its
-         * own monitor path after the pause is released.
+         * double-click save. Also keep the live WiFi SDIO path attached here:
+         * the scanner can switch station firmware back to monitor mode much
+         * more reliably than it can recover from an unnecessary host release.
          */
         headless_tty0_write("Probe: releasing scanner; monitor rearm deferred to scanner\n");
-        (void)cyw43_force_release_emmc_for_storage();
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);
@@ -1139,8 +1140,10 @@ static void button_result_burst(unsigned int pulses, unsigned long now){
         return;
     }
     if (!spin_trylock(&g_headless_lock)){
+        g_led_probe_quiet = 0u;
         return;
     }
+    g_led_probe_quiet = 0u;
     led_burst_with_gap(pulses, now, LED_RESULT_FINAL_GAP_MS);
     spin_unlock(&g_headless_lock);
 }
@@ -1360,6 +1363,11 @@ static void render_led(unsigned long now){
     }
     g_led_burst_hold_until = 0u;
 
+    if (g_led_probe_quiet){
+        led_apply(1u);
+        return;
+    }
+
     if (g_action_busy){
         unsigned long phase = now % LED_ACTION_BUSY_PERIOD_MS;
         led_apply((phase < LED_ACTION_BUSY_ON_MS) ? 1u : 0u);
@@ -1490,6 +1498,7 @@ void headless_control_init(void){
     g_led_scanner_idle_hint = 0u;
     g_led_scanner_recovery = 0u;
     g_led_scanner_recovery_expire = 0u;
+    g_led_probe_quiet = 0u;
     g_led_wifi_joined_waiting_login = 0u;
     g_led_login_seen = 0u;
     g_led_login_wait_anchor = now;
@@ -1535,6 +1544,7 @@ void headless_control_note_boot_stage(unsigned int stage, unsigned int failed){
     g_led_burst_hold_until = 0u;
     g_led_test_active = 0u;
     g_led_manual_mode = 0u;
+    g_led_probe_quiet = 0u;
     spin_unlock(&g_headless_lock);
 }
 
@@ -1576,8 +1586,17 @@ static void headless_control_poll_internal(unsigned int allow_actions){
                     g_led_open_hit_valid = 0u;
                     g_led_base_anchor = now;
                     g_led_prev_scanner_running = 0u;
+                    g_led_probe_quiet = (action == BTN_ACTION_SINGLE_CHECK) ? 1u : 0u;
                     queued_notice = action;
-                    led_burst(ack_pulses, now);
+                    if (action == BTN_ACTION_SINGLE_CHECK){
+                        g_led_burst_pulses = 0u;
+                        g_led_burst_on = 0u;
+                        g_led_burst_pre_off = 0u;
+                        g_led_burst_hold_until = 0u;
+                        led_apply(1u);
+                    } else{
+                        led_burst(ack_pulses, now);
+                    }
                 } else if (g_pending_action == BTN_ACTION_NONE && !g_action_busy){
                     unsigned int ack_pulses = 1u;
                     g_pending_action = action;
@@ -1594,13 +1613,22 @@ static void headless_control_poll_internal(unsigned int allow_actions){
                     g_led_open_hit_valid = 0u;
                     g_led_base_anchor = now;
                     g_led_prev_scanner_running = 0u;
+                    g_led_probe_quiet = (action == BTN_ACTION_SINGLE_CHECK) ? 1u : 0u;
                     if (action == BTN_ACTION_SECURE_STOP){
                         ack_pulses = 6u;
                     } else if (action == BTN_ACTION_TOGGLE){
                         ack_pulses = 2u;
                     }
                     queued_notice = action;
-                    led_burst(ack_pulses, now);
+                    if (action == BTN_ACTION_SINGLE_CHECK){
+                        g_led_burst_pulses = 0u;
+                        g_led_burst_on = 0u;
+                        g_led_burst_pre_off = 0u;
+                        g_led_burst_hold_until = 0u;
+                        led_apply(1u);
+                    } else{
+                        led_burst(ack_pulses, now);
+                    }
                 } else{
                     /*
                      * Acknowledge the press even if a previous action is still
@@ -1630,6 +1658,7 @@ static void headless_control_poll_internal(unsigned int allow_actions){
             probe_pause_set(0u);
             g_probe_pause_ack = 0u;
             g_led_scanner_idle_hint = 0u;
+            g_led_probe_quiet = 0u;
             led_burst(11u, now);
         }
         if (allow_actions &&
@@ -1708,6 +1737,9 @@ static void headless_control_poll_internal(unsigned int allow_actions){
             probe_pause_set(0u);
             g_probe_pause_ack = 0u;
             g_led_scanner_idle_hint = 0u;
+            if (run_action != BTN_ACTION_SINGLE_CHECK){
+                g_led_probe_quiet = 0u;
+            }
         }
         spin_unlock(&g_headless_lock);
     }
@@ -1753,6 +1785,7 @@ void headless_control_note_wifi_joined_waiting_login(void){
         g_led_test_active = 0u;
         g_led_manual_mode = 0u;
         g_led_burst_hold_until = 0u;
+        g_led_probe_quiet = 0u;
     }
     spin_unlock(&g_headless_lock);
 }
@@ -1768,6 +1801,7 @@ void headless_control_note_login_success(void){
     g_led_wifi_joined_waiting_login = 0u;
     g_led_boot_stage = 0u;
     g_led_boot_failed = 0u;
+    g_led_probe_quiet = 0u;
     spin_unlock(&g_headless_lock);
 }
 
