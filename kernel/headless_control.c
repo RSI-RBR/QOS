@@ -708,6 +708,22 @@ static int headless_https_probe_open_ap(void){
     headless_tty0_write("Probe: switching WiFi monitor -> station\n");
     (void)cyw43_raw_capture_set_enabled(0u);
     (void)cyw43_ioctl_monitor(0u, 0u);
+    {
+        unsigned char forced_mac[6];
+        unsigned int forced_valid = 0u;
+        unsigned int forced_pending = 0u;
+        unsigned int forced_applied = 0u;
+        (void)cyw43_get_mac_override_status(forced_mac,
+                                            &forced_valid,
+                                            &forced_pending,
+                                            &forced_applied);
+        if (!forced_valid){
+            headless_tty0_write("Probe: no random MAC configured; generating one\n");
+            if (cyw43_ioctl_randomize_mac() != 0){
+                headless_tty0_write("Probe: random MAC generation failed; using current MAC\n");
+            }
+        }
+    }
 
     rc = cyw43_ioctl_up();
     if (rc != 0){
@@ -721,6 +737,25 @@ static int headless_https_probe_open_ap(void){
         goto probe_restore;
     }
     headless_tty0_write("Probe: WiFi up OK\n");
+    {
+        unsigned char forced_mac[6];
+        unsigned int forced_valid = 0u;
+        unsigned int forced_pending = 0u;
+        unsigned int forced_applied = 0u;
+        (void)cyw43_get_mac_override_status(forced_mac,
+                                            &forced_valid,
+                                            &forced_pending,
+                                            &forced_applied);
+        if (forced_valid){
+            headless_tty0_write("Probe: random MAC before join ");
+            headless_tty0_putmac(forced_mac);
+            headless_tty0_write(" pending=");
+            headless_tty0_putdec((unsigned long)forced_pending);
+            headless_tty0_write(" fw_applied=");
+            headless_tty0_putdec((unsigned long)forced_applied);
+            headless_tty0_write("\n");
+        }
+    }
 
     headless_tty0_write("Probe: joining open AP\n");
     rc = cyw43_ioctl_join(ssid, "");

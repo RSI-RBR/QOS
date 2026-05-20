@@ -2374,6 +2374,10 @@ static int cyw43_control_ready(void){
     return g_cyw43.fw_running && g_cyw43.iface_up && g_cyw43.func2_ready;
 }
 
+static int cyw43_control_path_ready(void){
+    return g_cyw43.fw_running && g_cyw43.func2_ready;
+}
+
 static void cyw43_set_pending_mac(const unsigned char mac[6]){
     if (!mac){
         return;
@@ -2409,7 +2413,7 @@ static int cyw43_apply_pending_mac_if_ready(void){
     } else{
         return 0;
     }
-    if (!cyw43_control_ready()){
+    if (!cyw43_control_path_ready()){
         return -1;
     }
     if (cyw43_wl_set_var("cur_etheraddr", mac, 6u) != 0){
@@ -4122,6 +4126,15 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
         }
         if (cyw43_refresh_cur_etheraddr() != 0){
             uart_puts("CYW43: cur_etheraddr read failed; using nvram MAC\n");
+        }
+        /*
+         * Apply a forced/random MAC before WLC_UP. Some firmware revisions
+         * accept cur_etheraddr after the interface is up but keep transmitting
+         * with the original hardware address until the next up transition.
+         */
+        if ((g_cyw43_pending_mac_valid || g_cyw43_forced_mac_valid) &&
+            cyw43_apply_pending_mac_if_ready() != 0){
+            uart_puts("CYW43: pre-up random MAC apply failed; will retry after up\n");
         }
     }
     if (monitor_minimal){
