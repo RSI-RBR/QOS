@@ -30,6 +30,7 @@ void arp_set_local_interface(const unsigned char mac[ETH_ADDR_LEN], const unsign
 void arp_note_peer(const unsigned char ip[4], const unsigned char mac[ETH_ADDR_LEN]);
 int arp_send_request(const unsigned char target_ip[4]);
 void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int interval_ms);
+void arp_stop_periodic(void);
 void arp_periodic_tick(unsigned long now_ticks);
 int arp_gateway_resolved(void);
 int arp_get_gateway_mac(unsigned char out_mac[ETH_ADDR_LEN]);

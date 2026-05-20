@@ -881,6 +881,7 @@ probe_restore:
          * more reliably than it can recover from an unnecessary host release.
          */
         headless_tty0_write("Probe: releasing scanner; monitor rearm deferred to scanner\n");
+        arp_stop_periodic();
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
         headless_control_note_scanner_idle(0u);

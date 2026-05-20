@@ -362,6 +362,12 @@ void arp_set_periodic_target(const unsigned char target_ip[4], unsigned int inte
     g_gateway_resolved = 0;
 }
 
+void arp_stop_periodic(void){
+    g_periodic_enabled = 0;
+    g_periodic_attempts = 0;
+    g_periodic_next_tick = 0;
+}
+
 void arp_periodic_tick(unsigned long now_ticks){
     if (!g_periodic_enabled || !g_iface_ready){
         return;

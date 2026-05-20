@@ -4169,6 +4169,7 @@ static int cyw43_ioctl_up_common(unsigned int monitor_minimal){
     }
     if (monitor_minimal){
         g_cyw43.iface_up = 1;
+        arp_stop_periodic();
         return 0;
     }
     if (!g_cyw43.iface_up &&
