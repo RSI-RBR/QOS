@@ -106,6 +106,10 @@ int cyw43_ioctl_scan_ssid(const char* ssid, cyw43_scan_result_t* out, unsigned i
 int cyw43_ioctl_join(const char* ssid, const char* password);
 int cyw43_ioctl_set_mac(const unsigned char mac[6]);
 int cyw43_ioctl_randomize_mac(void);
+int cyw43_get_mac_override_status(unsigned char out_mac[6],
+                                  unsigned int* forced_valid,
+                                  unsigned int* pending,
+                                  unsigned int* applied);
 int cyw43_get_firmware_version(char* out, unsigned int out_cap);
 
 int cyw43_build_sdpcm(cyw43_sdpcm_hdr_t* hdr,

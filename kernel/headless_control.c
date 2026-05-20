@@ -19,6 +19,7 @@
 #include "spinlock.h"
 #include "terminal.h"
 #include "scanner_log.h"
+#include "interrupt.h"
 
 #define BTN_DEBOUNCE_MS       35u
 #define BTN_DOUBLE_WINDOW_MS  800u
@@ -172,6 +173,16 @@ static void headless_tty0_puthex_byte(unsigned char v){
     out[1] = hex[v & 0xFu];
     out[2] = 0;
     headless_tty0_write(out);
+}
+
+static void headless_tty0_puthex32(unsigned int v){
+    static const char hex[] = "0123456789ABCDEF";
+    for (int shift = 28; shift >= 0; shift -= 4){
+        char one[2];
+        one[0] = hex[(v >> (unsigned int)shift) & 0xFu];
+        one[1] = 0;
+        headless_tty0_write(one);
+    }
 }
 
 static void headless_tty0_write_escaped(const unsigned char* data, unsigned int len){
@@ -524,6 +535,14 @@ static void probe_print_dhcp_diag(void){
 
     headless_tty0_write("Probe: DHCP diag stage=");
     headless_tty0_putdec((unsigned long)d.stage);
+    headless_tty0_write(" xid=");
+    headless_tty0_puthex32(d.xid);
+    headless_tty0_write(" mac=");
+    headless_tty0_putmac(d.client_mac);
+    headless_tty0_write(" txD=");
+    headless_tty0_putdec((unsigned long)d.tx_discover);
+    headless_tty0_write(" txR=");
+    headless_tty0_putdec((unsigned long)d.tx_request);
     headless_tty0_write(" rx68=");
     headless_tty0_putdec((unsigned long)d.rx_udp68);
     headless_tty0_write(" ok=");
@@ -565,12 +584,28 @@ static void probe_print_dhcp_diag(void){
     headless_tty0_write("\n");
 }
 
-static void probe_station_settle(unsigned int ms){
+static int probe_station_settle(unsigned int ms){
     unsigned long start = system_ticks;
-    while ((unsigned long)(system_ticks - start) < (unsigned long)ms){
+    unsigned int loops = 0u;
+    unsigned int max_loops = (ms * 80u) + 4000u;
+
+    while ((unsigned long)(system_ticks - start) < (unsigned long)ms &&
+           loops < max_loops){
         (void)net_poll();
-        asm volatile("wfe" : : : "memory");
+        /*
+         * Do not use WFE here: this path may run immediately after a syscall
+         * transition, and a missed event can make a short settle look frozen.
+         */
+        for (volatile unsigned int spin = 0u; spin < 250u; spin++){
+            asm volatile("yield" : : : "memory");
+        }
+        loops++;
     }
+    if (loops >= max_loops){
+        headless_tty0_write("Probe: station settle bounded out; continuing\n");
+        return -1;
+    }
+    return 0;
 }
 
 static int probe_preload_x509_trust_store(void){
@@ -702,16 +737,39 @@ static int headless_https_probe_open_ap(void){
     headless_tty0_write("Probe: join OK\n");
     {
         unsigned char probe_mac[6];
+        unsigned char forced_mac[6];
+        unsigned int forced_valid = 0u;
+        unsigned int forced_pending = 0u;
+        unsigned int forced_applied = 0u;
         net_proto_get_local_mac(probe_mac);
         headless_tty0_write("Probe: station MAC ");
         headless_tty0_putmac(probe_mac);
         headless_tty0_write("\n");
+        (void)cyw43_get_mac_override_status(forced_mac,
+                                            &forced_valid,
+                                            &forced_pending,
+                                            &forced_applied);
+        if (forced_valid){
+            headless_tty0_write("Probe: random/forced MAC ");
+            headless_tty0_putmac(forced_mac);
+            headless_tty0_write(" pending=");
+            headless_tty0_putdec((unsigned long)forced_pending);
+            headless_tty0_write(" fw_applied=");
+            headless_tty0_putdec((unsigned long)forced_applied);
+            headless_tty0_write("\n");
+        }
     }
     headless_tty0_write("Probe: settling station link\n");
-    probe_station_settle(750u);
+    (void)probe_station_settle(1200u);
 
-    headless_tty0_write("Probe: DHCP request\n");
-    dhcp_rc = dhcp_acquire(3500u, &lease);
+    headless_tty0_write("Probe: DHCP request using MAC ");
+    {
+        unsigned char dhcp_mac[6];
+        net_proto_get_local_mac(dhcp_mac);
+        headless_tty0_putmac(dhcp_mac);
+    }
+    headless_tty0_write("\n");
+    dhcp_rc = dhcp_acquire(12000u, &lease);
     if (dhcp_rc == 0){
         restore_net = 1;
         headless_tty0_write("Probe: DHCP OK; checking gateway ARP\n");
@@ -1604,7 +1662,9 @@ static void headless_control_poll_internal(unsigned int allow_actions){
         } else if (run_action == BTN_ACTION_SECURE_STOP){
             headless_tty0_write("Button: dispatch long-press secure stop\n");
         }
+        kernel_preempt_enter();
         perform_button_action(run_action, now);
+        kernel_preempt_exit();
         spin_lock(&g_headless_lock);
         g_action_busy = 0u;
         if (run_action == BTN_ACTION_SINGLE_CHECK ||

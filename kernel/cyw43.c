@@ -227,6 +227,7 @@ static unsigned int g_cyw43_bp_fail_suppressed;
 static unsigned int g_cyw43_pending_mac_valid;
 static unsigned char g_cyw43_pending_mac[6];
 static unsigned int g_cyw43_forced_mac_valid;
+static unsigned int g_cyw43_forced_mac_applied;
 static unsigned char g_cyw43_forced_mac[6];
 static unsigned int g_cyw43_force_restage_init;
 
@@ -2391,6 +2392,7 @@ static void cyw43_set_forced_mac(const unsigned char mac[6]){
         g_cyw43_forced_mac[i] = mac[i];
     }
     g_cyw43_forced_mac_valid = 1u;
+    g_cyw43_forced_mac_applied = 0u;
     cyw43_set_pending_mac(mac);
 }
 
@@ -2430,6 +2432,28 @@ static int cyw43_apply_pending_mac_if_ready(void){
     net_proto_get_gateway_ip(gateway_ip);
     arp_set_periodic_target(gateway_ip, 1000u);
     g_cyw43_pending_mac_valid = 0u;
+    g_cyw43_forced_mac_applied = 1u;
+    return 0;
+}
+
+int cyw43_get_mac_override_status(unsigned char out_mac[6],
+                                  unsigned int* forced_valid,
+                                  unsigned int* pending,
+                                  unsigned int* applied){
+    if (out_mac){
+        for (unsigned int i = 0u; i < 6u; i++){
+            out_mac[i] = g_cyw43_forced_mac[i];
+        }
+    }
+    if (forced_valid){
+        *forced_valid = g_cyw43_forced_mac_valid;
+    }
+    if (pending){
+        *pending = g_cyw43_pending_mac_valid;
+    }
+    if (applied){
+        *applied = g_cyw43_forced_mac_applied;
+    }
     return 0;
 }
 
@@ -2496,6 +2520,8 @@ int cyw43_ioctl_set_mac(const unsigned char mac[6]){
         g_cyw43.mac[i] = local_mac[i];
     }
     net_proto_set_local_mac(g_cyw43.mac);
+    g_cyw43_pending_mac_valid = 0u;
+    g_cyw43_forced_mac_applied = 1u;
     net_proto_get_gateway_ip(gateway_ip);
     arp_set_periodic_target(gateway_ip, 1000u);
     (void)arp_send_request(gateway_ip);

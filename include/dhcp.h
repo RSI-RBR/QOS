@@ -21,9 +21,13 @@ typedef struct {
     unsigned int bad_yiaddr;
     unsigned int wrong_type;
     unsigned int send_fail;
+    unsigned int xid;
+    unsigned int tx_discover;
+    unsigned int tx_request;
     unsigned char last_msg_type;
     unsigned char last_offer_ip[4];
     unsigned char last_server_id[4];
+    unsigned char client_mac[6];
 } dhcp_diag_t;
 
 /*

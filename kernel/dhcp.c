@@ -251,6 +251,13 @@ static int send_dhcp_broadcast(unsigned char msg_type,
     be16_write(&udp[6], 0u); /* IPv4 permits UDP checksum zero. */
 
     rc = net_send_raw(frame, frame_len);
+    if (rc == 0){
+        if (msg_type == DHCPDISCOVER){
+            g_dhcp_diag.tx_discover++;
+        } else if (msg_type == DHCPREQUEST){
+            g_dhcp_diag.tx_request++;
+        }
+    }
     if (rc != 0){
         g_dhcp_diag.send_fail++;
     }
@@ -368,7 +375,10 @@ static int wait_dhcp_msg(unsigned char want_type,
     unsigned long start = system_ticks;
     unsigned char buf[UDP_MAX_PAYLOAD];
     udp_meta_t meta;
-    while ((unsigned long)(system_ticks - start) < (unsigned long)timeout_ms){
+    unsigned int loops = 0u;
+    unsigned int max_loops = (timeout_ms * 80u) + 4000u;
+    while ((unsigned long)(system_ticks - start) < (unsigned long)timeout_ms &&
+           loops < max_loops){
         (void)net_poll();
         for (;;){
             int n = udp_recv_filtered(DHCP_CLIENT_PORT, 0, 0, 0, buf, sizeof(buf), &meta);
@@ -391,7 +401,10 @@ static int wait_dhcp_msg(unsigned char want_type,
                 g_dhcp_diag.wrong_type++;
             }
         }
-        asm volatile("wfe" : : : "memory");
+        for (volatile unsigned int spin = 0u; spin < 250u; spin++){
+            asm volatile("yield" : : : "memory");
+        }
+        loops++;
     }
     return -1;
 }
@@ -461,6 +474,10 @@ int dhcp_acquire(unsigned int timeout_ms, dhcp_lease_t* lease_out){
     net_proto_get_local_mac(mac);
     xid = make_xid(mac);
     dhcp_diag_reset();
+    g_dhcp_diag.xid = xid;
+    for (unsigned int i = 0u; i < 6u; i++){
+        g_dhcp_diag.client_mac[i] = mac[i];
+    }
 
     net_proto_set_local_ip(zero_ip);
     net_proto_set_gateway_ip(zero_ip);
