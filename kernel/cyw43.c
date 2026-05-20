@@ -1394,16 +1394,17 @@ int cyw43_release_emmc_for_storage(void){
 }
 
 int cyw43_force_release_emmc_for_storage(void){
+    unsigned char was_fw_loaded = g_cyw43.fw_loaded;
+    unsigned char was_fw_running = g_cyw43.fw_running;
     /*
      * Emergency path for headless scanner log preservation. This intentionally
      * skips WLC_DOWN/control traffic; a sick monitor firmware path may never
      * answer. Reclaim the shared host in software, then blockdev will reinit
      * the EMMC controller and pins before FAT I/O.
      *
-     * Since this skips the firmware's normal DOWN path, do not later reattach
-     * to the old firmware image. If an AP vanished during station probing, the
-     * firmware may be left half-associated and monitor restore becomes flaky.
-     * Force the next monitor bring-up through a clean firmware restage.
+     * Keep firmware metadata so scanner restore can try a fast SDIO reattach
+     * path after probe/save actions. Full firmware restage remains available
+     * through explicit hard-recovery paths when reattach fails.
      */
     cyw43_clear_monitor_raw_state(-7);
     g_cyw43.iface_up = 0;
@@ -1413,9 +1414,8 @@ int cyw43_force_release_emmc_for_storage(void){
     g_cyw43.enabled = 0;
     g_cyw43.func1_ready = 0;
     g_cyw43.wifi_configured = 0;
-    g_cyw43.fw_running = 0;
-    g_cyw43.fw_loaded = 0;
-    g_cyw43_force_restage_init = 1u;
+    g_cyw43.fw_running = was_fw_running;
+    g_cyw43.fw_loaded = was_fw_loaded;
     sdio_bus_suspend_state();
     blockdev_reserve_emmc_for_wifi(0);
     net_wait_for_io_idle();

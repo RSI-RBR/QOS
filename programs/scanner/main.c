@@ -2358,6 +2358,21 @@ void program_main(void){
                     raw_rc = -1;
                 }
             }
+            if (raw_rc != 0){
+                int hard_rc;
+                qos_puts("scanner: pause restore failed; forcing hard monitor recovery\n");
+                hard_rc = qos_wifi_monitor_recover(active_channel);
+                if (hard_rc == 0){
+                    raw_rc = qos_wifi_raw_set_enabled(1u);
+                    if (qos_wifi_monitor_status(&pause_st) == 0 && pause_st.channel != 0u){
+                        active_channel = pause_st.channel;
+                    }
+                } else{
+                    qos_puts("scanner: hard monitor recovery rc=");
+                    put_i32(hard_rc);
+                    qos_puts("\n");
+                }
+            }
             last_rx_progress_us = qos_get_time_us();
             recv_err_streak = 0u;
             idle_quiet_windows = 0u;
