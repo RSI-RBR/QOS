@@ -693,7 +693,7 @@ static void syscall_poll_background_io(void){
         next_remote_poll_tick = now + 10u;
         remote_login_poll();
     }
-    headless_control_poll();
+    headless_control_poll_actions();
 }
 
 static void syscall_write_puts(int pid, const char* s){
@@ -3053,7 +3053,7 @@ void* syscall_handle(void* frame_sp, unsigned long esr){
                  * pending headless button action immediately instead of waiting
                  * for a later background poll.
                  */
-                headless_control_poll();
+                headless_control_poll_actions();
             }
             frame[TF_X0] = 0;
             return frame_sp;
