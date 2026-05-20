@@ -1195,7 +1195,12 @@ static int scanner_manual_fat_save(unsigned long now){
         headless_tty0_write("Save: releasing scanner; monitor rearm deferred to scanner\n");
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);
-        headless_control_note_scanner_idle(0u);
+        /*
+         * Keep the LED in solid/idle state until the scanner proves raw RX is
+         * flowing again. Clearing this here made a post-save stalled monitor
+         * look like a healthy running scanner.
+         */
+        headless_control_note_scanner_idle(1u);
     }
 
     return (rc == 0) ? 0 : -1;
@@ -1802,7 +1807,17 @@ static void headless_control_poll_internal(unsigned int allow_actions){
             run_action == BTN_ACTION_SECURE_STOP){
             probe_pause_set(0u);
             g_probe_pause_ack = 0u;
-            g_led_scanner_idle_hint = 0u;
+            if (run_action == BTN_ACTION_TOGGLE && find_scanner_pid() >= 0){
+                /*
+                 * Save temporarily steals the shared SDIO host for FAT I/O.
+                 * Keep solid/idle LED until the scanner loop reports actual
+                 * RX progress again.
+                 */
+                g_led_scanner_idle_hint = 1u;
+                g_led_scanner_running_cached = 1u;
+            } else{
+                g_led_scanner_idle_hint = 0u;
+            }
             if (run_action != BTN_ACTION_SINGLE_CHECK){
                 g_led_probe_quiet = 0u;
             }

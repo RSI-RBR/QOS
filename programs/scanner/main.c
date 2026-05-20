@@ -1590,6 +1590,16 @@ static int scanner_note_raw_progress(const cyw43_raw_capture_status_t* st,
     return progressed;
 }
 
+static void scanner_set_raw_progress_baseline(unsigned int* last_rx_frames){
+    cyw43_raw_capture_status_t st;
+    if (!last_rx_frames){
+        return;
+    }
+    if (qos_wifi_raw_status(&st) == 0){
+        *last_rx_frames = st.rx_frames;
+    }
+}
+
 static int scanner_wait_for_raw_progress(unsigned int* last_rx_frames,
                                          unsigned int total_wait_ms){
     cyw43_raw_capture_status_t st;
@@ -1959,9 +1969,11 @@ static void maybe_hop_channel(unsigned int* active_channel,
     int rc = qos_wifi_monitor_set(2u, ch);
     qos_sleep(HOP_CHANNEL_SETTLE_MS);
     (void)qos_wifi_raw_set_enabled(1u);
-    if (last_rx_frames){
-        *last_rx_frames = 0u;
-    }
+    /*
+     * rx_frames is cumulative. Do not reset the baseline to zero on every hop,
+     * or old frames make the watchdog think fresh RF progress happened.
+     */
+    scanner_set_raw_progress_baseline(last_rx_frames);
 
     if (rc == 0){
         *active_channel = ch;
@@ -2348,6 +2360,7 @@ void program_main(void){
         }
         if (probe_pause_seen){
             int raw_rc;
+            int resumed_rx = 0;
             cyw43_monitor_status_t pause_st;
             int pause_have_st;
             probe_pause_seen = 0u;
@@ -2394,16 +2407,36 @@ void program_main(void){
                 qos_puts("scanner: pause restore failed; hard recovery skipped\n");
 #endif
             }
-            last_rx_progress_us = qos_get_time_us();
-            recv_err_streak = 0u;
+            if (raw_rc == 0){
+                scanner_set_raw_progress_baseline(&last_rx_frames);
+                resumed_rx = scanner_wait_for_raw_progress(&last_rx_frames, 1200u);
+            }
+            recv_err_streak = raw_rc == 0 ? 0u : RECV_ERR_FORCE_REARM;
             idle_quiet_windows = 0u;
             rearm_stage = 0u;
-            if (idle_led_active){
+            if (resumed_rx){
+                last_rx_progress_us = qos_get_time_us();
+            } else{
+                /*
+                 * A button save/probe can leave monitor mode nominally enabled
+                 * but not actually receiving frames. Keep the LED solid and
+                 * let the watchdog continue recovery instead of declaring the
+                 * scanner healthy too early.
+                 */
+                last_rx_progress_us = qos_get_time_us() -
+                    ((unsigned long long)STALE_RECOVER_SECS * 1000000ull);
+            }
+            if (resumed_rx && idle_led_active){
                 (void)qos_headless_scanner_idle(0u);
                 idle_led_active = 0u;
+            } else if (!resumed_rx && !idle_led_active){
+                (void)qos_headless_scanner_idle(1u);
+                idle_led_active = 1u;
             }
             qos_puts("scanner: button action pause done; raw rc=");
             put_i32(raw_rc);
+            qos_puts(" rx=");
+            put_u32((unsigned int)(resumed_rx ? 1u : 0u));
             qos_puts("\n");
         }
         now = qos_get_time_us();
