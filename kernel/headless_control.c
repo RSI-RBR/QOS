@@ -324,7 +324,7 @@ static int is_plausible_rssi(int sig){
     return (sig >= -110 && sig <= -1) ? 1 : 0;
 }
 
-static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
+static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig, unsigned int* out_channel){
     static const char aps_path[] = "aps.log";
     int size;
     unsigned char* buf;
@@ -332,6 +332,8 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
     int best_live_sig = -200;
     int best_any_sig = -200;
     unsigned long long best_live_last_ms = 0ull;
+    unsigned int best_live_channel = 0u;
+    unsigned int best_any_channel = 0u;
     char best_live_ssid[33];
     char best_any_ssid[33];
     int found = 0;
@@ -342,6 +344,9 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
     }
     out_ssid[0] = 0;
     *out_sig = -127;
+    if (out_channel){
+        *out_channel = 0u;
+    }
     best_live_ssid[0] = 0;
     best_any_ssid[0] = 0;
 
@@ -370,6 +375,7 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
             if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == 0u){
                 unsigned char saved = buf[i];
                 int sig_max;
+                int ch_i = 0;
                 unsigned long long last_ms = 0ull;
                 int have_last_ms = 0;
                 char ssid[33];
@@ -381,12 +387,14 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
                     if (parse_u64_key(line, " last_ms=", &last_ms) == 0){
                         have_last_ms = 1;
                     }
+                    (void)parse_i32_key(line, " ch=", &ch_i);
                     if (have_last_ms && last_ms > 0ull){
                         if (!found_live ||
                             sig_max > best_live_sig ||
                             (sig_max == best_live_sig && last_ms > best_live_last_ms)){
                             best_live_last_ms = last_ms;
                             best_live_sig = sig_max;
+                            best_live_channel = (ch_i > 0 && ch_i <= 14) ? (unsigned int)ch_i : 0u;
                             for (unsigned int j = 0u; j < sizeof(best_live_ssid); j++){
                                 best_live_ssid[j] = ssid[j];
                                 if (ssid[j] == 0){
@@ -397,6 +405,7 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
                         }
                     } else if (!found || sig_max > best_any_sig){
                         best_any_sig = sig_max;
+                        best_any_channel = (ch_i > 0 && ch_i <= 14) ? (unsigned int)ch_i : 0u;
                         for (unsigned int j = 0u; j < sizeof(best_any_ssid); j++){
                             best_any_ssid[j] = ssid[j];
                             if (ssid[j] == 0){
@@ -426,6 +435,9 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
             }
         }
         *out_sig = best_live_sig;
+        if (out_channel){
+            *out_channel = best_live_channel;
+        }
         return 0;
     }
     for (unsigned int i = 0u; i < 33u; i++){
@@ -435,6 +447,9 @@ static int scanner_pick_strongest_open_ssid(char out_ssid[33], int* out_sig){
         }
     }
     *out_sig = best_any_sig;
+    if (out_channel){
+        *out_channel = best_any_channel;
+    }
     return 0;
 }
 
@@ -466,6 +481,34 @@ static void probe_print_net_diag(const char* prefix){
     headless_tty0_write("\n");
 }
 
+static int probe_wait_raw_rx(unsigned int wait_ms){
+    cyw43_raw_capture_status_t before;
+    cyw43_raw_capture_status_t now_st;
+    unsigned int start_rx = 0u;
+    unsigned long start = system_ticks;
+
+    if (cyw43_raw_capture_get_status(&before) == 0){
+        start_rx = before.rx_frames;
+        if (!before.enabled){
+            return -2;
+        }
+    }
+
+    while ((unsigned long)(system_ticks - start) < (unsigned long)wait_ms){
+        (void)cyw43_raw_capture_poll_lite();
+        if (cyw43_raw_capture_get_status(&now_st) == 0){
+            if (!now_st.enabled){
+                return -2;
+            }
+            if (now_st.queued > 0u || now_st.rx_frames != start_rx){
+                return 0;
+            }
+        }
+        asm volatile("wfe" : : : "memory");
+    }
+    return -1;
+}
+
 static int headless_https_probe_open_ap(void){
     unsigned char dst_ip[4] = {1u, 1u, 1u, 1u};
     static const char host[] = "one.one.one.one";
@@ -476,6 +519,7 @@ static int headless_https_probe_open_ap(void){
     unsigned char old_gw[4];
     char ssid[33];
     int sig = -127;
+    unsigned int return_ch = HEADLESS_PROBE_RETURN_CH;
     int rc;
     int dhcp_rc;
     int restore_net = 0;
@@ -497,7 +541,7 @@ static int headless_https_probe_open_ap(void){
         probe_pause_wait_ticks(250u);
     }
 
-    if (scanner_pick_strongest_open_ssid(ssid, &sig) != 0){
+    if (scanner_pick_strongest_open_ssid(ssid, &sig, &return_ch) != 0){
         if (scanner_running){
             probe_pause_set(0u);
             headless_control_note_scanner_idle(0u);
@@ -522,6 +566,12 @@ static int headless_https_probe_open_ap(void){
     headless_tty0_write("\" signal ");
     headless_tty0_puti(sig);
     headless_tty0_write(" dBm\n");
+    if (return_ch == 0u || return_ch > 14u){
+        return_ch = HEADLESS_PROBE_RETURN_CH;
+    }
+    headless_tty0_write("Probe: restore channel ");
+    headless_tty0_putdec((unsigned long)return_ch);
+    headless_tty0_write("\n");
 
     headless_tty0_write("Probe: switching WiFi monitor -> station\n");
     (void)cyw43_raw_capture_set_enabled(0u);
@@ -607,6 +657,9 @@ static int headless_https_probe_open_ap(void){
         headless_tty0_write("Probe: HTTPS failed rc=");
         headless_tty0_puti(rc);
         headless_tty0_write("\n");
+        if (rc == -141){
+            headless_tty0_write("Probe: X509 verify failed after reaching HTTPS server\n");
+        }
         rc = -14;
     }
 
@@ -617,22 +670,41 @@ probe_restore:
     }
     if (scanner_running){
         int restore_rc = 0;
+        int rx_rc = -1;
         headless_tty0_write("Probe: restoring monitor scanner path\n");
         headless_control_note_scanner_recovery(1u);
         (void)cyw43_raw_capture_set_enabled(0u);
         (void)cyw43_ioctl_monitor(0u, 0u);
         restore_rc = cyw43_ioctl_up_monitor();
         if (restore_rc == 0){
-            restore_rc = cyw43_ioctl_monitor(2u, HEADLESS_PROBE_RETURN_CH);
+            restore_rc = cyw43_ioctl_monitor(2u, return_ch);
         }
         if (restore_rc == 0){
             restore_rc = cyw43_raw_capture_set_enabled(1u);
+        }
+        if (restore_rc == 0){
+            rx_rc = probe_wait_raw_rx(900u);
+            if (rx_rc != 0){
+                headless_tty0_write("Probe: monitor restored but raw RX not flowing rc=");
+                headless_tty0_puti(rx_rc);
+                headless_tty0_write("; hard recovery\n");
+                restore_rc = -100 + rx_rc;
+            }
         }
         if (restore_rc != 0){
             headless_tty0_write("Probe: monitor restore failed rc=");
             headless_tty0_puti(restore_rc);
             headless_tty0_write("; hard recovery\n");
-            restore_rc = cyw43_monitor_hard_recover(HEADLESS_PROBE_RETURN_CH);
+            restore_rc = cyw43_monitor_hard_recover(return_ch);
+            if (restore_rc == 0){
+                rx_rc = probe_wait_raw_rx(1200u);
+                if (rx_rc != 0){
+                    headless_tty0_write("Probe: hard recovery had no raw RX rc=");
+                    headless_tty0_puti(rx_rc);
+                    headless_tty0_write("\n");
+                    restore_rc = -200 + rx_rc;
+                }
+            }
         }
         headless_control_note_scanner_recovery(0u);
         probe_pause_set(0u);

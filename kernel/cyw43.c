@@ -2303,6 +2303,22 @@ static int cyw43_wl_set_int(unsigned int op, unsigned int value){
     return cyw43_wl_cmd(1, op, buf, sizeof(buf), 0, 0, 0);
 }
 
+static int cyw43_wl_set_int_tolerant(unsigned int op, unsigned int value, const char* label){
+    if (cyw43_wl_set_int(op, value) == 0){
+        return 0;
+    }
+    uart_puts("CYW43: ");
+    uart_puts(label ? label : "wl set");
+    uart_puts(" normal reply failed; trying no-response\n");
+    if (cyw43_wl_set_int_noresp(op, value) == 0){
+        return 0;
+    }
+    uart_puts("CYW43: ");
+    uart_puts(label ? label : "wl set");
+    uart_puts(" no-response failed\n");
+    return -1;
+}
+
 static int cyw43_wl_get_int(unsigned int op, unsigned int* out){
     unsigned char buf[4];
     unsigned int actual = 0;
@@ -3389,22 +3405,22 @@ static int cyw43_join_prepare_station_state(void){
      */
     cyw43_drain_pending_packets(16u);
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_SCANSUPPRESS, 0u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_SCANSUPPRESS, 0u, "join prep scansuppress clear") != 0){
         uart_puts("CYW43: join prep scansuppress clear failed; continuing\n");
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_PROMISC, 0u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_PROMISC, 0u, "join prep promisc clear") != 0){
         uart_puts("CYW43: join prep promisc clear failed; continuing\n");
     }
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_PASSIVE_SCAN, 0u);
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_RADIO, 0u);
-    (void)cyw43_wl_set_int(CYW43_WLC_SET_PM, 0u);
+    (void)cyw43_wl_set_int_tolerant(CYW43_WLC_SET_PASSIVE_SCAN, 0u, "join prep passive-scan clear");
+    (void)cyw43_wl_set_int_tolerant(CYW43_WLC_SET_RADIO, 0u, "join prep radio enable");
+    (void)cyw43_wl_set_int_tolerant(CYW43_WLC_SET_PM, 0u, "join prep power-save off");
     (void)cyw43_wl_set_var_u32("mpc", 0u);
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_INFRA, 1u, "join prep infra") != 0){
         uart_puts("CYW43: join prep infra failed\n");
         return -1;
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_AUTH, 0u, "join prep auth-open") != 0){
         uart_puts("CYW43: join prep auth-open failed\n");
         return -2;
     }
@@ -4234,25 +4250,25 @@ int cyw43_ioctl_join(const char* ssid, const char* password){
             }
         }
     } else{
-        if (cyw43_wl_set_int(CYW43_WLC_SET_WSEC, 0u) != 0){
+        if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_WSEC, 0u, "join open wsec clear") != 0){
             uart_puts("CYW43: join open wsec clear failed\n");
             return -40;
         }
-        if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA_AUTH_DISABLED) != 0){
+        if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_WPA_AUTH, CYW43_WPA_AUTH_DISABLED, "join open auth clear") != 0){
             uart_puts("CYW43: join open auth clear failed\n");
             return -41;
         }
     }
 
-    if (cyw43_wl_set_int(CYW43_WLC_SET_INFRA, 1u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_INFRA, 1u, "join infra") != 0){
         uart_puts("CYW43: join infra set failed\n");
         return -50;
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_AUTH, 0u) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_AUTH, 0u, "join auth-open") != 0){
         uart_puts("CYW43: join auth-open set failed\n");
         return -51;
     }
-    if (cyw43_wl_set_int(CYW43_WLC_SET_WPA_AUTH, wpa_auth) != 0){
+    if (cyw43_wl_set_int_tolerant(CYW43_WLC_SET_WPA_AUTH, wpa_auth, "join final WPA auth") != 0){
         uart_puts("CYW43: join final WPA auth set failed\n");
         return -52;
     }
